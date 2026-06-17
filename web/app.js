@@ -145,6 +145,10 @@ function renderWeekly(data) {
   if (data.note) { $("weekly").innerHTML = `<div class="muted">${data.note}</div>`; return; }
   $("weekly-dates").textContent = data.this_date ? `（${data.last_date} → ${data.this_date}）` : "";
   const rows = (data.stocks || []).filter((r) => r.status !== "持平");
+  if (!rows.length) {
+    $("weekly").innerHTML = '<div class="muted">本週與上週相比無新進榜／加速／退榜的個股（或兩份資料相同）。</div>';
+    return;
+  }
   rows.sort((a, b) => (b.custody_delta || -999) - (a.custody_delta || -999));
   const head = "<tr><th>股票</th><th>狀態</th><th>集保Δ</th><th>大戶增比</th><th>產業</th></tr>";
   const body = rows.map((r) =>

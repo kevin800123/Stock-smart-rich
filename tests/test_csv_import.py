@@ -21,6 +21,47 @@ def test_parse_handles_unquoted_comma_in_last_column(make_big5_csv):
     assert by["2330.TW"]["code"] == "2330.TW"
 
 
+ROW_6174 = (
+    '3\t,"6174.TW","安碁","100","1","500","99","1","2","50","20","8","2","6","20","20",'
+    '"1","1","0","0","60","0.1","3.18","-10.46","2","25","3","1.1","2.2","3.3","0.2","0",'
+    '"上櫃電子零組件","石英元件","石英元件",石英元件廠'
+)
+
+
+def test_parse_cp950_special_char_no_mojibake(make_big5_csv):
+    # 「碁」字在純 big5 會變亂碼，cp950 應正確解出
+    path = make_big5_csv([ROW_6174], encoding="cp950")
+    _, rows = parse_csv(path)
+    assert rows[0]["name"] == "安碁"
+    assert "�" not in rows[0]["name"]
+
+
+def test_parse_utf8_encoded_file(make_big5_csv):
+    # 使用者另存成 UTF-8 的檔也要能讀
+    path = make_big5_csv([ROW_2330], encoding="utf-8-sig")
+    snap_date, rows = parse_csv(path)
+    assert snap_date == "2026-06-15"
+    assert rows[0]["code"] == "2330.TW"
+
+
+def test_parse_finds_header_when_extra_preamble(make_big5_csv):
+    # 前置列數不固定時，仍能掃到標頭與日期
+    path = make_big5_csv(
+        [ROW_2330],
+        preamble_lines=["匯出報表", "你好", "資料日期：2026年  6月 15日", "策略,常用", "註解列"],
+    )
+    snap_date, rows = parse_csv(path)
+    assert snap_date == "2026-06-15"
+    assert rows[0]["code"] == "2330.TW"
+
+
+def test_parse_minguo_date(make_big5_csv):
+    # 民國年 115 → 西元 2026
+    path = make_big5_csv([ROW_2330], date_line="資料日期：115年 6月 15日")
+    snap_date, _ = parse_csv(path)
+    assert snap_date == "2026-06-15"
+
+
 def test_parse_extracts_date_and_row(big5_csv):
     snap_date, rows = parse_csv(big5_csv)
     assert snap_date == "2026-06-15"

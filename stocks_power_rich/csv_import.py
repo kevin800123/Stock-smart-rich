@@ -1,6 +1,7 @@
-"""解析使用者每日上傳的 Big5 編碼籌碼 CSV → 標準化欄位 → 寫入 chip_snapshot。
+"""解析使用者每日上傳的籌碼 CSV → 標準化欄位 → 寫入 chip_snapshot。
 
-CSV 結構：第 1 列標題、第 2 列含「資料日期」、第 3 列策略名、第 4 列欄名、之後為資料。
+自動偵測編碼（cp950/big5hkscs/utf-8/utf-16）並自動定位標頭與資料日期列，
+容忍前置列數不同、末欄未加引號逗號、西元或民國年。
 """
 import csv
 import io
@@ -9,6 +10,9 @@ import os
 import re
 import shutil
 from datetime import datetime
+
+# 嘗試的編碼（cp950＝Windows Big5 超集，含「碁」等字；再退 UTF-8/UTF-16）
+ENCODINGS = ["cp950", "big5hkscs", "utf-8-sig", "utf-16", "utf-8"]
 
 COLMAP = {
     "代碼": "code", "商品": "name", "成交": "close", "漲幅%": "change_pct",
@@ -44,16 +48,48 @@ def _normalize_field_count(row: list, n: int) -> list:
     return row
 
 
-def parse_csv(path: str):
-    raw = open(path, "rb").read().decode("big5", errors="replace")
-    lines = raw.splitlines()
-    m = re.search(r"(\d+)\s*年\s*(\d+)\s*月\s*(\d+)\s*日", lines[1]) if len(lines) > 1 else None
-    if m:
-        snap_date = f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
-    else:
-        snap_date = datetime.now().strftime("%Y-%m-%d")
+def _decode(raw: bytes) -> str:
+    """自動偵測編碼：優先選能解出關鍵欄名（代碼、商品）的編碼。"""
+    fallback = None
+    for enc in ENCODINGS:
+        try:
+            txt = raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+        if "代碼" in txt and "商品" in txt:
+            return txt
+        if fallback is None:
+            fallback = txt
+    return fallback if fallback is not None else raw.decode("cp950", errors="replace")
 
-    table = list(csv.reader(io.StringIO("\n".join(lines[3:]))))
+
+def _find_header_index(lines: list) -> int:
+    """掃出標頭列（含「代碼」與「商品」），找不到則視為第一列。"""
+    for i, ln in enumerate(lines):
+        if "代碼" in ln and "商品" in ln:
+            return i
+    return 0
+
+
+def _extract_date(lines: list) -> str:
+    """掃描列找資料日期，支援西元與民國年。"""
+    for ln in lines:
+        m = re.search(r"(\d{2,4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日", ln)
+        if m:
+            year = int(m.group(1))
+            if year < 1911:  # 民國 → 西元
+                year += 1911
+            return f"{year:04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def parse_csv(path: str):
+    raw = open(path, "rb").read()
+    lines = _decode(raw).splitlines()
+    hidx = _find_header_index(lines)
+    snap_date = _extract_date(lines[:hidx] if hidx else lines[:3])
+
+    table = list(csv.reader(io.StringIO("\n".join(lines[hidx:]))))
     if not table:
         return snap_date, []
     header = [str(c).strip().strip('"') for c in table[0]]

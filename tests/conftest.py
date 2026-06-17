@@ -15,10 +15,10 @@ ROW_2330 = (
 )
 
 
-def _make_csv(path, data_rows, date_line="資料日期：2026年  6月 15日"):
-    content = "符合條件商品\n" + date_line + "\n策略,\t.常用\n" + HEADER + "\n"
-    content += "\n".join(data_rows) + "\n"
-    path.write_bytes(content.encode("big5"))
+def _make_csv(path, data_rows, date_line="資料日期：2026年  6月 15日", encoding="cp950", preamble_lines=None):
+    pre = preamble_lines if preamble_lines is not None else ["符合條件商品", date_line, "策略,\t.常用"]
+    content = "\n".join(pre) + "\n" + HEADER + "\n" + "\n".join(data_rows) + "\n"
+    path.write_bytes(content.encode(encoding))
     return str(path)
 
 
@@ -29,11 +29,11 @@ def big5_csv(tmp_path):
 
 @pytest.fixture
 def make_big5_csv(tmp_path):
-    """工廠 fixture：自訂日期與資料列，產生 Big5 CSV。"""
+    """工廠 fixture：自訂日期、資料列、編碼與前置列，產生 CSV。"""
     counter = {"n": 0}
 
-    def factory(data_rows, date_line="資料日期：2026年  6月 15日"):
+    def factory(data_rows, date_line="資料日期：2026年  6月 15日", encoding="cp950", preamble_lines=None):
         counter["n"] += 1
-        return _make_csv(tmp_path / f"s{counter['n']}.csv", data_rows, date_line)
+        return _make_csv(tmp_path / f"s{counter['n']}.csv", data_rows, date_line, encoding, preamble_lines)
 
     return factory
