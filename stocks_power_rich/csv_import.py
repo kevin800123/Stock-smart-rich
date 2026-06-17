@@ -63,18 +63,54 @@ def _decode(raw: bytes) -> str:
     return fallback if fallback is not None else raw.decode("cp950", errors="replace")
 
 
-def _find_header_index(lines: list) -> int:
+def _cell_str(c) -> str:
+    if c is None:
+        return ""
+    if isinstance(c, float) and c.is_integer():  # 30000.0 → "30000"
+        return str(int(c))
+    return str(c)
+
+
+def _read_excel_rows(raw: bytes) -> list:
+    """讀 .xlsx/.xlsm 第一個工作表 → 每列為字串 list。"""
+    import openpyxl
+
+    wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    out = [[_cell_str(c) for c in r] for r in ws.iter_rows(values_only=True)]
+    wb.close()
+    return out
+
+
+def _read_rows(path: str) -> list:
+    """讀檔成「每列為儲存格 list」，自動分辨 Excel(zip) 與 CSV(多編碼)。"""
+    raw = open(path, "rb").read()
+    if raw[:4] == b"PK\x03\x04":  # xlsx/xlsm 為 zip
+        return _read_excel_rows(raw)
+    return list(csv.reader(io.StringIO(_decode(raw))))
+
+
+def _trim_trailing_empty(cells: list) -> list:
+    out = list(cells)
+    while out and str(out[-1]).strip() == "":
+        out.pop()
+    return out
+
+
+def _find_header_index(rows: list) -> int:
     """掃出標頭列（含「代碼」與「商品」），找不到則視為第一列。"""
-    for i, ln in enumerate(lines):
-        if "代碼" in ln and "商品" in ln:
+    for i, r in enumerate(rows):
+        joined = ",".join(_cell_str(c) for c in r)
+        if "代碼" in joined and "商品" in joined:
             return i
     return 0
 
 
-def _extract_date(lines: list) -> str:
+def _extract_date(rows: list) -> str:
     """掃描列找資料日期，支援西元與民國年。"""
-    for ln in lines:
-        m = re.search(r"(\d{2,4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日", ln)
+    for r in rows:
+        joined = " ".join(_cell_str(c) for c in r)
+        m = re.search(r"(\d{2,4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日", joined)
         if m:
             year = int(m.group(1))
             if year < 1911:  # 民國 → 西元
@@ -84,22 +120,21 @@ def _extract_date(lines: list) -> str:
 
 
 def parse_csv(path: str):
-    raw = open(path, "rb").read()
-    lines = _decode(raw).splitlines()
-    hidx = _find_header_index(lines)
-    snap_date = _extract_date(lines[:hidx] if hidx else lines[:3])
+    rows_in = _read_rows(path)
+    if not rows_in:
+        return datetime.now().strftime("%Y-%m-%d"), []
+    hidx = _find_header_index(rows_in)
+    snap_date = _extract_date(rows_in[:hidx] if hidx else rows_in[:3])
 
-    table = list(csv.reader(io.StringIO("\n".join(lines[hidx:]))))
-    if not table:
-        return snap_date, []
-    header = [str(c).strip().strip('"') for c in table[0]]
+    header = _trim_trailing_empty([_cell_str(c).strip().strip('"') for c in rows_in[hidx]])
     n = len(header)
 
     rows = []
-    for raw_row in table[1:]:
-        if not raw_row:
+    for raw_row in rows_in[hidx + 1:]:
+        cells = _trim_trailing_empty([_cell_str(c) for c in raw_row])
+        if not cells:
             continue
-        rec = dict(zip(header, _normalize_field_count(raw_row, n)))
+        rec = dict(zip(header, _normalize_field_count(cells, n)))
         d = {}
         for src, dst in COLMAP.items():
             if src in rec:

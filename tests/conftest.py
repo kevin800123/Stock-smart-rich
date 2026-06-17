@@ -22,6 +22,40 @@ def _make_csv(path, data_rows, date_line="資料日期：2026年  6月 15日", e
     return str(path)
 
 
+HEADER_COLS = [
+    "序號", "代碼", "商品", "成交", "漲幅%", "總量", "收盤價(06/15)", "區間漲幅%", "振幅",
+    "市值(億)", "股本(億)", "成交值(億)", "推估獲利", "蘭質", "LPE", "蘭值", "有CB", "W55",
+    "55高", "55低", "集保", "評比值", "大戶增比", "人數降比", "月增", "年增", "累增", "投三",
+    "外三", "TOTAL", "55漲%", "21跌%", "產業", "細產業", "所有細產業", "產業地位",
+]
+ROW_2330_CELLS = [
+    "1\t", "2330.TW", "台積電", 1000, 1.5, 30000, 985, 1.5, 2, 250000, 2593, 500, 30, 6,
+    20, 20, 1, 1, 0, 0, 75, 0.1, 0.8, -0.5, 3, 12.3, 5, 2.5, 3.1, 5.6, 0.2, 0,
+    "上市半導體", "晶圓", "晶圓代工", "全球晶圓代工龍頭",
+]
+
+
+def _make_xlsx(path, data_rows_cells, date_line="資料日期：2026年  6月 15日", sheet=".常用"):
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = sheet
+    ws.append(["符合條件商品"])
+    ws.append([date_line])
+    ws.append(["策略", "\t" + sheet])
+    ws.append(HEADER_COLS)
+    for r in data_rows_cells:
+        ws.append(r)
+    wb.save(path)
+    return str(path)
+
+
+@pytest.fixture
+def xlsx_file(tmp_path):
+    return _make_xlsx(tmp_path / "sample.xlsx", [ROW_2330_CELLS])
+
+
 @pytest.fixture
 def big5_csv(tmp_path):
     return _make_csv(tmp_path / "sample.csv", [ROW_2330])

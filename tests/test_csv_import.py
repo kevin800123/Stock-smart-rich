@@ -62,6 +62,17 @@ def test_parse_minguo_date(make_big5_csv):
     assert snap_date == "2026-06-15"
 
 
+def test_parse_xlsx_excel_file(xlsx_file):
+    # 使用者實際每日檔是 .xlsm/.xlsx Excel，需與 CSV 走同一套解析
+    snap_date, rows = parse_csv(xlsx_file)
+    assert snap_date == "2026-06-15"
+    assert rows[0]["code"] == "2330.TW"
+    assert rows[0]["name"] == "台積電"
+    assert rows[0]["big_holder_ratio"] == 0.8
+    assert rows[0]["rev_yoy"] == 12.3
+    assert rows[0]["w55"] == 1.0
+
+
 def test_parse_extracts_date_and_row(big5_csv):
     snap_date, rows = parse_csv(big5_csv)
     assert snap_date == "2026-06-15"
