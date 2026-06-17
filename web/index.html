@@ -23,7 +23,20 @@
       <h2>大盤儀表板</h2>
       <div id="cards" class="cards"></div>
       <div class="chart-row">
-        <div id="trend" class="chart"></div>
+        <div class="chart-side">
+          <div class="chart-side-title">商品</div>
+          <label><input type="radio" name="idx" value="taiex" checked /> 加權指數</label>
+          <label><input type="radio" name="idx" value="tx" /> 台指期</label>
+        </div>
+        <div class="chart-main">
+          <div class="chart-toolbar">
+            <button class="tf active" data-iv="1d">日線</button>
+            <button class="tf" data-iv="1wk">週線</button>
+            <button class="tf" data-iv="1mo">月線</button>
+            <span id="idx-note" class="muted"></span>
+          </div>
+          <div id="idxchart" class="chart"></div>
+        </div>
       </div>
       <div id="market-summary" class="ai-box">點「一鍵更新」後可生成盤勢摘要。</div>
     </section>

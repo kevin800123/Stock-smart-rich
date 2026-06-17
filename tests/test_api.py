@@ -32,7 +32,7 @@ def test_kline_endpoint(tmp_path, monkeypatch):
     import pandas as pd
     from stocks_power_rich.sources import kline
 
-    def fake_history(self, period="1y"):
+    def fake_history(self, period="1y", interval="1d"):
         idx = pd.to_datetime(["2026-06-12"])
         return pd.DataFrame({"Open": [10], "High": [12], "Low": [9], "Close": [11], "Volume": [100]}, index=idx)
 
@@ -42,3 +42,19 @@ def test_kline_endpoint(tmp_path, monkeypatch):
     r = client.get("/api/stock/2330.TW/kline?period=1mo")
     assert r.status_code == 200
     assert r.json()["candles"][0] == [10.0, 11.0, 9.0, 12.0]
+
+
+def test_index_kline_tx_from_snapshots(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-06-16", "tx_open": 45600, "tx_high": 45900, "tx_low": 45550, "tx_price": 45772})
+    upsert_market_daily(c, {"date": "2026-06-17", "tx_open": 45772, "tx_high": 45850, "tx_low": 45700, "tx_price": 45809})
+
+    app = create_app()
+    client = TestClient(app)
+    out = client.get("/api/index/kline?symbol=tx&interval=1d").json()
+    assert out["dates"] == ["2026-06-16", "2026-06-17"]
+    assert out["candles"][0] == [45600.0, 45772.0, 45550.0, 45900.0]

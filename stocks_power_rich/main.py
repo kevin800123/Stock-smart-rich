@@ -88,6 +88,16 @@ def create_app() -> FastAPI:
     def stock_kline(code: str, period: str = "1y"):
         return kline.fetch_kline(code, period)
 
+    @app.get("/api/index/kline")
+    def index_kline(symbol: str = "taiex", interval: str = "1d"):
+        if symbol == "tx":
+            c = conn()
+            rows = [dict(r) for r in c.execute(
+                "SELECT date, tx_open, tx_high, tx_low, tx_price FROM market_daily ORDER BY date"
+            ).fetchall()]
+            return kline.tx_candles_from_rows(rows, interval)
+        return kline.fetch_index_kline(symbol, interval)
+
     if os.path.isdir(WEB_DIR):
         app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
     return app

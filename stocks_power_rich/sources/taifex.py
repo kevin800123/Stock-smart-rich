@@ -71,10 +71,16 @@ def parse_tx_price(fut_records: list, contract: str = "TX") -> dict:
         and "W" not in str(r.get("ContractMonth(Week)", ""))
     ]
     if not rows:
-        return {"tx_price": None, "tx_chg": None}
+        return {"tx_price": None, "tx_chg": None, "tx_open": None, "tx_high": None, "tx_low": None}
     rows.sort(key=lambda r: str(r.get("ContractMonth(Week)", "")))
     near = rows[0]
-    return {"tx_price": _f(near.get("Last")), "tx_chg": _f(near.get("Change"))}
+    return {
+        "tx_price": _f(near.get("Last")),
+        "tx_chg": _f(near.get("Change")),
+        "tx_open": _f(near.get("Open")),
+        "tx_high": _f(near.get("High")),
+        "tx_low": _f(near.get("Low")),
+    }
 
 
 def compute_retail_ratios(fut_records: list, inst_records: list) -> dict:

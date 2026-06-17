@@ -5,7 +5,8 @@ import sqlite3
 MARKET_COLS = [
     "date", "taiex", "taiex_chg", "inst_foreign", "inst_trust", "inst_dealer",
     "margin_balance", "margin_chg", "short_balance", "short_chg",
-    "tx_price", "tx_chg", "fut_inst_net", "retail_ls_mtx", "retail_ls_tmf",
+    "tx_price", "tx_chg", "tx_open", "tx_high", "tx_low",
+    "fut_inst_net", "retail_ls_mtx", "retail_ls_tmf",
     "sox", "n225", "kospi", "gold", "btc", "updated_at",
 ]
 
@@ -45,6 +46,12 @@ def init_db(conn: sqlite3.Connection) -> None:
         "id INTEGER PRIMARY KEY AUTOINCREMENT, snap_date TEXT, "
         "stored_path TEXT, imported_at TEXT)"
     )
+    # 既有資料庫補上後來新增的欄位
+    existing = {r[1] for r in conn.execute("PRAGMA table_info(market_daily)").fetchall()}
+    for col in MARKET_COLS:
+        if col not in existing and col not in ("date",):
+            coltype = "TEXT" if col == "updated_at" else "REAL"
+            conn.execute(f"ALTER TABLE market_daily ADD COLUMN {col} {coltype}")
     conn.commit()
 
 

@@ -6,7 +6,8 @@ const fmt = (v, d = 2) => (v === null || v === undefined || v === "" ? "—" : N
 const chgClass = (v) => (v > 0 ? "up" : v < 0 ? "down" : "flat");
 const chgText = (v, d = 2) => (v === null || v === undefined ? "" : (v > 0 ? "▲" : v < 0 ? "▼" : "") + fmt(Math.abs(v), d));
 
-let trendChart, klineChart;
+let idxChart, klineChart;
+let idxSymbol = "taiex", idxInterval = "1d";
 
 async function getJSON(url) {
   const r = await fetch(url);
@@ -46,27 +47,59 @@ function renderCards(m) {
   $("cards").innerHTML = cards.join("");
 }
 
-function renderTrend(history) {
-  if (!trendChart) trendChart = echarts.init($("trend"));
-  const dates = history.map((r) => r.date);
-  const series = [
-    { key: "taiex", name: "加權指數" },
-    { key: "tx_price", name: "台指期" },
-  ].map((s) => ({ name: s.name, type: "line", smooth: true, showSymbol: false, data: history.map((r) => r[s.key]) }));
-  trendChart.setOption({
-    tooltip: { trigger: "axis" },
-    legend: { textStyle: { color: "#ccc" } },
-    grid: { left: 60, right: 20, top: 30, bottom: 30 },
-    xAxis: { type: "category", data: dates, axisLabel: { color: "#999" } },
-    yAxis: { type: "value", scale: true, axisLabel: { color: "#999" } },
-    series,
-  });
+// 共用蠟燭圖 option（K + MA5 + MA20 + 量），dashboard 指數圖與個股 K 線共用
+function candlestickOption(data, startPct) {
+  const closes = data.candles.map((c) => c[1]);
+  return {
+    tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
+    legend: { data: ["K線", "MA5", "MA20"], textStyle: { color: "#ccc" } },
+    grid: [
+      { left: 60, right: 20, top: 30, height: "62%" },
+      { left: 60, right: 20, top: "78%", height: "14%" },
+    ],
+    xAxis: [
+      { type: "category", data: data.dates, axisLabel: { color: "#999" } },
+      { type: "category", data: data.dates, gridIndex: 1, axisLabel: { show: false } },
+    ],
+    yAxis: [
+      { scale: true, axisLabel: { color: "#999" } },
+      { gridIndex: 1, axisLabel: { show: false }, splitLine: { show: false } },
+    ],
+    dataZoom: [
+      { type: "inside", xAxisIndex: [0, 1], start: startPct },
+      { type: "slider", xAxisIndex: [0, 1], start: startPct, bottom: 0, height: 16 },
+    ],
+    series: [
+      { name: "K線", type: "candlestick", data: data.candles, itemStyle: { color: "#e04545", color0: "#2ea043", borderColor: "#e04545", borderColor0: "#2ea043" } },
+      { name: "MA5", type: "line", data: ma(closes, 5), smooth: true, showSymbol: false, lineStyle: { width: 1 } },
+      { name: "MA20", type: "line", data: ma(closes, 20), smooth: true, showSymbol: false, lineStyle: { width: 1 } },
+      { name: "量", type: "bar", xAxisIndex: 1, yAxisIndex: 1, data: data.volumes },
+    ],
+  };
+}
+
+async function loadIndexChart() {
+  if (!idxChart) idxChart = echarts.init($("idxchart"));
+  idxChart.showLoading();
+  try {
+    const d = await getJSON(`/api/index/kline?symbol=${idxSymbol}&interval=${idxInterval}`);
+    idxChart.hideLoading();
+    if (!d.candles || !d.candles.length) {
+      idxChart.clear();
+      $("idx-note").textContent = idxSymbol === "tx" ? "台指期 K 線由每日更新累積，請先按幾天「一鍵更新」" : "尚無資料";
+      return;
+    }
+    $("idx-note").textContent = idxSymbol === "tx" ? "（台指期：每日更新累積）" : "";
+    idxChart.setOption(candlestickOption(d, d.candles.length > 120 ? 70 : 0), true);
+  } catch (e) {
+    idxChart.hideLoading();
+    $("idx-note").textContent = "載入失敗：" + e.message;
+  }
 }
 
 async function loadDashboard() {
   const d = await getJSON("/api/dashboard");
   renderCards(d.latest);
-  renderTrend(d.history || []);
   if (d.latest && d.latest.updated_at) {
     $("last-updated").textContent = "更新：" + d.latest.updated_at.replace("T", " ").slice(0, 19);
   }
@@ -96,6 +129,7 @@ async function runUpdate() {
     bar.innerHTML = `✅ 成功：${ok || "無"}` + (fail ? `　❌ 失敗：${fail}` : "");
     bar.className = "status-bar " + (fail ? "warn" : "ok");
     await loadDashboard();
+    await loadIndexChart();
     await loadMarketSummary();
   } catch (e) {
     bar.textContent = "更新失敗：" + e.message;
@@ -217,28 +251,8 @@ async function openKline(code, name) {
   klineChart.showLoading();
   try {
     const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/kline?period=1y`);
-    const closes = d.candles.map((c) => c[1]);
     klineChart.hideLoading();
-    klineChart.setOption({
-      tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
-      legend: { data: ["K線", "MA5", "MA20"], textStyle: { color: "#ccc" } },
-      grid: [{ left: 55, right: 20, top: 30, height: "55%" }, { left: 55, right: 20, top: "72%", height: "16%" }],
-      xAxis: [
-        { type: "category", data: d.dates, axisLabel: { color: "#999" } },
-        { type: "category", data: d.dates, gridIndex: 1, axisLabel: { show: false } },
-      ],
-      yAxis: [
-        { scale: true, axisLabel: { color: "#999" } },
-        { gridIndex: 1, axisLabel: { show: false }, splitLine: { show: false } },
-      ],
-      dataZoom: [{ type: "inside", xAxisIndex: [0, 1], start: 60 }, { type: "slider", xAxisIndex: [0, 1], start: 60 }],
-      series: [
-        { name: "K線", type: "candlestick", data: d.candles, itemStyle: { color: "#e04545", color0: "#2ea043", borderColor: "#e04545", borderColor0: "#2ea043" } },
-        { name: "MA5", type: "line", data: ma(closes, 5), smooth: true, showSymbol: false, lineStyle: { width: 1 } },
-        { name: "MA20", type: "line", data: ma(closes, 20), smooth: true, showSymbol: false, lineStyle: { width: 1 } },
-        { name: "量", type: "bar", xAxisIndex: 1, yAxisIndex: 1, data: d.volumes },
-      ],
-    });
+    klineChart.setOption(candlestickOption(d, 60), true);
   } catch (e) {
     klineChart.hideLoading();
     $("kline-title").textContent = `${code} 無 K 線資料（${e.message}）`;
@@ -254,9 +268,24 @@ document.addEventListener("click", (e) => {
   const a = e.target.closest("a.stock");
   if (a) { e.preventDefault(); openKline(a.dataset.code, a.dataset.name); }
 });
-window.addEventListener("resize", () => { trendChart && trendChart.resize(); klineChart && klineChart.resize(); });
+window.addEventListener("resize", () => { idxChart && idxChart.resize(); klineChart && klineChart.resize(); });
+
+// 指數圖：商品選擇（加權/台指期）
+document.querySelectorAll('input[name="idx"]').forEach((el) =>
+  el.addEventListener("change", (e) => { idxSymbol = e.target.value; loadIndexChart(); })
+);
+// 指數圖：日/週/月切換
+document.querySelectorAll(".tf").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".tf").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    idxInterval = btn.dataset.iv;
+    loadIndexChart();
+  })
+);
 
 // 初始載入
 loadDashboard();
+loadIndexChart();
 loadDaily();
 loadWeeklyAndSummary();

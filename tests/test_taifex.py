@@ -11,7 +11,7 @@ def test_retail_ls_zero_total_is_none():
 
 
 FUT = [
-    {"Contract": "TX", "ContractMonth(Week)": "202606", "Last": "45772", "Change": "100", "OpenInterest": "21508"},
+    {"Contract": "TX", "ContractMonth(Week)": "202606", "Last": "45772", "Change": "100", "OpenInterest": "21508", "Open": "45600", "High": "45900", "Low": "45550"},
     {"Contract": "TX", "ContractMonth(Week)": "202606", "Last": "46246", "Change": "", "OpenInterest": "-"},  # 盤後
     {"Contract": "TX", "ContractMonth(Week)": "202607", "Last": "45849", "Change": "90", "OpenInterest": "80581"},
     {"Contract": "MTX", "ContractMonth(Week)": "202606", "Last": "45762", "Change": "5", "OpenInterest": "2000"},
@@ -33,6 +33,9 @@ def test_parse_tx_price_picks_near_month_day_session():
     out = taifex.parse_tx_price(FUT)
     assert out["tx_price"] == 45772.0
     assert out["tx_chg"] == 100.0
+    assert out["tx_open"] == 45600.0
+    assert out["tx_high"] == 45900.0
+    assert out["tx_low"] == 45550.0
 
 
 def test_compute_retail_ratios():
