@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>STOCKS POWER RICH</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>STOCKS POWER RICH <span class="zh">股力智富</span></h1>
+    <div class="actions">
+      <span id="last-updated" class="muted">尚未更新</span>
+      <button id="btn-update">⟳ 一鍵更新</button>
+    </div>
+  </header>
+
+  <div id="update-status" class="status-bar hidden"></div>
+
+  <main>
+    <section class="panel">
+      <h2>大盤儀表板</h2>
+      <div id="cards" class="cards"></div>
+      <div class="chart-row">
+        <div id="trend" class="chart"></div>
+      </div>
+      <div id="market-summary" class="ai-box">點「一鍵更新」後可生成盤勢摘要。</div>
+    </section>
+
+    <section class="panel">
+      <h2>籌碼 CSV 分析</h2>
+      <div class="upload-row">
+        <label class="file-label">
+          <input type="file" id="csv" accept=".csv" hidden />
+          📤 上傳今日 CSV
+        </label>
+        <span id="upload-info" class="muted"></span>
+      </div>
+
+      <div class="grid-2">
+        <div>
+          <h3>當日訊號榜（大戶進＋散戶退）</h3>
+          <div id="daily" class="table-wrap"></div>
+        </div>
+        <div>
+          <h3>產業榜</h3>
+          <div id="industry" class="table-wrap"></div>
+        </div>
+      </div>
+
+      <h3>跨週變化（本週 vs 上週）<span id="weekly-dates" class="muted"></span></h3>
+      <div id="weekly" class="table-wrap"></div>
+
+      <div id="csv-summary" class="ai-box">上傳 CSV 後可生成籌碼洞察。</div>
+    </section>
+  </main>
+
+  <div id="kline-modal" class="modal hidden">
+    <div class="modal-body">
+      <div class="modal-head">
+        <span id="kline-title"></span>
+        <button id="kline-close">✕</button>
+      </div>
+      <div id="kline" class="kline-chart"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
