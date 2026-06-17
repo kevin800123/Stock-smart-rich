@@ -186,6 +186,10 @@ async function uploadCsv(file) {
   try {
     const r = await fetch("/api/csv/upload", { method: "POST", body: fd });
     const res = await r.json();
+    if (!res.count) {
+      info.innerHTML = `<span style="color:#e08585">⚠ 讀到 0 檔（${res.snap_date}）。請確認上傳的是籌碼匯出 CSV（含「代碼／商品／大戶增比」等欄位）。</span>`;
+      return;
+    }
     info.textContent = `已匯入 ${res.snap_date}，共 ${res.count} 檔`;
     renderDaily(res.daily_top || []);
     await loadWeeklyAndSummary();
