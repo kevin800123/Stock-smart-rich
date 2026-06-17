@@ -46,6 +46,15 @@ def create_app() -> FastAPI:
         rows = get_snapshot(c, snap_date)
         return {"snap_date": snap_date, "count": count, "daily_top": analysis.daily_signals(rows, 30)}
 
+    @app.get("/api/analysis/daily")
+    def daily():
+        c = conn()
+        dates = get_snapshot_dates(c)
+        if not dates:
+            return {"snap_date": None, "daily_top": []}
+        rows = get_snapshot(c, dates[-1])
+        return {"snap_date": dates[-1], "daily_top": analysis.daily_signals(rows, 30)}
+
     @app.get("/api/analysis/weekly")
     def weekly():
         c = conn()

@@ -153,6 +153,14 @@ function renderWeekly(data) {
   $("weekly").innerHTML = `<table>${head}${body}</table>`;
 }
 
+async function loadDaily() {
+  try {
+    const d = await getJSON("/api/analysis/daily");
+    renderDaily(d.daily_top || []);
+    if (d.snap_date) $("upload-info").textContent = `最新快照 ${d.snap_date}`;
+  } catch (e) { /* 忽略 */ }
+}
+
 async function loadWeeklyAndSummary() {
   try {
     const w = await getJSON("/api/analysis/weekly");
@@ -242,4 +250,5 @@ window.addEventListener("resize", () => { trendChart && trendChart.resize(); kli
 
 // 初始載入
 loadDashboard();
+loadDaily();
 loadWeeklyAndSummary();

@@ -21,6 +21,11 @@ def test_dashboard_and_upload(tmp_path, monkeypatch):
     assert body["count"] == 1
     assert body["daily_top"][0]["code"] == "2330.TW"
 
+    # 重整後仍可從最新快照取得當日訊號榜
+    d = client.get("/api/analysis/daily").json()
+    assert d["snap_date"] == "2026-06-15"
+    assert d["daily_top"][0]["code"] == "2330.TW"
+
 
 def test_kline_endpoint(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
