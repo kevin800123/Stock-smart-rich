@@ -35,7 +35,7 @@ body {
 .status-bar.ok { background: #15301c; color: #7ee2a0; }
 .status-bar.warn { background: #34270f; color: #f0c474; }
 .status-bar.err { background: #3a1717; color: #e08585; }
-.hidden { display: none; }
+.hidden { display: none !important; }
 
 main { padding: 18px; display: flex; flex-direction: column; gap: 18px; max-width: 1280px; margin: 0 auto; }
 .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
