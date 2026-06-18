@@ -85,8 +85,10 @@ def create_app() -> FastAPI:
         return gemini.summarize_market(dict(row) if row else {}, cfg.gemini_api_key)
 
     @app.get("/api/stock/{code}/kline")
-    def stock_kline(code: str, period: str = "1y"):
-        return kline.fetch_kline(code, period)
+    def stock_kline(code: str, interval: str = "1d", period: str | None = None):
+        if period is None:
+            period = {"1d": "1y", "1wk": "2y", "1mo": "5y"}.get(interval, "1y")
+        return kline.fetch_kline(code, period=period, interval=interval)
 
     @app.get("/api/index/kline")
     def index_kline(symbol: str = "taiex", interval: str = "1d"):

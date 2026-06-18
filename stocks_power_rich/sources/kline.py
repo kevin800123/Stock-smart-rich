@@ -18,9 +18,24 @@ def _df_to_candles(df) -> dict:
     return {"dates": dates, "candles": candles, "volumes": volumes}
 
 
+def _history(code: str, period: str, interval: str):
+    try:
+        return yf.Ticker(code).history(period=period, interval=interval)
+    except Exception:  # noqa: BLE001 — 抓不到視為空
+        import pandas as pd
+
+        return pd.DataFrame()
+
+
 def fetch_kline(code: str, period: str = "1y", interval: str = "1d") -> dict:
-    df = yf.Ticker(code).history(period=period, interval=interval)
-    if df.empty:
+    df = _history(code, period, interval)
+    # 上櫃/興櫃股 .TW 查不到 → 改試 .TWO（CSV 一律給 .TW）
+    if (df is None or df.empty) and code.endswith(".TW"):
+        alt = code[:-3] + ".TWO"
+        alt_df = _history(alt, period, interval)
+        if alt_df is not None and not alt_df.empty:
+            code, df = alt, alt_df
+    if df is None or df.empty:
         return {"code": code, "dates": [], "candles": [], "volumes": []}
     return {"code": code, **_df_to_candles(df)}
 

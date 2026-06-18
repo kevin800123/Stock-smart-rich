@@ -244,24 +244,48 @@ function ma(values, n) {
   return out;
 }
 
-async function openKline(code, name) {
-  $("kline-modal").classList.remove("hidden");
-  $("kline-title").textContent = `${code} ${name || ""} 日K線`;
+let klineCode = "", klineName = "", klineInterval = "1d";
+const TF_LABEL = { "1d": "日", "1wk": "週", "1mo": "月" };
+
+async function loadKline() {
   if (!klineChart) klineChart = echarts.init($("kline"));
+  $("kline-title").textContent = `${klineCode} ${klineName || ""} ${TF_LABEL[klineInterval]}K線`;
   klineChart.showLoading();
   try {
-    const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/kline?period=1y`);
+    const d = await getJSON(`/api/stock/${encodeURIComponent(klineCode)}/kline?interval=${klineInterval}`);
     klineChart.hideLoading();
-    klineChart.setOption(candlestickOption(d, 60), true);
+    if (!d.candles || !d.candles.length) {
+      klineChart.clear();
+      $("kline-title").textContent = `${klineCode} 無 K 線資料`;
+      return;
+    }
+    klineChart.setOption(candlestickOption(d, d.candles.length > 120 ? 60 : 0), true);
   } catch (e) {
     klineChart.hideLoading();
-    $("kline-title").textContent = `${code} 無 K 線資料（${e.message}）`;
+    $("kline-title").textContent = `${klineCode} 無 K 線資料（${e.message}）`;
   }
+}
+
+function openKline(code, name) {
+  klineCode = code;
+  klineName = name;
+  klineInterval = "1d";
+  document.querySelectorAll(".ktf").forEach((b) => b.classList.toggle("active", b.dataset.iv === "1d"));
+  $("kline-modal").classList.remove("hidden");
+  loadKline();
 }
 
 // ---------- 事件綁定 ----------
 $("btn-update").addEventListener("click", runUpdate);
 $("csv").addEventListener("change", (e) => { if (e.target.files[0]) uploadCsv(e.target.files[0]); });
+document.querySelectorAll(".ktf").forEach((btn) =>
+  btn.addEventListener("click", () => {
+    document.querySelectorAll(".ktf").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    klineInterval = btn.dataset.iv;
+    loadKline();
+  })
+);
 $("kline-close").addEventListener("click", () => $("kline-modal").classList.add("hidden"));
 $("kline-modal").addEventListener("click", (e) => { if (e.target.id === "kline-modal") $("kline-modal").classList.add("hidden"); });
 document.addEventListener("click", (e) => {

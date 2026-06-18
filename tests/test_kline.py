@@ -19,6 +19,20 @@ def test_fetch_kline_echarts_shape(monkeypatch):
     assert out["volumes"] == [100.0, 200.0]
 
 
+def test_fetch_kline_falls_back_to_two(monkeypatch):
+    # 上櫃股 .TW 查不到 → 自動改試 .TWO
+    def fake_history(self, period="1y", interval="1d"):
+        if self.ticker.endswith(".TWO"):
+            idx = pd.to_datetime(["2026-06-12"])
+            return pd.DataFrame({"Open": [10], "High": [12], "Low": [9], "Close": [11], "Volume": [100]}, index=idx)
+        return pd.DataFrame()  # .TW 空
+
+    monkeypatch.setattr(kline.yf.Ticker, "history", fake_history)
+    out = kline.fetch_kline("6174.TW")
+    assert out["code"] == "6174.TWO"
+    assert out["candles"][0] == [10.0, 11.0, 9.0, 12.0]
+
+
 def test_fetch_index_kline_taiex(monkeypatch):
     captured = {}
 

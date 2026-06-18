@@ -44,6 +44,28 @@ def test_kline_endpoint(tmp_path, monkeypatch):
     assert r.json()["candles"][0] == [10.0, 11.0, 9.0, 12.0]
 
 
+def test_stock_kline_interval_passed(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    import pandas as pd
+    from stocks_power_rich.sources import kline
+
+    cap = {}
+
+    def fake_history(self, period="1y", interval="1d"):
+        cap["interval"] = interval
+        cap["period"] = period
+        idx = pd.to_datetime(["2026-06-12"])
+        return pd.DataFrame({"Open": [10], "High": [12], "Low": [9], "Close": [11], "Volume": [100]}, index=idx)
+
+    monkeypatch.setattr(kline.yf.Ticker, "history", fake_history)
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/stock/2330.TW/kline?interval=1wk")
+    assert r.status_code == 200
+    assert cap["interval"] == "1wk"
+    assert cap["period"] == "2y"
+
+
 def test_index_kline_tx_from_snapshots(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
