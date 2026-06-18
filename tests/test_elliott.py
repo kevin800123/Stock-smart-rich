@@ -25,3 +25,13 @@ def test_no_label_when_wave4_overlaps_wave1():
 
 def test_no_label_when_too_few_pivots():
     assert elliott_waves([100, 101, 102, 103], pct=0.05) == []
+
+
+def test_labels_impulse_then_abc_correction():
+    # 上升五浪後接 A-B-C 修正（170→150 A、150→160 B、160→140 C）
+    closes = UP_IMPULSE + [150, 160, 140]
+    out = elliott_waves(closes, pct=0.05)
+    assert [(w["index"], w["label"]) for w in out] == [
+        (2, "1"), (4, "2"), (6, "3"), (8, "4"), (10, "5"),
+        (11, "A"), (12, "B"), (13, "C"),
+    ]

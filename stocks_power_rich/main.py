@@ -205,7 +205,14 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             rows = [dict(r) for r in c.execute(
                 "SELECT date, tx_open, tx_high, tx_low, tx_price FROM market_daily ORDER BY date"
             ).fetchall()]
-            return kline.tx_candles_from_rows(rows, interval)
+            tx = kline.tx_candles_from_rows(rows, interval)
+            if len(tx.get("candles", [])) >= 20:
+                return tx
+            # 台指期歷史累積不足 → 以高度連動的加權指數近似
+            proxy = kline.fetch_index_kline("taiex", interval)
+            proxy["symbol"] = "tx"
+            proxy["proxy"] = True
+            return proxy
         return kline.fetch_index_kline(symbol, interval)
 
     if os.path.isdir(WEB_DIR):

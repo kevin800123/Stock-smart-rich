@@ -9,6 +9,7 @@ const chgText = (v, d = 2) => (v === null || v === undefined ? "" : (v > 0 ? "�
 let idxChart, klineChart;
 let idxSymbol = "taiex", idxInterval = "1d";
 let showWaves = false;
+let wavePct = 0.05;
 let lastIndexData = null, lastKlineData = null;
 const MA_DEFS = [
   { n: 5, color: "#5b8ff9" },
@@ -16,6 +17,57 @@ const MA_DEFS = [
   { n: 60, color: "#f6bd16" },
   { n: 120, color: "#e8684a" },
 ];
+
+// 艾略特波浪偵測（與後端 elliott.py 同邏輯，前端版供靈敏度即時調整）
+function zigzag(vals, pct) {
+  const n = vals.length;
+  if (!n) return [];
+  const piv = [];
+  let pi = 0, pv = vals[0], trend = 0;
+  for (let i = 1; i < n; i++) {
+    const v = vals[i];
+    if (trend === 0) {
+      if (pv && Math.abs(v - pv) / Math.abs(pv) >= pct) { trend = v > pv ? 1 : -1; piv.push(pi); pi = i; pv = v; }
+    } else if (trend === 1) {
+      if (v > pv) { pi = i; pv = v; }
+      else if (pv && (pv - v) / Math.abs(pv) >= pct) { piv.push(pi); trend = -1; pi = i; pv = v; }
+    } else {
+      if (v < pv) { pi = i; pv = v; }
+      else if (pv && (v - pv) / Math.abs(pv) >= pct) { piv.push(pi); trend = 1; pi = i; pv = v; }
+    }
+  }
+  piv.push(pi);
+  return piv;
+}
+function impulseLabels(closes, seg) {
+  const p = seg.map((i) => closes[i]); const up = p[1] > p[0];
+  let shape, r2, r3t, r4;
+  if (up) { shape = p[1] > p[0] && p[2] < p[1] && p[3] > p[2] && p[4] < p[3] && p[5] > p[4]; r2 = p[2] > p[0]; r3t = p[3] > p[1]; r4 = p[4] > p[1]; }
+  else { shape = p[1] < p[0] && p[2] > p[1] && p[3] < p[2] && p[4] > p[3] && p[5] < p[4]; r2 = p[2] < p[0]; r3t = p[3] < p[1]; r4 = p[4] < p[1]; }
+  const w1 = Math.abs(p[1] - p[0]), w3 = Math.abs(p[3] - p[2]), w5 = Math.abs(p[5] - p[4]);
+  const r3s = !(w3 < w1 && w3 < w5);
+  if (!(shape && r2 && r3t && r4 && r3s)) return [];
+  return [0, 1, 2, 3, 4].map((k) => ({ index: seg[k + 1], label: String(k + 1) }));
+}
+function abcLabels(closes, seg, up) {
+  const p = seg.map((i) => closes[i]);
+  const ok = up ? (p[1] < p[0] && p[2] > p[1] && p[3] < p[2]) : (p[1] > p[0] && p[2] < p[1] && p[3] > p[2]);
+  if (!ok) return [];
+  return [["A", 1], ["B", 2], ["C", 3]].map(([l, i]) => ({ index: seg[i], label: l }));
+}
+function elliottWaves(closes, pct) {
+  const piv = zigzag(closes, pct);
+  if (piv.length >= 9) {
+    const imp = impulseLabels(closes, piv.slice(-9, -3));
+    if (imp.length) {
+      const up = closes[piv[piv.length - 8]] > closes[piv[piv.length - 9]];
+      const abc = abcLabels(closes, piv.slice(-4), up);
+      if (abc.length) return imp.concat(abc);
+    }
+  }
+  if (piv.length >= 6) return impulseLabels(closes, piv.slice(-6));
+  return [];
+}
 
 async function getJSON(url) {
   const r = await fetch(url);
@@ -66,13 +118,19 @@ function candlestickOption(data, startPct) {
     name: "K線", type: "candlestick", data: data.candles,
     itemStyle: { color: "#e04545", color0: "#2ea043", borderColor: "#e04545", borderColor0: "#2ea043" },
   };
-  if (showWaves && data.waves && data.waves.length) {
-    candle.markPoint = {
-      symbol: "circle", symbolSize: 20,
-      itemStyle: { color: "#f0a500" },
-      label: { color: "#1a1a1a", fontWeight: 700, fontSize: 12, formatter: (p) => p.data.value },
-      data: data.waves.map((w) => ({ value: w.label, coord: [data.dates[w.index], data.candles[w.index][3]] })),
-    };
+  if (showWaves) {
+    const waves = elliottWaves(closes, wavePct);
+    if (waves.length) {
+      candle.markPoint = {
+        symbol: "circle", symbolSize: 20,
+        label: { color: "#1a1a1a", fontWeight: 700, fontSize: 12, formatter: (p) => p.data.value },
+        data: waves.map((w) => ({
+          value: w.label,
+          coord: [data.dates[w.index], data.candles[w.index][3]],
+          itemStyle: { color: /[ABC]/.test(w.label) ? "#6cb6ff" : "#f0a500" }, // 修正浪藍、推動浪橘
+        })),
+      };
+    }
   }
   return {
     tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
@@ -108,7 +166,9 @@ async function loadIndexChart() {
       $("idx-note").textContent = idxSymbol === "tx" ? "台指期 K 線由每日更新累積，請先按幾天「一鍵更新」" : "尚無資料";
       return;
     }
-    $("idx-note").textContent = idxSymbol === "tx" ? "（台指期：每日更新累積）" : "";
+    $("idx-note").textContent = d.proxy
+      ? "（台指期歷史不足，暫以加權指數近似；每日更新累積後改用真實台指期）"
+      : (idxSymbol === "tx" ? "（台指期：每日更新累積）" : "");
     lastIndexData = d;
     idxChart.setOption(candlestickOption(d, d.candles.length > 120 ? 70 : 0), true);
   } catch (e) {
@@ -472,12 +532,17 @@ document.querySelectorAll(".tf").forEach((btn) =>
 $("date-select").addEventListener("change", (e) => loadDaily(e.target.value));
 $("btn-ai-market").addEventListener("click", () => loadMarketSummary(true));
 $("btn-ai-csv").addEventListener("click", () => loadCsvSummary(true));
-$("wave-chk").addEventListener("change", (e) => {
-  showWaves = e.target.checked;
+function redrawCharts() {
   if (idxChart && lastIndexData) idxChart.setOption(candlestickOption(lastIndexData, lastIndexData.candles.length > 120 ? 70 : 0), true);
   if (klineChart && lastKlineData && !$("kline-modal").classList.contains("hidden")) {
     klineChart.setOption(candlestickOption(lastKlineData, lastKlineData.candles.length > 120 ? 60 : 0), true);
   }
+}
+$("wave-chk").addEventListener("change", (e) => { showWaves = e.target.checked; redrawCharts(); });
+$("wave-pct").addEventListener("input", (e) => {
+  wavePct = Number(e.target.value) / 100;
+  $("wave-pct-val").textContent = `轉折 ${e.target.value}%`;
+  if (showWaves) redrawCharts();
 });
 $("btn-export").addEventListener("click", () => {
   const date = $("date-select").value || "";

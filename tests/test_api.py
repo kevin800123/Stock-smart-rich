@@ -109,6 +109,28 @@ def test_summary_refresh_bypasses_cache(tmp_path, monkeypatch):
     assert calls["n"] == 2
 
 
+def test_tx_kline_falls_back_to_proxy_when_sparse(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    import pandas as pd
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import kline
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-06-17", "tx_open": 1, "tx_high": 2, "tx_low": 1, "tx_price": 1.5})
+
+    def fake_history(self, period="1y", interval="1d"):
+        idx = pd.to_datetime(["2026-06-12", "2026-06-13"])
+        return pd.DataFrame({"Open": [1, 2], "High": [3, 4], "Low": [0, 1], "Close": [2, 3], "Volume": [1, 1]}, index=idx)
+
+    monkeypatch.setattr(kline.yf.Ticker, "history", fake_history)
+    app = create_app()
+    client = TestClient(app)
+    d = client.get("/api/index/kline?symbol=tx&interval=1d").json()
+    assert d.get("proxy") is True          # 累積不足 → 以加權指數近似
+    assert len(d["candles"]) == 2
+
+
 def test_stock_kline_interval_passed(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     import pandas as pd
@@ -179,11 +201,14 @@ def test_index_kline_tx_from_snapshots(tmp_path, monkeypatch):
 
     c = get_connection(str(tmp_path / "t.sqlite"))
     init_db(c)
-    upsert_market_daily(c, {"date": "2026-06-16", "tx_open": 45600, "tx_high": 45900, "tx_low": 45550, "tx_price": 45772})
-    upsert_market_daily(c, {"date": "2026-06-17", "tx_open": 45772, "tx_high": 45850, "tx_low": 45700, "tx_price": 45809})
+    # 累積 ≥20 個交易日 → 走真實台指期 OHLC（非 proxy）
+    for d in range(1, 21):
+        base = 45000 + d
+        upsert_market_daily(c, {"date": f"2026-06-{d:02d}", "tx_open": base, "tx_high": base + 5, "tx_low": base - 5, "tx_price": base + 2})
 
     app = create_app()
     client = TestClient(app)
     out = client.get("/api/index/kline?symbol=tx&interval=1d").json()
-    assert out["dates"] == ["2026-06-16", "2026-06-17"]
-    assert out["candles"][0] == [45600.0, 45772.0, 45550.0, 45900.0]
+    assert not out.get("proxy")
+    assert len(out["candles"]) == 20
+    assert out["candles"][0] == [45001.0, 45003.0, 44996.0, 45006.0]  # 第1天 [open, close, low, high]

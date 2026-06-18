@@ -38,30 +38,42 @@ def _zigzag(vals: list, pct: float) -> list:
     return pivots
 
 
-def elliott_waves(closes: list, pct: float = 0.05) -> list:
-    """偵測最近一段五浪推動，回傳 [{index, label}]（1~5）；不符合鐵律則回 []。"""
-    piv = _zigzag(closes, pct)
-    if len(piv) < 6:
-        return []
-    seg = piv[-6:]
+def _impulse_labels(closes: list, seg: list) -> list:
+    """驗證 6 個樞紐是否構成合法五浪推動，是則回 1~5 標註，否則回 []。"""
     p = [closes[i] for i in seg]
     up = p[1] > p[0]
-
     if up:
         shape = p[1] > p[0] and p[2] < p[1] and p[3] > p[2] and p[4] < p[3] and p[5] > p[4]
-        rule2 = p[2] > p[0]              # 第2浪不破第1浪起點
-        rule3top = p[3] > p[1]           # 第3浪須突破第1浪頂
-        rule4 = p[4] > p[1]              # 第4浪不重疊第1浪
+        rule2, rule3top, rule4 = p[2] > p[0], p[3] > p[1], p[4] > p[1]
     else:
         shape = p[1] < p[0] and p[2] > p[1] and p[3] < p[2] and p[4] > p[3] and p[5] < p[4]
-        rule2 = p[2] < p[0]
-        rule3top = p[3] < p[1]
-        rule4 = p[4] < p[1]
-
+        rule2, rule3top, rule4 = p[2] < p[0], p[3] < p[1], p[4] < p[1]
     w1, w3, w5 = abs(p[1] - p[0]), abs(p[3] - p[2]), abs(p[5] - p[4])
-    rule3short = not (w3 < w1 and w3 < w5)  # 第3浪不可最短
-
+    rule3short = not (w3 < w1 and w3 < w5)
     if not (shape and rule2 and rule3top and rule4 and rule3short):
         return []
-    labels = ["1", "2", "3", "4", "5"]
-    return [{"index": seg[k + 1], "label": labels[k]} for k in range(5)]
+    return [{"index": seg[k + 1], "label": str(k + 1)} for k in range(5)]
+
+
+def _abc_labels(closes: list, seg: list, up: bool) -> list:
+    """seg=[第5浪頂, A, B, C] 四樞紐；修正浪方向與推動相反才標 A-B-C。"""
+    p = [closes[i] for i in seg]
+    ok = (p[1] < p[0] and p[2] > p[1] and p[3] < p[2]) if up else (p[1] > p[0] and p[2] < p[1] and p[3] > p[2])
+    if not ok:
+        return []
+    return [{"index": seg[1], "label": "A"}, {"index": seg[2], "label": "B"}, {"index": seg[3], "label": "C"}]
+
+
+def elliott_waves(closes: list, pct: float = 0.05) -> list:
+    """偵測最近一段五浪推動（1~5），若其後接合法修正浪再加標 A-B-C；不符合則回 []。"""
+    piv = _zigzag(closes, pct)
+    if len(piv) >= 9:
+        imp = _impulse_labels(closes, piv[-9:-3])
+        if imp:
+            up = closes[piv[-8]] > closes[piv[-9]]
+            abc = _abc_labels(closes, piv[-4:], up)
+            if abc:
+                return imp + abc
+    if len(piv) >= 6:
+        return _impulse_labels(closes, piv[-6:])
+    return []
