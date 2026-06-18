@@ -160,20 +160,67 @@ function lanCell(v) {
   return v > 60 ? `<b style="color:var(--up)">${fmt(v, 1)}</b>` : fmt(v, 1);
 }
 
-function renderDaily(rows) {
-  if (!rows || !rows.length) { $("daily").innerHTML = '<div class="muted">尚無資料</div>'; return; }
-  const head = "<tr><th>股票</th><th>分數</th><th>大戶增比</th><th>人數降比</th><th>營收年增%</th><th>蘭值</th><th>訊號</th></tr>";
-  const body = rows.map((r) =>
-    `<tr><td>${stockLink(r.code, r.name)}</td><td>${fmt(r.score, 3)}</td><td>${fmt(r.big_holder_ratio, 2)}</td><td>${fmt(r.holder_drop_ratio, 2)}</td><td>${fmt(r.rev_yoy, 1)}</td><td>${lanCell(r.lan_value)}</td><td>${flagBadges(r.flags)}</td></tr>`
-  ).join("");
-  $("daily").innerHTML = `<table>${head}${body}</table>`;
+// 通用可排序表格：點欄位標題即排序（數字欄位數值排序）
+const sortState = {};
+function renderSortable(elId, columns, rows, emptyMsg) {
+  if (!rows || !rows.length) { $(elId).innerHTML = `<div class="muted">${emptyMsg || "無資料"}</div>`; return; }
+  const st = sortState[elId] || {};
+  const data = rows.slice();
+  if (st.key) {
+    const col = columns.find((c) => c.key === st.key) || {};
+    data.sort((a, b) => {
+      let va = a[st.key], vb = b[st.key];
+      if (col.numeric) {
+        va = va === null || va === undefined ? -Infinity : Number(va);
+        vb = vb === null || vb === undefined ? -Infinity : Number(vb);
+        return st.asc ? va - vb : vb - va;
+      }
+      va = va == null ? "" : String(va); vb = vb == null ? "" : String(vb);
+      return st.asc ? va.localeCompare(vb) : vb.localeCompare(va);
+    });
+  }
+  const head = "<tr>" + columns.map((c) => {
+    const arrow = st.key === c.key ? (st.asc ? " ▲" : " ▼") : "";
+    return `<th class="sortable" data-sort="${c.key}">${c.label}${arrow}</th>`;
+  }).join("") + "</tr>";
+  const body = data.map((r) => "<tr>" + columns.map((c) =>
+    `<td>${c.render ? c.render(r) : fmt(r[c.key], c.dp === undefined ? 2 : c.dp)}</td>`
+  ).join("") + "</tr>").join("");
+  $(elId).innerHTML = `<table>${head}${body}</table>`;
+  $(elId).querySelectorAll("th.sortable").forEach((th) =>
+    th.addEventListener("click", () => {
+      const key = th.dataset.sort, cur = sortState[elId] || {};
+      sortState[elId] = { key, asc: cur.key === key ? !cur.asc : false };
+      renderSortable(elId, columns, rows, emptyMsg);
+    })
+  );
 }
 
-function renderIndustry(rows) {
-  if (!rows || !rows.length) { $("industry").innerHTML = '<div class="muted">尚無資料</div>'; return; }
-  const head = "<tr><th>產業</th><th>檔數</th><th>平均分數</th></tr>";
-  const body = rows.map((r) => `<tr><td>${r.industry}</td><td>${r.count}</td><td>${fmt(r.avg_score, 3)}</td></tr>`).join("");
-  $("industry").innerHTML = `<table>${head}${body}</table>`;
+const PICK_COLS = [
+  { key: "code", label: "股票", render: (r) => stockLink(r.code, r.name) },
+  { key: "lan_value", label: "蘭值", numeric: true, render: (r) => lanCell(r.lan_value) },
+  { key: "lan_score", label: "蘭質", numeric: true, dp: 1 },
+  { key: "lpe", label: "本益比", numeric: true },
+  { key: "est_profit", label: "推估EPS", numeric: true },
+  { key: "rev_yoy", label: "營收年增%", numeric: true, dp: 1 },
+  { key: "accum_inc", label: "營收累增", numeric: true, dp: 1 },
+  { key: "holder_drop_ratio", label: "人數降比", numeric: true },
+  { key: "big_holder_ratio", label: "大戶增比", numeric: true },
+];
+
+const SUBIND_COLS = [
+  { key: "sub_industry", label: "細產業", render: (r) => r.sub_industry },
+  { key: "count", label: "檔數", numeric: true, dp: 0 },
+];
+
+function renderDaily(picks) {
+  if (!sortState.daily) sortState.daily = { key: "lan_value", asc: false };
+  renderSortable("daily", PICK_COLS, picks, "無符合條件的個股（W55翻多＋大戶增＋營收年增＞0＋推估EPS＞0）");
+}
+
+function renderIndustry(subind) {
+  if (!sortState.industry) sortState.industry = { key: "count", asc: false };
+  renderSortable("industry", SUBIND_COLS, subind, "無符合條件的個股");
 }
 
 function statusBadge(s) {
@@ -201,8 +248,8 @@ async function loadDaily(date) {
   try {
     const q = date ? `?date=${encodeURIComponent(date)}` : "";
     const d = await getJSON("/api/analysis/daily" + q);
-    renderIndustry(d.industry || []);
-    renderDaily(d.daily_top || []);
+    renderIndustry(d.subindustry || []);
+    renderDaily(d.picks || []);
     if (d.snap_date) $("date-select").value = d.snap_date;
   } catch (e) { /* 忽略 */ }
 }

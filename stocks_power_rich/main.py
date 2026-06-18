@@ -70,8 +70,8 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         snap_date, count = csv_import.import_csv(c, tmp)
         c.execute("DELETE FROM ai_cache WHERE cache_key=?", (f"csv:{snap_date}",))
         c.commit()
-        rows = get_snapshot(c, snap_date)
-        return {"snap_date": snap_date, "count": count, "daily_top": analysis.daily_signals(rows, 30)}
+        picks = analysis.filtered_picks(get_snapshot(c, snap_date))
+        return {"snap_date": snap_date, "count": count, "picks": picks}
 
     @app.post("/api/csv/import-latest")
     def import_latest():
@@ -83,9 +83,9 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         snap_date, count = csv_import.import_csv(c, path)
         c.execute("DELETE FROM ai_cache WHERE cache_key=?", (f"csv:{snap_date}",))
         c.commit()
-        rows = get_snapshot(c, snap_date)
+        picks = analysis.filtered_picks(get_snapshot(c, snap_date))
         return {"snap_date": snap_date, "count": count, "file": os.path.basename(path),
-                "daily_top": analysis.daily_signals(rows, 30)}
+                "picks": picks}
 
     @app.get("/api/snapshots")
     def snapshots():
@@ -96,11 +96,11 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         c = conn()
         dates = get_snapshot_dates(c)
         if not dates:
-            return {"snap_date": None, "daily_top": [], "industry": []}
+            return {"snap_date": None, "picks": [], "subindustry": []}
         snap = date if date in dates else dates[-1]
-        rows = get_snapshot(c, snap)
-        return {"snap_date": snap, "daily_top": analysis.daily_signals(rows, 30),
-                "industry": analysis.industry_aggregate(rows)}
+        picks = analysis.filtered_picks(get_snapshot(c, snap))
+        return {"snap_date": snap, "picks": picks,
+                "subindustry": analysis.subindustry_counts(picks)}
 
     @app.get("/api/analysis/weekly")
     def weekly():
@@ -126,9 +126,9 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         cached = get_ai_cache(c, key)
         if cached:
             return cached
-        rows = get_snapshot(c, dates[-1])
+        picks = analysis.filtered_picks(get_snapshot(c, dates[-1]))
         result = gemini.summarize_csv(
-            analysis.daily_signals(rows, 30), {}, analysis.industry_aggregate(rows), cfg.gemini_api_key
+            picks, {}, analysis.subindustry_counts(picks), cfg.gemini_api_key
         )
         if result.get("enabled"):
             set_ai_cache(c, key, result)

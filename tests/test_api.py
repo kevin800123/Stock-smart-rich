@@ -19,12 +19,12 @@ def test_dashboard_and_upload(tmp_path, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["count"] == 1
-    assert body["daily_top"][0]["code"] == "2330.TW"
+    assert body["picks"][0]["code"] == "2330.TW"
 
-    # 重整後仍可從最新快照取得當日訊號榜
+    # 重整後仍可從最新快照取得篩選榜
     d = client.get("/api/analysis/daily").json()
     assert d["snap_date"] == "2026-06-15"
-    assert d["daily_top"][0]["code"] == "2330.TW"
+    assert d["picks"][0]["code"] == "2330.TW"
 
 
 def test_kline_endpoint(tmp_path, monkeypatch):
@@ -60,7 +60,7 @@ def test_import_latest_from_folder(tmp_path, monkeypatch):
     client = TestClient(app)
     r = client.post("/api/csv/import-latest").json()
     assert r["count"] == 1
-    assert r["daily_top"][0]["code"] == "2330.TW"
+    assert r["picks"][0]["code"] == "2330.TW"
     assert r["file"] == "20260615.csv"
 
 
@@ -92,8 +92,8 @@ def test_snapshots_and_daily_by_date(tmp_path, monkeypatch):
 
     c = get_connection(str(tmp_path / "t.sqlite"))
     init_db(c)
-    insert_chip_snapshot(c, "2026-06-15", [{"code": "A", "industry": "半導體", "big_holder_ratio": 0.9, "holder_drop_ratio": -0.5}])
-    insert_chip_snapshot(c, "2026-06-16", [{"code": "B", "industry": "水泥", "big_holder_ratio": 0.2, "holder_drop_ratio": 0.1}])
+    insert_chip_snapshot(c, "2026-06-15", [{"code": "A", "sub_industry": "晶圓", "w55": 1, "big_holder_ratio": 0.9, "rev_yoy": 10, "est_profit": 1, "lan_value": 70}])
+    insert_chip_snapshot(c, "2026-06-16", [{"code": "B", "sub_industry": "水泥", "w55": 1, "big_holder_ratio": 0.2, "rev_yoy": 5, "est_profit": 1, "lan_value": 30}])
 
     app = create_app()
     client = TestClient(app)
@@ -102,8 +102,8 @@ def test_snapshots_and_daily_by_date(tmp_path, monkeypatch):
 
     d = client.get("/api/analysis/daily?date=2026-06-15").json()
     assert d["snap_date"] == "2026-06-15"
-    assert d["daily_top"][0]["code"] == "A"
-    assert d["industry"][0]["industry"] == "半導體"
+    assert d["picks"][0]["code"] == "A"
+    assert d["subindustry"][0]["sub_industry"] == "晶圓"
 
 
 def test_stock_profile_merges_chip_and_valuation(tmp_path, monkeypatch):

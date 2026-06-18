@@ -32,6 +32,34 @@ def daily_signals(rows: list[dict], top_n: int = 30) -> list[dict]:
     return scored[:top_n]
 
 
+def filtered_picks(rows: list[dict]) -> list[dict]:
+    """選股篩選：W55=1（技術翻多）＋大戶增比>0＋營收年增>0＋推估EPS>0，再依蘭值由高到低排序。"""
+    out = []
+    for r in rows:
+        if _num(r.get("w55")) < 1:
+            continue
+        if _num(r.get("big_holder_ratio")) <= 0:
+            continue
+        if _num(r.get("rev_yoy")) <= 0:
+            continue
+        if _num(r.get("est_profit")) <= 0:
+            continue
+        out.append(dict(r))
+    out.sort(key=lambda r: (r["lan_value"] if r.get("lan_value") is not None else float("-inf")), reverse=True)
+    return out
+
+
+def subindustry_counts(rows: list[dict]) -> list[dict]:
+    """統計（已篩選個股）每個細產業的檔數，由多到少排序。"""
+    groups: dict[str, int] = {}
+    for r in rows:
+        key = r.get("sub_industry") or "未分類"
+        groups[key] = groups.get(key, 0) + 1
+    out = [{"sub_industry": k, "count": v} for k, v in groups.items()]
+    out.sort(key=lambda x: x["count"], reverse=True)
+    return out
+
+
 def weekly_comparison(this_rows: list[dict], last_rows: list[dict]) -> dict:
     """比較本週最新 vs 上週最新快照，標記每檔 新進榜/加速/持平/退榜 與集保大戶持股 Δ。"""
     last = {r["code"]: r for r in last_rows}
