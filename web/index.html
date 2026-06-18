@@ -30,9 +30,11 @@
         </div>
         <div class="chart-main">
           <div class="chart-toolbar">
-            <button class="tf active" data-iv="1d">日線</button>
-            <button class="tf" data-iv="1wk">週線</button>
-            <button class="tf" data-iv="1mo">月線</button>
+            <button class="tf" data-iv="1h">1小時K</button>
+            <button class="tf active" data-iv="1d">日K</button>
+            <button class="tf" data-iv="1wk">週K</button>
+            <button class="tf" data-iv="1mo">月K</button>
+            <label class="wave-toggle"><input type="checkbox" id="wave-chk" /> 艾略特波浪</label>
             <span id="idx-note" class="muted"></span>
           </div>
           <div id="idxchart" class="chart"></div>
@@ -77,6 +79,7 @@
       <div class="modal-head">
         <span id="kline-title"></span>
         <div class="kline-tf">
+          <button class="ktf" data-iv="1h">時</button>
           <button class="ktf active" data-iv="1d">日</button>
           <button class="ktf" data-iv="1wk">週</button>
           <button class="ktf" data-iv="1mo">月</button>

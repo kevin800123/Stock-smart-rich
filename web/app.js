@@ -8,6 +8,14 @@ const chgText = (v, d = 2) => (v === null || v === undefined ? "" : (v > 0 ? "�
 
 let idxChart, klineChart;
 let idxSymbol = "taiex", idxInterval = "1d";
+let showWaves = false;
+let lastIndexData = null, lastKlineData = null;
+const MA_DEFS = [
+  { n: 5, color: "#5b8ff9" },
+  { n: 20, color: "#5ad8a6" },
+  { n: 60, color: "#f6bd16" },
+  { n: 120, color: "#e8684a" },
+];
 
 async function getJSON(url) {
   const r = await fetch(url);
@@ -50,9 +58,25 @@ function renderCards(m) {
 // 共用蠟燭圖 option（K + MA5 + MA20 + 量），dashboard 指數圖與個股 K 線共用
 function candlestickOption(data, startPct) {
   const closes = data.candles.map((c) => c[1]);
+  const maSeries = MA_DEFS.map((m) => ({
+    name: "MA" + m.n, type: "line", data: ma(closes, m.n), smooth: true, showSymbol: false,
+    lineStyle: { width: 1, color: m.color }, itemStyle: { color: m.color },
+  }));
+  const candle = {
+    name: "K線", type: "candlestick", data: data.candles,
+    itemStyle: { color: "#e04545", color0: "#2ea043", borderColor: "#e04545", borderColor0: "#2ea043" },
+  };
+  if (showWaves && data.waves && data.waves.length) {
+    candle.markPoint = {
+      symbol: "circle", symbolSize: 20,
+      itemStyle: { color: "#f0a500" },
+      label: { color: "#1a1a1a", fontWeight: 700, fontSize: 12, formatter: (p) => p.data.value },
+      data: data.waves.map((w) => ({ value: w.label, coord: [data.dates[w.index], data.candles[w.index][3]] })),
+    };
+  }
   return {
     tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
-    legend: { data: ["K線", "MA5", "MA20"], textStyle: { color: "#ccc" } },
+    legend: { data: ["K線", ...MA_DEFS.map((m) => "MA" + m.n)], textStyle: { color: "#ccc" } },
     grid: [
       { left: 60, right: 20, top: 30, height: "62%" },
       { left: 60, right: 20, top: "78%", height: "14%" },
@@ -69,12 +93,7 @@ function candlestickOption(data, startPct) {
       { type: "inside", xAxisIndex: [0, 1], start: startPct },
       { type: "slider", xAxisIndex: [0, 1], start: startPct, bottom: 0, height: 16 },
     ],
-    series: [
-      { name: "K線", type: "candlestick", data: data.candles, itemStyle: { color: "#e04545", color0: "#2ea043", borderColor: "#e04545", borderColor0: "#2ea043" } },
-      { name: "MA5", type: "line", data: ma(closes, 5), smooth: true, showSymbol: false, lineStyle: { width: 1 } },
-      { name: "MA20", type: "line", data: ma(closes, 20), smooth: true, showSymbol: false, lineStyle: { width: 1 } },
-      { name: "量", type: "bar", xAxisIndex: 1, yAxisIndex: 1, data: data.volumes },
-    ],
+    series: [candle, ...maSeries, { name: "量", type: "bar", xAxisIndex: 1, yAxisIndex: 1, data: data.volumes }],
   };
 }
 
@@ -90,6 +109,7 @@ async function loadIndexChart() {
       return;
     }
     $("idx-note").textContent = idxSymbol === "tx" ? "（台指期：每日更新累積）" : "";
+    lastIndexData = d;
     idxChart.setOption(candlestickOption(d, d.candles.length > 120 ? 70 : 0), true);
   } catch (e) {
     idxChart.hideLoading();
@@ -361,7 +381,7 @@ function ma(values, n) {
 }
 
 let klineCode = "", klineName = "", klineInterval = "1d";
-const TF_LABEL = { "1d": "日", "1wk": "週", "1mo": "月" };
+const TF_LABEL = { "1h": "1小時", "1d": "日", "1wk": "週", "1mo": "月" };
 
 async function loadKline() {
   if (!klineChart) klineChart = echarts.init($("kline"));
@@ -375,6 +395,7 @@ async function loadKline() {
       $("kline-title").textContent = `${klineCode} 無 K 線資料`;
       return;
     }
+    lastKlineData = d;
     klineChart.setOption(candlestickOption(d, d.candles.length > 120 ? 60 : 0), true);
   } catch (e) {
     klineChart.hideLoading();
@@ -451,6 +472,13 @@ document.querySelectorAll(".tf").forEach((btn) =>
 $("date-select").addEventListener("change", (e) => loadDaily(e.target.value));
 $("btn-ai-market").addEventListener("click", () => loadMarketSummary(true));
 $("btn-ai-csv").addEventListener("click", () => loadCsvSummary(true));
+$("wave-chk").addEventListener("change", (e) => {
+  showWaves = e.target.checked;
+  if (idxChart && lastIndexData) idxChart.setOption(candlestickOption(lastIndexData, lastIndexData.candles.length > 120 ? 70 : 0), true);
+  if (klineChart && lastKlineData && !$("kline-modal").classList.contains("hidden")) {
+    klineChart.setOption(candlestickOption(lastKlineData, lastKlineData.candles.length > 120 ? 60 : 0), true);
+  }
+});
 $("btn-export").addEventListener("click", () => {
   const date = $("date-select").value || "";
   const url = `/api/analysis/export?date=${encodeURIComponent(date)}` + (subFilter ? `&sub=${encodeURIComponent(subFilter)}` : "");
