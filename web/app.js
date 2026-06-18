@@ -105,12 +105,24 @@ async function loadDashboard() {
   }
 }
 
-async function loadMarketSummary() {
+async function loadMarketSummary(refresh) {
+  const box = $("market-summary");
+  box.textContent = "AI 生成中…";
   try {
-    const s = await getJSON("/api/market/summary");
-    $("market-summary").textContent = s.text || "";
-    $("market-summary").classList.toggle("disabled", !s.enabled);
-  } catch (e) { /* 忽略 */ }
+    const s = await getJSON("/api/market/summary" + (refresh ? "?refresh=1" : ""));
+    box.textContent = s.text || "";
+    box.classList.toggle("disabled", !s.enabled);
+  } catch (e) { box.textContent = "AI 摘要失敗：" + e.message; }
+}
+
+async function loadCsvSummary(refresh) {
+  const box = $("csv-summary");
+  box.textContent = "AI 生成中…";
+  try {
+    const s = await getJSON("/api/analysis/summary" + (refresh ? "?refresh=1" : ""));
+    box.textContent = s.text || "";
+    box.classList.toggle("disabled", !s.enabled);
+  } catch (e) { box.textContent = "AI 分析失敗：" + e.message; }
 }
 
 // ---------- 一鍵更新 ----------
@@ -130,7 +142,6 @@ async function runUpdate() {
     bar.className = "status-bar " + (fail ? "warn" : "ok");
     await loadDashboard();
     await loadIndexChart();
-    await loadMarketSummary();
   } catch (e) {
     bar.textContent = "更新失敗：" + e.message;
     bar.className = "status-bar err";
@@ -162,7 +173,7 @@ function lanCell(v) {
 
 // 通用可排序表格：點欄位標題即排序（數字欄位數值排序）
 const sortState = {};
-function renderSortable(elId, columns, rows, emptyMsg) {
+function renderSortable(elId, columns, rows, emptyMsg, onRowClick) {
   if (!rows || !rows.length) { $(elId).innerHTML = `<div class="muted">${emptyMsg || "無資料"}</div>`; return; }
   const st = sortState[elId] || {};
   const data = rows.slice();
@@ -183,7 +194,7 @@ function renderSortable(elId, columns, rows, emptyMsg) {
     const arrow = st.key === c.key ? (st.asc ? " ▲" : " ▼") : "";
     return `<th class="sortable" data-sort="${c.key}">${c.label}${arrow}</th>`;
   }).join("") + "</tr>";
-  const body = data.map((r) => "<tr>" + columns.map((c) =>
+  const body = data.map((r, i) => `<tr data-i="${i}"${onRowClick ? ' class="clickrow"' : ""}>` + columns.map((c) =>
     `<td>${c.render ? c.render(r) : fmt(r[c.key], c.dp === undefined ? 2 : c.dp)}</td>`
   ).join("") + "</tr>").join("");
   $(elId).innerHTML = `<table>${head}${body}</table>`;
@@ -191,9 +202,14 @@ function renderSortable(elId, columns, rows, emptyMsg) {
     th.addEventListener("click", () => {
       const key = th.dataset.sort, cur = sortState[elId] || {};
       sortState[elId] = { key, asc: cur.key === key ? !cur.asc : false };
-      renderSortable(elId, columns, rows, emptyMsg);
+      renderSortable(elId, columns, rows, emptyMsg, onRowClick);
     })
   );
+  if (onRowClick) {
+    $(elId).querySelectorAll("tr[data-i]").forEach((tr) =>
+      tr.addEventListener("click", () => onRowClick(data[Number(tr.dataset.i)]))
+    );
+  }
 }
 
 const PICK_COLS = [
@@ -213,14 +229,35 @@ const SUBIND_COLS = [
   { key: "count", label: "檔數", numeric: true, dp: 0 },
 ];
 
+let currentPicks = [];
+let subFilter = null;
+
+function renderSubFilterChip() {
+  const el = $("sub-filter");
+  if (subFilter) {
+    el.innerHTML = `篩選細產業：<b>${subFilter}</b>（${currentPicks.filter((p) => p.sub_industry === subFilter).length} 檔） <a href="#" id="clear-sub">✕ 顯示全部</a>`;
+    const clr = $("clear-sub");
+    if (clr) clr.addEventListener("click", (e) => { e.preventDefault(); subFilter = null; renderDailyView(); });
+  } else {
+    el.innerHTML = `<span class="muted">共 ${currentPicks.length} 檔（點上方細產業可篩選）</span>`;
+  }
+}
+
 function renderDaily(picks) {
   if (!sortState.daily) sortState.daily = { key: "lan_value", asc: false };
   renderSortable("daily", PICK_COLS, picks, "無符合條件的個股（W55翻多＋大戶增＋營收年增＞0＋推估EPS＞0）");
 }
 
+function renderDailyView() {
+  const rows = subFilter ? currentPicks.filter((p) => p.sub_industry === subFilter) : currentPicks;
+  renderSubFilterChip();
+  renderDaily(rows);
+}
+
 function renderIndustry(subind) {
   if (!sortState.industry) sortState.industry = { key: "count", asc: false };
-  renderSortable("industry", SUBIND_COLS, subind, "無符合條件的個股");
+  renderSortable("industry", SUBIND_COLS, subind, "無符合條件的個股",
+    (r) => { subFilter = r.sub_industry; renderDailyView(); });
 }
 
 function statusBadge(s) {
@@ -248,8 +285,10 @@ async function loadDaily(date) {
   try {
     const q = date ? `?date=${encodeURIComponent(date)}` : "";
     const d = await getJSON("/api/analysis/daily" + q);
+    currentPicks = d.picks || [];
+    subFilter = null;
     renderIndustry(d.subindustry || []);
-    renderDaily(d.picks || []);
+    renderDailyView();
     if (d.snap_date) $("date-select").value = d.snap_date;
   } catch (e) { /* 忽略 */ }
 }
@@ -265,15 +304,10 @@ async function loadDates() {
   } catch (e) { /* 忽略 */ }
 }
 
-async function loadWeeklyAndSummary() {
+async function loadWeekly() {
   try {
     const w = await getJSON("/api/analysis/weekly");
     renderWeekly(w);
-  } catch (e) { /* 忽略 */ }
-  try {
-    const s = await getJSON("/api/analysis/summary");
-    $("csv-summary").textContent = s.text || "";
-    $("csv-summary").classList.toggle("disabled", !s.enabled);
   } catch (e) { /* 忽略 */ }
 }
 
@@ -289,7 +323,7 @@ async function applyImportResult(res) {
   }
   info.textContent = `已匯入 ${res.file ? res.file + "：" : ""}${res.snap_date}，共 ${res.count} 檔`;
   await loadDates();
-  await loadWeeklyAndSummary();
+  await loadWeekly();
 }
 
 async function uploadCsv(file) {
@@ -415,9 +449,16 @@ document.querySelectorAll(".tf").forEach((btn) =>
 );
 
 $("date-select").addEventListener("change", (e) => loadDaily(e.target.value));
+$("btn-ai-market").addEventListener("click", () => loadMarketSummary(true));
+$("btn-ai-csv").addEventListener("click", () => loadCsvSummary(true));
+$("btn-export").addEventListener("click", () => {
+  const date = $("date-select").value || "";
+  const url = `/api/analysis/export?date=${encodeURIComponent(date)}` + (subFilter ? `&sub=${encodeURIComponent(subFilter)}` : "");
+  window.location.href = url;
+});
 
 // 初始載入
 loadDashboard();
 loadIndexChart();
 loadDates();
-loadWeeklyAndSummary();
+loadWeekly();

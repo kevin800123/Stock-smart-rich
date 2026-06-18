@@ -64,6 +64,51 @@ def test_import_latest_from_folder(tmp_path, monkeypatch):
     assert r["file"] == "20260615.csv"
 
 
+def test_export_returns_xlsx(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, insert_chip_snapshot
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    insert_chip_snapshot(c, "2026-06-15", [{"code": "A", "sub_industry": "晶圓", "w55": 1, "big_holder_ratio": 0.9, "rev_yoy": 10, "est_profit": 1, "lan_value": 70}])
+
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/analysis/export")
+    assert r.status_code == 200
+    assert "spreadsheetml" in r.headers["content-type"]
+    assert r.content[:2] == b"PK"  # xlsx 為 zip
+    # 帶中文細產業篩選：檔名須維持 ASCII，回應仍為合法 xlsx
+    r2 = client.get("/api/analysis/export?sub=晶圓")
+    assert r2.status_code == 200
+    assert r2.content[:2] == b"PK"
+
+
+def test_summary_refresh_bypasses_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    from stocks_power_rich.db import get_connection, init_db, insert_chip_snapshot
+    from stocks_power_rich import gemini
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    insert_chip_snapshot(c, "2026-06-15", [{"code": "A", "sub_industry": "晶圓", "w55": 1, "big_holder_ratio": 0.9, "rev_yoy": 10, "est_profit": 1, "lan_value": 70}])
+
+    calls = {"n": 0}
+
+    def fake(*a, **k):
+        calls["n"] += 1
+        return {"enabled": True, "text": f"v{calls['n']}"}
+
+    monkeypatch.setattr(gemini, "summarize_csv", fake)
+    app = create_app()
+    client = TestClient(app)
+    assert client.get("/api/analysis/summary").json()["text"] == "v1"
+    assert client.get("/api/analysis/summary").json()["text"] == "v1"  # 走快取
+    assert client.get("/api/analysis/summary?refresh=1").json()["text"] == "v2"  # 強制重生
+    assert calls["n"] == 2
+
+
 def test_stock_kline_interval_passed(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     import pandas as pd

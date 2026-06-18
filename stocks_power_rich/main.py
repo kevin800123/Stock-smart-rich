@@ -3,11 +3,12 @@ import os
 import tempfile
 
 from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
 from datetime import datetime
 
-from . import analysis, csv_import, gemini, updater
+from . import analysis, csv_import, exporter, gemini, updater
 from .config import load_config
 from .sources import twse
 from .db import (
@@ -102,6 +103,23 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         return {"snap_date": snap, "picks": picks,
                 "subindustry": analysis.subindustry_counts(picks)}
 
+    @app.get("/api/analysis/export")
+    def export(date: str | None = None, sub: str | None = None):
+        c = conn()
+        dates = get_snapshot_dates(c)
+        snap = date if date in dates else (dates[-1] if dates else None)
+        picks = analysis.filtered_picks(get_snapshot(c, snap)) if snap else []
+        if sub:
+            picks = [p for p in picks if p.get("sub_industry") == sub]
+        data = exporter.picks_to_xlsx(picks, snap or "")
+        # 檔名僅用 ASCII（HTTP header 不可含非 latin-1 字元，故中文細產業不放檔名）
+        fname = f"picks_{snap or 'empty'}.xlsx"
+        return Response(
+            content=data,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
+
     @app.get("/api/analysis/weekly")
     def weekly():
         c = conn()
@@ -117,14 +135,14 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         return result
 
     @app.get("/api/analysis/summary")
-    def summary():
+    def summary(refresh: int = 0):
         c = conn()
         dates = get_snapshot_dates(c)
         if not dates:
             return gemini.summarize_csv([], {}, [], cfg.gemini_api_key)
         key = f"csv:{dates[-1]}"
         cached = get_ai_cache(c, key)
-        if cached:
+        if cached and not refresh:
             return cached
         picks = analysis.filtered_picks(get_snapshot(c, dates[-1]))
         result = gemini.summarize_csv(
@@ -135,7 +153,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         return result
 
     @app.get("/api/market/summary")
-    def market_summary():
+    def market_summary(refresh: int = 0):
         c = conn()
         row = c.execute("SELECT * FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
         if not row:
@@ -143,7 +161,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         m = dict(row)
         key = f"market:{m.get('date')}:{m.get('updated_at')}"
         cached = get_ai_cache(c, key)
-        if cached:
+        if cached and not refresh:
             return cached
         result = gemini.summarize_market(m, cfg.gemini_api_key)
         if result.get("enabled"):

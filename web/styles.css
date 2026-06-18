@@ -68,7 +68,13 @@ main { padding: 18px; display: flex; flex-direction: column; gap: 18px; max-widt
   .chart-side { flex-direction: row; flex-wrap: wrap; flex-basis: auto; }
 }
 
-.ai-box { margin-top: 14px; background: #12181f; border: 1px dashed var(--border); border-radius: 8px; padding: 12px 14px; font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
+.ai-head { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; font-size: 14px; color: var(--accent); font-weight: 700; }
+.ai-btn { background: var(--card); color: var(--text); border: 1px solid var(--border); padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.ai-btn:hover { border-color: var(--accent); }
+.picks-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 6px 0; font-size: 13px; }
+#sub-filter b { color: var(--accent); }
+tr.clickrow { cursor: pointer; }
+.ai-box { margin-top: 6px; background: #12181f; border: 1px dashed var(--border); border-radius: 8px; padding: 12px 14px; font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
 .ai-box.disabled { color: var(--muted); font-style: italic; }
 
 .upload-row { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }

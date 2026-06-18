@@ -38,7 +38,8 @@
           <div id="idxchart" class="chart"></div>
         </div>
       </div>
-      <div id="market-summary" class="ai-box">點「一鍵更新」後可生成盤勢摘要。</div>
+      <div class="ai-head"><span>AI 盤勢摘要</span><button id="btn-ai-market" class="ai-btn">🔄 產生/更新</button></div>
+      <div id="market-summary" class="ai-box">按「🔄 產生/更新」生成盤勢摘要。</div>
     </section>
 
     <section class="panel">
@@ -57,12 +58,17 @@
       <div id="industry" class="table-wrap"></div>
 
       <h3>選股清單　<span class="muted">W55翻多 ＋ 大戶增比&gt;0 ＋ 營收年增&gt;0 ＋ 推估EPS&gt;0，依蘭值排序（點欄位可排序）</span></h3>
+      <div class="picks-bar">
+        <span id="sub-filter"></span>
+        <button id="btn-export" class="file-label">⬇ 匯出 Excel</button>
+      </div>
       <div id="daily" class="table-wrap"></div>
 
       <h3>跨週變化（本週 vs 上週）<span id="weekly-dates" class="muted"></span></h3>
       <div id="weekly" class="table-wrap"></div>
 
-      <div id="csv-summary" class="ai-box">上傳 CSV 後可生成籌碼洞察。</div>
+      <div class="ai-head"><span>AI 籌碼分析師</span><button id="btn-ai-csv" class="ai-btn">🔄 產生/更新</button></div>
+      <div id="csv-summary" class="ai-box">按「🔄 產生/更新」生成籌碼洞察。</div>
     </section>
   </main>
 
