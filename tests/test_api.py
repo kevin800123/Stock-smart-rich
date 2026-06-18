@@ -44,6 +44,26 @@ def test_kline_endpoint(tmp_path, monkeypatch):
     assert r.json()["candles"][0] == [10.0, 11.0, 9.0, 12.0]
 
 
+def test_import_latest_from_folder(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    data_in = tmp_path / "data_in"
+    os.makedirs(data_in)
+    monkeypatch.setenv("SPR_DATA_DIR", str(data_in))
+    content = (
+        "符合條件商品\n資料日期：2026年  6月 15日\n策略,\t.常用\n" + HEADER + "\n" + ROW_2330 + "\n"
+    ).encode("cp950")
+    (data_in / "20260615.csv").write_bytes(content)
+
+    app = create_app()
+    client = TestClient(app)
+    r = client.post("/api/csv/import-latest").json()
+    assert r["count"] == 1
+    assert r["daily_top"][0]["code"] == "2330.TW"
+    assert r["file"] == "20260615.csv"
+
+
 def test_stock_kline_interval_passed(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     import pandas as pd
@@ -64,6 +84,28 @@ def test_stock_kline_interval_passed(tmp_path, monkeypatch):
     assert r.status_code == 200
     assert cap["interval"] == "1wk"
     assert cap["period"] == "2y"
+
+
+def test_stock_profile_merges_chip_and_valuation(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, insert_chip_snapshot
+    from stocks_power_rich.sources import twse
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    insert_chip_snapshot(c, "2026-06-15", [{
+        "code": "2330.TW", "name": "台積電", "custody": 75, "big_holder_ratio": 0.8,
+        "w55": 1, "rev_yoy": 30, "trust_3d": 2, "foreign_3d": 3,
+    }])
+    monkeypatch.setattr(twse, "fetch_valuation", lambda: [{"code": "2330.TW", "pe": 20.0, "yield": 2.0, "pb": 5.0}])
+
+    app = create_app()
+    client = TestClient(app)
+    p = client.get("/api/stock/2330.TW/profile").json()
+    assert p["chip"]["name"] == "台積電"
+    assert p["chip"]["big_holder_ratio"] == 0.8
+    assert p["valuation"]["pe"] == 20.0
+    assert p["valuation"]["yield"] == 2.0
 
 
 def test_index_kline_tx_from_snapshots(tmp_path, monkeypatch):

@@ -147,6 +147,18 @@ def parse_csv(path: str):
     return snap_date, rows
 
 
+def find_latest_file(directory: str):
+    """回傳資料夾內最新（mtime）的 .csv/.xlsx/.xlsm 檔，無則 None。"""
+    import glob
+
+    files = []
+    for ext in ("*.csv", "*.xlsx", "*.xlsm"):
+        files.extend(glob.glob(os.path.join(directory, ext)))
+    if not files:
+        return None
+    return max(files, key=os.path.getmtime)
+
+
 def import_csv(conn, path: str, store_dir: str = "data/csv"):
     from .db import insert_chip_snapshot
 

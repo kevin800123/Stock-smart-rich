@@ -46,6 +46,10 @@ def init_db(conn: sqlite3.Connection) -> None:
         "id INTEGER PRIMARY KEY AUTOINCREMENT, snap_date TEXT, "
         "stored_path TEXT, imported_at TEXT)"
     )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS ai_cache ("
+        "cache_key TEXT PRIMARY KEY, payload TEXT, created_at TEXT)"
+    )
     # 既有資料庫補上後來新增的欄位
     existing = {r[1] for r in conn.execute("PRAGMA table_info(market_daily)").fetchall()}
     for col in MARKET_COLS:
@@ -97,3 +101,22 @@ def get_snapshot(conn: sqlite3.Connection, snap_date: str) -> list[dict]:
             "SELECT * FROM chip_snapshot WHERE snap_date=?", (snap_date,)
         ).fetchall()
     ]
+
+
+def get_ai_cache(conn: sqlite3.Connection, key: str):
+    import json
+
+    row = conn.execute("SELECT payload FROM ai_cache WHERE cache_key=?", (key,)).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def set_ai_cache(conn: sqlite3.Connection, key: str, payload: dict) -> None:
+    import json
+    from datetime import datetime
+
+    conn.execute(
+        "INSERT INTO ai_cache (cache_key, payload, created_at) VALUES (?,?,?) "
+        "ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload, created_at=excluded.created_at",
+        (key, json.dumps(payload, ensure_ascii=False), datetime.now().isoformat()),
+    )
+    conn.commit()

@@ -7,5 +7,6 @@ if not exist ".venv\Scripts\python.exe" (
   .venv\Scripts\python -m pip install --upgrade pip
   .venv\Scripts\python -m pip install -r requirements.txt
 )
+set SPR_ENABLE_SCHEDULER=1
 start "" http://127.0.0.1:8000
 .venv\Scripts\python -m uvicorn stocks_power_rich.main:app --host 127.0.0.1 --port 8000

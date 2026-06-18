@@ -1,5 +1,18 @@
-from stocks_power_rich.csv_import import parse_csv
+from stocks_power_rich.csv_import import parse_csv, find_latest_file
 from tests.conftest import ROW_2330
+
+
+def test_find_latest_file_picks_newest(tmp_path):
+    import os
+
+    a = tmp_path / "a.csv"
+    a.write_bytes(b"x")
+    b = tmp_path / "b.xlsm"
+    b.write_bytes(b"y")
+    os.utime(str(a), (1000, 1000))
+    os.utime(str(b), (2000, 2000))  # b 較新
+    assert find_latest_file(str(tmp_path)) == str(b)
+    assert find_latest_file(str(tmp_path / "nope")) is None
 
 # 末欄「產業地位」未加引號且含 ASCII 逗號（重現真實 CSV 5464.TW 的格式）
 ROW_COMMA_TAIL = (

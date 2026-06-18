@@ -13,6 +13,16 @@ def main():
     cfg = load_config()
     conn = get_connection(cfg.db_path)
     init_db(conn)
+    # 先讀資料夾最新檔（若有）
+    from . import csv_import
+
+    path = csv_import.find_latest_file(cfg.data_dir)
+    if path:
+        try:
+            snap_date, count = csv_import.import_csv(conn, path)
+            print(f"imported {path}: {snap_date} x{count}")
+        except Exception as e:  # noqa: BLE001
+            print(f"import skipped: {e}")
     result = updater.run_update(conn, cfg.intl_tickers)
     print(result)
     return result

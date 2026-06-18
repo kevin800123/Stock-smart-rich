@@ -212,23 +212,40 @@ async function loadWeeklyAndSummary() {
   } catch (e) { /* 忽略 */ }
 }
 
-async function uploadCsv(file) {
+async function applyImportResult(res) {
   const info = $("upload-info");
-  info.textContent = "解析中…";
+  if (res.error && !res.count) {
+    info.innerHTML = `<span style="color:#e08585">⚠ ${res.error}</span>`;
+    return;
+  }
+  if (!res.count) {
+    info.innerHTML = `<span style="color:#e08585">⚠ 讀到 0 檔（${res.snap_date}）。請確認是籌碼匯出檔（含「代碼／商品／大戶增比」等欄位）。</span>`;
+    return;
+  }
+  info.textContent = `已匯入 ${res.file ? res.file + "：" : ""}${res.snap_date}，共 ${res.count} 檔`;
+  renderDaily(res.daily_top || []);
+  await loadWeeklyAndSummary();
+}
+
+async function uploadCsv(file) {
+  $("upload-info").textContent = "解析中…";
   const fd = new FormData();
   fd.append("file", file);
   try {
     const r = await fetch("/api/csv/upload", { method: "POST", body: fd });
-    const res = await r.json();
-    if (!res.count) {
-      info.innerHTML = `<span style="color:#e08585">⚠ 讀到 0 檔（${res.snap_date}）。請確認上傳的是籌碼匯出 CSV（含「代碼／商品／大戶增比」等欄位）。</span>`;
-      return;
-    }
-    info.textContent = `已匯入 ${res.snap_date}，共 ${res.count} 檔`;
-    renderDaily(res.daily_top || []);
-    await loadWeeklyAndSummary();
+    await applyImportResult(await r.json());
   } catch (e) {
-    info.textContent = "上傳失敗：" + e.message;
+    $("upload-info").textContent = "上傳失敗：" + e.message;
+  }
+}
+
+async function importLatest() {
+  $("upload-info").textContent = "讀取資料夾最新檔…";
+  try {
+    const r = await fetch("/api/csv/import-latest", { method: "POST" });
+    await applyImportResult(await r.json());
+  } catch (e) {
+    $("upload-info").textContent = "讀取失敗：" + e.message;
   }
 }
 
@@ -266,18 +283,42 @@ async function loadKline() {
   }
 }
 
+function renderProfile(p) {
+  const el = $("kline-profile");
+  if (!p || !p.chip) { el.innerHTML = ""; return; }
+  const c = p.chip, v = p.valuation || {};
+  const groups = [
+    ["籌碼面", [["大戶增比", fmt(c.big_holder_ratio)], ["人數降比", fmt(c.holder_drop_ratio)], ["集保大戶", fmt(c.custody)], ["投信3日", fmt(c.trust_3d)], ["外資3日", fmt(c.foreign_3d)]]],
+    ["技術面", [["W55", Number(c.w55) >= 1 ? "翻多 ✓" : "—"]]],
+    ["基本/財務", [["營收年增%", fmt(c.rev_yoy, 1)], ["本益比(LPE)", fmt(c.lpe)], ["市值(億)", fmt(c.market_cap, 0)], ["股本(億)", fmt(c.capital)]]],
+    ["TWSE估值", [["本益比", fmt(v.pe)], ["殖利率%", fmt(v.yield)], ["淨值比", fmt(v.pb)]]],
+  ];
+  el.innerHTML = groups.map(([title, items]) =>
+    `<div class="pf-group"><span class="pf-title">${title}</span>${items.map(([k, val]) => `<span class="pf-item"><b>${k}</b> ${val}</span>`).join("")}</div>`
+  ).join("");
+}
+
+async function loadProfile() {
+  try {
+    renderProfile(await getJSON(`/api/stock/${encodeURIComponent(klineCode)}/profile`));
+  } catch (e) { $("kline-profile").innerHTML = ""; }
+}
+
 function openKline(code, name) {
   klineCode = code;
   klineName = name;
   klineInterval = "1d";
   document.querySelectorAll(".ktf").forEach((b) => b.classList.toggle("active", b.dataset.iv === "1d"));
+  $("kline-profile").innerHTML = "";
   $("kline-modal").classList.remove("hidden");
   loadKline();
+  loadProfile();
 }
 
 // ---------- 事件綁定 ----------
 $("btn-update").addEventListener("click", runUpdate);
 $("csv").addEventListener("change", (e) => { if (e.target.files[0]) uploadCsv(e.target.files[0]); });
+$("btn-latest").addEventListener("click", importLatest);
 document.querySelectorAll(".ktf").forEach((btn) =>
   btn.addEventListener("click", () => {
     document.querySelectorAll(".ktf").forEach((b) => b.classList.remove("active"));

@@ -5,7 +5,18 @@ from stocks_power_rich.db import (
     insert_chip_snapshot,
     get_snapshot_dates,
     get_snapshot,
+    get_ai_cache,
+    set_ai_cache,
 )
+
+
+def test_ai_cache_roundtrip(tmp_path):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    assert get_ai_cache(conn, "market:2026-06-17") is None
+    set_ai_cache(conn, "market:2026-06-17", {"enabled": True, "text": "盤勢偏多"})
+    got = get_ai_cache(conn, "market:2026-06-17")
+    assert got == {"enabled": True, "text": "盤勢偏多"}
 
 
 def test_market_daily_upsert(tmp_path):
