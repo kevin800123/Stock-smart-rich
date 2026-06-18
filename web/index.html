@@ -49,19 +49,15 @@
           📤 上傳今日檔（CSV/Excel）
         </label>
         <button id="btn-latest" class="file-label">📂 讀取資料夾最新檔</button>
+        <label class="date-pick">資料日期 <select id="date-select"></select></label>
         <span id="upload-info" class="muted"></span>
       </div>
 
-      <div class="grid-2">
-        <div>
-          <h3>當日訊號榜（大戶進＋散戶退）</h3>
-          <div id="daily" class="table-wrap"></div>
-        </div>
-        <div>
-          <h3>產業榜</h3>
-          <div id="industry" class="table-wrap"></div>
-        </div>
-      </div>
+      <h3>產業榜</h3>
+      <div id="industry" class="table-wrap"></div>
+
+      <h3>當日訊號榜（大戶進＋散戶退）</h3>
+      <div id="daily" class="table-wrap"></div>
 
       <h3>跨週變化（本週 vs 上週）<span id="weekly-dates" class="muted"></span></h3>
       <div id="weekly" class="table-wrap"></div>

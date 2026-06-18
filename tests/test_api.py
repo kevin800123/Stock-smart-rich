@@ -86,6 +86,26 @@ def test_stock_kline_interval_passed(tmp_path, monkeypatch):
     assert cap["period"] == "2y"
 
 
+def test_snapshots_and_daily_by_date(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, insert_chip_snapshot
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    insert_chip_snapshot(c, "2026-06-15", [{"code": "A", "industry": "半導體", "big_holder_ratio": 0.9, "holder_drop_ratio": -0.5}])
+    insert_chip_snapshot(c, "2026-06-16", [{"code": "B", "industry": "水泥", "big_holder_ratio": 0.2, "holder_drop_ratio": 0.1}])
+
+    app = create_app()
+    client = TestClient(app)
+    snaps = client.get("/api/snapshots").json()
+    assert snaps["dates"] == ["2026-06-15", "2026-06-16"]
+
+    d = client.get("/api/analysis/daily?date=2026-06-15").json()
+    assert d["snap_date"] == "2026-06-15"
+    assert d["daily_top"][0]["code"] == "A"
+    assert d["industry"][0]["industry"] == "半導體"
+
+
 def test_stock_profile_merges_chip_and_valuation(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import get_connection, init_db, insert_chip_snapshot

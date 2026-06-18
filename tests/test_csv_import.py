@@ -100,3 +100,8 @@ def test_parse_extracts_date_and_row(big5_csv):
     assert r["w55"] == 1.0
     assert r["industry"] == "上市半導體"
     assert "raw_json" in r
+    # 新增欄位：推估EPS、蘭質、本益比、蘭值
+    assert r["est_profit"] == 30.0   # 推估獲利＝下季推估 EPS
+    assert r["lan_score"] == 6.0     # 蘭質＝綜合財評分數（滿分15）
+    assert r["lpe"] == 20.0          # LPE＝本益比
+    assert r["lan_value"] == 20.0    # 蘭值＝蘭質/LPE 換算

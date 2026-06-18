@@ -74,6 +74,9 @@ main { padding: 18px; display: flex; flex-direction: column; gap: 18px; max-widt
 .upload-row { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
 .file-label { background: var(--card); border: 1px solid var(--border); padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; }
 .file-label:hover { border-color: var(--accent); }
+button.file-label { color: var(--text); font: inherit; }
+.date-pick { font-size: 14px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.date-pick select { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; font-size: 14px; }
 
 .grid-2 { display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; }
 .table-wrap { overflow: auto; max-height: 420px; border: 1px solid var(--border); border-radius: 8px; }

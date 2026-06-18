@@ -17,7 +17,8 @@ ENCODINGS = ["cp950", "big5hkscs", "utf-8-sig", "utf-16", "utf-8"]
 COLMAP = {
     "代碼": "code", "商品": "name", "成交": "close", "漲幅%": "change_pct",
     "總量": "volume", "市值(億)": "market_cap", "股本(億)": "capital",
-    "推估獲利": "est_profit", "LPE": "lpe", "W55": "w55", "集保": "custody",
+    "推估獲利": "est_profit", "蘭質": "lan_score", "LPE": "lpe", "蘭值": "lan_value",
+    "W55": "w55", "集保": "custody",
     "大戶增比": "big_holder_ratio", "人數降比": "holder_drop_ratio",
     "月增": "month_inc", "年增": "rev_yoy", "累增": "accum_inc",
     "投三": "trust_3d", "外三": "foreign_3d", "產業": "industry",
@@ -26,8 +27,8 @@ COLMAP = {
 }
 NUMERIC = {
     "close", "change_pct", "volume", "market_cap", "capital", "est_profit",
-    "lpe", "w55", "custody", "big_holder_ratio", "holder_drop_ratio",
-    "month_inc", "rev_yoy", "accum_inc", "trust_3d", "foreign_3d",
+    "lan_score", "lpe", "lan_value", "w55", "custody", "big_holder_ratio",
+    "holder_drop_ratio", "month_inc", "rev_yoy", "accum_inc", "trust_3d", "foreign_3d",
 }
 
 

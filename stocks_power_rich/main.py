@@ -87,14 +87,20 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         return {"snap_date": snap_date, "count": count, "file": os.path.basename(path),
                 "daily_top": analysis.daily_signals(rows, 30)}
 
+    @app.get("/api/snapshots")
+    def snapshots():
+        return {"dates": get_snapshot_dates(conn())}
+
     @app.get("/api/analysis/daily")
-    def daily():
+    def daily(date: str | None = None):
         c = conn()
         dates = get_snapshot_dates(c)
         if not dates:
-            return {"snap_date": None, "daily_top": []}
-        rows = get_snapshot(c, dates[-1])
-        return {"snap_date": dates[-1], "daily_top": analysis.daily_signals(rows, 30)}
+            return {"snap_date": None, "daily_top": [], "industry": []}
+        snap = date if date in dates else dates[-1]
+        rows = get_snapshot(c, snap)
+        return {"snap_date": snap, "daily_top": analysis.daily_signals(rows, 30),
+                "industry": analysis.industry_aggregate(rows)}
 
     @app.get("/api/analysis/weekly")
     def weekly():

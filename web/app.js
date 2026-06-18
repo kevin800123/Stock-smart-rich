@@ -154,11 +154,17 @@ function stockLink(code, name) {
   return `<a href="#" class="stock" data-code="${code}" data-name="${name || ""}">${code} ${name || ""}</a>`;
 }
 
+// 蘭值（蘭質/LPE）：>60 標粗紅
+function lanCell(v) {
+  if (v === null || v === undefined) return "—";
+  return v > 60 ? `<b style="color:var(--up)">${fmt(v, 1)}</b>` : fmt(v, 1);
+}
+
 function renderDaily(rows) {
   if (!rows || !rows.length) { $("daily").innerHTML = '<div class="muted">尚無資料</div>'; return; }
-  const head = "<tr><th>股票</th><th>分數</th><th>大戶增比</th><th>人數降比</th><th>年增%</th><th>訊號</th></tr>";
+  const head = "<tr><th>股票</th><th>分數</th><th>大戶增比</th><th>人數降比</th><th>營收年增%</th><th>蘭值</th><th>訊號</th></tr>";
   const body = rows.map((r) =>
-    `<tr><td>${stockLink(r.code, r.name)}</td><td>${fmt(r.score, 3)}</td><td>${fmt(r.big_holder_ratio, 2)}</td><td>${fmt(r.holder_drop_ratio, 2)}</td><td>${fmt(r.rev_yoy, 1)}</td><td>${flagBadges(r.flags)}</td></tr>`
+    `<tr><td>${stockLink(r.code, r.name)}</td><td>${fmt(r.score, 3)}</td><td>${fmt(r.big_holder_ratio, 2)}</td><td>${fmt(r.holder_drop_ratio, 2)}</td><td>${fmt(r.rev_yoy, 1)}</td><td>${lanCell(r.lan_value)}</td><td>${flagBadges(r.flags)}</td></tr>`
   ).join("");
   $("daily").innerHTML = `<table>${head}${body}</table>`;
 }
@@ -191,11 +197,24 @@ function renderWeekly(data) {
   $("weekly").innerHTML = `<table>${head}${body}</table>`;
 }
 
-async function loadDaily() {
+async function loadDaily(date) {
   try {
-    const d = await getJSON("/api/analysis/daily");
+    const q = date ? `?date=${encodeURIComponent(date)}` : "";
+    const d = await getJSON("/api/analysis/daily" + q);
+    renderIndustry(d.industry || []);
     renderDaily(d.daily_top || []);
-    if (d.snap_date) $("upload-info").textContent = `最新快照 ${d.snap_date}`;
+    if (d.snap_date) $("date-select").value = d.snap_date;
+  } catch (e) { /* 忽略 */ }
+}
+
+async function loadDates() {
+  try {
+    const s = await getJSON("/api/snapshots");
+    const dates = s.dates || [];
+    const sel = $("date-select");
+    sel.innerHTML = dates.map((d) => `<option value="${d}">${d}</option>`).join("");
+    const latest = dates[dates.length - 1];
+    await loadDaily(latest);
   } catch (e) { /* 忽略 */ }
 }
 
@@ -203,7 +222,6 @@ async function loadWeeklyAndSummary() {
   try {
     const w = await getJSON("/api/analysis/weekly");
     renderWeekly(w);
-    renderIndustry(w.industry || []);
   } catch (e) { /* 忽略 */ }
   try {
     const s = await getJSON("/api/analysis/summary");
@@ -223,7 +241,7 @@ async function applyImportResult(res) {
     return;
   }
   info.textContent = `已匯入 ${res.file ? res.file + "：" : ""}${res.snap_date}，共 ${res.count} 檔`;
-  renderDaily(res.daily_top || []);
+  await loadDates();
   await loadWeeklyAndSummary();
 }
 
@@ -290,8 +308,8 @@ function renderProfile(p) {
   const groups = [
     ["籌碼面", [["大戶增比", fmt(c.big_holder_ratio)], ["人數降比", fmt(c.holder_drop_ratio)], ["集保大戶", fmt(c.custody)], ["投信3日", fmt(c.trust_3d)], ["外資3日", fmt(c.foreign_3d)]]],
     ["技術面", [["W55", Number(c.w55) >= 1 ? "翻多 ✓" : "—"]]],
-    ["基本/財務", [["營收年增%", fmt(c.rev_yoy, 1)], ["本益比(LPE)", fmt(c.lpe)], ["市值(億)", fmt(c.market_cap, 0)], ["股本(億)", fmt(c.capital)]]],
-    ["TWSE估值", [["本益比", fmt(v.pe)], ["殖利率%", fmt(v.yield)], ["淨值比", fmt(v.pb)]]],
+    ["基本/財務", [["營收年增%", fmt(c.rev_yoy, 1)], ["推估EPS(下季)", fmt(c.est_profit)], ["蘭質(財評/15)", fmt(c.lan_score)], ["本益比(LPE)", fmt(c.lpe)], ["蘭值", lanCell(c.lan_value)], ["市值(億)", fmt(c.market_cap, 0)], ["股本(億)", fmt(c.capital)]]],
+    ["TWSE估值", [["本益比(TWSE)", fmt(v.pe)], ["殖利率%", fmt(v.yield)], ["淨值比", fmt(v.pb)]]],
   ];
   el.innerHTML = groups.map(([title, items]) =>
     `<div class="pf-group"><span class="pf-title">${title}</span>${items.map(([k, val]) => `<span class="pf-item"><b>${k}</b> ${val}</span>`).join("")}</div>`
@@ -349,8 +367,10 @@ document.querySelectorAll(".tf").forEach((btn) =>
   })
 );
 
+$("date-select").addEventListener("change", (e) => loadDaily(e.target.value));
+
 // 初始載入
 loadDashboard();
 loadIndexChart();
-loadDaily();
+loadDates();
 loadWeeklyAndSummary();

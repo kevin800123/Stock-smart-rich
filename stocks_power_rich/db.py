@@ -14,7 +14,7 @@ CHIP_COLS = [
     "snap_date", "code", "name", "industry", "sub_industry", "close",
     "big_holder_ratio", "holder_drop_ratio", "month_inc", "rev_yoy", "accum_inc",
     "trust_3d", "foreign_3d", "custody", "w55", "market_cap", "capital",
-    "est_profit", "lpe", "raw_json",
+    "est_profit", "lan_score", "lpe", "lan_value", "raw_json",
 ]
 
 
@@ -38,8 +38,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         "snap_date TEXT, code TEXT, name TEXT, industry TEXT, sub_industry TEXT, "
         "close REAL, big_holder_ratio REAL, holder_drop_ratio REAL, month_inc REAL, "
         "rev_yoy REAL, accum_inc REAL, trust_3d REAL, foreign_3d REAL, custody REAL, "
-        "w55 REAL, market_cap REAL, capital REAL, est_profit REAL, lpe REAL, "
-        "raw_json TEXT, PRIMARY KEY(snap_date, code))"
+        "w55 REAL, market_cap REAL, capital REAL, est_profit REAL, lan_score REAL, "
+        "lpe REAL, lan_value REAL, raw_json TEXT, PRIMARY KEY(snap_date, code))"
     )
     conn.execute(
         "CREATE TABLE IF NOT EXISTS csv_files ("
@@ -51,11 +51,16 @@ def init_db(conn: sqlite3.Connection) -> None:
         "cache_key TEXT PRIMARY KEY, payload TEXT, created_at TEXT)"
     )
     # 既有資料庫補上後來新增的欄位
-    existing = {r[1] for r in conn.execute("PRAGMA table_info(market_daily)").fetchall()}
+    mkt_existing = {r[1] for r in conn.execute("PRAGMA table_info(market_daily)").fetchall()}
     for col in MARKET_COLS:
-        if col not in existing and col not in ("date",):
+        if col not in mkt_existing and col != "date":
             coltype = "TEXT" if col == "updated_at" else "REAL"
             conn.execute(f"ALTER TABLE market_daily ADD COLUMN {col} {coltype}")
+    chip_existing = {r[1] for r in conn.execute("PRAGMA table_info(chip_snapshot)").fetchall()}
+    for col in CHIP_COLS:
+        if col not in chip_existing and col not in ("snap_date", "code"):
+            coltype = "TEXT" if col in ("name", "industry", "sub_industry", "raw_json") else "REAL"
+            conn.execute(f"ALTER TABLE chip_snapshot ADD COLUMN {col} {coltype}")
     conn.commit()
 
 
