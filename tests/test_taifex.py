@@ -38,6 +38,24 @@ def test_parse_tx_price_picks_near_month_day_session():
     assert out["tx_low"] == 45550.0
 
 
+TX_HIST_CSV = """交易日期,契約,到期月份(週別),開盤價,最高價,最低價,收盤價,漲跌價,漲跌%,成交量,結算價,未沖銷契約數,最後最佳買價,最後最佳賣價,歷史最高價,歷史最低價,是否因訊息面暫停交易,交易時段,價差對單式委託成交量
+2026/05/19,TX,202605  ,40890,40931,40188,40248,-549,-1.35%,86112,40240,17052,40239,40247,42554,31357,,一般,
+2026/05/19,TX,202606  ,40992,41100,40380,40383,-580,-1.42%,45710,40399,72130,40381,40390,42669,20819,,一般,
+2026/05/19,TX,202605  ,40962,41450,40524,40878,81,0.20%,65991,-,-,40878,40896,42554,31357,,盤後,
+2026/05/20,TX,202606  ,40383,40500,40000,40100,-283,-0.70%,90000,40110,72000,40098,40105,42669,20819,,一般,
+"""
+
+
+def test_parse_tx_history_picks_near_month_day_session():
+    from stocks_power_rich.sources.taifex import parse_tx_history_csv
+
+    out = parse_tx_history_csv(TX_HIST_CSV)
+    assert [r["date"] for r in out] == ["2026-05-19", "2026-05-20"]
+    # 2026-05-19 取成交量最大者(202605, 86112)；盤後列排除
+    assert out[0] == {"date": "2026-05-19", "open": 40890.0, "high": 40931.0, "low": 40188.0, "close": 40248.0, "volume": 86112.0}
+    assert out[1]["close"] == 40100.0
+
+
 def test_compute_retail_ratios():
     out = taifex.compute_retail_ratios(FUT, INST)
     assert out["fut_inst_net"] == 600          # 小台三大法人淨額

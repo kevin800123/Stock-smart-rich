@@ -109,15 +109,12 @@ def test_summary_refresh_bypasses_cache(tmp_path, monkeypatch):
     assert calls["n"] == 2
 
 
-def test_tx_kline_falls_back_to_proxy_when_sparse(tmp_path, monkeypatch):
+def test_tx_kline_falls_back_to_proxy_when_no_history(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     import pandas as pd
-    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
-    from stocks_power_rich.sources import kline
+    from stocks_power_rich.sources import kline, taifex
 
-    c = get_connection(str(tmp_path / "t.sqlite"))
-    init_db(c)
-    upsert_market_daily(c, {"date": "2026-06-17", "tx_open": 1, "tx_high": 2, "tx_low": 1, "tx_price": 1.5})
+    monkeypatch.setattr(taifex, "fetch_tx_history", lambda *a, **k: [])  # 下載不到歷史
 
     def fake_history(self, period="1y", interval="1d"):
         idx = pd.to_datetime(["2026-06-12", "2026-06-13"])
@@ -127,7 +124,7 @@ def test_tx_kline_falls_back_to_proxy_when_sparse(tmp_path, monkeypatch):
     app = create_app()
     client = TestClient(app)
     d = client.get("/api/index/kline?symbol=tx&interval=1d").json()
-    assert d.get("proxy") is True          # 累積不足 → 以加權指數近似
+    assert d.get("proxy") is True          # 無歷史 → 以加權指數近似
     assert len(d["candles"]) == 2
 
 
@@ -195,16 +192,16 @@ def test_stock_profile_merges_chip_and_valuation(tmp_path, monkeypatch):
     assert p["valuation"]["yield"] == 2.0
 
 
-def test_index_kline_tx_from_snapshots(tmp_path, monkeypatch):
+def test_index_kline_tx_from_history(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
-    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.db import get_connection, init_db, upsert_tx_history
 
     c = get_connection(str(tmp_path / "t.sqlite"))
     init_db(c)
-    # 累積 ≥20 個交易日 → 走真實台指期 OHLC（非 proxy）
-    for d in range(1, 21):
-        base = 45000 + d
-        upsert_market_daily(c, {"date": f"2026-06-{d:02d}", "tx_open": base, "tx_high": base + 5, "tx_low": base - 5, "tx_price": base + 2})
+    # tx_history 已有 ≥20 個交易日 → 走真實台指期 OHLC（非 proxy）
+    rows = [{"date": f"2026-06-{d:02d}", "open": 45000 + d, "high": 45000 + d + 5,
+             "low": 45000 + d - 5, "close": 45000 + d + 2, "volume": d} for d in range(1, 21)]
+    upsert_tx_history(c, rows)
 
     app = create_app()
     client = TestClient(app)

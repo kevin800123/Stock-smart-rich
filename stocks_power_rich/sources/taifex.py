@@ -6,9 +6,16 @@
 
 設計：純解析/計算函式（可單元測試）＋ 薄網路包裝（整合測試）。
 """
+import csv
+import io
+from datetime import date, timedelta
+
 import httpx
 
 BASE = "https://openapi.taifex.com.tw/v1"
+# 期交所官方「歷史每日行情」下載（openapi 無歷史，改用此官方下載）
+TX_DOWNLOAD = "https://www.taifex.com.tw/cht/3/dlFutDataDown"
+TX_FORM = "https://www.taifex.com.tw/cht/3/futDataDown"
 Q_FUT = "/DailyMarketReportFut"
 Q_INST = "/MarketDataOfMajorInstitutionalTradersDetailsOfFuturesContractsBytheDate"
 
@@ -103,3 +110,63 @@ def fetch_tx_quote() -> dict:
 
 def fetch_retail_ratios() -> dict:
     return compute_retail_ratios(_get(Q_FUT), _get(Q_INST))
+
+
+# ---- 台指期歷史日K（期交所官方下載） ----
+
+def parse_tx_history_csv(text: str, contract: str = "TX") -> list:
+    """解析期交所歷史每日行情 CSV → 每日近月（一般盤、成交量最大者）OHLC。"""
+    rows = list(csv.reader(io.StringIO(text)))
+    if not rows:
+        return []
+    header = [h.strip() for h in rows[0]]
+    idx = {h: i for i, h in enumerate(header)}
+
+    def g(r, name):
+        i = idx.get(name)
+        return r[i].strip() if i is not None and i < len(r) else ""
+
+    best: dict = {}  # date -> (volume, row dict)
+    for r in rows[1:]:
+        if not r or g(r, "契約") != contract or g(r, "交易時段") != "一般":
+            continue
+        o, h, l, c = g(r, "開盤價"), g(r, "最高價"), g(r, "最低價"), g(r, "收盤價")
+        if any(v in ("", "-") for v in (o, h, l, c)):
+            continue
+        try:
+            vol = float(g(r, "成交量").replace(",", ""))
+            d = g(r, "交易日期").replace("/", "-")
+            item = {"date": d, "open": float(o), "high": float(h), "low": float(l), "close": float(c), "volume": vol}
+        except ValueError:
+            continue
+        if item["date"] not in best or vol > best[item["date"]][0]:
+            best[item["date"]] = (vol, item)
+    return [best[d][1] for d in sorted(best)]
+
+
+def fetch_tx_history(days: int = 365, contract: str = "TX", chunk: int = 28) -> list:
+    """下載近 days 天台指期歷史日K。期交所單次下載上限約 30 天，故分段(≤chunk 天)抓取後合併。
+
+    流程：先 GET 表單頁取 cookie，再對每個時間窗 POST 下載 CSV、解析、依日期去重合併。
+    """
+    end = date.today()
+    start = end - timedelta(days=days)
+    merged: dict = {}
+    with httpx.Client(timeout=60, follow_redirects=True,
+                      headers={"User-Agent": "Mozilla/5.0", "Referer": TX_FORM}) as s:
+        s.get(TX_FORM)
+        cur = start
+        while cur <= end:
+            win_end = min(cur + timedelta(days=chunk - 1), end)
+            try:
+                r = s.post(TX_DOWNLOAD, data={
+                    "down_type": "1", "commodity_id": contract,
+                    "queryStartDate": cur.strftime("%Y/%m/%d"),
+                    "queryEndDate": win_end.strftime("%Y/%m/%d"),
+                })
+                for item in parse_tx_history_csv(r.content.decode("ms950", errors="replace"), contract):
+                    merged[item["date"]] = item
+            except Exception:  # noqa: BLE001 — 單一時間窗失敗略過
+                pass
+            cur = win_end + timedelta(days=1)
+    return [merged[d] for d in sorted(merged)]

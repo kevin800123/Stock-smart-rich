@@ -5,7 +5,7 @@
 """
 from datetime import datetime
 
-from .db import upsert_market_daily
+from .db import upsert_market_daily, upsert_tx_history
 from .sources import intl, taifex, twse
 
 
@@ -37,4 +37,14 @@ def run_update(conn, intl_tickers: dict) -> dict:
             failed.append({"source": name.split("_")[0], "name": name, "error": str(e)})
 
     upsert_market_daily(conn, row)
+
+    # 台指期歷史日K（期交所官方下載），刷新近期
+    try:
+        tx_hist = taifex.fetch_tx_history(days=40)
+        if tx_hist:
+            upsert_tx_history(conn, tx_hist)
+            success.append("taifex_tx_history")
+    except Exception as e:  # noqa: BLE001
+        failed.append({"source": "taifex", "name": "tx_history", "error": str(e)})
+
     return {"date": today, "success": success, "failed": failed}

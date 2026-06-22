@@ -7,7 +7,18 @@ from stocks_power_rich.db import (
     get_snapshot,
     get_ai_cache,
     set_ai_cache,
+    upsert_tx_history,
+    get_tx_history,
 )
+
+
+def test_tx_history_roundtrip(tmp_path):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    upsert_tx_history(conn, [{"date": "2026-06-16", "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 9}])
+    upsert_tx_history(conn, [{"date": "2026-06-16", "open": 1, "high": 3, "low": 0.5, "close": 2.0, "volume": 9}])  # 覆蓋
+    got = get_tx_history(conn)
+    assert len(got) == 1 and got[0]["close"] == 2.0
 
 
 def test_ai_cache_roundtrip(tmp_path):

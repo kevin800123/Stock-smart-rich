@@ -50,6 +50,10 @@ def init_db(conn: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS ai_cache ("
         "cache_key TEXT PRIMARY KEY, payload TEXT, created_at TEXT)"
     )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS tx_history ("
+        "date TEXT PRIMARY KEY, open REAL, high REAL, low REAL, close REAL, volume REAL)"
+    )
     # 既有資料庫補上後來新增的欄位
     mkt_existing = {r[1] for r in conn.execute("PRAGMA table_info(market_daily)").fetchall()}
     for col in MARKET_COLS:
@@ -106,6 +110,21 @@ def get_snapshot(conn: sqlite3.Connection, snap_date: str) -> list[dict]:
             "SELECT * FROM chip_snapshot WHERE snap_date=?", (snap_date,)
         ).fetchall()
     ]
+
+
+def upsert_tx_history(conn: sqlite3.Connection, rows: list[dict]) -> None:
+    for r in rows:
+        conn.execute(
+            "INSERT INTO tx_history (date, open, high, low, close, volume) VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT(date) DO UPDATE SET open=excluded.open, high=excluded.high, "
+            "low=excluded.low, close=excluded.close, volume=excluded.volume",
+            (r["date"], r.get("open"), r.get("high"), r.get("low"), r.get("close"), r.get("volume")),
+        )
+    conn.commit()
+
+
+def get_tx_history(conn: sqlite3.Connection) -> list[dict]:
+    return [dict(r) for r in conn.execute("SELECT * FROM tx_history ORDER BY date").fetchall()]
 
 
 def get_ai_cache(conn: sqlite3.Connection, key: str):

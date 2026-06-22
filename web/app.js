@@ -167,8 +167,8 @@ async function loadIndexChart() {
       return;
     }
     $("idx-note").textContent = d.proxy
-      ? "（台指期歷史不足，暫以加權指數近似；每日更新累積後改用真實台指期）"
-      : (idxSymbol === "tx" ? "（台指期：每日更新累積）" : "");
+      ? "（台指期歷史抓取失敗，暫以加權指數近似）"
+      : (idxSymbol === "tx" ? "（台指期：期交所近月歷史日K）" : "");
     lastIndexData = d;
     idxChart.setOption(candlestickOption(d, d.candles.length > 120 ? 70 : 0), true);
   } catch (e) {

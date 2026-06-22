@@ -61,35 +61,26 @@ def fetch_index_kline(symbol: str, interval: str = "1d") -> dict:
     return {"symbol": symbol, **_df_to_candles(df, interval)}
 
 
-def tx_candles_from_rows(market_rows: list, interval: str = "1d") -> dict:
-    """以 market_daily 累積的台指期 OHLC 組 K 線；週/月線以 pandas 聚合。"""
+def ohlc_candles(rows: list, interval: str = "1d") -> dict:
+    """通用 OHLC 組 K 線：rows 含 date/open/high/low/close(/volume)；週/月以 pandas 聚合。"""
     import pandas as pd
 
-    recs = []
-    for r in market_rows:
-        close = r.get("tx_price")
-        if close is None:
-            continue
-        recs.append({
-            "date": r["date"],
-            "o": r.get("tx_open") if r.get("tx_open") is not None else close,
-            "h": r.get("tx_high") if r.get("tx_high") is not None else close,
-            "l": r.get("tx_low") if r.get("tx_low") is not None else close,
-            "c": close,
-        })
+    recs = [{"date": r["date"], "o": r["open"], "h": r["high"], "l": r["low"],
+             "c": r["close"], "v": r.get("volume") or 0}
+            for r in rows if r.get("close") is not None]
     if not recs:
-        return {"symbol": "tx", "dates": [], "candles": [], "volumes": [], "waves": []}
+        return {"dates": [], "candles": [], "volumes": [], "waves": []}
 
     df = pd.DataFrame(recs)
     df["date"] = pd.to_datetime(df["date"])
     df = df.sort_values("date").set_index("date")
-
     if interval in ("1wk", "1mo"):
         rule = "W" if interval == "1wk" else "ME"
-        df = df.resample(rule).agg({"o": "first", "h": "max", "l": "min", "c": "last"}).dropna()
+        df = df.resample(rule).agg({"o": "first", "h": "max", "l": "min", "c": "last", "v": "sum"}).dropna()
 
     dates = [d.strftime("%Y-%m-%d") for d in df.index]
     candles = [[float(r.o), float(r.c), float(r.l), float(r.h)] for r in df.itertuples()]
+    volumes = [float(r.v) for r in df.itertuples()]
     closes = [c[1] for c in candles]
     waves = elliott.elliott_waves(closes) if len(closes) >= 6 else []
-    return {"symbol": "tx", "dates": dates, "candles": candles, "volumes": [0.0] * len(dates), "waves": waves}
+    return {"dates": dates, "candles": candles, "volumes": volumes, "waves": waves}

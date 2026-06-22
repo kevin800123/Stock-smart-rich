@@ -50,22 +50,23 @@ def test_fetch_index_kline_taiex(monkeypatch):
     assert out["candles"][0] == [100.0, 110.0, 90.0, 120.0]
 
 
-def test_tx_candles_from_rows_daily():
+def test_ohlc_candles_daily():
     rows = [
-        {"date": "2026-06-16", "tx_open": 45600, "tx_high": 45900, "tx_low": 45550, "tx_price": 45772},
-        {"date": "2026-06-17", "tx_open": 45772, "tx_high": 45850, "tx_low": 45700, "tx_price": 45809},
+        {"date": "2026-06-16", "open": 45600, "high": 45900, "low": 45550, "close": 45772, "volume": 100},
+        {"date": "2026-06-17", "open": 45772, "high": 45850, "low": 45700, "close": 45809, "volume": 200},
     ]
-    out = kline.tx_candles_from_rows(rows, interval="1d")
+    out = kline.ohlc_candles(rows, interval="1d")
     assert out["dates"] == ["2026-06-16", "2026-06-17"]
     assert out["candles"][0] == [45600.0, 45772.0, 45550.0, 45900.0]
+    assert out["volumes"] == [100.0, 200.0]
 
 
-def test_tx_candles_weekly_resample():
+def test_ohlc_candles_weekly_resample():
     # 同一週兩天 → 週線聚合成一根（open第一天、close最後天、high最大、low最小）
     rows = [
-        {"date": "2026-06-15", "tx_open": 100, "tx_high": 120, "tx_low": 95, "tx_price": 110},
-        {"date": "2026-06-16", "tx_open": 110, "tx_high": 130, "tx_low": 90, "tx_price": 125},
+        {"date": "2026-06-15", "open": 100, "high": 120, "low": 95, "close": 110, "volume": 1},
+        {"date": "2026-06-16", "open": 110, "high": 130, "low": 90, "close": 125, "volume": 2},
     ]
-    out = kline.tx_candles_from_rows(rows, interval="1wk")
+    out = kline.ohlc_candles(rows, interval="1wk")
     assert len(out["candles"]) == 1
     assert out["candles"][0] == [100.0, 125.0, 90.0, 130.0]

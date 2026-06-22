@@ -10,16 +10,17 @@ from datetime import datetime
 
 from . import analysis, csv_import, exporter, gemini, updater
 from .config import load_config
-from .sources import twse
+from .sources import kline, taifex, twse
 from .db import (
     get_ai_cache,
     get_connection,
     get_snapshot,
     get_snapshot_dates,
+    get_tx_history,
     init_db,
     set_ai_cache,
+    upsert_tx_history,
 )
-from .sources import kline
 
 WEB_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "web"))
 
@@ -202,13 +203,20 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     def index_kline(symbol: str = "taiex", interval: str = "1d"):
         if symbol == "tx":
             c = conn()
-            rows = [dict(r) for r in c.execute(
-                "SELECT date, tx_open, tx_high, tx_low, tx_price FROM market_daily ORDER BY date"
-            ).fetchall()]
-            tx = kline.tx_candles_from_rows(rows, interval)
-            if len(tx.get("candles", [])) >= 20:
-                return tx
-            # 台指期歷史累積不足 → 以高度連動的加權指數近似
+            hist = get_tx_history(c)
+            if len(hist) < 20:  # 首次或不足 → 從期交所官方下載歷史並快取
+                try:
+                    rows = taifex.fetch_tx_history()
+                    if rows:
+                        upsert_tx_history(c, rows)
+                        hist = get_tx_history(c)
+                except Exception:  # noqa: BLE001
+                    pass
+            if len(hist) >= 20:
+                out = kline.ohlc_candles(hist, interval)
+                out["symbol"] = "tx"
+                return out
+            # 仍無法取得 → 以高度連動的加權指數近似
             proxy = kline.fetch_index_kline("taiex", interval)
             proxy["symbol"] = "tx"
             proxy["proxy"] = True

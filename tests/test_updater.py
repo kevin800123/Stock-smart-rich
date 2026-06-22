@@ -11,6 +11,8 @@ def test_run_update_collects_and_tolerates_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(updater.taifex, "fetch_tx_quote", lambda: {"tx_price": 23010.0, "tx_chg": 40.0})
     monkeypatch.setattr(updater.taifex, "fetch_retail_ratios", lambda: {"fut_inst_net": 600, "retail_ls_mtx": -0.2, "retail_ls_tmf": -0.1})
 
+    monkeypatch.setattr(updater.taifex, "fetch_tx_history", lambda *a, **k: [])
+
     def boom():
         raise RuntimeError("network down")
 
