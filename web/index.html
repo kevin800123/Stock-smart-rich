@@ -8,88 +8,106 @@
   <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
 </head>
 <body>
-  <header class="topbar">
-    <h1>STOCKS POWER RICH <span class="zh">股力智富</span></h1>
-    <div class="actions">
-      <span id="last-updated" class="muted">尚未更新</span>
-      <button id="btn-update">⟳ 一鍵更新</button>
-    </div>
-  </header>
+  <div class="app">
+    <header class="topbar">
+      <h1>STOCKS POWER RICH <span class="zh">股力智富</span></h1>
+      <div class="actions">
+        <span id="last-updated" class="muted">尚未更新</span>
+        <button id="btn-update">⟳ 一鍵更新</button>
+      </div>
+    </header>
 
-  <div id="update-status" class="status-bar hidden"></div>
+    <nav class="sidebar">
+      <a class="nav active" data-view="overview"><span class="ico">📊</span><span class="lbl">總覽</span></a>
+      <a class="nav" data-view="picks"><span class="ico">🎯</span><span class="lbl">選股清單</span></a>
+      <a class="nav" data-view="stock"><span class="ico">🔍</span><span class="lbl">個股查詢</span></a>
+      <a class="nav" data-view="weekly"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
+    </nav>
 
-  <main>
-    <section class="panel">
-      <h2>大盤儀表板</h2>
-      <div id="cards" class="cards"></div>
-      <div class="chart-row">
-        <div class="chart-side">
-          <div class="chart-side-title">商品</div>
-          <label><input type="radio" name="idx" value="taiex" checked /> 加權指數</label>
-          <label><input type="radio" name="idx" value="tx" /> 台指期</label>
-        </div>
-        <div class="chart-main">
-          <div class="chart-toolbar">
-            <button class="tf" data-iv="1h">1小時K</button>
-            <button class="tf active" data-iv="1d">日K</button>
-            <button class="tf" data-iv="1wk">週K</button>
-            <button class="tf" data-iv="1mo">月K</button>
-            <label class="wave-toggle"><input type="checkbox" id="wave-chk" /> 艾略特波浪</label>
-            <span class="wave-pct"><input type="range" id="wave-pct" min="2" max="15" step="1" value="5" /><span id="wave-pct-val">轉折 5%</span></span>
-            <span id="idx-note" class="muted"></span>
+    <main class="content">
+      <div id="update-status" class="status-bar hidden"></div>
+
+      <!-- ===== 總覽 ===== -->
+      <section id="view-overview" class="view active">
+        <div class="card-group"><div class="group-title">台股大盤</div><div id="cards-tw" class="cards"></div></div>
+        <div class="card-group"><div class="group-title">期貨籌碼</div><div id="cards-fut" class="cards"></div></div>
+        <div class="card-group"><div class="group-title">國際市場</div><div id="cards-intl" class="cards"></div></div>
+
+        <div class="chart-row">
+          <div class="chart-side">
+            <div class="chart-side-title">商品</div>
+            <label><input type="radio" name="idx" value="taiex" checked /> 加權指數</label>
+            <label><input type="radio" name="idx" value="tx" /> 台指期</label>
           </div>
-          <div id="idxchart" class="chart"></div>
+          <div class="chart-main">
+            <div class="chart-toolbar">
+              <button class="tf" data-iv="1h">1小時K</button>
+              <button class="tf active" data-iv="1d">日K</button>
+              <button class="tf" data-iv="1wk">週K</button>
+              <button class="tf" data-iv="1mo">月K</button>
+              <label class="wave-toggle"><input type="checkbox" id="wave-chk" /> 艾略特波浪</label>
+              <span class="wave-pct"><input type="range" id="wave-pct" min="2" max="15" step="1" value="5" /><span id="wave-pct-val">轉折 5%</span></span>
+              <span id="idx-note" class="muted"></span>
+            </div>
+            <div id="idxchart" class="chart"></div>
+          </div>
         </div>
-      </div>
-      <div class="ai-head"><span>AI 盤勢摘要</span><button id="btn-ai-market" class="ai-btn">🔄 產生/更新</button></div>
-      <div id="market-summary" class="ai-box">按「🔄 產生/更新」生成盤勢摘要。</div>
-    </section>
 
-    <section class="panel">
-      <h2>籌碼 CSV 分析</h2>
-      <div class="upload-row">
-        <label class="file-label">
-          <input type="file" id="csv" accept=".csv,.xlsx,.xlsm" hidden />
-          📤 上傳今日檔（CSV/Excel）
-        </label>
-        <button id="btn-latest" class="file-label">📂 讀取資料夾最新檔</button>
-        <label class="date-pick">資料日期 <select id="date-select"></select></label>
-        <span id="upload-info" class="muted"></span>
-      </div>
+        <div class="ai-head"><span>AI 盤勢摘要</span><button id="btn-ai-market" class="ai-btn">🔄 產生/更新</button></div>
+        <div id="market-summary" class="ai-box">按「🔄 產生/更新」生成盤勢摘要。</div>
+      </section>
 
-      <h3>細產業統計（符合條件個股檔數）</h3>
-      <div id="industry" class="table-wrap"></div>
-
-      <h3>選股清單　<span class="muted">W55翻多 ＋ 大戶增比&gt;0 ＋ 營收年增&gt;0 ＋ 推估EPS&gt;0，依蘭值排序（點欄位可排序）</span></h3>
-      <div class="picks-bar">
-        <span id="sub-filter"></span>
-        <button id="btn-export" class="file-label">⬇ 匯出 Excel</button>
-      </div>
-      <div id="daily" class="table-wrap"></div>
-
-      <h3>跨週變化（本週 vs 上週）<span id="weekly-dates" class="muted"></span></h3>
-      <div id="weekly" class="table-wrap"></div>
-
-      <div class="ai-head"><span>AI 籌碼分析師</span><button id="btn-ai-csv" class="ai-btn">🔄 產生/更新</button></div>
-      <div id="csv-summary" class="ai-box">按「🔄 產生/更新」生成籌碼洞察。</div>
-    </section>
-  </main>
-
-  <div id="kline-modal" class="modal hidden">
-    <div class="modal-body">
-      <div class="modal-head">
-        <span id="kline-title"></span>
-        <div class="kline-tf">
-          <button class="ktf" data-iv="1h">時</button>
-          <button class="ktf active" data-iv="1d">日</button>
-          <button class="ktf" data-iv="1wk">週</button>
-          <button class="ktf" data-iv="1mo">月</button>
+      <!-- ===== 選股清單 ===== -->
+      <section id="view-picks" class="view">
+        <div class="toolbar">
+          <label class="file-label">
+            <input type="file" id="csv" accept=".csv,.xlsx,.xlsm" hidden />
+            📤 上傳今日檔（CSV/Excel）
+          </label>
+          <button id="btn-latest" class="file-label">📂 讀取資料夾最新檔</button>
+          <label class="date-pick">資料日期 <select id="date-select"></select></label>
+          <button id="btn-export" class="file-label">⬇ 匯出 Excel</button>
+          <span id="upload-info" class="muted"></span>
         </div>
-        <button id="kline-close">✕</button>
-      </div>
-      <div id="kline-profile" class="kline-profile"></div>
-      <div id="kline" class="kline-chart"></div>
-    </div>
+        <div class="picks-split">
+          <div class="picks-side">
+            <div class="pane-title">細產業統計</div>
+            <div id="industry" class="table-wrap fill"></div>
+          </div>
+          <div class="picks-main">
+            <div class="pane-title">選股清單　<span id="sub-filter" class="muted"></span></div>
+            <div class="muted small">W55翻多 ＋ 大戶增比&gt;0 ＋ 營收年增&gt;0 ＋ 推估EPS&gt;0，依蘭值排序（點欄位排序、點細產業聯動）</div>
+            <div id="daily" class="table-wrap fill"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== 個股查詢 ===== -->
+      <section id="view-stock" class="view">
+        <div class="toolbar">
+          <input type="text" id="stock-input" class="stock-input" placeholder="輸入股號（如 2330 或 2330.TW）後按 Enter" />
+          <button id="stock-go" class="file-label">查詢</button>
+          <div class="kline-tf">
+            <button class="ktf" data-iv="1h">時</button>
+            <button class="ktf active" data-iv="1d">日</button>
+            <button class="ktf" data-iv="1wk">週</button>
+            <button class="ktf" data-iv="1mo">月</button>
+          </div>
+          <label class="wave-toggle"><input type="checkbox" id="stock-wave-chk" /> 艾略特波浪</label>
+          <span id="stock-note" class="muted"></span>
+        </div>
+        <div id="stock-profile" class="kline-profile"></div>
+        <div id="stock-chart" class="chart-big"></div>
+      </section>
+
+      <!-- ===== 跨週 ＋ AI ===== -->
+      <section id="view-weekly" class="view">
+        <div class="pane-title">跨週變化（本週 vs 上週）<span id="weekly-dates" class="muted"></span></div>
+        <div id="weekly" class="table-wrap fill-half"></div>
+        <div class="ai-head"><span>AI 籌碼分析師</span><button id="btn-ai-csv" class="ai-btn">🔄 產生/更新</button></div>
+        <div id="csv-summary" class="ai-box">按「🔄 產生/更新」生成籌碼洞察。</div>
+      </section>
+    </main>
   </div>
 
   <script src="app.js"></script>
