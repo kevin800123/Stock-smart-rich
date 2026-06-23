@@ -54,6 +54,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS tx_history ("
         "date TEXT PRIMARY KEY, open REAL, high REAL, low REAL, close REAL, volume REAL)"
     )
+    conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
     # 既有資料庫補上後來新增的欄位
     mkt_existing = {r[1] for r in conn.execute("PRAGMA table_info(market_daily)").fetchall()}
     for col in MARKET_COLS:
@@ -110,6 +111,20 @@ def get_snapshot(conn: sqlite3.Connection, snap_date: str) -> list[dict]:
             "SELECT * FROM chip_snapshot WHERE snap_date=?", (snap_date,)
         ).fetchall()
     ]
+
+
+def get_setting(conn: sqlite3.Connection, key: str, default=None):
+    row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO settings (key, value) VALUES (?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, value),
+    )
+    conn.commit()
 
 
 def upsert_tx_history(conn: sqlite3.Connection, rows: list[dict]) -> None:

@@ -2,7 +2,7 @@
 import os
 import tempfile
 
-from fastapi import FastAPI, File, UploadFile
+from fastapi import Body, FastAPI, File, UploadFile
 from fastapi.responses import Response
 from fastapi.staticfiles import StaticFiles
 
@@ -14,11 +14,13 @@ from .sources import kline, taifex, twse
 from .db import (
     get_ai_cache,
     get_connection,
+    get_setting,
     get_snapshot,
     get_snapshot_dates,
     get_tx_history,
     init_db,
     set_ai_cache,
+    set_setting,
     upsert_tx_history,
 )
 
@@ -34,9 +36,15 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         init_db(c)
         return c
 
+    def effective_data_dir():
+        return get_setting(conn(), "data_dir") or cfg.data_dir
+
+    def effective_schedule():
+        return get_setting(conn(), "schedule_time") or cfg.schedule_time
+
     def scheduled_job():
         c = conn()
-        path = csv_import.find_latest_file(cfg.data_dir)
+        path = csv_import.find_latest_file(effective_data_dir())
         if path:
             try:
                 csv_import.import_csv(c, path)
@@ -47,7 +55,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     if enable_scheduler:
         from .scheduler import start_scheduler
 
-        app.state.scheduler = start_scheduler(scheduled_job, cfg.schedule_time)
+        app.state.scheduler = start_scheduler(scheduled_job, effective_schedule())
 
     @app.get("/api/dashboard")
     def dashboard():
@@ -77,10 +85,11 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
 
     @app.post("/api/csv/import-latest")
     def import_latest():
-        path = csv_import.find_latest_file(cfg.data_dir)
+        data_dir = effective_data_dir()
+        path = csv_import.find_latest_file(data_dir)
         if not path:
             return {"snap_date": None, "count": 0, "daily_top": [],
-                    "error": f"資料夾找不到 CSV/Excel：{cfg.data_dir}"}
+                    "error": f"資料夾找不到 CSV/Excel：{data_dir}"}
         c = conn()
         snap_date, count = csv_import.import_csv(c, path)
         c.execute("DELETE FROM ai_cache WHERE cache_key=?", (f"csv:{snap_date}",))
@@ -92,6 +101,37 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     @app.get("/api/snapshots")
     def snapshots():
         return {"dates": get_snapshot_dates(conn())}
+
+    @app.get("/api/settings")
+    def get_settings():
+        c = conn()
+        last = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
+        return {
+            "gemini_configured": bool(cfg.gemini_api_key),  # 僅狀態，絕不回傳金鑰值
+            "schedule_time": effective_schedule(),
+            "scheduler_running": bool(getattr(app.state, "scheduler", None)),
+            "data_dir": effective_data_dir(),
+            "snapshots": len(get_snapshot_dates(c)),
+            "tx_history_days": len(get_tx_history(c)),
+            "last_market_date": last[0] if last else None,
+        }
+
+    @app.post("/api/settings")
+    def update_settings(payload: dict = Body(...)):
+        c = conn()
+        st = payload.get("schedule_time")
+        if st:
+            set_setting(c, "schedule_time", str(st))
+            sched = getattr(app.state, "scheduler", None)
+            if sched:
+                try:
+                    from .scheduler import build_trigger_kwargs
+                    sched.reschedule_job("daily_update", trigger="cron", **build_trigger_kwargs(st))
+                except Exception:  # noqa: BLE001
+                    pass
+        if payload.get("data_dir"):
+            set_setting(c, "data_dir", str(payload["data_dir"]))
+        return {"ok": True, **get_settings()}
 
     @app.get("/api/analysis/daily")
     def daily(date: str | None = None):

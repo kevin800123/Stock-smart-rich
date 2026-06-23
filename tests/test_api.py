@@ -64,6 +64,31 @@ def test_import_latest_from_folder(tmp_path, monkeypatch):
     assert r["file"] == "20260615.csv"
 
 
+def test_settings_get_hides_gemini_key(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("GEMINI_API_KEY", "secret-xyz")
+    monkeypatch.setenv("SPR_SCHEDULE_TIME", "15:30")
+    app = create_app()
+    client = TestClient(app)
+    s = client.get("/api/settings").json()
+    assert s["gemini_configured"] is True
+    assert s["schedule_time"] == "15:30"
+    assert "gemini_api_key" not in s
+    assert "secret-xyz" not in json.dumps(s, ensure_ascii=False)  # 金鑰絕不外洩
+
+
+def test_settings_post_updates_schedule_and_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    app = create_app()
+    client = TestClient(app)
+    assert client.post("/api/settings", json={"schedule_time": "09:05", "data_dir": "D:/mydata"}).status_code == 200
+    s = client.get("/api/settings").json()
+    assert s["schedule_time"] == "09:05"
+    assert s["data_dir"] == "D:/mydata"
+
+
 def test_export_returns_xlsx(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import get_connection, init_db, insert_chip_snapshot

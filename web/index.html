@@ -22,6 +22,7 @@
       <a class="nav" data-view="picks"><span class="ico">🎯</span><span class="lbl">選股清單</span></a>
       <a class="nav" data-view="stock"><span class="ico">🔍</span><span class="lbl">個股查詢</span></a>
       <a class="nav" data-view="weekly"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
+      <a class="nav" data-view="settings"><span class="ico">⚙️</span><span class="lbl">設定</span></a>
     </nav>
 
     <main class="content">
@@ -106,6 +107,18 @@
         <div id="weekly" class="table-wrap fill-half"></div>
         <div class="ai-head"><span>AI 籌碼分析師</span><button id="btn-ai-csv" class="ai-btn">🔄 產生/更新</button></div>
         <div id="csv-summary" class="ai-box">按「🔄 產生/更新」生成籌碼洞察。</div>
+      </section>
+
+      <!-- ===== 設定 ===== -->
+      <section id="view-settings" class="view">
+        <div class="settings-grid">
+          <div class="set-row"><label>每日排程時間</label><input type="time" id="set-schedule" /><span id="set-sched-status" class="muted"></span></div>
+          <div class="set-row"><label>「讀取最新檔」資料夾</label><input type="text" id="set-datadir" class="stock-input" placeholder="例如 Date 或完整路徑" /></div>
+          <div class="set-row"><label>Gemini 金鑰</label><span id="set-gemini" class="set-badge"></span><span class="muted small">（金鑰只能透過 .env 設定，此處不顯示也不輸入）</span></div>
+          <div class="set-row"><button id="btn-save-settings" class="file-label">💾 儲存設定</button><span id="set-saved" class="muted"></span></div>
+        </div>
+        <div class="ai-head" style="margin-top:8px"><span>資料庫狀態</span></div>
+        <div id="set-stats" class="stats-grid"></div>
       </section>
     </main>
   </div>

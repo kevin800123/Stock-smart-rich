@@ -103,6 +103,30 @@ function showView(name) {
   document.querySelectorAll(".nav").forEach((n) => n.classList.toggle("active", n.dataset.view === name));
   if (name === "overview" && idxChart) idxChart.resize();
   if (name === "stock" && stockChart) stockChart.resize();
+  if (name === "settings") loadSettings();
+}
+
+async function loadSettings() {
+  try {
+    const s = await getJSON("/api/settings");
+    $("set-schedule").value = s.schedule_time || "";
+    $("set-datadir").value = s.data_dir || "";
+    $("set-sched-status").textContent = s.scheduler_running ? "（排程執行中）" : "（排程未啟用；用 啟動.bat 會自動啟用）";
+    const g = $("set-gemini");
+    g.textContent = s.gemini_configured ? "已設定 ✓" : "未設定";
+    g.className = "set-badge " + (s.gemini_configured ? "ok" : "no");
+    $("set-stats").innerHTML = [
+      ["快照天數", s.snapshots], ["台指期歷史天數", s.tx_history_days], ["最新大盤日期", s.last_market_date || "—"],
+    ].map(([k, v]) => `<div class="stat"><div class="stat-k">${k}</div><div class="stat-v">${v}</div></div>`).join("");
+  } catch (e) { /* 忽略 */ }
+}
+async function saveSettings() {
+  $("set-saved").textContent = "儲存中…";
+  try {
+    await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ schedule_time: $("set-schedule").value, data_dir: $("set-datadir").value }) });
+    $("set-saved").textContent = "已儲存 ✓"; setTimeout(() => { $("set-saved").textContent = ""; }, 2000);
+    loadSettings();
+  } catch (e) { $("set-saved").textContent = "儲存失敗：" + e.message; }
 }
 
 // ========== 總覽：指標卡 ==========
@@ -330,6 +354,7 @@ $("btn-export").addEventListener("click", () => {
 });
 $("btn-ai-market").addEventListener("click", () => loadMarketSummary(true));
 $("btn-ai-csv").addEventListener("click", () => loadCsvSummary(true));
+$("btn-save-settings").addEventListener("click", saveSettings);
 
 // 大盤圖控制
 document.querySelectorAll('input[name="idx"]').forEach((el) => el.addEventListener("change", (e) => { idxSymbol = e.target.value; loadIndexChart(); }));
