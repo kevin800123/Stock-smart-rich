@@ -130,29 +130,38 @@ async function saveSettings() {
 }
 
 // ========== 總覽：指標卡 ==========
-function card(label, value, chg, unit = "") {
-  const ct = chg === undefined ? "" : `<div class="card-chg ${chgClass(chg)}">${chgText(chg)}</div>`;
-  return `<div class="card"><div class="card-label">${label}</div><div class="card-val">${value}${unit}</div>${ct}</div>`;
+const pctOf = (val, chg) => (val != null && chg != null && (val - chg) ? chg / (val - chg) * 100 : null);
+function pctTag(pct) { return pct == null ? "" : ` (${pct > 0 ? "+" : ""}${fmt(pct, 2)}%)`; }
+// label, value, chg(可空), pct(可空), unit
+function card(label, value, chg, pct, unit = "") {
+  let sub = "";
+  if (chg !== undefined && chg !== null) sub = `<div class="card-chg ${chgClass(chg)}">${chgText(chg)}${pctTag(pct)}</div>`;
+  else if (pct !== undefined && pct !== null) sub = `<div class="card-chg ${chgClass(pct)}">${pct > 0 ? "▲" : pct < 0 ? "▼" : ""}${fmt(Math.abs(pct), 2)}%</div>`;
+  return `<div class="card"><div class="card-label">${label}</div><div class="card-val">${value}${unit}</div>${sub}</div>`;
 }
 function renderCards(m) {
-  if (!m || !m.date) { $("cards-tw").innerHTML = '<div class="muted">尚無大盤資料，請按「一鍵更新」。</div>'; $("cards-fut").innerHTML = ""; $("cards-intl").innerHTML = ""; return; }
+  if (!m || !m.date) { $("cards-tw").innerHTML = '<div class="muted">尚無大盤資料，請按「一鍵更新」。</div>'; $("cards-fut").innerHTML = ""; $("cards-intl").innerHTML = ""; $("data-date").textContent = ""; return; }
+  $("data-date").textContent = "資料日期：" + m.date;
   const ls = (v) => (v === null || v === undefined ? "—" : (v > 0 ? "散戶偏多 " : v < 0 ? "散戶偏空 " : "") + fmt(v, 3));
   $("cards-tw").innerHTML = [
-    card("加權指數", fmt(m.taiex), m.taiex_chg),
-    card("外資買賣超", fmt(m.inst_foreign), m.inst_foreign, " 億"),
-    card("投信買賣超", fmt(m.inst_trust), m.inst_trust, " 億"),
-    card("自營買賣超", fmt(m.inst_dealer), m.inst_dealer, " 億"),
-    card("融資餘額(張)", fmt(m.margin_balance, 0), m.margin_chg),
-    card("融券餘額(張)", fmt(m.short_balance, 0), m.short_chg),
+    card("加權指數", fmt(m.taiex), m.taiex_chg, pctOf(m.taiex, m.taiex_chg)),
+    card("外資買賣超", fmt(m.inst_foreign), m.inst_foreign, null, " 億"),
+    card("投信買賣超", fmt(m.inst_trust), m.inst_trust, null, " 億"),
+    card("自營買賣超", fmt(m.inst_dealer), m.inst_dealer, null, " 億"),
+    card("融資餘額(張)", fmt(m.margin_balance, 0), m.margin_chg, pctOf(m.margin_balance, m.margin_chg)),
+    card("融券餘額(張)", fmt(m.short_balance, 0), m.short_chg, pctOf(m.short_balance, m.short_chg)),
   ].join("");
   $("cards-fut").innerHTML = [
-    card("台指期", fmt(m.tx_price), m.tx_chg),
+    card("台指期", fmt(m.tx_price), m.tx_chg, pctOf(m.tx_price, m.tx_chg)),
     card("小台散戶多空比", ls(m.retail_ls_mtx), m.retail_ls_mtx),
     card("微台散戶多空比", ls(m.retail_ls_tmf), m.retail_ls_tmf),
   ].join("");
   $("cards-intl").innerHTML = [
-    card("費城半導體", fmt(m.sox)), card("日經225", fmt(m.n225)),
-    card("韓股KOSPI", fmt(m.kospi)), card("黃金", fmt(m.gold)), card("比特幣", fmt(m.btc)),
+    card("費城半導體", fmt(m.sox), undefined, m.sox_chg),
+    card("日經225", fmt(m.n225), undefined, m.n225_chg),
+    card("韓股KOSPI", fmt(m.kospi), undefined, m.kospi_chg),
+    card("黃金", fmt(m.gold), undefined, m.gold_chg),
+    card("比特幣", fmt(m.btc), undefined, m.btc_chg),
   ].join("");
 }
 
@@ -362,6 +371,7 @@ document.querySelectorAll("#view-overview .tf").forEach((btn) => btn.addEventLis
   document.querySelectorAll("#view-overview .tf").forEach((b) => b.classList.remove("active"));
   btn.classList.add("active"); idxInterval = btn.dataset.iv; loadIndexChart();
 }));
+$("wave-help-toggle").addEventListener("click", (e) => { e.preventDefault(); $("wave-help").classList.toggle("hidden"); });
 $("wave-chk").addEventListener("change", (e) => { overviewWaves = e.target.checked; if (idxChart && lastIndexData) idxChart.setOption(candlestickOption(lastIndexData, lastIndexData.candles.length > 120 ? 70 : 0, overviewWaves, wavePct), true); });
 $("wave-pct").addEventListener("input", (e) => {
   wavePct = Number(e.target.value) / 100; $("wave-pct-val").textContent = `轉折 ${e.target.value}%`;

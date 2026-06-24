@@ -40,7 +40,15 @@ def parse_taiex(records: list) -> dict:
         prev = _f(records[-2].get("TAIEX"))
         if prev is not None:
             chg = round(close - prev, 2)
-    return {"taiex": close, "taiex_chg": chg}
+    return {"taiex": close, "taiex_chg": chg, "date": _roc_to_iso(last.get("Date"))}
+
+
+def _roc_to_iso(roc) -> str | None:
+    """民國日期字串（如 1150616）轉西元 ISO（2026-06-16）。"""
+    s = "".join(ch for ch in str(roc or "") if ch.isdigit())
+    if len(s) < 7:
+        return None
+    return f"{int(s[:3]) + 1911:04d}-{s[3:5]}-{s[5:7]}"
 
 
 def parse_institutional(payload: dict) -> dict:

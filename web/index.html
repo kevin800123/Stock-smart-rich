@@ -12,6 +12,7 @@
     <header class="topbar">
       <h1>STOCKS POWER RICH <span class="zh">股力智富</span></h1>
       <div class="actions">
+        <span id="data-date" class="data-date"></span>
         <span id="last-updated" class="muted">尚未更新</span>
         <button id="btn-update">⟳ 一鍵更新</button>
       </div>
@@ -48,7 +49,15 @@
               <button class="tf" data-iv="1mo">月K</button>
               <label class="wave-toggle"><input type="checkbox" id="wave-chk" /> 艾略特波浪</label>
               <span class="wave-pct"><input type="range" id="wave-pct" min="2" max="15" step="1" value="5" /><span id="wave-pct-val">轉折 5%</span></span>
+              <a href="#" id="wave-help-toggle" class="help-link">ⓘ 波浪說明</a>
               <span id="idx-note" class="muted"></span>
+            </div>
+            <div id="wave-help" class="wave-help hidden">
+              <b>艾略特波浪</b>：一個趨勢通常「上漲 5 浪、下跌 3 浪」。
+              <span class="dot orange">●</span><b>1–5（橘）</b>＝推動浪（順勢）；
+              <span class="dot blue">●</span><b>A–B–C（藍）</b>＝修正浪（逆勢回檔）。<br />
+              <b>轉折%（靈敏度）</b>：判定「一個轉折」所需的最小漲跌幅。<b>調小</b>→連小波動都算轉折、波浪更多更敏感；<b>調大</b>→只認大波段、波浪更少更乾淨。指數平緩看不到浪時就調小，波動大時調大較準。<br />
+              <b>怎麼判斷的</b>：先用轉折% 抓出高低轉折點，取最近一段，<b>三大鐵律全部符合才標</b>：① 第2浪不跌破第1浪起點　② 第3浪不是最短　③ 第4浪不重疊第1浪價格區。其後若接合法的逆勢三波，再加標 A–B–C。不符合就不標（不硬湊）。
             </div>
             <div id="idxchart" class="chart"></div>
           </div>

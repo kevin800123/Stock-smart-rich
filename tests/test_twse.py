@@ -16,6 +16,14 @@ def test_parse_taiex_negative_change():
     assert twse.parse_taiex(records)["taiex_chg"] == -10.0
 
 
+def test_parse_taiex_returns_iso_date_from_roc():
+    records = [
+        {"Date": "1150615", "TAIEX": "45000", "Change": "0"},
+        {"Date": "1150616", "TAIEX": "45337.91", "Change": "337.91"},
+    ]
+    assert twse.parse_taiex(records)["date"] == "2026-06-16"
+
+
 def test_parse_institutional_net_in_yi():
     payload = {
         "fields": ["單位名稱", "買進金額", "賣出金額", "買賣差額"],
