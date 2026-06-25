@@ -27,6 +27,28 @@ def test_dashboard_and_upload(tmp_path, monkeypatch):
     assert d["picks"][0]["code"] == "2330.TW"
 
 
+def test_data_is_stale_logic():
+    from stocks_power_rich.main import data_is_stale
+
+    # 平日(週三=2)且資料停在前一交易日 → 官方當日盤後尚未釋出
+    assert data_is_stale("2026-06-23", "2026-06-24", 2) is True
+    # 已是當日 → 不提示
+    assert data_is_stale("2026-06-24", "2026-06-24", 2) is False
+    # 週六(5)：資料停在週五屬正常 → 不提示
+    assert data_is_stale("2026-06-26", "2026-06-27", 5) is False
+    # 尚無任何資料 → 不提示
+    assert data_is_stale(None, "2026-06-24", 2) is False
+
+
+def test_dashboard_includes_today_and_stale_flag(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    app = create_app()
+    client = TestClient(app)
+    body = client.get("/api/dashboard").json()
+    assert "today" in body and "data_stale" in body
+    assert body["data_stale"] is False  # 無資料時不標延遲
+
+
 def test_kline_endpoint(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     import pandas as pd

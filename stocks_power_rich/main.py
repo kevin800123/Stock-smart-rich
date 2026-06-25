@@ -27,6 +27,15 @@ from .db import (
 WEB_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "web"))
 
 
+def data_is_stale(data_date, today: str, weekday: int) -> bool:
+    """官方盤後資料是否「落後當日」。
+
+    判定：資料日期早於今天，且今天是平日（週一~週五，weekday 0~4）。
+    週末資料停在週五屬正常、不算延遲；平日落後代表官方 openapi 當日盤後尚未釋出。
+    """
+    return bool(data_date and data_date < today and weekday < 5)
+
+
 def create_app(enable_scheduler: bool = False) -> FastAPI:
     cfg = load_config()
     app = FastAPI(title="STOCKS POWER RICH")
@@ -64,7 +73,14 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             "SELECT * FROM market_daily ORDER BY date DESC LIMIT 60"
         ).fetchall()]
         latest = rows[0] if rows else {}
-        return {"latest": latest, "history": list(reversed(rows))}
+        now = datetime.now()
+        today = now.strftime("%Y-%m-%d")
+        return {
+            "latest": latest,
+            "history": list(reversed(rows)),
+            "today": today,
+            "data_stale": data_is_stale(latest.get("date"), today, now.weekday()),
+        }
 
     @app.post("/api/update/run")
     def run_update():

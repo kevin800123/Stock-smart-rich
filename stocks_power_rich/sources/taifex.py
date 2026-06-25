@@ -20,8 +20,9 @@ Q_FUT = "/DailyMarketReportFut"
 Q_INST = "/MarketDataOfMajorInstitutionalTradersDetailsOfFuturesContractsBytheDate"
 
 # 行情用代號 → 法人用中文品名
-MTX_NAME = "小型臺指期貨"
-TMF_NAME = "微型臺指期貨"
+TX_NAME = "臺股期貨"      # 大台
+MTX_NAME = "小型臺指期貨"  # 小台
+TMF_NAME = "微型臺指期貨"  # 微台
 
 
 def _f(v):
@@ -56,16 +57,23 @@ def total_oi_for(fut_records: list, contract: str):
     return s if found else None
 
 
-def inst_net_oi_for(inst_records: list, contract_name: str):
-    """某契約三大法人淨未平倉＝該品名 自營/投信/外資 三列 OpenInterest(Net) 加總。"""
+def inst_net_oi_for(inst_records: list, contract_name: str, item: str | None = None):
+    """某契約法人淨未平倉＝OpenInterest(Net) 加總。
+
+    item=None → 自營/投信/外資 三列加總（三大法人合計）；
+    item='外資' → 僅外資列（含「外資及陸資」，以子字串比對）。
+    """
     s = 0.0
     found = False
     for r in inst_records:
-        if r.get("ContractCode") == contract_name:
-            net = _f(r.get("OpenInterest(Net)"))
-            if net is not None:
-                s += net
-                found = True
+        if r.get("ContractCode") != contract_name:
+            continue
+        if item is not None and item not in str(r.get("Item") or ""):
+            continue
+        net = _f(r.get("OpenInterest(Net)"))
+        if net is not None:
+            s += net
+            found = True
     return s if found else None
 
 
@@ -95,10 +103,14 @@ def compute_retail_ratios(fut_records: list, inst_records: list) -> dict:
     mtx_net = inst_net_oi_for(inst_records, MTX_NAME)
     tmf_oi = total_oi_for(fut_records, "TMF")
     tmf_net = inst_net_oi_for(inst_records, TMF_NAME)
+    tx_foreign_oi = inst_net_oi_for(inst_records, TX_NAME, item="外資")  # 外資台指淨未平倉（口）
     return {
         "fut_inst_net": mtx_net,
         "retail_ls_mtx": retail_long_short_ratio(mtx_net, mtx_oi) if (mtx_net is not None and mtx_oi) else None,
         "retail_ls_tmf": retail_long_short_ratio(tmf_net, tmf_oi) if (tmf_net is not None and tmf_oi) else None,
+        "tx_foreign_oi": int(tx_foreign_oi) if tx_foreign_oi is not None else None,
+        # 散戶小台淨未平倉（口）≈ -(三大法人小台淨額)，期貨零和近似
+        "retail_oi_mtx": int(-mtx_net) if mtx_net is not None else None,
     }
 
 

@@ -12,13 +12,14 @@ INTL_TICKERS = {
     "kospi": "^KS11",   # 韓股 KOSPI
     "gold": "GC=F",     # 黃金期貨
     "btc": "BTC-USD",   # 比特幣
+    "vix": "^VIX",      # VIX 恐慌指數（CBOE）
 }
 
 
 @dataclass
 class Config:
     gemini_api_key: str = ""
-    schedule_time: str = "15:30"
+    schedule_time: str = "21:00"
     db_path: str = "data/spr.sqlite"
     data_dir: str = "Date"
     intl_tickers: dict = field(default_factory=lambda: dict(INTL_TICKERS))
@@ -27,7 +28,7 @@ class Config:
 def load_config() -> Config:
     return Config(
         gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
-        schedule_time=os.getenv("SPR_SCHEDULE_TIME", "15:30"),
+        schedule_time=os.getenv("SPR_SCHEDULE_TIME", "21:00"),
         db_path=os.getenv("SPR_DB_PATH", "data/spr.sqlite"),
         data_dir=os.getenv("SPR_DATA_DIR", "Date"),
     )

@@ -5,9 +5,10 @@ def test_defaults(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("SPR_SCHEDULE_TIME", raising=False)
     cfg = load_config()
-    assert cfg.schedule_time == "15:30"
+    assert cfg.schedule_time == "21:00"
     assert cfg.gemini_api_key == ""
     assert "^SOX" in cfg.intl_tickers.values()
+    assert "^VIX" in cfg.intl_tickers.values()
 
 
 def test_env_override(monkeypatch):

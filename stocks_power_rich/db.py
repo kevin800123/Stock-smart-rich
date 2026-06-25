@@ -7,8 +7,9 @@ MARKET_COLS = [
     "margin_balance", "margin_chg", "short_balance", "short_chg",
     "tx_price", "tx_chg", "tx_open", "tx_high", "tx_low",
     "fut_inst_net", "retail_ls_mtx", "retail_ls_tmf",
-    "sox", "n225", "kospi", "gold", "btc",
-    "sox_chg", "n225_chg", "kospi_chg", "gold_chg", "btc_chg", "updated_at",
+    "tx_foreign_oi", "retail_oi_mtx",
+    "sox", "n225", "kospi", "gold", "btc", "vix",
+    "sox_chg", "n225_chg", "kospi_chg", "gold_chg", "btc_chg", "vix_chg", "updated_at",
 ]
 
 CHIP_COLS = [

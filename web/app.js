@@ -132,6 +132,13 @@ async function saveSettings() {
 // ========== 總覽：指標卡 ==========
 const pctOf = (val, chg) => (val != null && chg != null && (val - chg) ? chg / (val - chg) * 100 : null);
 function pctTag(pct) { return pct == null ? "" : ` (${pct > 0 ? "+" : ""}${fmt(pct, 2)}%)`; }
+// 日對日漲跌與百分比（同號才給 %，避免比率/部位翻號時百分比失真）
+function dod(cur, prev) {
+  if (cur == null || prev == null) return { chg: null, pct: null };
+  const chg = cur - prev;
+  const pct = (prev !== 0 && Math.sign(prev) === Math.sign(cur)) ? chg / Math.abs(prev) * 100 : null;
+  return { chg, pct };
+}
 // label, value, chg(可空), pct(可空), unit
 function card(label, value, chg, pct, unit = "") {
   let sub = "";
@@ -139,22 +146,47 @@ function card(label, value, chg, pct, unit = "") {
   else if (pct !== undefined && pct !== null) sub = `<div class="card-chg ${chgClass(pct)}">${pct > 0 ? "▲" : pct < 0 ? "▼" : ""}${fmt(Math.abs(pct), 2)}%</div>`;
   return `<div class="card"><div class="card-label">${label}</div><div class="card-val">${value}${unit}</div>${sub}</div>`;
 }
-function renderCards(m) {
+// 未平倉口數卡：依淨多/淨空上色（紅多綠空），附「較昨日」增減口數與百分比
+function oiCard(label, v, prev) {
+  if (v === null || v === undefined) return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+  const cls = v > 0 ? "up" : v < 0 ? "down" : "flat";
+  const head = (v > 0 ? "淨多 " : v < 0 ? "淨空 " : "") + fmt(Math.abs(v), 0) + " 口";
+  const { chg, pct } = dod(v, prev);
+  const sub = chg == null ? "" : `<div class="card-chg ${chgClass(chg)}">較昨 ${chg > 0 ? "+" : ""}${fmt(chg, 0)} 口${pctTag(pct)}</div>`;
+  return `<div class="card"><div class="card-label">${label}</div><div class="card-val ${cls}">${head}</div>${sub}</div>`;
+}
+// 買賣超/淨額卡：當日淨流量，數值依正負上色，附「較昨日」增減金額
+// （淨流量基數會翻號、趨近 0，算百分比會失真，故只給金額增減、不給 %）
+function flowCard(label, v, prev, unit = "") {
+  if (v === null || v === undefined) return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+  const chg = prev == null ? null : v - prev;
+  const sub = chg == null ? "" : `<div class="card-chg ${chgClass(chg)}">較昨 ${chg > 0 ? "+" : ""}${fmt(chg)}${unit}</div>`;
+  return `<div class="card"><div class="card-label">${label}</div><div class="card-val ${chgClass(v)}">${fmt(v)}${unit}</div>${sub}</div>`;
+}
+function renderCards(m, prev = {}) {
   if (!m || !m.date) { $("cards-tw").innerHTML = '<div class="muted">尚無大盤資料，請按「一鍵更新」。</div>'; $("cards-fut").innerHTML = ""; $("cards-intl").innerHTML = ""; $("data-date").textContent = ""; return; }
   $("data-date").textContent = "資料日期：" + m.date;
   const ls = (v) => (v === null || v === undefined ? "—" : (v > 0 ? "散戶偏多 " : v < 0 ? "散戶偏空 " : "") + fmt(v, 3));
+  const sum3 = (r) => [r.inst_foreign, r.inst_trust, r.inst_dealer].every((x) => x != null)
+    ? r.inst_foreign + r.inst_trust + r.inst_dealer : null;
+  const lsm = dod(m.retail_ls_mtx, prev.retail_ls_mtx);
+  const lst = dod(m.retail_ls_tmf, prev.retail_ls_tmf);
   $("cards-tw").innerHTML = [
     card("加權指數", fmt(m.taiex), m.taiex_chg, pctOf(m.taiex, m.taiex_chg)),
-    card("外資買賣超", fmt(m.inst_foreign), m.inst_foreign, null, " 億"),
-    card("投信買賣超", fmt(m.inst_trust), m.inst_trust, null, " 億"),
-    card("自營買賣超", fmt(m.inst_dealer), m.inst_dealer, null, " 億"),
+    flowCard("外資買賣超", m.inst_foreign, prev.inst_foreign, " 億"),
+    flowCard("投信買賣超", m.inst_trust, prev.inst_trust, " 億"),
+    flowCard("自營買賣超", m.inst_dealer, prev.inst_dealer, " 億"),
+    flowCard("三大法人合計", sum3(m), sum3(prev), " 億"),
     card("融資餘額(張)", fmt(m.margin_balance, 0), m.margin_chg, pctOf(m.margin_balance, m.margin_chg)),
     card("融券餘額(張)", fmt(m.short_balance, 0), m.short_chg, pctOf(m.short_balance, m.short_chg)),
   ].join("");
   $("cards-fut").innerHTML = [
     card("台指期", fmt(m.tx_price), m.tx_chg, pctOf(m.tx_price, m.tx_chg)),
-    card("小台散戶多空比", ls(m.retail_ls_mtx), m.retail_ls_mtx),
-    card("微台散戶多空比", ls(m.retail_ls_tmf), m.retail_ls_tmf),
+    oiCard("外資台指淨未平倉", m.tx_foreign_oi, prev.tx_foreign_oi),
+    oiCard("散戶小台淨未平倉", m.retail_oi_mtx, prev.retail_oi_mtx),
+    card("小台散戶多空比", ls(m.retail_ls_mtx), lsm.chg, lsm.pct),
+    card("微台散戶多空比", ls(m.retail_ls_tmf), lst.chg, lst.pct),
+    card("VIX 恐慌指數", fmt(m.vix), undefined, m.vix_chg),
   ].join("");
   $("cards-intl").innerHTML = [
     card("費城半導體", fmt(m.sox), undefined, m.sox_chg),
@@ -165,9 +197,24 @@ function renderCards(m) {
   ].join("");
 }
 
+function renderStale(d) {
+  const el = $("stale-note");
+  if (!el) return;
+  if (d && d.data_stale && d.latest && d.latest.date) {
+    el.textContent = "⚠️ 官方盤後資料尚未釋出，目前顯示最近結算日 " + d.latest.date
+      + "（今日 " + (d.today || "") + " 的盤後籌碼/期貨數據，官方 openapi 通常隔日早上才補上，屆時按「一鍵更新」或等晚間排程即會更新）";
+    el.classList.remove("hidden");
+  } else {
+    el.classList.add("hidden");
+  }
+}
+
 async function loadDashboard() {
   const d = await getJSON("/api/dashboard");
-  renderCards(d.latest);
+  const hist = d.history || [];
+  const prev = hist.length >= 2 ? hist[hist.length - 2] : {};
+  renderCards(d.latest, prev);
+  renderStale(d);
   if (d.latest && d.latest.updated_at) $("last-updated").textContent = "更新：" + d.latest.updated_at.replace("T", " ").slice(0, 19);
 }
 

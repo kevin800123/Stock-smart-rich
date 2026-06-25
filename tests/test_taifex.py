@@ -25,7 +25,9 @@ INST = [
     {"ContractCode": "微型臺指期貨", "Item": "自營商", "OpenInterest(Net)": "-50"},
     {"ContractCode": "微型臺指期貨", "Item": "投信", "OpenInterest(Net)": "-100"},
     {"ContractCode": "微型臺指期貨", "Item": "外資", "OpenInterest(Net)": "-100"},
-    {"ContractCode": "臺股期貨", "Item": "外資", "OpenInterest(Net)": "9999"},
+    {"ContractCode": "臺股期貨", "Item": "自營商", "OpenInterest(Net)": "100"},
+    {"ContractCode": "臺股期貨", "Item": "投信", "OpenInterest(Net)": "200"},
+    {"ContractCode": "臺股期貨", "Item": "外資及陸資", "OpenInterest(Net)": "9999"},
 ]
 
 
@@ -61,3 +63,18 @@ def test_compute_retail_ratios():
     assert out["fut_inst_net"] == 600          # 小台三大法人淨額
     assert out["retail_ls_mtx"] == -0.2        # -600/3000
     assert out["retail_ls_tmf"] == 0.05        # -(-250)/5000
+
+
+def test_inst_net_oi_for_with_item_filter():
+    # 全體三大法人（不分投資人）小台淨額 = -100+50+650 = 600
+    assert taifex.inst_net_oi_for(INST, "小型臺指期貨") == 600
+    # 僅外資（含「外資及陸資」）臺股期貨淨未平倉
+    assert taifex.inst_net_oi_for(INST, "臺股期貨", item="外資") == 9999
+
+
+def test_compute_oi_positions():
+    out = taifex.compute_retail_ratios(FUT, INST)
+    # 外資台指淨未平倉（口）：臺股期貨外資列
+    assert out["tx_foreign_oi"] == 9999
+    # 散戶小台淨未平倉（口）≈ -(三大法人小台淨額) = -600
+    assert out["retail_oi_mtx"] == -600

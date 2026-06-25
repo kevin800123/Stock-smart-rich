@@ -57,6 +57,7 @@ body {
 .status-bar.ok { background: #15301c; color: #7ee2a0; }
 .status-bar.warn { background: #34270f; color: #f0c474; }
 .status-bar.err { background: #3a1717; color: #e08585; }
+.stale-note { padding: 8px 20px; font-size: 13.5px; line-height: 1.5; background: #34270f; color: #f0c474; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
 .hidden { display: none !important; }
 
 /* ===== 指標卡 ===== */
