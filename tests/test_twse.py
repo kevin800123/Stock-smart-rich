@@ -42,6 +42,41 @@ def test_parse_institutional_net_in_yi():
     assert out["inst_dealer"] == 60.89
 
 
+def test_parse_taiex_rwd_latest_row():
+    payload = {
+        "stat": "OK",
+        "fields": ["日期", "成交股數", "成交金額", "成交筆數", "發行量加權股價指數", "漲跌點數"],
+        "data": [
+            ["115/06/24", "16,786,237,802", "1,539,046,268,153", "8,227,804", "46,043.60", "-1,057.05"],
+            ["115/06/25", "13,439,264,364", "1,355,687,298,430", "6,071,253", "46,255.26", "211.66"],
+        ],
+    }
+    out = twse.parse_taiex_rwd(payload)
+    assert out["taiex"] == 46255.26
+    assert out["taiex_chg"] == 211.66
+    assert out["date"] == "2026-06-25"
+
+
+def test_parse_margin_rwd_summary_in_lots():
+    payload = {
+        "stat": "OK", "date": "20260624",
+        "tables": [{
+            "title": "115年06月24日 信用交易統計",
+            "fields": ["項目", "買進", "賣出", "現金(券)償還", "前日餘額", "今日餘額"],
+            "data": [
+                ["融資(交易單位)", "684,163", "496,735", "19,052", "9,300,654", "9,469,030"],
+                ["融券(交易單位)", "31,457", "30,912", "1,516", "204,255", "202,194"],
+                ["融資金額(仟元)", "51,217,597", "36,966,775", "724,575", "593,930,024", "607,456,271"],
+            ],
+        }],
+    }
+    out = twse.parse_margin_rwd(payload)
+    assert out["margin_balance"] == 9469030
+    assert out["margin_chg"] == 168376   # 9,469,030 - 9,300,654
+    assert out["short_balance"] == 202194
+    assert out["short_chg"] == -2061     # 202,194 - 204,255
+
+
 def test_parse_margin_sums_balances():
     records = [
         {"融資今日餘額": "10757", "融資前日餘額": "10291", "融券今日餘額": "91", "融券前日餘額": "87"},

@@ -21,13 +21,19 @@ def run_update(conn, intl_tickers: dict) -> dict:
     row = {"date": today, "updated_at": datetime.now().isoformat()}
     success, failed = [], []
 
+    # 先以直連加權指數定出「資料日期」D（當日盤後即有），其餘來源全部依 D 直連抓取
+    try:
+        taiex = twse.fetch_taiex()
+        row.update({k: v for k, v in taiex.items() if v is not None})
+        success.append("twse_taiex")
+    except Exception as e:  # noqa: BLE001
+        failed.append({"source": "twse", "name": "twse_taiex", "error": str(e)})
+    D = _iso_to_date(row.get("date"))
+
     tasks = [
-        # 先抓加權指數定出「資料日期」，其餘對齊同一天
-        ("twse_taiex", twse.fetch_taiex),
-        ("twse_inst", lambda: twse.fetch_institutional(date=_iso_to_date(row.get("date")))),
-        ("twse_margin", twse.fetch_margin),
-        ("taifex_tx", taifex.fetch_tx_quote),
-        ("taifex_retail", taifex.fetch_retail_ratios),
+        ("twse_inst", lambda: twse.fetch_institutional(date=D)),
+        ("twse_margin", lambda: twse.fetch_margin(date=D)),
+        ("taifex_chips", lambda: taifex.fetch_chips_for_date(D)),
         ("intl", lambda: intl.fetch_intl_indices(intl_tickers)),
     ]
 
@@ -40,7 +46,7 @@ def run_update(conn, intl_tickers: dict) -> dict:
                         row[key] = val["value"]
                         row[key + "_chg"] = val.get("chg_pct")  # 國際指數漲跌%
             else:
-                # taiex 的 date 會覆蓋預設 today，作為全列的資料日期
+                # 只覆蓋有值的欄位；缺資料（None）保持空白，不以舊值或他日資料填充
                 row.update({k: v for k, v in data.items() if v is not None})
             success.append(name)
         except Exception as e:  # noqa: BLE001 — 容錯：單一來源失敗不影響其餘

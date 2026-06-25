@@ -5,11 +5,13 @@ from stocks_power_rich.db import get_connection, init_db
 def test_run_update_collects_and_tolerates_failure(tmp_path, monkeypatch):
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
-    monkeypatch.setattr(updater.twse, "fetch_taiex", lambda: {"taiex": 23000.0, "taiex_chg": 50.0})
+    monkeypatch.setattr(updater.twse, "fetch_taiex", lambda: {"taiex": 23000.0, "taiex_chg": 50.0, "date": "2026-06-23"})
     monkeypatch.setattr(updater.twse, "fetch_institutional", lambda date=None: {"inst_foreign": 1.0, "inst_trust": 2.0, "inst_dealer": 3.0})
-    monkeypatch.setattr(updater.twse, "fetch_margin", lambda: {"margin_balance": 1000.0, "margin_chg": 10.0, "short_balance": 200.0, "short_chg": 5.0})
-    monkeypatch.setattr(updater.taifex, "fetch_tx_quote", lambda: {"tx_price": 23010.0, "tx_chg": 40.0})
-    monkeypatch.setattr(updater.taifex, "fetch_retail_ratios", lambda: {"fut_inst_net": 600, "retail_ls_mtx": -0.2, "retail_ls_tmf": -0.1})
+    monkeypatch.setattr(updater.twse, "fetch_margin", lambda date=None: {"margin_balance": 1000.0, "margin_chg": 10.0, "short_balance": 200.0, "short_chg": 5.0})
+    monkeypatch.setattr(updater.taifex, "fetch_chips_for_date", lambda date=None: {
+        "tx_price": 23010.0, "tx_chg": 40.0, "fut_inst_net": 600,
+        "retail_ls_mtx": -0.2, "retail_ls_tmf": -0.1, "tx_foreign_oi": -76502, "retail_oi_mtx": -600,
+    })
 
     monkeypatch.setattr(updater.taifex, "fetch_tx_history", lambda *a, **k: [])
 

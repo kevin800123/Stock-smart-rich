@@ -13,6 +13,9 @@ import httpx
 
 OPENAPI = "https://openapi.twse.com.tw/v1"
 BFI82U_URL = "https://www.twse.com.tw/rwd/zh/fund/BFI82U"
+# 直連（RWD）端點：當日盤後（約 14:00 後）即可取得，openapi 鏡像則常延遲到晚間/隔日
+FMTQIK_RWD = "https://www.twse.com.tw/rwd/zh/afterTrading/FMTQIK"
+MARGIN_RWD = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
 NET_UNIT = 1e8  # 元 → 億
 
 
@@ -49,6 +52,48 @@ def _roc_to_iso(roc) -> str | None:
     if len(s) < 7:
         return None
     return f"{int(s[:3]) + 1911:04d}-{s[3:5]}-{s[5:7]}"
+
+
+def _rwd_row_getter(fields: list, row: list):
+    idx = {name: i for i, name in enumerate(fields or [])}
+
+    def g(name):
+        i = idx.get(name)
+        return row[i] if i is not None and i < len(row) else None
+
+    return g
+
+
+def parse_taiex_rwd(payload: dict) -> dict:
+    """直連 FMTQIK（{fields, data}）→ 取最新一列的加權指數、漲跌點數、資料日期。"""
+    data = payload.get("data") or []
+    if not data:
+        return {"taiex": None, "taiex_chg": None, "date": None}
+    g = _rwd_row_getter(payload.get("fields"), data[-1])
+    return {
+        "taiex": _f(g("發行量加權股價指數")),
+        "taiex_chg": _f(g("漲跌點數")),
+        "date": _roc_to_iso(g("日期")),
+    }
+
+
+def parse_margin_rwd(payload: dict) -> dict:
+    """直連 MI_MARGN（selectType=MS）信用交易統計表 → 大盤融資/融券餘額（張）與日增減。"""
+    tables = payload.get("tables") or []
+    table = tables[0] if tables else {}
+    fields = table.get("fields") or []
+    res = {"margin_balance": None, "margin_chg": None, "short_balance": None, "short_chg": None}
+    for row in table.get("data") or []:
+        item = str(row[0]) if row else ""
+        g = _rwd_row_getter(fields, row)
+        today, prev = _f(g("今日餘額")), _f(g("前日餘額"))
+        bal = round(today) if today is not None else None
+        chg = round(today - prev) if (today is not None and prev is not None) else None
+        if "融資" in item and "單位" in item:
+            res["margin_balance"], res["margin_chg"] = bal, chg
+        elif "融券" in item and "單位" in item:
+            res["short_balance"], res["short_chg"] = bal, chg
+    return res
 
 
 def parse_institutional(payload: dict) -> dict:
@@ -113,11 +158,32 @@ def parse_valuation(records: list) -> list[dict]:
 # ---- 網路包裝 ----
 
 def fetch_taiex() -> dict:
-    return parse_taiex(_get_openapi("/exchangeReport/FMTQIK"))
+    """直連 FMTQIK 取最新加權指數（當日盤後即有；回傳含資料日期作為全列錨點）。"""
+    for back in (0, 35):  # 跨月初容錯：當月無資料就回看上一個月
+        day = datetime.date.today() - datetime.timedelta(days=back)
+        try:
+            j = httpx.get(FMTQIK_RWD, params={"date": day.strftime("%Y%m%d"), "response": "json"},
+                          timeout=20, follow_redirects=True).json()
+            out = parse_taiex_rwd(j)
+            if out["taiex"] is not None:
+                return out
+        except Exception:  # noqa: BLE001 — 試下一個月份
+            pass
+    return {"taiex": None, "taiex_chg": None, "date": None}
 
 
-def fetch_margin() -> dict:
-    return parse_margin(_get_openapi("/exchangeReport/MI_MARGN"))
+def fetch_margin(date: datetime.date | None = None) -> dict:
+    """直連 MI_MARGN 取指定日（預設今天）大盤融資融券（張）。"""
+    day = date or datetime.date.today()
+    try:
+        j = httpx.get(MARGIN_RWD,
+                      params={"date": day.strftime("%Y%m%d"), "selectType": "MS", "response": "json"},
+                      timeout=20, follow_redirects=True).json()
+        if j.get("stat") == "OK" and j.get("tables"):
+            return parse_margin_rwd(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"margin_balance": None, "margin_chg": None, "short_balance": None, "short_chg": None}
 
 
 def fetch_valuation() -> list[dict]:

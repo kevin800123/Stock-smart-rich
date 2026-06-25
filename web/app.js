@@ -131,6 +131,8 @@ async function saveSettings() {
 
 // ========== 總覽：指標卡 ==========
 const pctOf = (val, chg) => (val != null && chg != null && (val - chg) ? chg / (val - chg) * 100 : null);
+// 由「現值 + 漲跌%」回推漲跌點數（國際指數/VIX 只回傳%，據此換算點數顯示）
+const chgPts = (val, pct) => (val != null && pct != null && (100 + pct) !== 0) ? val * pct / (100 + pct) : null;
 function pctTag(pct) { return pct == null ? "" : ` (${pct > 0 ? "+" : ""}${fmt(pct, 2)}%)`; }
 // 日對日漲跌與百分比（同號才給 %，避免比率/部位翻號時百分比失真）
 function dod(cur, prev) {
@@ -186,14 +188,14 @@ function renderCards(m, prev = {}) {
     oiCard("散戶小台淨未平倉", m.retail_oi_mtx, prev.retail_oi_mtx),
     card("小台散戶多空比", ls(m.retail_ls_mtx), lsm.chg, lsm.pct),
     card("微台散戶多空比", ls(m.retail_ls_tmf), lst.chg, lst.pct),
-    card("VIX 恐慌指數", fmt(m.vix), undefined, m.vix_chg),
+    card("VIX 恐慌指數", fmt(m.vix), chgPts(m.vix, m.vix_chg), m.vix_chg),
   ].join("");
   $("cards-intl").innerHTML = [
-    card("費城半導體", fmt(m.sox), undefined, m.sox_chg),
-    card("日經225", fmt(m.n225), undefined, m.n225_chg),
-    card("韓股KOSPI", fmt(m.kospi), undefined, m.kospi_chg),
-    card("黃金", fmt(m.gold), undefined, m.gold_chg),
-    card("比特幣", fmt(m.btc), undefined, m.btc_chg),
+    card("費城半導體", fmt(m.sox), chgPts(m.sox, m.sox_chg), m.sox_chg),
+    card("日經225", fmt(m.n225), chgPts(m.n225, m.n225_chg), m.n225_chg),
+    card("韓股KOSPI", fmt(m.kospi), chgPts(m.kospi, m.kospi_chg), m.kospi_chg),
+    card("黃金", fmt(m.gold), chgPts(m.gold, m.gold_chg), m.gold_chg),
+    card("比特幣", fmt(m.btc), chgPts(m.btc, m.btc_chg), m.btc_chg),
   ].join("");
 }
 
@@ -216,6 +218,7 @@ async function loadDashboard() {
   renderCards(d.latest, prev);
   renderStale(d);
   if (d.latest && d.latest.updated_at) $("last-updated").textContent = "更新：" + d.latest.updated_at.replace("T", " ").slice(0, 19);
+  return d;
 }
 
 async function loadIndexChart() {
@@ -242,19 +245,25 @@ async function loadCsvSummary(refresh) {
   catch (e) { box.textContent = "AI 分析失敗：" + e.message; }
 }
 
-// ========== 一鍵更新 ==========
-async function runUpdate() {
-  const btn = $("btn-update"); btn.disabled = true; btn.textContent = "更新中…";
-  const bar = $("update-status"); bar.classList.remove("hidden"); bar.textContent = "正在抓取 TWSE / TAIFEX / 國際指數…";
+// ========== 自動更新（無按鍵；開頁時若資料非當日即自動抓一次） ==========
+let autoUpdating = false;
+async function autoUpdate() {
+  if (autoUpdating) return;
+  autoUpdating = true;
+  const bar = $("update-status"); bar.classList.remove("hidden"); bar.className = "status-bar";
+  bar.textContent = "🔄 自動更新中…（抓取 TWSE / TAIFEX / 國際指數，約 20–30 秒）";
+  $("last-updated").textContent = "🔄 自動更新中…";
   try {
     const res = await (await fetch("/api/update/run", { method: "POST" })).json();
-    const ok = (res.success || []).join("、");
-    const fail = (res.failed || []).map((f) => `${f.name}(${f.error})`).join("；");
-    bar.innerHTML = `✅ 成功：${ok || "無"}` + (fail ? `　❌ 失敗：${fail}` : "");
+    const fail = (res.failed || []).map((f) => f.name).join("、");
+    bar.innerHTML = fail ? `已自動更新（部分來源未取得：${fail}）` : "✅ 已自動更新";
     bar.className = "status-bar " + (fail ? "warn" : "ok");
     await loadDashboard(); await loadIndexChart();
-  } catch (e) { bar.textContent = "更新失敗：" + e.message; bar.className = "status-bar err"; }
-  finally { btn.disabled = false; btn.textContent = "⟳ 一鍵更新"; }
+    setTimeout(() => bar.classList.add("hidden"), 5000);
+  } catch (e) {
+    bar.textContent = "自動更新失敗：" + e.message; bar.className = "status-bar err";
+    await loadDashboard();
+  } finally { autoUpdating = false; }
 }
 
 // ========== 選股清單 ==========
@@ -400,7 +409,6 @@ async function importLatest() {
 
 // ========== 事件 ==========
 document.querySelectorAll(".nav").forEach((n) => n.addEventListener("click", () => showView(n.dataset.view)));
-$("btn-update").addEventListener("click", runUpdate);
 $("csv").addEventListener("change", (e) => { if (e.target.files[0]) uploadCsv(e.target.files[0]); });
 $("btn-latest").addEventListener("click", importLatest);
 $("date-select").addEventListener("change", (e) => loadDaily(e.target.value));
@@ -442,7 +450,11 @@ document.addEventListener("click", (e) => {
 window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); });
 
 // ========== 初始載入 ==========
-loadDashboard();
-loadIndexChart();
-loadDates();
-loadWeekly();
+(async () => {
+  const d = await loadDashboard();
+  loadIndexChart();
+  loadDates();
+  loadWeekly();
+  // 自動更新：無資料、或資料非當日（平日尚未更新到最新交易日）時，自動抓一次
+  if (!d || !d.latest || !d.latest.date || d.data_stale) autoUpdate();
+})();
