@@ -191,20 +191,21 @@ def fetch_valuation() -> list[dict]:
 
 
 def fetch_institutional(date: datetime.date | None = None) -> dict:
-    """查最近一個有資料的交易日的三大法人買賣超（往前找最多 10 天）。"""
+    """查「指定日」（預設今天）的三大法人買賣超（單位：億）。
+
+    僅查該日，不回退到其他交易日：該日尚未公布就回傳 None，避免把他日資料誤標成當日
+    （日期錯置會造成「今日＝昨日」的假象）。缺的日期由 updater 的近期回補在資料公布後補正。
+    """
     day = date or datetime.date.today()
-    for _ in range(10):
-        ds = day.strftime("%Y%m%d")
-        try:
-            j = httpx.get(
-                BFI82U_URL,
-                params={"response": "json", "dayDate": ds, "type": "day"},
-                timeout=20,
-                follow_redirects=True,
-            ).json()
-            if j.get("stat") == "OK" and j.get("data"):
-                return parse_institutional(j)
-        except Exception:  # noqa: BLE001 — 試下一個交易日
-            pass
-        day = day - datetime.timedelta(days=1)
+    try:
+        j = httpx.get(
+            BFI82U_URL,
+            params={"response": "json", "dayDate": day.strftime("%Y%m%d"), "type": "day"},
+            timeout=20,
+            follow_redirects=True,
+        ).json()
+        if j.get("stat") == "OK" and j.get("data"):
+            return parse_institutional(j)
+    except Exception:  # noqa: BLE001
+        pass
     return {"inst_foreign": None, "inst_trust": None, "inst_dealer": None}
