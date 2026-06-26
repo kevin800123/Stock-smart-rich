@@ -87,7 +87,26 @@ function candlestickOption(data, startPct, showW, pct) {
     };
   }
   return {
-    tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
+    tooltip: {
+      trigger: "axis", axisPointer: { type: "cross" },
+      formatter: (ps) => {
+        if (!ps || !ps.length) return "";
+        let html = ps[0].axisValue;
+        ps.forEach((p) => {
+          const m = p.marker || "";
+          if (p.seriesType === "candlestick") {
+            const d = p.data, n = d.length;
+            const o = d[n - 4], c = d[n - 3], l = d[n - 2], h = d[n - 1];  // [(idx,)open,close,low,high]
+            html += `<br/>${m}K線　開 ${fmt(o, 2)}　收 ${fmt(c, 2)}　低 ${fmt(l, 2)}　高 ${fmt(h, 2)}`;
+          } else if (p.seriesName === "量") {
+            if (p.value != null) html += `<br/>${m}量 ${fmt(p.value, 0)}`;
+          } else if (p.value != null) {
+            html += `<br/>${m}${p.seriesName} ${fmt(p.value, 2)}`;
+          }
+        });
+        return html;
+      },
+    },
     legend: { data: ["K線", ...MA_DEFS.map((m) => "MA" + m.n)], textStyle: { color: "#ccc" } },
     grid: [{ left: 60, right: 20, top: 30, height: "60%" }, { left: 60, right: 20, top: "76%", height: "15%" }],
     xAxis: [{ type: "category", data: data.dates, axisLabel: { color: "#999" } }, { type: "category", data: data.dates, gridIndex: 1, axisLabel: { show: false } }],
@@ -165,22 +184,33 @@ function flowCard(label, v, prev, unit = "") {
   const sub = chg == null ? "" : `<div class="card-chg ${chgClass(chg)}">較昨 ${chg > 0 ? "+" : ""}${fmt(chg)}${unit}</div>`;
   return `<div class="card"><div class="card-label">${label}</div><div class="card-val ${chgClass(v)}">${fmt(v)}${unit}</div>${sub}</div>`;
 }
-function renderCards(m, prev = {}) {
-  if (!m || !m.date) { $("cards-tw").innerHTML = '<div class="muted">尚無大盤資料，請按「一鍵更新」。</div>'; $("cards-fut").innerHTML = ""; $("cards-intl").innerHTML = ""; $("data-date").textContent = ""; return; }
+// 餘額卡（融資/融券）：當日尚未公布（晚間才出）時，退而顯示最近一筆有資料的交易日，並標註日期
+function balanceCard(label, srcRow, curDate, balKey, chgKey) {
+  if (!srcRow || srcRow[balKey] === null || srcRow[balKey] === undefined) {
+    return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+  }
+  const stale = srcRow.date && srcRow.date !== curDate;
+  const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
+  return card(lbl, fmt(srcRow[balKey], 0), srcRow[chgKey], pctOf(srcRow[balKey], srcRow[chgKey]));
+}
+function renderCards(m, prev = {}, hist = []) {
+  if (!m || !m.date) { $("cards-tw").innerHTML = '<div class="muted">尚無大盤資料。</div>'; $("cards-fut").innerHTML = ""; $("cards-intl").innerHTML = ""; $("data-date").textContent = ""; return; }
   $("data-date").textContent = "資料日期：" + m.date;
   const ls = (v) => (v === null || v === undefined ? "—" : (v > 0 ? "散戶偏多 " : v < 0 ? "散戶偏空 " : "") + fmt(v, 3));
   const sum3 = (r) => [r.inst_foreign, r.inst_trust, r.inst_dealer].every((x) => x != null)
     ? r.inst_foreign + r.inst_trust + r.inst_dealer : null;
   const lsm = dod(m.retail_ls_mtx, prev.retail_ls_mtx);
   const lst = dod(m.retail_ls_tmf, prev.retail_ls_tmf);
+  // 融資/融券：當日有就用當日，否則退到最近一筆有資料的交易日（晚間才公布的容錯）
+  const marginRow = [...hist].reverse().find((r) => r && r.margin_balance != null) || m;
   $("cards-tw").innerHTML = [
     card("加權指數", fmt(m.taiex), m.taiex_chg, pctOf(m.taiex, m.taiex_chg)),
     flowCard("外資買賣超", m.inst_foreign, prev.inst_foreign, " 億"),
     flowCard("投信買賣超", m.inst_trust, prev.inst_trust, " 億"),
     flowCard("自營買賣超", m.inst_dealer, prev.inst_dealer, " 億"),
     flowCard("三大法人合計", sum3(m), sum3(prev), " 億"),
-    card("融資餘額(張)", fmt(m.margin_balance, 0), m.margin_chg, pctOf(m.margin_balance, m.margin_chg)),
-    card("融券餘額(張)", fmt(m.short_balance, 0), m.short_chg, pctOf(m.short_balance, m.short_chg)),
+    balanceCard("融資餘額(張)", marginRow, m.date, "margin_balance", "margin_chg"),
+    balanceCard("融券餘額(張)", marginRow, m.date, "short_balance", "short_chg"),
   ].join("");
   $("cards-fut").innerHTML = [
     card("台指期", fmt(m.tx_price), m.tx_chg, pctOf(m.tx_price, m.tx_chg)),
@@ -215,7 +245,7 @@ async function loadDashboard() {
   const d = await getJSON("/api/dashboard");
   const hist = d.history || [];
   const prev = hist.length >= 2 ? hist[hist.length - 2] : {};
-  renderCards(d.latest, prev);
+  renderCards(d.latest, prev, hist);
   renderStale(d);
   if (d.latest && d.latest.updated_at) $("last-updated").textContent = "更新：" + d.latest.updated_at.replace("T", " ").slice(0, 19);
   return d;
