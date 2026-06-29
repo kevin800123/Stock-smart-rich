@@ -21,11 +21,18 @@ def _run(prompt: str, api_key: str) -> dict:
         return {"enabled": False, "text": f"（AI 摘要失敗：{e}）"}
 
 
-def summarize_market(market_row: dict, api_key: str) -> dict:
+def summarize_market(data: dict, api_key: str) -> dict:
+    """大盤盤後解讀。data 可為單列，或 {latest, trend(近數日), sectors(領漲/領跌)}。"""
     prompt = (
-        "你是台股分析師，依以下大盤數據用繁體中文三句話講盤勢與法人動向，"
-        "提到加權指數、三大法人、散戶多空比若有的話：\n"
-        + json.dumps(market_row, ensure_ascii=False)
+        "你是台股資深籌碼／期貨分析師。根據下方 JSON（latest=當日數據、trend=近數日趨勢、"
+        "sectors=當日類股領漲/領跌），用繁體中文寫一段精煉、專業的盤後解讀：\n"
+        "1. 一定要引用具體數字（點數／億／口／比值／%），不要空泛形容詞與免責套話。\n"
+        "2. 依序涵蓋：①大盤指數與當日強弱 ②三大法人現貨（外資/投信/自營，並點出近數日是連續買或賣的趨勢）"
+        "③期貨籌碼（外資台指淨未平倉是淨多或淨空、散戶多空比，研判主力與散戶方向是否背離）"
+        "④融資增減與 VIX 所反映的情緒 ⑤族群輪動（具體點名領漲與領跌類股及其%）。\n"
+        "3. 收尾用一句『盤勢傾向：偏多／偏空／中性』＋一句數據支撐的理由。\n"
+        "4. 全文約 5～7 句、條理清楚，可用分號分段；最後標註『（數據解讀，非投資建議）』。\n\n"
+        + json.dumps(data, ensure_ascii=False)
     )
     return _run(prompt, api_key)
 

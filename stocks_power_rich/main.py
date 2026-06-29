@@ -283,15 +283,28 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     @app.get("/api/market/summary")
     def market_summary(refresh: int = 0):
         c = conn()
-        row = c.execute("SELECT * FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
-        if not row:
+        rows = [dict(r) for r in c.execute(
+            "SELECT * FROM market_daily ORDER BY date DESC LIMIT 10").fetchall()]
+        if not rows:
             return gemini.summarize_market({}, cfg.gemini_api_key)
-        m = dict(row)
+        m = rows[0]
         key = f"market:{m.get('date')}:{m.get('updated_at')}"
         cached = get_ai_cache(c, key)
         if cached and not refresh:
             return cached
-        result = gemini.summarize_market(m, cfg.gemini_api_key)
+        hist = list(reversed(rows))  # 由舊到新
+        keys = [("inst_foreign", "外資買賣超(億)"), ("inst_trust", "投信買賣超(億)"),
+                ("inst_dealer", "自營買賣超(億)"), ("tx_foreign_oi", "外資台指淨未平倉(口)"),
+                ("retail_ls_mtx", "小台散戶多空比"), ("margin_balance", "融資餘額(張)"),
+                ("taiex", "加權指數")]
+        trend = {"日期": [r.get("date") for r in hist]}
+        trend.update({label: [r.get(k) for r in hist] for k, label in keys})
+        secs = [s for s in _sectors_for(c, m["date"]) if s.get("chg_pct") is not None]
+        secs.sort(key=lambda s: -s["chg_pct"])
+        sectors = {"領漲": [[s["name"], s["chg_pct"]] for s in secs[:5]],
+                   "領跌": [[s["name"], s["chg_pct"]] for s in secs[-5:][::-1]]}
+        payload = {"latest": m, "trend": trend, "sectors": sectors}
+        result = gemini.summarize_market(payload, cfg.gemini_api_key)
         if result.get("enabled"):
             set_ai_cache(c, key, result)
         return result
