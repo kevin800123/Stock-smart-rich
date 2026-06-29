@@ -77,6 +77,26 @@ def test_parse_margin_rwd_summary_in_lots():
     assert out["short_chg"] == -2061     # 202,194 - 204,255
 
 
+def test_parse_sector_indices_filters_strips_and_signs():
+    payload = {"tables": [{
+        "fields": ["指數", "收盤指數", "漲跌(+/-)", "漲跌點數", "漲跌百分比(%)", "特殊處理註記"],
+        "data": [
+            ["發行量加權股價指數", "44,571.76", "<p style='color:green'>-</p>", "1,683.50", "-3.64", ""],  # 非類股→排除
+            ["半導體類指數", "1,516.72", "<p style='color:green'>-</p>", "53.55", "-3.41", ""],
+            ["航運類指數", "179.73", "<p style='color:red'>+</p>", "4.23", "2.30", ""],
+            ["其他類指數", "271.92", "<p style='color:green'>-</p>", "5.03", "1.82", ""],  # %未帶號→以顏色定負
+        ],
+    }]}
+    out = twse.parse_sector_indices(payload)
+    names = [s["name"] for s in out]
+    assert "發行量加權股價指數" not in names           # 只取產業「類指數」
+    assert names == ["半導體", "航運", "其他"]           # 去掉「類指數」後綴
+    by = {s["name"]: s for s in out}
+    assert by["半導體"]["chg_pct"] == -3.41 and by["半導體"]["close"] == 1516.72
+    assert by["航運"]["chg_pct"] == 2.30
+    assert by["其他"]["chg_pct"] == -1.82               # 綠色=跌，magnitude 轉負
+
+
 def test_parse_margin_sums_balances():
     records = [
         {"融資今日餘額": "10757", "融資前日餘額": "10291", "融券今日餘額": "91", "融券前日餘額": "87"},

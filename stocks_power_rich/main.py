@@ -86,6 +86,77 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     def run_update():
         return updater.run_update(conn(), cfg.intl_tickers)
 
+    @app.get("/api/sectors")
+    def sectors(date: str | None = None):
+        c = conn()
+        if not date:
+            last = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
+            date = last[0] if last else None
+        if not date:
+            return {"date": None, "sectors": []}
+        key = f"sectors:{date}"
+        cached = get_ai_cache(c, key)
+        if cached is not None:
+            return cached
+        try:
+            secs = twse.fetch_sector_indices(datetime.fromisoformat(date).date())
+        except Exception:  # noqa: BLE001
+            secs = []
+        secs.sort(key=lambda s: (s.get("chg_pct") is None, -(s.get("chg_pct") or 0)))  # 漲幅大→小
+        result = {"date": date, "sectors": secs}
+        if secs:
+            set_ai_cache(c, key, result)
+        return result
+
+    def _sectors_for(c, ds: str) -> list:
+        """取某日類股漲跌（先讀快取，否則直連並快取）。"""
+        cached = get_ai_cache(c, f"sectors:{ds}")
+        if cached is not None:
+            return cached.get("sectors", [])
+        try:
+            secs = twse.fetch_sector_indices(datetime.fromisoformat(ds).date())
+        except Exception:  # noqa: BLE001
+            secs = []
+        if secs:
+            set_ai_cache(c, f"sectors:{ds}", {"date": ds, "sectors": secs})
+        return secs
+
+    @app.get("/api/sectors/rotation")
+    def sectors_rotation(days: int = 5):
+        c = conn()
+        days = max(2, min(days, 15))
+        rows = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT ?", (days,)).fetchall()
+        dlist = [r[0] for r in reversed(rows)]
+        if not dlist:
+            return {"dates": [], "sectors": []}
+        ckey = f"rotation:{dlist[-1]}:{days}"
+        cached = get_ai_cache(c, ckey)
+        if cached is not None:
+            return cached
+        per = {ds: {s["name"]: s["chg_pct"] for s in _sectors_for(c, ds)} for ds in dlist}
+        names = sorted({n for d in per.values() for n in d})
+        sectors = [{
+            "name": n,
+            "series": [per[ds].get(n) for ds in dlist],
+            "sum": round(sum(per[ds].get(n) or 0 for ds in dlist), 2),
+        } for n in names]
+        sectors.sort(key=lambda s: -s["sum"])  # 近期累計強→弱
+        result = {"dates": dlist, "sectors": sectors}
+        if names:
+            set_ai_cache(c, ckey, result)
+        return result
+
+    @app.get("/api/sectors/picks")
+    def sectors_picks(date: str | None = None):
+        c = conn()
+        dates = get_snapshot_dates(c)
+        snap = date if date in dates else (dates[-1] if dates else None)
+        if not snap:
+            return {"date": None, "groups": []}
+        picks = analysis.filtered_picks(get_snapshot(c, snap))
+        sector_chg = {s["name"]: s["chg_pct"] for s in _sectors_for(c, snap)}
+        return {"date": snap, "groups": analysis.picks_by_sector(picks, sector_chg)}
+
     @app.post("/api/csv/upload")
     async def upload(file: UploadFile = File(...)):
         data = await file.read()

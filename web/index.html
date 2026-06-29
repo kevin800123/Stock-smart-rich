@@ -21,6 +21,7 @@
       <a class="nav active" data-view="overview"><span class="ico">📊</span><span class="lbl">總覽</span></a>
       <a class="nav" data-view="picks"><span class="ico">🎯</span><span class="lbl">選股清單</span></a>
       <a class="nav" data-view="stock"><span class="ico">🔍</span><span class="lbl">個股查詢</span></a>
+      <a class="nav" data-view="rotation"><span class="ico">🔄</span><span class="lbl">族群輪動</span></a>
       <a class="nav" data-view="weekly"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
       <a class="nav" data-view="settings"><span class="ico">⚙️</span><span class="lbl">設定</span></a>
     </nav>
@@ -34,6 +35,7 @@
         <div class="card-group"><div class="group-title">台股大盤</div><div id="cards-tw" class="cards"></div></div>
         <div class="card-group"><div class="group-title">期貨籌碼</div><div id="cards-fut" class="cards"></div></div>
         <div class="card-group"><div class="group-title">國際市場</div><div id="cards-intl" class="cards"></div></div>
+        <div class="card-group"><div class="group-title">當日漲跌族群 <span id="sectors-note" class="muted small"></span></div><div id="sectors" class="sectors"></div></div>
 
         <div class="chart-row">
           <div class="chart-side">
@@ -108,6 +110,15 @@
         </div>
         <div id="stock-profile" class="kline-profile"></div>
         <div id="stock-chart" class="chart-big"></div>
+      </section>
+
+      <!-- ===== 族群輪動 ===== -->
+      <section id="view-rotation" class="view">
+        <div class="pane-title">族群輪動　近 N 日類股漲跌%（依累計強弱排序，紅漲綠跌）<span id="rotation-note" class="muted small"></span></div>
+        <div id="rotation" class="table-wrap fill-half"></div>
+        <div class="pane-title" style="margin-top:10px">交叉選股　你的選股清單 × 當日族群<span id="cross-note" class="muted small"></span></div>
+        <div class="muted small">同一族群把命中個股聚在一起，依族群當日漲跌排序；點股號開 K 線。需先在「選股清單」載入當日 CSV。</div>
+        <div id="cross"></div>
       </section>
 
       <!-- ===== 跨週 ＋ AI ===== -->

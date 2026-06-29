@@ -60,6 +60,39 @@ def subindustry_counts(rows: list[dict]) -> list[dict]:
     return out
 
 
+# CSV 產業欄 → 官方類股名 的別名（少數命名差異；其餘去前綴後即相同）
+_SECTOR_ALIAS = {"化工": "化學", "航運業": "航運", "金融": "金融保險",
+                 "文化創意": "其他", "農業科技業": "其他"}
+
+
+def industry_to_sector(industry: str | None) -> str | None:
+    """CSV 產業欄（如「上市半導體」/「上櫃IC」）→ 官方類股名（「半導體」）。"""
+    if not industry:
+        return None
+    name = industry
+    for p in ("上市", "上櫃"):
+        if name.startswith(p):
+            name = name[len(p):]
+            break
+    return _SECTOR_ALIAS.get(name, name)
+
+
+def picks_by_sector(picks: list[dict], sector_chg: dict) -> list[dict]:
+    """把選股清單依官方類股分組，附該類股當日漲跌%，依漲跌%由強到弱排序。
+
+    sector_chg：{官方類股名: 當日漲跌%}。回傳 [{sector, chg_pct, count, stocks:[...]}]。
+    """
+    groups: dict[str, list[dict]] = {}
+    for p in picks:
+        sec = industry_to_sector(p.get("industry"))
+        if sec:
+            groups.setdefault(sec, []).append(p)
+    out = [{"sector": s, "chg_pct": sector_chg.get(s), "count": len(st), "stocks": st}
+           for s, st in groups.items()]
+    out.sort(key=lambda g: (g["chg_pct"] is None, -(g["chg_pct"] or 0)))
+    return out
+
+
 def weekly_comparison(this_rows: list[dict], last_rows: list[dict]) -> dict:
     """比較本週最新 vs 上週最新快照，標記每檔 新進榜/加速/持平/退榜 與集保大戶持股 Δ。"""
     last = {r["code"]: r for r in last_rows}

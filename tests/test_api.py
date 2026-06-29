@@ -49,6 +49,51 @@ def test_dashboard_includes_today_and_stale_flag(tmp_path, monkeypatch):
     assert body["data_stale"] is False  # 無資料時不標延遲
 
 
+def test_sectors_endpoint_sorted_by_change(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import twse
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-06-26", "taiex": 100.0})
+    monkeypatch.setattr(twse, "fetch_sector_indices", lambda date=None: [
+        {"name": "航運", "close": 1.0, "chg_pct": -1.0},
+        {"name": "半導體", "close": 1.0, "chg_pct": 2.0},
+        {"name": "金融保險", "close": 1.0, "chg_pct": 0.5},
+    ])
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/sectors").json()
+    assert r["date"] == "2026-06-26"  # 預設用最新大盤日期
+    assert [s["name"] for s in r["sectors"]] == ["半導體", "金融保險", "航運"]  # 漲幅大→小
+
+
+def test_sectors_picks_cross_groups_by_sector(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, insert_chip_snapshot
+    from stocks_power_rich.sources import twse
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    insert_chip_snapshot(c, "2026-06-26", [
+        {"code": "2330", "name": "台積電", "industry": "上市半導體", "sub_industry": "晶圓代工",
+         "w55": 1, "big_holder_ratio": 0.5, "rev_yoy": 10, "est_profit": 1, "lan_value": 80},
+        {"code": "3008", "name": "大立光", "industry": "上市光電", "sub_industry": "光學鏡片",
+         "w55": 1, "big_holder_ratio": 0.5, "rev_yoy": 10, "est_profit": 1, "lan_value": 60},
+    ])
+    monkeypatch.setattr(twse, "fetch_sector_indices", lambda date=None: [
+        {"name": "半導體", "close": 1.0, "chg_pct": -3.41},
+        {"name": "光電", "close": 1.0, "chg_pct": -7.37},
+    ])
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/sectors/picks").json()
+    assert r["date"] == "2026-06-26"
+    assert [g["sector"] for g in r["groups"]] == ["半導體", "光電"]  # 族群強→弱
+    assert r["groups"][0]["stocks"][0]["code"] == "2330"
+
+
 def test_kline_endpoint(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     import pandas as pd

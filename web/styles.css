@@ -71,6 +71,24 @@ body {
 .down { color: var(--down); }
 .flat { color: var(--muted); }
 
+/* ===== 當日漲跌族群 ===== */
+.sectors { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; }
+.sector { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--muted); border-radius: 6px; padding: 6px 9px; display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
+.sector .sec-name { color: #cfd6df; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sector .sec-chg { font-weight: 700; white-space: nowrap; }
+.sector.up { border-left-color: var(--up); }
+.sector.up .sec-chg { color: var(--up); }
+.sector.down { border-left-color: var(--down); }
+.sector.down .sec-chg { color: var(--down); }
+.sector.flat .sec-chg { color: var(--muted); }
+
+/* ===== 族群輪動 + 交叉選股 ===== */
+.cross-grp { border: 1px solid var(--border); border-left: 3px solid var(--muted); border-radius: 6px; padding: 8px 11px; margin-bottom: 6px; background: var(--card); }
+.cross-grp.up { border-left-color: var(--up); }
+.cross-grp.down { border-left-color: var(--down); }
+.cross-h { font-size: 14px; margin-bottom: 3px; }
+.cross-stocks { font-size: 13px; line-height: 1.95; }
+
 /* ===== K 線區 ===== */
 .chart-row { display: flex; gap: 14px; }
 .chart-side { flex: 0 0 110px; display: flex; flex-direction: column; gap: 8px; padding-top: 6px; }

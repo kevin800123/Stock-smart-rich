@@ -122,6 +122,7 @@ function showView(name) {
   document.querySelectorAll(".nav").forEach((n) => n.classList.toggle("active", n.dataset.view === name));
   if (name === "overview" && idxChart) idxChart.resize();
   if (name === "stock" && stockChart) stockChart.resize();
+  if (name === "rotation") { loadRotation(); loadCross(); }
   if (name === "settings") loadSettings();
 }
 
@@ -251,6 +252,61 @@ async function loadDashboard() {
   return d;
 }
 
+async function loadSectors() {
+  const el = $("sectors");
+  if (!el) return;
+  try {
+    const d = await getJSON("/api/sectors");
+    const note = $("sectors-note");
+    if (!d.sectors || !d.sectors.length) { el.innerHTML = '<div class="muted small">尚無類股資料</div>'; if (note) note.textContent = ""; return; }
+    if (note) {
+      const up = d.sectors.filter((s) => s.chg_pct > 0).length;
+      const down = d.sectors.filter((s) => s.chg_pct < 0).length;
+      note.textContent = `（${d.date}　紅漲 ${up}・綠跌 ${down}，依漲幅排序）`;
+    }
+    el.innerHTML = d.sectors.map((s) => {
+      const cls = chgClass(s.chg_pct);
+      const arrow = s.chg_pct > 0 ? "▲" : s.chg_pct < 0 ? "▼" : "";
+      const pct = s.chg_pct == null ? "—" : arrow + fmt(Math.abs(s.chg_pct), 2) + "%";
+      return `<div class="sector ${cls}"><span class="sec-name">${s.name}</span><span class="sec-chg">${pct}</span></div>`;
+    }).join("");
+  } catch (e) { el.innerHTML = '<div class="muted small">類股載入失敗</div>'; }
+}
+
+// ========== 族群輪動 + 交叉選股 ==========
+async function loadRotation() {
+  const el = $("rotation");
+  if (!el) return;
+  try {
+    const d = await getJSON("/api/sectors/rotation?days=5");
+    if (!d.sectors || !d.sectors.length) { el.innerHTML = '<div class="muted small">尚無類股資料</div>'; return; }
+    const note = $("rotation-note");
+    if (note && d.dates.length) note.textContent = `（${d.dates[0].slice(5)} ～ ${d.dates[d.dates.length - 1].slice(5)}）`;
+    const cell = (v) => v == null ? '<td class="muted" style="text-align:right">—</td>'
+      : `<td class="${chgClass(v)}" style="text-align:right">${v > 0 ? "+" : ""}${fmt(v, 2)}</td>`;
+    const head = "<tr><th>類股</th>" + d.dates.map((dt) => `<th style="text-align:right">${dt.slice(5)}</th>`).join("") + '<th style="text-align:right">累計</th></tr>';
+    const body = d.sectors.map((s) => `<tr><td>${s.name}</td>${s.series.map(cell).join("")}<td class="${chgClass(s.sum)}" style="text-align:right;font-weight:700">${s.sum > 0 ? "+" : ""}${fmt(s.sum, 2)}</td></tr>`).join("");
+    el.innerHTML = `<table>${head}${body}</table>`;
+  } catch (e) { el.innerHTML = '<div class="muted small">輪動載入失敗</div>'; }
+}
+async function loadCross() {
+  const el = $("cross");
+  if (!el) return;
+  const note = $("cross-note");
+  try {
+    const d = await getJSON("/api/sectors/picks");
+    if (!d.groups || !d.groups.length) { el.innerHTML = '<div class="muted small">尚無選股或族群資料（請先到「選股清單」載入當日 CSV）。</div>'; if (note) note.textContent = ""; return; }
+    if (note) note.textContent = `（選股日 ${d.date || ""}，共 ${d.groups.length} 族群）`;
+    el.innerHTML = d.groups.map((g) => {
+      const cls = chgClass(g.chg_pct);
+      const arrow = g.chg_pct > 0 ? "▲" : g.chg_pct < 0 ? "▼" : "";
+      const pct = g.chg_pct == null ? '<span class="muted">—</span>' : `<span class="${cls}">${arrow}${fmt(Math.abs(g.chg_pct), 2)}%</span>`;
+      const stocks = g.stocks.map((s) => stockLink(s.code, s.name)).join("　");
+      return `<div class="cross-grp ${cls}"><div class="cross-h"><b>${g.sector}</b>　${pct}　<span class="muted">· ${g.count} 檔</span></div><div class="cross-stocks">${stocks}</div></div>`;
+    }).join("");
+  } catch (e) { el.innerHTML = '<div class="muted small">交叉選股載入失敗</div>'; }
+}
+
 async function loadIndexChart() {
   if (!idxChart) idxChart = echarts.init($("idxchart"));
   idxChart.showLoading();
@@ -288,7 +344,7 @@ async function autoUpdate() {
     const fail = (res.failed || []).map((f) => f.name).join("、");
     bar.innerHTML = fail ? `已自動更新（部分來源未取得：${fail}）` : "✅ 已自動更新";
     bar.className = "status-bar " + (fail ? "warn" : "ok");
-    await loadDashboard(); await loadIndexChart();
+    await loadDashboard(); await loadIndexChart(); loadSectors();
     setTimeout(() => bar.classList.add("hidden"), 5000);
   } catch (e) {
     bar.textContent = "自動更新失敗：" + e.message; bar.className = "status-bar err";
@@ -483,6 +539,7 @@ window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockCh
 (async () => {
   const d = await loadDashboard();
   loadIndexChart();
+  loadSectors();
   loadDates();
   loadWeekly();
   // 自動更新：無資料、或資料非當日（平日尚未更新到最新交易日）時，自動抓一次

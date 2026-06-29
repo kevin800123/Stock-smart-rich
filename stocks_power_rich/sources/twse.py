@@ -16,6 +16,7 @@ BFI82U_URL = "https://www.twse.com.tw/rwd/zh/fund/BFI82U"
 # 直連（RWD）端點：當日盤後（約 14:00 後）即可取得，openapi 鏡像則常延遲到晚間/隔日
 FMTQIK_RWD = "https://www.twse.com.tw/rwd/zh/afterTrading/FMTQIK"
 MARGIN_RWD = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
+MI_INDEX_RWD = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"  # 各類股指數（族群當日漲跌）
 NET_UNIT = 1e8  # 元 → 億
 
 
@@ -96,6 +97,37 @@ def parse_margin_rwd(payload: dict) -> dict:
     return res
 
 
+def parse_sector_indices(payload: dict) -> list[dict]:
+    """MI_INDEX(type=IND) 價格指數表 → 各產業類股當日漲跌 [{name, close, chg_pct}]。
+
+    只取名稱以「類指數」結尾的產業族群（排除加權、台灣50 等大盤型指數），名稱去掉後綴。
+    漲跌方向以「漲跌(+/-)」欄顏色為準（綠跌紅漲），套用到百分比絕對值，兼容%帶號或未帶號。
+    """
+    tables = payload.get("tables") or []
+    table = tables[0] if tables else {}
+    fields = table.get("fields") or []
+    idx = {n: i for i, n in enumerate(fields)}
+    ni, ci, di, pi = idx.get("指數"), idx.get("收盤指數"), idx.get("漲跌(+/-)"), idx.get("漲跌百分比(%)")
+    out = []
+    for row in table.get("data") or []:
+        if not row or ni is None or ni >= len(row):
+            continue
+        name = str(row[ni] or "").strip()
+        if not name.endswith("類指數"):
+            continue
+        pct = _f(row[pi]) if pi is not None and pi < len(row) else None
+        if pct is not None:
+            dcell = str(row[di]) if di is not None and di < len(row) else ""
+            sign = -1 if "green" in dcell else (1 if "red" in dcell else (1 if pct >= 0 else -1))
+            pct = round(sign * abs(pct), 2)
+        out.append({
+            "name": name[:-3],
+            "close": _f(row[ci]) if ci is not None and ci < len(row) else None,
+            "chg_pct": pct,
+        })
+    return out
+
+
 def parse_institutional(payload: dict) -> dict:
     """BFI82U → 外資/投信/自營 買賣超淨額（單位：億元）。
 
@@ -170,6 +202,20 @@ def fetch_taiex() -> dict:
         except Exception:  # noqa: BLE001 — 試下一個月份
             pass
     return {"taiex": None, "taiex_chg": None, "date": None}
+
+
+def fetch_sector_indices(date: datetime.date | None = None) -> list[dict]:
+    """直連 MI_INDEX(type=IND) 取指定日（預設今天）各產業類股當日漲跌。"""
+    day = date or datetime.date.today()
+    try:
+        j = httpx.get(MI_INDEX_RWD,
+                      params={"date": day.strftime("%Y%m%d"), "type": "IND", "response": "json"},
+                      timeout=20, follow_redirects=True).json()
+        if j.get("stat") == "OK" and j.get("tables"):
+            return parse_sector_indices(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return []
 
 
 def fetch_margin(date: datetime.date | None = None) -> dict:
