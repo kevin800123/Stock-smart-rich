@@ -12,6 +12,7 @@ from . import analysis, csv_import, exporter, gemini, updater
 from .config import load_config
 from .sources import kline, taifex, twse
 from .db import (
+    add_watch,
     get_ai_cache,
     get_connection,
     get_setting,
@@ -19,6 +20,8 @@ from .db import (
     get_snapshot_dates,
     get_tx_history,
     init_db,
+    list_watch,
+    remove_watch,
     set_ai_cache,
     set_setting,
     upsert_tx_history,
@@ -145,6 +148,42 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         if names:
             set_ai_cache(c, ckey, result)
         return result
+
+    @app.get("/api/watchlist")
+    def get_watchlist():
+        c = conn()
+        wl = list_watch(c)
+        dates = get_snapshot_dates(c)
+        # 各快照日的選股榜（code→pick），用於進出榜與自進榜報酬
+        picks_by_date = {d: {p["code"]: p for p in analysis.filtered_picks(get_snapshot(c, d))}
+                         for d in dates}
+        latest = dates[-1] if dates else None
+        out = []
+        for w in wl:
+            code = w["code"]
+            on = [d for d in dates if code in picks_by_date[d]]
+            entry = on[0] if on else None
+            ec = picks_by_date[entry][code].get("close") if entry else None
+            lc = picks_by_date[latest][code].get("close") if (latest and code in picks_by_date.get(latest, {})) else None
+            ret = round((lc - ec) / ec * 100, 2) if (ec and lc) else None
+            nm = w["name"] or next((picks_by_date[d][code].get("name") for d in reversed(dates) if code in picks_by_date[d]), "")
+            out.append({**w, "name": nm, "in_latest": bool(latest and code in picks_by_date.get(latest, {})),
+                        "times": len(on), "entry_date": entry, "ret_pct": ret})
+        return {"stocks": out, "latest": latest}
+
+    @app.post("/api/watchlist")
+    def add_watchlist(payload: dict = Body(...)):
+        code = str(payload.get("code", "")).strip().upper()
+        if code and "." not in code:
+            code += ".TW"
+        if code:
+            add_watch(conn(), code, str(payload.get("name", "")).strip())
+        return get_watchlist()
+
+    @app.delete("/api/watchlist/{code}")
+    def del_watchlist(code: str):
+        remove_watch(conn(), code)
+        return get_watchlist()
 
     @app.get("/api/options-sentiment")
     def options_sentiment():

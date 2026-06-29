@@ -57,6 +57,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         "date TEXT PRIMARY KEY, open REAL, high REAL, low REAL, close REAL, volume REAL)"
     )
     conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS watchlist (code TEXT PRIMARY KEY, name TEXT, added_at TEXT)")
     # 既有資料庫補上後來新增的欄位
     mkt_existing = {r[1] for r in conn.execute("PRAGMA table_info(market_daily)").fetchall()}
     for col in MARKET_COLS:
@@ -137,6 +138,26 @@ def upsert_tx_history(conn: sqlite3.Connection, rows: list[dict]) -> None:
             "low=excluded.low, close=excluded.close, volume=excluded.volume",
             (r["date"], r.get("open"), r.get("high"), r.get("low"), r.get("close"), r.get("volume")),
         )
+    conn.commit()
+
+
+def list_watch(conn: sqlite3.Connection) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT code, name, added_at FROM watchlist ORDER BY added_at").fetchall()]
+
+
+def add_watch(conn: sqlite3.Connection, code: str, name: str = "") -> None:
+    from datetime import datetime
+
+    conn.execute(
+        "INSERT OR IGNORE INTO watchlist (code, name, added_at) VALUES (?,?,?)",
+        (code, name, datetime.now().isoformat()),
+    )
+    conn.commit()
+
+
+def remove_watch(conn: sqlite3.Connection, code: str) -> None:
+    conn.execute("DELETE FROM watchlist WHERE code=?", (code,))
     conn.commit()
 
 

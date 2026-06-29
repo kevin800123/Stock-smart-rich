@@ -126,6 +126,7 @@ function showView(name) {
   if (name === "overview") { idxChart && idxChart.resize(); chipChart && chipChart.resize(); }
   if (name === "stock") { stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); }
   if (name === "rotation") { loadRotation(); loadCross(); }
+  if (name === "watch") loadWatchlist();
   if (name === "settings") loadSettings();
 }
 
@@ -305,6 +306,29 @@ async function loadInstRanking() {
     buyEl.innerHTML = d.buy && d.buy.length ? d.buy.map(row).join("") : '<div class="muted small">—</div>';
     sellEl.innerHTML = d.sell && d.sell.length ? d.sell.map(row).join("") : '<div class="muted small">—</div>';
   } catch (e) { buyEl.innerHTML = '<div class="muted small">載入失敗</div>'; }
+}
+
+// ========== 自選股 + 進出榜追蹤 ==========
+async function loadWatchlist() {
+  const el = $("watch-table");
+  if (!el) return;
+  try {
+    const d = await getJSON("/api/watchlist");
+    if (!d.stocks || !d.stocks.length) { el.innerHTML = '<div class="muted small">尚無自選股，輸入股號加入。</div>'; return; }
+    const rows = d.stocks.map((s) => {
+      const onb = s.in_latest ? '<span class="status new">在榜</span>' : '<span class="status out">未在榜</span>';
+      const ret = s.ret_pct == null ? "—" : `<span class="${s.ret_pct > 0 ? "up" : s.ret_pct < 0 ? "down" : ""}">${s.ret_pct > 0 ? "+" : ""}${fmt(s.ret_pct, 2)}%</span>`;
+      return `<tr><td>${stockLink(s.code, s.name)}</td><td>${onb}</td><td style="text-align:right">${s.times}</td><td>${s.entry_date || "—"}</td><td style="text-align:right">${ret}</td><td><a href="#" class="watch-del" data-code="${s.code}" style="color:#e08585">移除</a></td></tr>`;
+    }).join("");
+    el.innerHTML = `<table><tr><th>股票</th><th>今日選股榜</th><th style="text-align:right">在榜次數</th><th>進榜日</th><th style="text-align:right">自進榜報酬</th><th></th></tr>${rows}</table>`;
+  } catch (e) { el.innerHTML = '<div class="muted small">載入失敗</div>'; }
+}
+async function addWatch() {
+  const v = ($("watch-input").value || "").trim();
+  if (!v) return;
+  $("watch-input").value = "";
+  try { await fetch("/api/watchlist", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code: v }) }); } catch (e) { /* ignore */ }
+  loadWatchlist();
 }
 
 // ========== 族群輪動 + 交叉選股 ==========
@@ -625,6 +649,13 @@ $("wave-pct").addEventListener("input", (e) => {
 });
 
 // 個股圖控制
+$("watch-add").addEventListener("click", addWatch);
+$("watch-input").addEventListener("keydown", (e) => { if (e.key === "Enter") addWatch(); });
+$("watch-table").addEventListener("click", async (e) => {
+  const a = e.target.closest(".watch-del"); if (!a) return; e.preventDefault();
+  try { await fetch(`/api/watchlist/${encodeURIComponent(a.dataset.code)}`, { method: "DELETE" }); } catch (er) { /* ignore */ }
+  loadWatchlist();
+});
 $("stock-go").addEventListener("click", () => loadStock($("stock-input").value));
 $("stock-input").addEventListener("keydown", (e) => { if (e.key === "Enter") loadStock($("stock-input").value); });
 document.querySelectorAll(".ktf").forEach((btn) => btn.addEventListener("click", () => {

@@ -94,6 +94,24 @@ def test_sectors_picks_cross_groups_by_sector(tmp_path, monkeypatch):
     assert r["groups"][0]["stocks"][0]["code"] == "2330"
 
 
+def test_watchlist_add_track_remove(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, insert_chip_snapshot
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    base = {"name": "台積電", "w55": 1, "big_holder_ratio": 0.5, "rev_yoy": 10, "est_profit": 1, "lan_value": 80}
+    insert_chip_snapshot(c, "2026-06-25", [{"code": "2330.TW", "close": 100, **base}])
+    insert_chip_snapshot(c, "2026-06-26", [{"code": "2330.TW", "close": 110, **base}])
+    app = create_app()
+    client = TestClient(app)
+    r = client.post("/api/watchlist", json={"code": "2330"}).json()
+    s = r["stocks"][0]
+    assert s["code"] == "2330.TW" and s["in_latest"] is True and s["times"] == 2
+    assert s["entry_date"] == "2026-06-25" and s["ret_pct"] == 10.0  # 100→110
+    assert client.delete("/api/watchlist/2330.TW").json()["stocks"] == []
+
+
 def test_options_sentiment_endpoint(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
