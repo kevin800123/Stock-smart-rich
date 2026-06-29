@@ -94,6 +94,25 @@ def test_sectors_picks_cross_groups_by_sector(tmp_path, monkeypatch):
     assert r["groups"][0]["stocks"][0]["code"] == "2330"
 
 
+def test_stock_chips_per_day_series(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import twse
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-06-25", "taiex": 1.0})
+    upsert_market_daily(c, {"date": "2026-06-26", "taiex": 1.0})
+    table = {"2330": {"foreign": 5000, "trust": 2000, "dealer": -1000, "total": 6000}}
+    monkeypatch.setattr(twse, "fetch_t86", lambda date=None: table)
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/stock/2330.TW/chips?days=10").json()
+    assert r["code"] == "2330"
+    assert r["dates"] == ["2026-06-25", "2026-06-26"]
+    assert r["foreign"] == [5000, 5000] and r["total"] == [6000, 6000]
+
+
 def test_kline_endpoint(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     import pandas as pd

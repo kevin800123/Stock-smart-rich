@@ -309,6 +309,25 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             set_ai_cache(c, key, result)
         return result
 
+    @app.get("/api/stock/{code}/chips")
+    def stock_chips(code: str, days: int = 10):
+        c = conn()
+        pure = code.split(".")[0]
+        days = max(2, min(days, 20))
+        rows = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT ?", (days,)).fetchall()
+        dlist = [r[0] for r in reversed(rows)]
+        series = {"foreign": [], "trust": [], "dealer": [], "total": []}
+        for ds in dlist:
+            t = get_ai_cache(c, f"t86:{ds}")
+            if t is None:
+                t = twse.fetch_t86(datetime.fromisoformat(ds).date())
+                if t:
+                    set_ai_cache(c, f"t86:{ds}", t)
+            rec = (t or {}).get(pure)
+            for k in series:
+                series[k].append(rec.get(k) if rec else None)
+        return {"code": pure, "dates": dlist, **series}
+
     @app.get("/api/stock/{code}/kline")
     def stock_kline(code: str, interval: str = "1d", period: str | None = None):
         if period is None:

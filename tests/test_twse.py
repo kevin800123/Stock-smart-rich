@@ -97,6 +97,16 @@ def test_parse_sector_indices_filters_strips_and_signs():
     assert by["其他"]["chg_pct"] == -1.82               # 綠色=跌，magnitude 轉負
 
 
+def test_parse_t86_per_stock_in_lots():
+    payload = {
+        "fields": ["證券代號", "證券名稱", "外陸資買賣超股數(不含外資自營商)", "投信買賣超股數",
+                   "自營商買賣超股數", "三大法人買賣超股數"],
+        "data": [["2330", "台積電", "5,000,000", "2,000,000", "-1,000,000", "6,000,000"]],
+    }
+    out = twse.parse_t86(payload)
+    assert out["2330"] == {"foreign": 5000, "trust": 2000, "dealer": -1000, "total": 6000}
+
+
 def test_parse_margin_sums_balances():
     records = [
         {"融資今日餘額": "10757", "融資前日餘額": "10291", "融券今日餘額": "91", "融券前日餘額": "87"},

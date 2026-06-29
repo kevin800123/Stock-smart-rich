@@ -18,6 +18,7 @@ let stockCode = "", stockInterval = "1d", stockWaves = false;
 let wavePct = 0.05;
 let lastIndexData = null, lastStockData = null;
 let chipChart = null, chipMetric = "inst", lastHistory = [];
+let stockChipsChart = null;
 const MA_DEFS = [
   { n: 5, color: "#5b8ff9" }, { n: 20, color: "#5ad8a6" },
   { n: 60, color: "#f6bd16" }, { n: 120, color: "#e8684a" },
@@ -122,7 +123,7 @@ function showView(name) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + name));
   document.querySelectorAll(".nav").forEach((n) => n.classList.toggle("active", n.dataset.view === name));
   if (name === "overview") { idxChart && idxChart.resize(); chipChart && chipChart.resize(); }
-  if (name === "stock" && stockChart) stockChart.resize();
+  if (name === "stock") { stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); }
   if (name === "rotation") { loadRotation(); loadCross(); }
   if (name === "settings") loadSettings();
 }
@@ -500,6 +501,31 @@ function renderProfile(p) {
   ];
   el.innerHTML = groups.map(([t, items]) => `<div class="pf-group"><span class="pf-title">${t}</span>${items.map(([k, val]) => `<span class="pf-item"><b>${k}</b> ${val}</span>`).join("")}</div>`).join("");
 }
+async function loadStockChips(code) {
+  const wrap = $("stock-chips-wrap");
+  if (!wrap) return;
+  wrap.classList.remove("hidden");
+  if (!stockChipsChart) stockChipsChart = echarts.init($("stock-chips"));
+  stockChipsChart.showLoading();
+  const note = $("stock-chips-note");
+  try {
+    const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/chips?days=10`);
+    stockChipsChart.hideLoading();
+    if (!d.total || !d.total.some((v) => v != null)) { stockChipsChart.clear(); if (note) note.textContent = "（查無此股三大法人資料；上櫃股暫不支援）"; return; }
+    const last = [...d.total].reverse().find((v) => v != null);
+    if (note) note.textContent = `（最新合計 ${last > 0 ? "+" : ""}${fmt(last, 0)} 張）`;
+    const bar = (name, arr, color) => ({ name, type: "bar", stack: "三大法人", data: arr, itemStyle: { color } });
+    stockChipsChart.setOption({
+      tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
+      legend: { textStyle: { color: "#ccc" }, top: 0 },
+      grid: { left: 58, right: 16, top: 26, bottom: 24 },
+      xAxis: { type: "category", data: d.dates.map((x) => x.slice(5)), axisLabel: { color: "#999" } },
+      yAxis: { type: "value", name: "張", axisLabel: { color: "#999" }, splitLine: { lineStyle: { color: "#262d38" } } },
+      series: [bar("外資", d.foreign, "#e0a23c"), bar("投信", d.trust, "#6cb6ff"), bar("自營", d.dealer, "#a07cff")],
+    }, true);
+  } catch (e) { stockChipsChart.hideLoading(); if (note) note.textContent = "（載入失敗）"; }
+}
+
 async function loadStock(code, name) {
   code = (code || "").trim().toUpperCase();
   if (!code) return;
@@ -508,6 +534,7 @@ async function loadStock(code, name) {
   if (!stockChart) stockChart = echarts.init($("stock-chart"));
   $("stock-note").textContent = "載入中…";
   try { renderProfile(await getJSON(`/api/stock/${encodeURIComponent(code)}/profile`)); } catch (e) { $("stock-profile").innerHTML = ""; }
+  loadStockChips(code);
   stockChart.showLoading();
   try {
     const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/kline?interval=${stockInterval}`);
@@ -584,7 +611,7 @@ document.querySelectorAll(".ctf").forEach((b) => b.addEventListener("click", () 
   document.querySelectorAll(".ctf").forEach((x) => x.classList.toggle("active", x === b));
   chipMetric = b.dataset.metric; loadChipTrend();
 }));
-window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); chipChart && chipChart.resize(); });
+window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); chipChart && chipChart.resize(); stockChipsChart && stockChipsChart.resize(); });
 
 // ========== 初始載入 ==========
 (async () => {

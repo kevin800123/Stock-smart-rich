@@ -17,6 +17,7 @@ BFI82U_URL = "https://www.twse.com.tw/rwd/zh/fund/BFI82U"
 FMTQIK_RWD = "https://www.twse.com.tw/rwd/zh/afterTrading/FMTQIK"
 MARGIN_RWD = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
 MI_INDEX_RWD = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"  # 各類股指數（族群當日漲跌）
+T86_URL = "https://www.twse.com.tw/rwd/zh/fund/T86"  # 個股三大法人買賣超
 NET_UNIT = 1e8  # 元 → 億
 
 
@@ -202,6 +203,40 @@ def fetch_taiex() -> dict:
         except Exception:  # noqa: BLE001 — 試下一個月份
             pass
     return {"taiex": None, "taiex_chg": None, "date": None}
+
+
+def parse_t86(payload: dict) -> dict:
+    """T86 個股三大法人買賣超 → {代號: {foreign, trust, dealer, total}}（單位：張，股數/1000）。"""
+    fields = payload.get("fields") or []
+    idx = {n: i for i, n in enumerate(fields)}
+    fi = idx.get("外陸資買賣超股數(不含外資自營商)")
+    ti = idx.get("投信買賣超股數")
+    di = idx.get("自營商買賣超股數")
+    ai = idx.get("三大法人買賣超股數")
+    out = {}
+    for r in payload.get("data") or []:
+        if not r:
+            continue
+
+        def lots(i):
+            v = _f(r[i]) if i is not None and i < len(r) else None
+            return round(v / 1000) if v is not None else None
+
+        out[str(r[0]).strip()] = {"foreign": lots(fi), "trust": lots(ti), "dealer": lots(di), "total": lots(ai)}
+    return out
+
+
+def fetch_t86(date: datetime.date | None = None) -> dict:
+    """直連 T86 取指定日（預設今天）全市場個股三大法人買賣超。"""
+    day = date or datetime.date.today()
+    try:
+        j = httpx.get(T86_URL, params={"date": day.strftime("%Y%m%d"), "selectType": "ALL", "response": "json"},
+                      timeout=25, follow_redirects=True).json()
+        if j.get("stat") == "OK" and j.get("data"):
+            return parse_t86(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
 
 
 def fetch_sector_indices(date: datetime.date | None = None) -> list[dict]:
