@@ -209,28 +209,48 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         return result
 
     @app.get("/api/inst-ranking")
-    def inst_ranking(who: str = "foreign", date: str | None = None, top: int = 20):
+    def inst_ranking(who: str = "foreign", date: str | None = None, top: int = 20, unit: str = "shares"):
         c = conn()
         if who not in ("foreign", "trust", "dealer", "total"):
             who = "foreign"
+        if unit not in ("shares", "value"):
+            unit = "shares"
         if not date:
             last = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
             date = last[0] if last else None
         if not date:
-            return {"date": None, "who": who, "buy": [], "sell": []}
+            return {"date": None, "who": who, "unit": unit, "buy": [], "sell": []}
         t = get_ai_cache(c, f"t86:{date}")
         if t is None:
             t = twse.fetch_t86(datetime.fromisoformat(date).date())
             if t:
                 set_ai_cache(c, f"t86:{date}", t)
+        prices = {}
+        if unit == "value":
+            prices = get_ai_cache(c, f"close:{date}")
+            if prices is None:
+                prices = twse.fetch_close_prices(datetime.fromisoformat(date).date())
+                if prices:
+                    set_ai_cache(c, f"close:{date}", prices)
         top = max(5, min(top, 50))
-        # 只取上市個股（4 位數字、排除 00 開頭的 ETF/受益證券）
-        items = [{"code": code, "name": v.get("name") or code, "net": v.get(who)}
-                 for code, v in (t or {}).items()
-                 if len(code) == 4 and code.isdigit() and not code.startswith("00") and v.get(who) is not None]
+        items = []
+        for code, v in (t or {}).items():
+            if not (len(code) == 4 and code.isdigit() and not code.startswith("00")):
+                continue  # 只取上市個股，排除 ETF/受益證券
+            lots = v.get(who)
+            if lots is None:
+                continue
+            if unit == "value":
+                close = (prices or {}).get(code)
+                if close is None:
+                    continue
+                net = round(lots * close / 1e5, 2)  # 張×元×1000 ÷1e8 = 億
+            else:
+                net = lots
+            items.append({"code": code, "name": v.get("name") or code, "net": net})
         buy = sorted(items, key=lambda x: -x["net"])[:top]
         sell = sorted(items, key=lambda x: x["net"])[:top]
-        return {"date": date, "who": who, "buy": buy, "sell": sell}
+        return {"date": date, "who": who, "unit": unit, "buy": buy, "sell": sell}
 
     @app.get("/api/sectors/picks")
     def sectors_picks(date: str | None = None):

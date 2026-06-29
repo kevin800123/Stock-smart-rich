@@ -151,6 +151,15 @@ def test_inst_ranking_sorts_and_filters_etf(tmp_path, monkeypatch):
     assert r["buy"][0]["code"] == "2317"   # 外資買超最大
     assert r["sell"][0]["code"] == "2330"  # 外資賣超最大
 
+    # 金額單位：張 × 收盤價 ÷ 1e5 = 億
+    monkeypatch.setattr(twse, "fetch_close_prices", lambda date=None: {"2330": 1000.0, "2317": 100.0})
+    rv = client.get("/api/inst-ranking?who=foreign&unit=value&top=5").json()
+    assert rv["unit"] == "value"
+    buy = {x["code"]: x["net"] for x in rv["buy"]}
+    assert buy["2317"] == round(8000 * 100.0 / 1e5, 2)   # 8.0 億
+    sell = {x["code"]: x["net"] for x in rv["sell"]}
+    assert sell["2330"] == round(-5000 * 1000.0 / 1e5, 2)  # -50.0 億
+
 
 def test_stock_custody_accumulates(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))

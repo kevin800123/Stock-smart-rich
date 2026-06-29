@@ -19,7 +19,7 @@ let wavePct = 0.05;
 let lastIndexData = null, lastStockData = null;
 let chipChart = null, chipMetric = "inst", lastHistory = [];
 let stockChipsChart = null, stockCustodyChart = null;
-let rankWho = "foreign";
+let rankWho = "foreign", rankUnit = "shares";
 const MA_DEFS = [
   { n: 5, color: "#5b8ff9" }, { n: 20, color: "#5ad8a6" },
   { n: 60, color: "#f6bd16" }, { n: 120, color: "#e8684a" },
@@ -300,9 +300,10 @@ async function loadInstRanking() {
   const buyEl = $("rank-buy"), sellEl = $("rank-sell");
   if (!buyEl) return;
   try {
-    const d = await getJSON(`/api/inst-ranking?who=${rankWho}&top=15`);
-    const note = $("rank-note"); if (note) note.textContent = d.date ? `（${d.date}，單位：張）` : "";
-    const row = (x) => `<div class="rank-row">${stockLink(x.code, x.name)}<span class="${x.net > 0 ? "up" : x.net < 0 ? "down" : ""}">${x.net > 0 ? "+" : ""}${fmt(x.net, 0)}</span></div>`;
+    const d = await getJSON(`/api/inst-ranking?who=${rankWho}&unit=${rankUnit}&top=15`);
+    const isVal = d.unit === "value";
+    const note = $("rank-note"); if (note) note.textContent = d.date ? `（${d.date}，單位：${isVal ? "億元" : "張"}）` : "";
+    const row = (x) => `<div class="rank-row">${stockLink(x.code, x.name)}<span class="${x.net > 0 ? "up" : x.net < 0 ? "down" : ""}">${x.net > 0 ? "+" : ""}${fmt(x.net, isVal ? 2 : 0)}${isVal ? " 億" : ""}</span></div>`;
     buyEl.innerHTML = d.buy && d.buy.length ? d.buy.map(row).join("") : '<div class="muted small">—</div>';
     sellEl.innerHTML = d.sell && d.sell.length ? d.sell.map(row).join("") : '<div class="muted small">—</div>';
   } catch (e) { buyEl.innerHTML = '<div class="muted small">載入失敗</div>'; }
@@ -702,6 +703,10 @@ document.querySelectorAll(".ctf").forEach((b) => b.addEventListener("click", () 
 document.querySelectorAll(".rkf").forEach((b) => b.addEventListener("click", () => {
   document.querySelectorAll(".rkf").forEach((x) => x.classList.toggle("active", x === b));
   rankWho = b.dataset.who; loadInstRanking();
+}));
+document.querySelectorAll(".rku").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll(".rku").forEach((x) => x.classList.toggle("active", x === b));
+  rankUnit = b.dataset.unit; loadInstRanking();
 }));
 window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); chipChart && chipChart.resize(); stockChipsChart && stockChipsChart.resize(); });
 

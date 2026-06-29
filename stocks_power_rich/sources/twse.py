@@ -205,6 +205,36 @@ def fetch_taiex() -> dict:
     return {"taiex": None, "taiex_chg": None, "date": None}
 
 
+def parse_close_prices(payload: dict) -> dict:
+    """MI_INDEX(type=ALLBUT0999) 個股表 → {代號: 收盤價}。"""
+    out = {}
+    for t in payload.get("tables") or []:
+        idx = {n: i for i, n in enumerate(t.get("fields") or [])}
+        ci, pi = idx.get("證券代號"), idx.get("收盤價")
+        if ci is None or pi is None:
+            continue
+        for r in t.get("data") or []:
+            if ci < len(r) and pi < len(r):
+                code = str(r[ci]).strip()
+                price = _f(r[pi])
+                if code and price is not None:
+                    out[code] = price
+    return out
+
+
+def fetch_close_prices(date: datetime.date | None = None) -> dict:
+    """直連 MI_INDEX(ALLBUT0999) 取指定日（預設今天）全市場個股收盤價。"""
+    day = date or datetime.date.today()
+    try:
+        j = httpx.get(MI_INDEX_RWD, params={"date": day.strftime("%Y%m%d"), "type": "ALLBUT0999", "response": "json"},
+                      timeout=25, follow_redirects=True).json()
+        if j.get("stat") == "OK" and j.get("tables"):
+            return parse_close_prices(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
 def parse_t86(payload: dict) -> dict:
     """T86 個股三大法人買賣超 → {代號: {foreign, trust, dealer, total}}（單位：張，股數/1000）。"""
     fields = payload.get("fields") or []

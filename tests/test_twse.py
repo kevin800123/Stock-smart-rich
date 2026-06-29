@@ -97,6 +97,15 @@ def test_parse_sector_indices_filters_strips_and_signs():
     assert by["其他"]["chg_pct"] == -1.82               # 綠色=跌，magnitude 轉負
 
 
+def test_parse_close_prices():
+    payload = {"tables": [
+        {"fields": ["指數", "收盤指數"], "data": [["加權", "1"]]},  # 非個股表→略過
+        {"fields": ["證券代號", "證券名稱", "收盤價"], "data": [["2330", "台積電", "1,100.00"], ["2317", "鴻海", "180.5"]]},
+    ]}
+    out = twse.parse_close_prices(payload)
+    assert out == {"2330": 1100.0, "2317": 180.5}
+
+
 def test_parse_t86_per_stock_in_lots():
     payload = {
         "fields": ["證券代號", "證券名稱", "外陸資買賣超股數(不含外資自營商)", "投信買賣超股數",
