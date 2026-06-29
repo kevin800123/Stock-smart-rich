@@ -312,13 +312,15 @@ async function loadCross() {
 // ========== 籌碼趨勢圖（用 dashboard 的近 60 日 history，純前端） ==========
 function chipTrendOption(hist, metric) {
   const dates = hist.map((r) => (r.date ? r.date.slice(5) : ""));
+  // 顯示實際資料點、斷點自動連線(不留假空白)、輕微平滑(不腦補誇大轉折)
+  const LP = { type: "line", smooth: 0.15, showSymbol: true, symbolSize: 5, connectNulls: true };
   const axisTaiex = { type: "value", scale: true, position: "right", axisLabel: { color: "#777", fontSize: 11 }, splitLine: { show: false } };
-  const taiexLine = { name: "加權", type: "line", yAxisIndex: 1, data: hist.map((r) => r.taiex), smooth: true, showSymbol: false, lineStyle: { width: 1, color: "#8a94a3", type: "dashed" }, itemStyle: { color: "#8a94a3" } };
+  const taiexLine = { ...LP, name: "加權", yAxisIndex: 1, symbolSize: 0, data: hist.map((r) => r.taiex), lineStyle: { width: 1, color: "#8a94a3", type: "dashed" }, itemStyle: { color: "#8a94a3" } };
   const base = {
     tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
     legend: { textStyle: { color: "#ccc" }, top: 0 },
     grid: { left: 64, right: 60, top: 30, bottom: 26 },
-    xAxis: { type: "category", data: dates, axisLabel: { color: "#999" } },
+    xAxis: { type: "category", data: dates, boundaryGap: false, axisLabel: { color: "#999" } },
   };
   const zeroMark = { silent: true, symbol: "none", data: [{ yAxis: 0 }], lineStyle: { color: "#555", type: "dashed" } };
   if (metric === "inst") {
@@ -328,13 +330,13 @@ function chipTrendOption(hist, metric) {
   }
   if (metric === "foreign_oi") {
     return { ...base, yAxis: [{ type: "value", name: "口", axisLabel: { color: "#999" } }, axisTaiex],
-      series: [{ name: "外資台指淨未平倉", type: "line", data: hist.map((r) => r.tx_foreign_oi), smooth: true, showSymbol: false, areaStyle: { opacity: 0.08 }, lineStyle: { color: "#e0a23c" }, itemStyle: { color: "#e0a23c" }, markLine: zeroMark }, taiexLine] };
+      series: [{ ...LP, name: "外資台指淨未平倉", data: hist.map((r) => r.tx_foreign_oi), areaStyle: { opacity: 0.08 }, lineStyle: { color: "#e0a23c" }, itemStyle: { color: "#e0a23c" }, markLine: zeroMark }, taiexLine] };
   }
   if (metric === "retail_ls") {
     return { ...base, yAxis: [{ type: "value", name: "多空比", axisLabel: { color: "#999" } }, axisTaiex],
       series: [
-        { name: "小台散戶多空比", type: "line", data: hist.map((r) => r.retail_ls_mtx), smooth: true, showSymbol: false, lineStyle: { color: "#e0a23c" }, itemStyle: { color: "#e0a23c" }, markLine: zeroMark },
-        { name: "微台散戶多空比", type: "line", data: hist.map((r) => r.retail_ls_tmf), smooth: true, showSymbol: false, lineStyle: { color: "#6cb6ff" }, itemStyle: { color: "#6cb6ff" } },
+        { ...LP, name: "小台散戶多空比", data: hist.map((r) => r.retail_ls_mtx), lineStyle: { color: "#e0a23c" }, itemStyle: { color: "#e0a23c" }, markLine: zeroMark },
+        { ...LP, name: "微台散戶多空比", data: hist.map((r) => r.retail_ls_tmf), lineStyle: { color: "#6cb6ff" }, itemStyle: { color: "#6cb6ff" } },
         taiexLine] };
   }
   // margin：融資（左軸）+ 融券（右軸，量級差很多）
@@ -342,8 +344,8 @@ function chipTrendOption(hist, metric) {
       { type: "value", name: "融資(張)", axisLabel: { color: "#999" } },
       { type: "value", name: "融券(張)", position: "right", axisLabel: { color: "#999" }, splitLine: { show: false } }],
     series: [
-      { name: "融資餘額", type: "line", data: hist.map((r) => r.margin_balance), smooth: true, showSymbol: false, lineStyle: { color: "#e04545" }, itemStyle: { color: "#e04545" } },
-      { name: "融券餘額", type: "line", yAxisIndex: 1, data: hist.map((r) => r.short_balance), smooth: true, showSymbol: false, lineStyle: { color: "#2ea043" }, itemStyle: { color: "#2ea043" } }] };
+      { ...LP, name: "融資餘額", data: hist.map((r) => r.margin_balance), lineStyle: { color: "#e04545" }, itemStyle: { color: "#e04545" } },
+      { ...LP, name: "融券餘額", yAxisIndex: 1, data: hist.map((r) => r.short_balance), lineStyle: { color: "#2ea043" }, itemStyle: { color: "#2ea043" } }] };
 }
 function loadChipTrend() {
   if (!$("chipchart")) return;

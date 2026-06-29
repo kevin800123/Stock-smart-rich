@@ -45,3 +45,17 @@ def test_refresh_recent_corrects_inst_and_fills_margin(tmp_path, monkeypatch):
     r = conn.execute("SELECT inst_foreign, margin_balance FROM market_daily WHERE date=?", (ds,)).fetchone()
     assert r[0] == -1431.89  # 三大法人被定稿值覆蓋校正
     assert r[1] == 9999.0    # 融資回補
+
+
+def test_backfill_chips_fills_recent_null_futures(tmp_path, monkeypatch):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    ds = (date.today() - timedelta(days=2)).isoformat()
+    upsert_market_daily(conn, {"date": ds, "taiex": 100.0})  # 期貨籌碼全空
+    monkeypatch.setattr(updater.taifex, "fetch_chips_for_date",
+                        lambda d=None: {"retail_ls_mtx": 0.3, "retail_ls_tmf": 0.4,
+                                        "tx_foreign_oi": -1000, "retail_oi_mtx": 500, "tx_price": 18000.0})
+    filled = updater._backfill_chips(conn)
+    assert ds in filled
+    r = conn.execute("SELECT retail_ls_mtx, tx_foreign_oi FROM market_daily WHERE date=?", (ds,)).fetchone()
+    assert r[0] == 0.3 and r[1] == -1000

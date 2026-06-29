@@ -42,6 +42,30 @@ def _refresh_recent(conn, days: int = 7) -> list:
     return healed
 
 
+def _backfill_chips(conn, days: int = 10, cap: int = 3) -> list:
+    """回補近 days 天內、期貨籌碼（多空比/未平倉）仍有缺的交易日。
+
+    期交所下載較慢（每日約 4 個檔），故限 cap 天；只補「多空比或外資台指未平倉為空」者。
+    """
+    cutoff = (_date.today() - timedelta(days=days)).isoformat()
+    pending = [r[0] for r in conn.execute(
+        "SELECT date FROM market_daily WHERE date >= ? "
+        "AND (retail_ls_mtx IS NULL OR tx_foreign_oi IS NULL) ORDER BY date DESC",
+        (cutoff,),
+    ).fetchall()][:cap]
+    filled = []
+    for ds in pending:
+        try:
+            chips = taifex.fetch_chips_for_date(_iso_to_date(ds))
+            patch = {k: v for k, v in chips.items() if v is not None}
+            if patch:
+                upsert_market_daily(conn, {"date": ds, **patch})
+                filled.append(ds)
+        except Exception:  # noqa: BLE001 — 單日回補失敗略過
+            pass
+    return filled
+
+
 def run_update(conn, intl_tickers: dict) -> dict:
     today = datetime.now().strftime("%Y-%m-%d")
     row = {"date": today, "updated_at": datetime.now().isoformat()}
@@ -89,6 +113,13 @@ def run_update(conn, intl_tickers: dict) -> dict:
             success.append("twse_refresh_recent")
     except Exception as e:  # noqa: BLE001
         failed.append({"source": "twse", "name": "refresh_recent", "error": str(e)})
+
+    # 回補近期缺的期貨籌碼（多空比/未平倉）
+    try:
+        if _backfill_chips(conn):
+            success.append("taifex_chips_backfill")
+    except Exception as e:  # noqa: BLE001
+        failed.append({"source": "taifex", "name": "chips_backfill", "error": str(e)})
 
     # 台指期歷史日K（期交所官方下載），刷新近期
     try:
