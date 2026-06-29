@@ -277,6 +277,23 @@ async function loadSectors() {
   } catch (e) { el.innerHTML = '<div class="muted small">類股載入失敗</div>'; }
 }
 
+// ========== 期權情緒・大額交易人 ==========
+async function loadOptionsSentiment() {
+  const el = $("cards-opt");
+  if (!el) return;
+  try {
+    const d = await getJSON("/api/options-sentiment");
+    const p = d.pcr || {}, l = d.large || {};
+    const note = $("opt-note"); if (note) note.textContent = (p.date || l.date) ? `（${p.date || l.date}）` : "";
+    el.innerHTML = [
+      card("P/C 未平倉比", fmt(p.pc_oi_ratio)),
+      card("P/C 成交量比", fmt(p.pc_vol_ratio)),
+      oiCard("前10大特定法人淨未平倉", l.top10_specific_net),
+      oiCard("前5大特定法人淨未平倉", l.top5_specific_net),
+    ].join("");
+  } catch (e) { el.innerHTML = '<div class="muted small">載入失敗</div>'; }
+}
+
 // ========== 法人買賣超排行 ==========
 async function loadInstRanking() {
   const buyEl = $("rank-buy"), sellEl = $("rank-sell");
@@ -637,6 +654,7 @@ window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockCh
   loadIndexChart();
   loadSectors();
   loadInstRanking();
+  loadOptionsSentiment();
   loadDates();
   loadWeekly();
   // 自動更新：無資料、或資料非當日（平日尚未更新到最新交易日）時，自動抓一次

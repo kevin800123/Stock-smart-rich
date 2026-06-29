@@ -146,6 +146,27 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             set_ai_cache(c, ckey, result)
         return result
 
+    @app.get("/api/options-sentiment")
+    def options_sentiment():
+        c = conn()
+        last = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
+        key = f"optsent:{last[0] if last else 'na'}"
+        cached = get_ai_cache(c, key)
+        if cached is not None:
+            return cached
+        try:
+            pcr = taifex.fetch_put_call_ratio()
+        except Exception:  # noqa: BLE001
+            pcr = {}
+        try:
+            large = taifex.fetch_large_traders()
+        except Exception:  # noqa: BLE001
+            large = {}
+        result = {"pcr": pcr, "large": large}
+        if pcr or large:
+            set_ai_cache(c, key, result)
+        return result
+
     @app.get("/api/inst-ranking")
     def inst_ranking(who: str = "foreign", date: str | None = None, top: int = 20):
         c = conn()

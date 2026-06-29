@@ -110,6 +110,31 @@ def test_parse_tx_quote_csv_near_month():
     assert out["tx_low"] == 45550.0
 
 
+def test_parse_put_call_ratio_picks_latest():
+    recs = [
+        {"Date": "20260625", "PutCallVolumeRatio%": "96.56", "PutCallOIRatio%": "114.57"},
+        {"Date": "20260626", "PutCallVolumeRatio%": "90.03", "PutCallOIRatio%": "128.74"},
+    ]
+    out = taifex.parse_put_call_ratio(recs)
+    assert out == {"date": "2026-06-26", "pc_oi_ratio": 128.74, "pc_vol_ratio": 90.03}
+
+
+def test_parse_large_traders_tx_specific_net():
+    recs = [
+        {"Date": "20260626", "ContractName": "臺股期貨(TX+MTX/4)", "SettlementMonth": "202607",
+         "TypeOfTraders": "1", "Top5Buy": "1", "Top5Sell": "1", "Top10Buy": "1", "Top10Sell": "1"},
+        {"Date": "20260626", "ContractName": "臺股期貨(TX+MTX/4)", "SettlementMonth": "999912",
+         "TypeOfTraders": "1", "Top5Buy": "59374", "Top5Sell": "58330", "Top10Buy": "67662", "Top10Sell": "79629"},
+        {"Date": "20260626", "ContractName": "臺股期貨(TX+MTX/4)", "SettlementMonth": "999912",
+         "TypeOfTraders": "0", "Top5Buy": "62970", "Top5Sell": "58330", "Top10Buy": "74260", "Top10Sell": "79629"},
+    ]
+    out = taifex.parse_large_traders(recs)
+    assert out["date"] == "2026-06-26"
+    assert out["top10_specific_net"] == -11967  # 67662 - 79629
+    assert out["top5_specific_net"] == 1044      # 59374 - 58330
+    assert out["top10_all_net"] == -5369         # 74260 - 79629
+
+
 def test_compute_retail_ratios():
     out = taifex.compute_retail_ratios(FUT, INST)
     assert out["fut_inst_net"] == 600          # 小台三大法人淨額

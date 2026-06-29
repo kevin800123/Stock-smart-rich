@@ -119,6 +119,57 @@ def compute_retail_ratios(fut_records: list, inst_records: list) -> dict:
 
 # ---- 網路包裝 ----
 
+Q_PCR = "/PutCallRatio"
+Q_LT = "/OpenInterestOfLargeTradersFutures"
+
+
+def _ymd(s) -> str | None:
+    s = "".join(ch for ch in str(s or "") if ch.isdigit())
+    return f"{s[:4]}-{s[4:6]}-{s[6:8]}" if len(s) >= 8 else None
+
+
+def parse_put_call_ratio(records: list) -> dict:
+    """選擇權 P/C ratio → 取最新一日的未平倉比與成交量比（賣權/買權，%）。"""
+    rows = [r for r in (records or []) if r.get("Date")]
+    if not rows:
+        return {}
+    r = max(rows, key=lambda x: x.get("Date"))
+    return {"date": _ymd(r.get("Date")), "pc_oi_ratio": _f(r.get("PutCallOIRatio%")),
+            "pc_vol_ratio": _f(r.get("PutCallVolumeRatio%"))}
+
+
+def parse_large_traders(records: list, contract_kw: str = "臺股期貨", month: str = "999912") -> dict:
+    """大額交易人未平倉 → 臺股期貨（所有契約 999912）前5/10大特定法人與全體淨未平倉（口）。"""
+    rows = [r for r in (records or [])
+            if contract_kw in (r.get("ContractName") or "") and r.get("SettlementMonth") == month]
+    if not rows:
+        return {}
+    spec = next((r for r in rows if str(r.get("TypeOfTraders")) == "1"), None)
+    allt = next((r for r in rows if str(r.get("TypeOfTraders")) == "0"), None)
+
+    def net(r, b, s):
+        if not r:
+            return None
+        bv, sv = _f(r.get(b)), _f(r.get(s))
+        return int(bv - sv) if (bv is not None and sv is not None) else None
+
+    return {
+        "date": _ymd(rows[0].get("Date")),
+        "top5_specific_net": net(spec, "Top5Buy", "Top5Sell"),
+        "top10_specific_net": net(spec, "Top10Buy", "Top10Sell"),
+        "top5_all_net": net(allt, "Top5Buy", "Top5Sell"),
+        "top10_all_net": net(allt, "Top10Buy", "Top10Sell"),
+    }
+
+
+def fetch_put_call_ratio() -> dict:
+    return parse_put_call_ratio(_get(Q_PCR))
+
+
+def fetch_large_traders() -> dict:
+    return parse_large_traders(_get(Q_LT))
+
+
 def fetch_tx_quote() -> dict:
     return parse_tx_price(_get(Q_FUT))
 

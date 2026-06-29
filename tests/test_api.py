@@ -94,6 +94,23 @@ def test_sectors_picks_cross_groups_by_sector(tmp_path, monkeypatch):
     assert r["groups"][0]["stocks"][0]["code"] == "2330"
 
 
+def test_options_sentiment_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import taifex
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-06-29", "taiex": 1.0})
+    monkeypatch.setattr(taifex, "fetch_put_call_ratio", lambda: {"date": "2026-06-26", "pc_oi_ratio": 128.74, "pc_vol_ratio": 90.03})
+    monkeypatch.setattr(taifex, "fetch_large_traders", lambda: {"date": "2026-06-26", "top10_specific_net": -11967, "top5_specific_net": 1044})
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/options-sentiment").json()
+    assert r["pcr"]["pc_oi_ratio"] == 128.74
+    assert r["large"]["top10_specific_net"] == -11967
+
+
 def test_inst_ranking_sorts_and_filters_etf(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
