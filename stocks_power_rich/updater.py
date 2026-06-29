@@ -5,8 +5,34 @@
 """
 from datetime import date as _date, datetime, timedelta
 
-from .db import upsert_market_daily, upsert_tx_history
-from .sources import intl, taifex, twse
+from .db import (
+    bulk_upsert_custody,
+    custody_week_exists,
+    latest_custody_week,
+    upsert_market_daily,
+    upsert_tx_history,
+)
+from .sources import intl, taifex, tdcc, twse
+
+
+def _accumulate_custody(conn) -> str | None:
+    """偵測到新的一週才抓 TDCC 全市場集保大戶比並批次入庫（趨勢逐週累積）。
+
+    若資料庫最近一週在 6 天內（同一週）即略過，連抓都免；跨到新一週才下載並 bulk 寫入。
+    """
+    last = latest_custody_week(conn)
+    if last:
+        try:
+            if (_date.today() - _date.fromisoformat(last)).days < 6:
+                return None
+        except (TypeError, ValueError):
+            pass
+    cur = tdcc.fetch_custody_distribution()
+    week, data = cur.get("week_date"), cur.get("data") or {}
+    if not week or not data or custody_week_exists(conn, week):
+        return None
+    bulk_upsert_custody(conn, week, data)
+    return week
 
 
 def _iso_to_date(s):
@@ -120,6 +146,14 @@ def run_update(conn, intl_tickers: dict) -> dict:
             success.append("taifex_chips_backfill")
     except Exception as e:  # noqa: BLE001
         failed.append({"source": "taifex", "name": "chips_backfill", "error": str(e)})
+
+    # 集保大戶比：偵測到新的一週才抓，全市場批次累積
+    try:
+        wk = _accumulate_custody(conn)
+        if wk:
+            success.append(f"tdcc_custody:{wk}")
+    except Exception as e:  # noqa: BLE001
+        failed.append({"source": "tdcc", "name": "custody", "error": str(e)})
 
     # 台指期歷史日K（期交所官方下載），刷新近期
     try:

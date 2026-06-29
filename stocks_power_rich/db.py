@@ -153,6 +153,28 @@ def upsert_custody(conn: sqlite3.Connection, week: str, code: str, rec: dict) ->
     conn.commit()
 
 
+def custody_week_exists(conn: sqlite3.Connection, week: str) -> bool:
+    return conn.execute("SELECT 1 FROM custody_dist WHERE week=? LIMIT 1", (week,)).fetchone() is not None
+
+
+def latest_custody_week(conn: sqlite3.Connection):
+    r = conn.execute("SELECT MAX(week) FROM custody_dist").fetchone()
+    return r[0] if r and r[0] else None
+
+
+def bulk_upsert_custody(conn: sqlite3.Connection, week: str, data: dict) -> int:
+    rows = [(week, code, v.get("big1000_pct"), v.get("big400_pct"), v.get("big_holders"))
+            for code, v in data.items()]
+    conn.executemany(
+        "INSERT INTO custody_dist (week, code, big1000_pct, big400_pct, big_holders) VALUES (?,?,?,?,?) "
+        "ON CONFLICT(week, code) DO UPDATE SET big1000_pct=excluded.big1000_pct, "
+        "big400_pct=excluded.big400_pct, big_holders=excluded.big_holders",
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
 def get_custody_trend(conn: sqlite3.Connection, code: str) -> list[dict]:
     return [dict(r) for r in conn.execute(
         "SELECT week, big1000_pct, big400_pct, big_holders FROM custody_dist WHERE code=? ORDER BY week",

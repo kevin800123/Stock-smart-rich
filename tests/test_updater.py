@@ -16,6 +16,7 @@ def test_run_update_collects_and_tolerates_failure(tmp_path, monkeypatch):
     })
 
     monkeypatch.setattr(updater.taifex, "fetch_tx_history", lambda *a, **k: [])
+    monkeypatch.setattr(updater.tdcc, "fetch_custody_distribution", lambda: {"week_date": None, "data": {}})
 
     def boom():
         raise RuntimeError("network down")
@@ -59,3 +60,18 @@ def test_backfill_chips_fills_recent_null_futures(tmp_path, monkeypatch):
     assert ds in filled
     r = conn.execute("SELECT retail_ls_mtx, tx_foreign_oi FROM market_daily WHERE date=?", (ds,)).fetchone()
     assert r[0] == 0.3 and r[1] == -1000
+
+
+def test_accumulate_custody_stores_new_week_then_skips(tmp_path, monkeypatch):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    wk = date.today().isoformat()
+    monkeypatch.setattr(updater.tdcc, "fetch_custody_distribution", lambda: {
+        "week_date": wk,
+        "data": {"2330": {"big1000_pct": 85.1, "big400_pct": 87.8, "big_holders": 1482},
+                 "2317": {"big1000_pct": 50.0, "big400_pct": 55.0, "big_holders": 900}},
+    })
+    assert updater._accumulate_custody(conn) == wk  # 新週 → 全市場入庫
+    n = conn.execute("SELECT COUNT(*) FROM custody_dist WHERE week=?", (wk,)).fetchone()[0]
+    assert n == 2
+    assert updater._accumulate_custody(conn) is None  # 本週已有 → 跳過
