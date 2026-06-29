@@ -17,6 +17,7 @@ let idxSymbol = "taiex", idxInterval = "1d", overviewWaves = false;
 let stockCode = "", stockInterval = "1d", stockWaves = false;
 let wavePct = 0.05;
 let lastIndexData = null, lastStockData = null;
+let chipChart = null, chipMetric = "inst", lastHistory = [];
 const MA_DEFS = [
   { n: 5, color: "#5b8ff9" }, { n: 20, color: "#5ad8a6" },
   { n: 60, color: "#f6bd16" }, { n: 120, color: "#e8684a" },
@@ -120,7 +121,7 @@ function candlestickOption(data, startPct, showW, pct) {
 function showView(name) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + name));
   document.querySelectorAll(".nav").forEach((n) => n.classList.toggle("active", n.dataset.view === name));
-  if (name === "overview" && idxChart) idxChart.resize();
+  if (name === "overview") { idxChart && idxChart.resize(); chipChart && chipChart.resize(); }
   if (name === "stock" && stockChart) stockChart.resize();
   if (name === "rotation") { loadRotation(); loadCross(); }
   if (name === "settings") loadSettings();
@@ -247,6 +248,7 @@ async function loadDashboard() {
   const hist = d.history || [];
   const prev = hist.length >= 2 ? hist[hist.length - 2] : {};
   renderCards(d.latest, prev, hist);
+  lastHistory = hist; loadChipTrend();
   renderStale(d);
   if (d.latest && d.latest.updated_at) $("last-updated").textContent = "更新：" + d.latest.updated_at.replace("T", " ").slice(0, 19);
   return d;
@@ -305,6 +307,49 @@ async function loadCross() {
       return `<div class="cross-grp ${cls}"><div class="cross-h"><b>${g.sector}</b>　${pct}　<span class="muted">· ${g.count} 檔</span></div><div class="cross-stocks">${stocks}</div></div>`;
     }).join("");
   } catch (e) { el.innerHTML = '<div class="muted small">交叉選股載入失敗</div>'; }
+}
+
+// ========== 籌碼趨勢圖（用 dashboard 的近 60 日 history，純前端） ==========
+function chipTrendOption(hist, metric) {
+  const dates = hist.map((r) => (r.date ? r.date.slice(5) : ""));
+  const axisTaiex = { type: "value", scale: true, position: "right", axisLabel: { color: "#777", fontSize: 11 }, splitLine: { show: false } };
+  const taiexLine = { name: "加權", type: "line", yAxisIndex: 1, data: hist.map((r) => r.taiex), smooth: true, showSymbol: false, lineStyle: { width: 1, color: "#8a94a3", type: "dashed" }, itemStyle: { color: "#8a94a3" } };
+  const base = {
+    tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
+    legend: { textStyle: { color: "#ccc" }, top: 0 },
+    grid: { left: 64, right: 60, top: 30, bottom: 26 },
+    xAxis: { type: "category", data: dates, axisLabel: { color: "#999" } },
+  };
+  const zeroMark = { silent: true, symbol: "none", data: [{ yAxis: 0 }], lineStyle: { color: "#555", type: "dashed" } };
+  if (metric === "inst") {
+    const bar = (name, key, color) => ({ name, type: "bar", data: hist.map((r) => r[key]), itemStyle: { color } });
+    return { ...base, yAxis: [{ type: "value", name: "億", axisLabel: { color: "#999" } }, axisTaiex],
+      series: [bar("外資", "inst_foreign", "#e0a23c"), bar("投信", "inst_trust", "#6cb6ff"), bar("自營", "inst_dealer", "#a07cff"), taiexLine] };
+  }
+  if (metric === "foreign_oi") {
+    return { ...base, yAxis: [{ type: "value", name: "口", axisLabel: { color: "#999" } }, axisTaiex],
+      series: [{ name: "外資台指淨未平倉", type: "line", data: hist.map((r) => r.tx_foreign_oi), smooth: true, showSymbol: false, areaStyle: { opacity: 0.08 }, lineStyle: { color: "#e0a23c" }, itemStyle: { color: "#e0a23c" }, markLine: zeroMark }, taiexLine] };
+  }
+  if (metric === "retail_ls") {
+    return { ...base, yAxis: [{ type: "value", name: "多空比", axisLabel: { color: "#999" } }, axisTaiex],
+      series: [
+        { name: "小台散戶多空比", type: "line", data: hist.map((r) => r.retail_ls_mtx), smooth: true, showSymbol: false, lineStyle: { color: "#e0a23c" }, itemStyle: { color: "#e0a23c" }, markLine: zeroMark },
+        { name: "微台散戶多空比", type: "line", data: hist.map((r) => r.retail_ls_tmf), smooth: true, showSymbol: false, lineStyle: { color: "#6cb6ff" }, itemStyle: { color: "#6cb6ff" } },
+        taiexLine] };
+  }
+  // margin：融資（左軸）+ 融券（右軸，量級差很多）
+  return { ...base, yAxis: [
+      { type: "value", name: "融資(張)", axisLabel: { color: "#999" } },
+      { type: "value", name: "融券(張)", position: "right", axisLabel: { color: "#999" }, splitLine: { show: false } }],
+    series: [
+      { name: "融資餘額", type: "line", data: hist.map((r) => r.margin_balance), smooth: true, showSymbol: false, lineStyle: { color: "#e04545" }, itemStyle: { color: "#e04545" } },
+      { name: "融券餘額", type: "line", yAxisIndex: 1, data: hist.map((r) => r.short_balance), smooth: true, showSymbol: false, lineStyle: { color: "#2ea043" }, itemStyle: { color: "#2ea043" } }] };
+}
+function loadChipTrend() {
+  if (!$("chipchart")) return;
+  if (!chipChart) chipChart = echarts.init($("chipchart"));
+  if (!lastHistory.length) { chipChart.clear(); return; }
+  chipChart.setOption(chipTrendOption(lastHistory, chipMetric), true);
 }
 
 async function loadIndexChart() {
@@ -533,7 +578,11 @@ document.addEventListener("click", (e) => {
   const a = e.target.closest("a.stock");
   if (a) { e.preventDefault(); showView("stock"); $("stock-input").value = a.dataset.code; loadStock(a.dataset.code, a.dataset.name); }
 });
-window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); });
+document.querySelectorAll(".ctf").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll(".ctf").forEach((x) => x.classList.toggle("active", x === b));
+  chipMetric = b.dataset.metric; loadChipTrend();
+}));
+window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); chipChart && chipChart.resize(); });
 
 // ========== 初始載入 ==========
 (async () => {

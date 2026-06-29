@@ -36,6 +36,16 @@
         <div class="card-group"><div class="group-title">期貨籌碼</div><div id="cards-fut" class="cards"></div></div>
         <div class="card-group"><div class="group-title">國際市場</div><div id="cards-intl" class="cards"></div></div>
         <div class="card-group"><div class="group-title">當日漲跌族群 <span id="sectors-note" class="muted small"></span></div><div id="sectors" class="sectors"></div></div>
+        <div class="card-group">
+          <div class="group-title">籌碼趨勢（近 60 日）</div>
+          <div class="chart-toolbar">
+            <button class="ctf active" data-metric="inst">三大法人買賣超</button>
+            <button class="ctf" data-metric="foreign_oi">外資台指未平倉</button>
+            <button class="ctf" data-metric="retail_ls">散戶多空比</button>
+            <button class="ctf" data-metric="margin">融資融券</button>
+          </div>
+          <div id="chipchart" class="chart"></div>
+        </div>
 
         <div class="chart-row">
           <div class="chart-side">
