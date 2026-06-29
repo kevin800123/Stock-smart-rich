@@ -209,6 +209,7 @@ def parse_t86(payload: dict) -> dict:
     """T86 個股三大法人買賣超 → {代號: {foreign, trust, dealer, total}}（單位：張，股數/1000）。"""
     fields = payload.get("fields") or []
     idx = {n: i for i, n in enumerate(fields)}
+    ni = idx.get("證券名稱")
     fi = idx.get("外陸資買賣超股數(不含外資自營商)")
     ti = idx.get("投信買賣超股數")
     di = idx.get("自營商買賣超股數")
@@ -222,7 +223,8 @@ def parse_t86(payload: dict) -> dict:
             v = _f(r[i]) if i is not None and i < len(r) else None
             return round(v / 1000) if v is not None else None
 
-        out[str(r[0]).strip()] = {"foreign": lots(fi), "trust": lots(ti), "dealer": lots(di), "total": lots(ai)}
+        name = str(r[ni]).strip() if ni is not None and ni < len(r) else ""
+        out[str(r[0]).strip()] = {"name": name, "foreign": lots(fi), "trust": lots(ti), "dealer": lots(di), "total": lots(ai)}
     return out
 
 

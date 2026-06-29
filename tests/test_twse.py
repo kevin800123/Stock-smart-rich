@@ -104,7 +104,7 @@ def test_parse_t86_per_stock_in_lots():
         "data": [["2330", "台積電", "5,000,000", "2,000,000", "-1,000,000", "6,000,000"]],
     }
     out = twse.parse_t86(payload)
-    assert out["2330"] == {"foreign": 5000, "trust": 2000, "dealer": -1000, "total": 6000}
+    assert out["2330"] == {"name": "台積電", "foreign": 5000, "trust": 2000, "dealer": -1000, "total": 6000}
 
 
 def test_parse_margin_sums_balances():

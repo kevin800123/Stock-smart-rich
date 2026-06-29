@@ -94,6 +94,29 @@ def test_sectors_picks_cross_groups_by_sector(tmp_path, monkeypatch):
     assert r["groups"][0]["stocks"][0]["code"] == "2330"
 
 
+def test_inst_ranking_sorts_and_filters_etf(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import twse
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-06-29", "taiex": 1.0})
+    table = {
+        "2330": {"name": "台積電", "foreign": -5000, "trust": 1, "dealer": 1, "total": -4000},
+        "2317": {"name": "鴻海", "foreign": 8000, "trust": 1, "dealer": 1, "total": 9000},
+        "00677U": {"name": "期富邦VIX", "foreign": 99999, "trust": 1, "dealer": 1, "total": 99999},
+    }
+    monkeypatch.setattr(twse, "fetch_t86", lambda date=None: table)
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/inst-ranking?who=foreign&top=5").json()
+    assert r["date"] == "2026-06-29"
+    assert "00677U" not in [x["code"] for x in r["buy"]]  # ETF 濾掉
+    assert r["buy"][0]["code"] == "2317"   # 外資買超最大
+    assert r["sell"][0]["code"] == "2330"  # 外資賣超最大
+
+
 def test_stock_chips_per_day_series(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily

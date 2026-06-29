@@ -19,6 +19,7 @@ let wavePct = 0.05;
 let lastIndexData = null, lastStockData = null;
 let chipChart = null, chipMetric = "inst", lastHistory = [];
 let stockChipsChart = null;
+let rankWho = "foreign";
 const MA_DEFS = [
   { n: 5, color: "#5b8ff9" }, { n: 20, color: "#5ad8a6" },
   { n: 60, color: "#f6bd16" }, { n: 120, color: "#e8684a" },
@@ -274,6 +275,19 @@ async function loadSectors() {
       return `<div class="sector ${cls}"><span class="sec-name">${s.name}</span><span class="sec-chg">${pct}</span></div>`;
     }).join("");
   } catch (e) { el.innerHTML = '<div class="muted small">類股載入失敗</div>'; }
+}
+
+// ========== 法人買賣超排行 ==========
+async function loadInstRanking() {
+  const buyEl = $("rank-buy"), sellEl = $("rank-sell");
+  if (!buyEl) return;
+  try {
+    const d = await getJSON(`/api/inst-ranking?who=${rankWho}&top=15`);
+    const note = $("rank-note"); if (note) note.textContent = d.date ? `（${d.date}，單位：張）` : "";
+    const row = (x) => `<div class="rank-row">${stockLink(x.code, x.name)}<span class="${x.net > 0 ? "up" : x.net < 0 ? "down" : ""}">${x.net > 0 ? "+" : ""}${fmt(x.net, 0)}</span></div>`;
+    buyEl.innerHTML = d.buy && d.buy.length ? d.buy.map(row).join("") : '<div class="muted small">—</div>';
+    sellEl.innerHTML = d.sell && d.sell.length ? d.sell.map(row).join("") : '<div class="muted small">—</div>';
+  } catch (e) { buyEl.innerHTML = '<div class="muted small">載入失敗</div>'; }
 }
 
 // ========== 族群輪動 + 交叉選股 ==========
@@ -611,6 +625,10 @@ document.querySelectorAll(".ctf").forEach((b) => b.addEventListener("click", () 
   document.querySelectorAll(".ctf").forEach((x) => x.classList.toggle("active", x === b));
   chipMetric = b.dataset.metric; loadChipTrend();
 }));
+document.querySelectorAll(".rkf").forEach((b) => b.addEventListener("click", () => {
+  document.querySelectorAll(".rkf").forEach((x) => x.classList.toggle("active", x === b));
+  rankWho = b.dataset.who; loadInstRanking();
+}));
 window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); chipChart && chipChart.resize(); stockChipsChart && stockChipsChart.resize(); });
 
 // ========== 初始載入 ==========
@@ -618,6 +636,7 @@ window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockCh
   const d = await loadDashboard();
   loadIndexChart();
   loadSectors();
+  loadInstRanking();
   loadDates();
   loadWeekly();
   // 自動更新：無資料、或資料非當日（平日尚未更新到最新交易日）時，自動抓一次

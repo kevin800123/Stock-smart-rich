@@ -89,6 +89,13 @@ body {
 .cross-h { font-size: 14px; margin-bottom: 3px; }
 .cross-stocks { font-size: 13px; line-height: 1.95; }
 
+/* ===== 法人買賣超排行 ===== */
+.rank-split { display: flex; gap: 12px; }
+.rank-col { flex: 1; min-width: 0; }
+.rank-h { font-weight: 700; font-size: 13px; margin-bottom: 4px; padding-left: 4px; }
+.rank-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.rank-row span { font-weight: 700; white-space: nowrap; }
+
 /* ===== K 線區 ===== */
 .chart-row { display: flex; gap: 14px; }
 .chart-side { flex: 0 0 110px; display: flex; flex-direction: column; gap: 8px; padding-top: 6px; }
