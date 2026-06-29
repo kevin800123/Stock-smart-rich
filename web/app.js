@@ -376,7 +376,7 @@ function chipTrendOption(hist, metric) {
     tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
     legend: { textStyle: { color: "#ccc" }, top: 0 },
     grid: { left: 64, right: 60, top: 30, bottom: 26 },
-    xAxis: { type: "category", data: dates, boundaryGap: false, axisLabel: { color: "#999" } },
+    xAxis: { type: "category", data: dates, boundaryGap: metric === "inst", axisLabel: { color: "#999" } },
   };
   const zeroMark = { silent: true, symbol: "none", data: [{ yAxis: 0 }], lineStyle: { color: "#555", type: "dashed" } };
   if (metric === "inst") {
