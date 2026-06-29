@@ -18,7 +18,7 @@ let stockCode = "", stockInterval = "1d", stockWaves = false;
 let wavePct = 0.05;
 let lastIndexData = null, lastStockData = null;
 let chipChart = null, chipMetric = "inst", lastHistory = [];
-let stockChipsChart = null;
+let stockChipsChart = null, stockCustodyChart = null;
 let rankWho = "foreign";
 const MA_DEFS = [
   { n: 5, color: "#5b8ff9" }, { n: 20, color: "#5ad8a6" },
@@ -124,7 +124,7 @@ function showView(name) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + name));
   document.querySelectorAll(".nav").forEach((n) => n.classList.toggle("active", n.dataset.view === name));
   if (name === "overview") { idxChart && idxChart.resize(); chipChart && chipChart.resize(); }
-  if (name === "stock") { stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); }
+  if (name === "stock") { stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize(); }
   if (name === "rotation") { loadRotation(); loadCross(); }
   if (name === "watch") loadWatchlist();
   if (name === "settings") loadSettings();
@@ -581,6 +581,31 @@ async function loadStockChips(code) {
   } catch (e) { stockChipsChart.hideLoading(); if (note) note.textContent = "（載入失敗）"; }
 }
 
+async function loadStockCustody(code) {
+  const wrap = $("stock-custody-wrap");
+  if (!wrap) return;
+  wrap.classList.remove("hidden");
+  if (!stockCustodyChart) stockCustodyChart = echarts.init($("stock-custody"));
+  stockCustodyChart.showLoading();
+  const note = $("stock-custody-note");
+  try {
+    const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/custody`);
+    stockCustodyChart.hideLoading();
+    if (!d.trend || !d.trend.length) { stockCustodyChart.clear(); if (note) note.textContent = "（查無集保資料；上市櫃個股適用）"; return; }
+    const cur = d.current;
+    if (note) note.textContent = cur ? `（${d.week}　千張大戶 ${fmt(cur.big1000_pct, 2)}%・400張↑ ${fmt(cur.big400_pct, 2)}%・千張大戶 ${fmt(cur.big_holders, 0)} 人；趨勢逐週累積）` : "";
+    const wk = d.trend.map((t) => (t.week ? t.week.slice(5) : ""));
+    const line = (name, key, color) => ({ name, type: "line", smooth: 0.2, showSymbol: true, symbolSize: 5, data: d.trend.map((t) => t[key]), lineStyle: { color }, itemStyle: { color } });
+    stockCustodyChart.setOption({
+      tooltip: { trigger: "axis" }, legend: { textStyle: { color: "#ccc" }, top: 0 },
+      grid: { left: 48, right: 16, top: 26, bottom: 24 },
+      xAxis: { type: "category", data: wk, boundaryGap: false, axisLabel: { color: "#999" } },
+      yAxis: { type: "value", name: "%", axisLabel: { color: "#999" }, splitLine: { lineStyle: { color: "#262d38" } } },
+      series: [line("千張大戶%", "big1000_pct", "#e0a23c"), line("400張↑大戶%", "big400_pct", "#6cb6ff")],
+    }, true);
+  } catch (e) { stockCustodyChart.hideLoading(); if (note) note.textContent = "（載入失敗）"; }
+}
+
 async function loadStock(code, name) {
   code = (code || "").trim().toUpperCase();
   if (!code) return;
@@ -590,6 +615,7 @@ async function loadStock(code, name) {
   $("stock-note").textContent = "載入中…";
   try { renderProfile(await getJSON(`/api/stock/${encodeURIComponent(code)}/profile`)); } catch (e) { $("stock-profile").innerHTML = ""; }
   loadStockChips(code);
+  loadStockCustody(code);
   stockChart.showLoading();
   try {
     const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/kline?interval=${stockInterval}`);

@@ -58,6 +58,8 @@ def init_db(conn: sqlite3.Connection) -> None:
     )
     conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS watchlist (code TEXT PRIMARY KEY, name TEXT, added_at TEXT)")
+    conn.execute("CREATE TABLE IF NOT EXISTS custody_dist (week TEXT, code TEXT, big1000_pct REAL, "
+                 "big400_pct REAL, big_holders REAL, PRIMARY KEY(week, code))")
     # 既有資料庫補上後來新增的欄位
     mkt_existing = {r[1] for r in conn.execute("PRAGMA table_info(market_daily)").fetchall()}
     for col in MARKET_COLS:
@@ -139,6 +141,22 @@ def upsert_tx_history(conn: sqlite3.Connection, rows: list[dict]) -> None:
             (r["date"], r.get("open"), r.get("high"), r.get("low"), r.get("close"), r.get("volume")),
         )
     conn.commit()
+
+
+def upsert_custody(conn: sqlite3.Connection, week: str, code: str, rec: dict) -> None:
+    conn.execute(
+        "INSERT INTO custody_dist (week, code, big1000_pct, big400_pct, big_holders) VALUES (?,?,?,?,?) "
+        "ON CONFLICT(week, code) DO UPDATE SET big1000_pct=excluded.big1000_pct, "
+        "big400_pct=excluded.big400_pct, big_holders=excluded.big_holders",
+        (week, code, rec.get("big1000_pct"), rec.get("big400_pct"), rec.get("big_holders")),
+    )
+    conn.commit()
+
+
+def get_custody_trend(conn: sqlite3.Connection, code: str) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT week, big1000_pct, big400_pct, big_holders FROM custody_dist WHERE code=? ORDER BY week",
+        (code,)).fetchall()]
 
 
 def list_watch(conn: sqlite3.Connection) -> list[dict]:

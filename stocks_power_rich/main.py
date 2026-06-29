@@ -10,11 +10,12 @@ from datetime import datetime
 
 from . import analysis, csv_import, exporter, gemini, updater
 from .config import load_config
-from .sources import kline, taifex, twse
+from .sources import kline, taifex, tdcc, twse
 from .db import (
     add_watch,
     get_ai_cache,
     get_connection,
+    get_custody_trend,
     get_setting,
     get_snapshot,
     get_snapshot_dates,
@@ -24,6 +25,7 @@ from .db import (
     remove_watch,
     set_ai_cache,
     set_setting,
+    upsert_custody,
     upsert_tx_history,
 )
 
@@ -411,6 +413,31 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             for k in series:
                 series[k].append(rec.get(k) if rec else None)
         return {"code": pure, "dates": dlist, **series}
+
+    @app.get("/api/stock/{code}/custody")
+    def stock_custody(code: str):
+        c = conn()
+        pure = code.split(".")[0]
+        cur = get_ai_cache(c, "tdcc:current")
+        stale = True
+        if cur and cur.get("week_date"):
+            try:
+                stale = (datetime.now().date() - datetime.fromisoformat(cur["week_date"]).date()).days >= 7
+            except Exception:  # noqa: BLE001
+                stale = False
+        if stale:
+            try:
+                fresh = tdcc.fetch_custody_distribution()
+                if fresh.get("data"):
+                    set_ai_cache(c, "tdcc:current", fresh)
+                    cur = fresh
+            except Exception:  # noqa: BLE001
+                pass
+        rec = (cur or {}).get("data", {}).get(pure)
+        if rec and (cur or {}).get("week_date"):
+            upsert_custody(c, cur["week_date"], pure, rec)  # 逐週累積
+        return {"code": pure, "week": (cur or {}).get("week_date"),
+                "current": rec, "trend": get_custody_trend(c, pure)}
 
     @app.get("/api/stock/{code}/kline")
     def stock_kline(code: str, interval: str = "1d", period: str | None = None):

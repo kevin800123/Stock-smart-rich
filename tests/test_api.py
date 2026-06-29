@@ -152,6 +152,22 @@ def test_inst_ranking_sorts_and_filters_etf(tmp_path, monkeypatch):
     assert r["sell"][0]["code"] == "2330"  # 外資賣超最大
 
 
+def test_stock_custody_accumulates(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.sources import tdcc
+
+    monkeypatch.setattr(tdcc, "fetch_custody_distribution", lambda: {
+        "week_date": "2026-06-26",
+        "data": {"2330": {"big1000_pct": 70.0, "big400_pct": 73.0, "big_holders": 30}},
+    })
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/stock/2330.TW/custody").json()
+    assert r["week"] == "2026-06-26"
+    assert r["current"]["big1000_pct"] == 70.0
+    assert len(r["trend"]) == 1 and r["trend"][0]["big1000_pct"] == 70.0  # 已累積入庫
+
+
 def test_stock_chips_per_day_series(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
