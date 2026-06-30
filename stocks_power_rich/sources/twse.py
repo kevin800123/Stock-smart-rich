@@ -79,6 +79,31 @@ def parse_taiex_rwd(payload: dict) -> dict:
     }
 
 
+def parse_taiex_history(payload: dict) -> list[dict]:
+    """FMTQIK 直連 → 整月每個交易日的加權指數與漲跌（供歷史回補）。"""
+    fields = payload.get("fields")
+    out = []
+    for row in payload.get("data") or []:
+        g = _rwd_row_getter(fields, row)
+        iso = _roc_to_iso(g("日期"))
+        if iso:
+            out.append({"date": iso, "taiex": _f(g("發行量加權股價指數")), "taiex_chg": _f(g("漲跌點數"))})
+    return out
+
+
+def fetch_taiex_history(date: datetime.date | None = None) -> list[dict]:
+    """直連 FMTQIK 取「date 所在整月」的每日加權指數（預設今天）。"""
+    day = date or datetime.date.today()
+    try:
+        j = httpx.get(FMTQIK_RWD, params={"date": day.strftime("%Y%m%d"), "response": "json"},
+                      timeout=20, follow_redirects=True).json()
+        if j.get("stat") == "OK":
+            return parse_taiex_history(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return []
+
+
 def parse_margin_rwd(payload: dict) -> dict:
     """直連 MI_MARGN（selectType=MS）信用交易統計表 → 大盤融資/融券餘額（張）與日增減。"""
     tables = payload.get("tables") or []

@@ -91,6 +91,12 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     def run_update():
         return updater.run_update(conn(), cfg.intl_tickers)
 
+    @app.get("/api/backfill")
+    def backfill(days: int = 30):
+        """回補近 N 日歷史（加權／三大法人現貨／融資券）。雲端冷啟動補歷史用；逐日入庫，可重跑續補。"""
+        n = updater.backfill_history(conn(), max(5, min(days, 60)))
+        return {"backfilled_days": n}
+
     @app.get("/api/sectors")
     def sectors(date: str | None = None):
         c = conn()

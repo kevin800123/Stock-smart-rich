@@ -92,6 +92,35 @@ def _backfill_chips(conn, days: int = 10, cap: int = 3) -> list:
     return filled
 
 
+def backfill_history(conn, days: int = 30) -> int:
+    """回補近 days 天的加權指數＋三大法人現貨買賣超＋融資融券（逐日，供雲端冷啟動補歷史）。
+
+    逐日 upsert 且各自 commit，即使中途逾時，已處理日期也會保存，重跑可續補。
+    期貨籌碼（未平倉/多空比）來源較慢，不在此整月回補，改由每日更新逐步累積。
+    """
+    cutoff = (_date.today() - timedelta(days=days)).isoformat()
+    seen: dict = {}
+    for back in (0, 32):  # 本月 + 上月，覆蓋約一個月以上的交易日
+        d0 = _date.today() - timedelta(days=back)
+        for r in twse.fetch_taiex_history(d0):
+            if r["date"] >= cutoff:
+                seen[r["date"]] = r
+    for iso in sorted(seen):
+        r = seen[iso]
+        row = {"date": iso, "updated_at": datetime.now().isoformat()}
+        for k in ("taiex", "taiex_chg"):
+            if r.get(k) is not None:
+                row[k] = r[k]
+        d = _iso_to_date(iso)
+        for fetch in (lambda: twse.fetch_institutional(date=d), lambda: twse.fetch_margin(date=d)):
+            try:
+                row.update({k: v for k, v in fetch().items() if v is not None})
+            except Exception:  # noqa: BLE001
+                pass
+        upsert_market_daily(conn, row)
+    return len(seen)
+
+
 def run_update(conn, intl_tickers: dict) -> dict:
     today = datetime.now().strftime("%Y-%m-%d")
     row = {"date": today, "updated_at": datetime.now().isoformat()}
