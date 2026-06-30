@@ -127,3 +127,21 @@ python -m venv .venv
 | `SPR_ENABLE_SCHEDULER` | 程式內每日自動更新（1 開啟，需程式開著） | 0（啟動.bat 會設 1） |
 
 AI 摘要會快取於當日，只在更新或上傳新檔後重新生成（省 token）。
+
+## 雲端部署（Zeabur，整包前後端）
+後端本身就 serve 前端，整包部署一個服務即可（不需 CORS／前後端分離）。
+
+1. **啟動指令**：repo 內 `Procfile` 已設 `uvicorn stocks_power_rich.main:app --host 0.0.0.0 --port $PORT`（用平台給的 `$PORT`）。不要開多 worker（會重複跑排程、SQLite 競爭）。
+2. **環境變數**：
+   | 變數 | 值 | 說明 |
+   |---|---|---|
+   | `TZ` | `Asia/Taipei` | **必設**；容器預設 UTC，否則資料日期／排程判斷會差 8 小時 |
+   | `SPR_DB_PATH` | `/data/spr.sqlite` | 指到持久化 Volume |
+   | `SPR_ENABLE_SCHEDULER` | `1` | 開每日自動更新 |
+   | `SPR_SCHEDULE_TIME` | `21:00` | 排程時間 |
+   | `GEMINI_API_KEY` | （金鑰） | 設為密鑰，絕不進前端 |
+3. **持久化 Volume**：掛載到 `/data`（對應 `SPR_DB_PATH`）。**未掛 Volume 重新部署資料會清空**（大盤歷史、集保逐週累積、自選股）。
+4. **區域**：選離台灣近者（連 TWSE／TAIFEX／TDCC 較穩）。
+5. **排程備援**：免費方案可能休眠導致 21:00 排程不觸發；可改用平台 Cron／外部排程每日 `POST /api/update/run`。
+
+注意：雲端上「讀取資料夾最新檔」只會讀到 repo 內的 `Date/`，每日請改用「上傳今日檔」。`集保（TDCC）` 來源憑證有瑕疵，程式對該主機停用 SSL 驗證（僅此主機）。
