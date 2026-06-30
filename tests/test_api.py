@@ -233,6 +233,23 @@ def test_import_latest_from_folder(tmp_path, monkeypatch):
     assert r["file"] == "20260615.csv"
 
 
+def test_import_all_loads_every_csv(tmp_path, monkeypatch):
+    import os
+
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    data_in = tmp_path / "din"
+    os.makedirs(data_in)
+    monkeypatch.setenv("SPR_DATA_DIR", str(data_in))
+    for day in ("22", "23"):
+        content = (f"符合條件商品\n資料日期：2026年  6月 {day}日\n策略,\t.常用\n" + HEADER + "\n" + ROW_2330 + "\n").encode("cp950")
+        (data_in / f"202606{day}.csv").write_bytes(content)
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/csv/import-all").json()
+    assert len(r["imported"]) == 2
+    assert set(r["dates"]) == {"2026-06-22", "2026-06-23"}
+
+
 def test_settings_get_hides_gemini_key(tmp_path, monkeypatch):
     import json
 

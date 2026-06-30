@@ -297,6 +297,26 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         return {"snap_date": snap_date, "count": count, "file": os.path.basename(path),
                 "picks": picks}
 
+    @app.get("/api/csv/import-all")
+    def import_all():
+        """匯入資料夾內所有 CSV/Excel（雲端一次載入 repo 內全部歷史檔，跨週比較才有意義）。"""
+        data_dir = effective_data_dir()
+        c = conn()
+        files = sorted(
+            os.path.join(data_dir, f) for f in os.listdir(data_dir)
+            if f.lower().endswith((".csv", ".xlsx", ".xlsm"))
+        ) if os.path.isdir(data_dir) else []
+        imported = []
+        for path in files:
+            try:
+                snap_date, count = csv_import.import_csv(c, path)
+                c.execute("DELETE FROM ai_cache WHERE cache_key=?", (f"csv:{snap_date}",))
+                c.commit()
+                imported.append({"file": os.path.basename(path), "snap_date": snap_date, "count": count})
+            except Exception as e:  # noqa: BLE001 — 單檔失敗不影響其餘
+                imported.append({"file": os.path.basename(path), "error": str(e)})
+        return {"imported": imported, "dates": get_snapshot_dates(c)}
+
     @app.get("/api/snapshots")
     def snapshots():
         return {"dates": get_snapshot_dates(conn())}
