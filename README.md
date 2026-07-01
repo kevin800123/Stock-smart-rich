@@ -2,18 +2,22 @@
 
 本機股市每日更新與籌碼分析 App。盤後**同日**自動更新大盤＋籌碼＋國際儀表板、每日上傳籌碼 CSV 做跨週與選股分析、個股 K 線、當日漲跌族群。FastAPI + SQLite，前端為單頁 + ECharts，無建置流程。
 
-## 功能（左側 5 個視圖）
+## 功能（左側視圖）
 1. **總覽**：
    - **台股大盤**：加權指數、外資／投信／自營買賣超、三大法人合計（億）、融資／融券餘額。
    - **期貨籌碼**：台指期、外資台指淨未平倉、散戶小台淨未平倉、小台／微台散戶多空比、VIX 恐慌指數。
+   - **期權情緒・大額交易人**：P/C 未平倉／成交量比、前 5／10 大特定法人台指淨未平倉。
    - **國際市場**：費城半導體、日經 225、KOSPI、黃金、比特幣（值＋漲跌點數＋%）。
    - **當日漲跌族群**：證交所 37 個上市類股指數，依漲幅排序、紅漲綠跌。
-   - **加權／台指期 K 線**（1 小時／日／週／月，含 MA5/20/60/120、成交量、可切換的艾略特波浪）。
-   - **AI 盤勢摘要**（Gemini，可降級）。
+   - **籌碼趨勢（近 60 日）**：三大法人買賣超／外資台指未平倉／散戶多空比／融資融券可切換走勢。
+   - **法人買賣超排行**：外資／投信／三大法人 買超・賣超 Top，可切「張／金額(億)」。
+   - **加權／台指期 K 線**（1 小時／日／週／月，MA5/20/60/120、成交量、可切換艾略特波浪）＋ **AI 盤勢摘要**。
 2. **選股清單**：上傳當日 CSV／Excel → 依「W55 翻多 ＋ 大戶增比>0 ＋ 營收年增>0 ＋ 推估EPS>0」篩選、依**蘭值**排序；細產業統計可點擊聯動、欄位可排序、一鍵匯出 Excel。
-3. **個股查詢**：輸入股號開日／週／月／時 K 線（上市 `.TW`、上櫃自動回退 `.TWO`），附籌碼／基本面卡片，艾略特波浪可切換。
-4. **跨週 ＋ AI**：本週 vs 上週（新進榜／加速／退榜）＋ AI 籌碼分析師。
-5. **設定**：每日排程時間、「讀取最新檔」資料夾、資料庫狀態、Gemini 金鑰狀態（**只顯示已/未設定，不顯示也不輸入金鑰**）。
+3. **個股查詢**：輸入股號開日／週／月／時 K 線（上市 `.TW`、上櫃自動回退 `.TWO`）＋ 籌碼／基本面卡片、**個股三大法人近 10 日**（上市 T86／上櫃櫃買）、**集保大戶持股趨勢**、可切換艾略特波浪。
+4. **族群輪動**：近數日類股漲跌熱力（依累計強弱排序）＋ **交叉選股**（你的選股清單依官方類股分組、附當日漲跌）。
+5. **自選股**：加入關注股 → 追蹤是否在選股榜、在榜次數、進榜日、自進榜報酬。
+6. **跨週 ＋ AI**：本週 vs 上週（新進榜／加速／退榜）＋ AI 籌碼分析師。
+7. **設定**：每日排程時間、「讀取最新檔」資料夾、資料庫狀態、Gemini 金鑰狀態（**只顯示已/未設定，不顯示也不輸入金鑰**）。
 
 > 大盤資料**無「一鍵更新」按鍵**：開頁時若非當日資料會自動更新，頂部只顯示「資料日期」與「更新時間」。
 
@@ -45,10 +49,12 @@
 │  ├─ scheduler.py            # APScheduler 每日排程
 │  ├─ cli.py                  # 命令列更新（給 Windows 工作排程器）
 │  └─ sources/
-│     ├─ twse.py              # 證交所直連：加權(FMTQIK)/融資券(MI_MARGN)/三大法人(BFI82U)/類股(MI_INDEX) + openapi 本益比
-│     ├─ taifex.py            # 期交所直連：台指期行情/期貨三大法人未平倉/散戶多空比/歷史日K
+│     ├─ twse.py              # 證交所：加權/融資券/三大法人現貨/類股指數/個股T86/個股收盤/指數OHLC
+│     ├─ taifex.py            # 期交所：台指期/期貨三大法人未平倉/多空比/歷史日K/P-C ratio/大額交易人
+│     ├─ tdcc.py             # 集保(TDCC)：個股集保大戶持股分散（當週，逐週累積）
+│     ├─ tpex.py             # 櫃買(TPEx)：上櫃個股三大法人買賣超
 │     ├─ intl.py              # yfinance 國際指數（含 VIX ^VIX）
-│     └─ kline.py             # yfinance 個股/指數 K 線 + 重採樣
+│     └─ kline.py             # yfinance 個股/指數 K 線（含重試）+ 重採樣
 └─ tests/                     # pytest（解析函式單元測試 + API 整合測試）
 ```
 
@@ -64,7 +70,12 @@
 | 本益比／殖利率／淨值比 | TWSE openapi `BWIBBU_ALL` | 個股基本面 |
 | 台指期近月行情、歷史日K | TAIFEX 直連 `dlFutDataDown` | 近月、一般盤 |
 | 期貨三大法人未平倉、散戶多空比 | TAIFEX 直連 `futContractsDateDown` + 全市場 OI | 外資台指/散戶小台/多空比 |
-| 國際指數（費半/日經/KOSPI/黃金/比特幣/VIX）、個股 K 線 | yfinance | — |
+| P/C ratio、大額交易人未平倉 | TAIFEX openapi `PutCallRatio`／`OpenInterestOfLargeTradersFutures` | 期權情緒 |
+| 個股三大法人買賣超（上市） | TWSE 直連 `T86` | 法人排行、個股籌碼 |
+| 個股三大法人買賣超（上櫃） | TPEx `dailyTrade` | 上櫃股 |
+| 個股集保大戶持股分散 | TDCC opendata `getOD?id=1-5` | 只給當週，逐週累積；需 `verify=False` |
+| 加權指數 OHLC（K 線 fallback） | TWSE openapi `MI_5MINS_HIST` | yfinance 失敗時改用 |
+| 國際指數、個股 K 線 | yfinance | 雲端偶爾限流 → 已加重試／fallback |
 
 資料正確性處理：
 - **不回退他日**：當日官方資料未出時留空，不以他日數值魚目混珠（避免「今日＝昨日」假象）。
@@ -103,13 +114,17 @@ python -m venv .venv
 | 方法 路徑 | 說明 |
 |---|---|
 | `GET /api/dashboard` | 最新大盤＋近 60 日歷史、資料延遲旗標 |
-| `POST /api/update/run` | 執行同日更新（TWSE/TAIFEX/國際） |
-| `GET /api/sectors` | 當日各類股漲跌族群（依漲幅排序） |
-| `POST /api/csv/upload`、`/api/csv/import-latest` | 上傳／讀取最新籌碼檔 |
+| `POST /api/update/run` | 執行同日更新（TWSE/TAIFEX/TDCC/國際） |
+| `GET /api/backfill?days=N` | 回補近月加權／三大法人現貨／融資券（冷啟動補歷史，可重跑續補） |
+| `GET /api/sectors`、`/api/sectors/rotation`、`/api/sectors/picks` | 當日漲跌族群、輪動熱力、交叉選股 |
+| `GET /api/inst-ranking?who=&unit=` | 法人買賣超排行（張／金額） |
+| `GET /api/options-sentiment` | P/C ratio ＋ 大額交易人 |
+| `POST /api/csv/upload`、`GET /api/csv/import-latest`、`import-all` | 上傳／讀最新／匯入資料夾全部 CSV |
 | `GET /api/analysis/daily`、`/weekly`、`/export` | 選股清單、跨週、匯出 Excel |
 | `GET /api/market/summary`、`/api/analysis/summary` | AI 盤勢／籌碼摘要 |
-| `GET /api/stock/{code}/kline`、`/profile` | 個股 K 線、籌碼/基本面 |
+| `GET /api/stock/{code}/kline`、`/profile`、`/chips`、`/custody` | 個股 K 線、籌碼/基本面、三大法人近10日、集保大戶趨勢 |
 | `GET /api/index/kline` | 加權／台指期 K 線 |
+| `GET/POST /api/watchlist`、`DELETE /api/watchlist/{code}` | 自選股 ＋ 進出選股榜追蹤 |
 | `GET/POST /api/settings` | 讀取/更新排程時間、資料夾（金鑰只回狀態） |
 
 ## 測試
@@ -140,8 +155,11 @@ AI 摘要會快取於當日，只在更新或上傳新檔後重新生成（省 t
    | `SPR_ENABLE_SCHEDULER` | `1` | 開每日自動更新 |
    | `SPR_SCHEDULE_TIME` | `21:00` | 排程時間 |
    | `GEMINI_API_KEY` | （金鑰） | 設為密鑰，絕不進前端 |
-3. **持久化 Volume**：掛載到 `/data`（對應 `SPR_DB_PATH`）。**未掛 Volume 重新部署資料會清空**（大盤歷史、集保逐週累積、自選股）。
+3. **持久化 Volume（務必）**：掛載到 `/data`（對應 `SPR_DB_PATH`）。**未掛 Volume 每次重新部署資料就會清空**（大盤歷史、集保逐週累積、自選股）。
 4. **區域**：選離台灣近者（連 TWSE／TAIFEX／TDCC 較穩）。
 5. **排程備援**：免費方案可能休眠導致 21:00 排程不觸發；可改用平台 Cron／外部排程每日 `POST /api/update/run`。
+6. **冷啟動補資料**（首次部署或 Volume 剛掛好，DB 是空的）：瀏覽器打開一次
+   - `…/api/backfill?days=35` → 回補近一個月大盤/現貨法人/融資券（可重跑續補）
+   - `…/api/csv/import-all` → 匯入 repo `Date/` 內全部選股 CSV
 
-注意：雲端上「讀取資料夾最新檔」只會讀到 repo 內的 `Date/`，每日請改用「上傳今日檔」。`集保（TDCC）` 來源憑證有瑕疵，程式對該主機停用 SSL 驗證（僅此主機）。
+注意：雲端上「讀取資料夾最新檔」只會讀到 repo 內的 `Date/`，每日請改用「上傳今日檔」。`集保（TDCC）` 憑證有瑕疵，程式對該主機停用 SSL 驗證（僅此主機）。
