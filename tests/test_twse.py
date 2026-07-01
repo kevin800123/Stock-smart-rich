@@ -118,6 +118,18 @@ def test_parse_sector_indices_filters_strips_and_signs():
     assert by["其他"]["chg_pct"] == -1.82               # 綠色=跌，magnitude 轉負
 
 
+def test_parse_sector_turnover_normalizes_names():
+    payload = {"data": [
+        ["水泥類指數          ", "137,025,097", "4,206,034,114", "31,988", "-2.66"],
+        ["航運業類指數        ", "1,000", "9,000,000", "10", "1.0"],   # 「業」後綴要正規化掉→航運
+        ["半導體類指數        ", "5,000", "88,000,000,000", "1", "3.4"],
+    ]}
+    out = twse.parse_sector_turnover(payload)
+    assert out["水泥"] == 4206034114
+    assert out["航運"] == 9000000          # 對齊 parse_sector_indices 的「航運」
+    assert out["半導體"] == 88000000000
+
+
 def test_parse_close_prices():
     payload = {"tables": [
         {"fields": ["指數", "收盤指數"], "data": [["加權", "1"]]},  # 非個股表→略過

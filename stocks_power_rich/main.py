@@ -108,16 +108,37 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         key = f"sectors:{date}"
         cached = get_ai_cache(c, key)
         if cached is not None:
-            return cached
-        try:
-            secs = twse.fetch_sector_indices(datetime.fromisoformat(date).date())
-        except Exception:  # noqa: BLE001
-            secs = []
-        secs.sort(key=lambda s: (s.get("chg_pct") is None, -(s.get("chg_pct") or 0)))  # 漲幅大→小
-        result = {"date": date, "sectors": secs}
-        if secs:
-            set_ai_cache(c, key, result)
+            result = cached
+        else:
+            try:
+                secs = twse.fetch_sector_indices(datetime.fromisoformat(date).date())
+            except Exception:  # noqa: BLE001
+                secs = []
+            secs.sort(key=lambda s: (s.get("chg_pct") is None, -(s.get("chg_pct") or 0)))  # 漲幅大→小
+            result = {"date": date, "sectors": secs}
+            if secs:
+                set_ai_cache(c, key, result)
+        _attach_turnover(c, date, result.get("sectors") or [])
         return result
+
+    # 熱力圖面積：各類股成交金額（元）。彙總型/跨市場指數不給面積，避免母子重複計面積。
+    _TURNOVER_EXCLUDE = {"化學生技醫療", "電子工業", "水泥窯製", "塑膠化工", "機電"}
+
+    def _attach_turnover(c, date: str, secs: list) -> None:
+        if not secs:
+            return
+        tkey = f"sector_turnover:{date}"
+        tmap = get_ai_cache(c, tkey)
+        if tmap is None:
+            try:
+                tmap = twse.fetch_sector_turnover(datetime.fromisoformat(date).date())
+            except Exception:  # noqa: BLE001
+                tmap = {}
+            if tmap:
+                set_ai_cache(c, tkey, tmap)
+        for s in secs:
+            name = s.get("name")
+            s["turnover"] = None if name in _TURNOVER_EXCLUDE else tmap.get(twse.norm_sector_name(name))
 
     def _sectors_for(c, ds: str) -> list:
         """取某日類股漲跌（先讀快取，否則直連並快取）。"""

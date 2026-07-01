@@ -19,6 +19,7 @@ let wavePct = 0.05;
 let lastIndexData = null, lastStockData = null;
 let chipChart = null, chipMetric = "inst", lastHistory = [];
 let stockChipsChart = null, stockCustodyChart = null;
+let sectorChart = null;
 let rankWho = "foreign", rankUnit = "shares";
 const MA_DEFS = [
   { n: 5, color: "#5b8ff9" }, { n: 20, color: "#5ad8a6" },
@@ -123,7 +124,7 @@ function candlestickOption(data, startPct, showW, pct) {
 function showView(name) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + name));
   document.querySelectorAll(".nav").forEach((n) => n.classList.toggle("active", n.dataset.view === name));
-  if (name === "overview") { idxChart && idxChart.resize(); chipChart && chipChart.resize(); }
+  if (name === "overview") { idxChart && idxChart.resize(); chipChart && chipChart.resize(); sectorChart && sectorChart.resize(); }
   if (name === "stock") { stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize(); }
   if (name === "rotation") { loadRotation(); loadCross(); }
   if (name === "watch") loadWatchlist();
@@ -257,25 +258,86 @@ async function loadDashboard() {
   return d;
 }
 
+// 依漲跌幅在「中性深色 → 紅(漲)／綠(跌)」間插值；漲跌越大顏色越飽和。
+function _hex(a, b, t) {
+  const p = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const [ar, ag, ab] = p(a), [br, bg, bb] = p(b);
+  const c = (x, y) => Math.round(x + (y - x) * t).toString(16).padStart(2, "0");
+  return "#" + c(ar, br) + c(ag, bg) + c(ab, bb);
+}
+function sectorColor(chg) {
+  if (chg == null) return "#2b3038";
+  const t = 0.35 + 0.65 * Math.min(Math.abs(chg) / 3, 1); // 小漲跌也看得出方向
+  return _hex("#2b3038", chg >= 0 ? "#e04545" : "#2ea043", t);
+}
+
 async function loadSectors() {
   const el = $("sectors");
   if (!el) return;
+  const note = $("sectors-note");
   try {
     const d = await getJSON("/api/sectors");
-    const note = $("sectors-note");
-    if (!d.sectors || !d.sectors.length) { el.innerHTML = '<div class="muted small">尚無類股資料</div>'; if (note) note.textContent = ""; return; }
+    if (!d.sectors || !d.sectors.length) {
+      renderSectorPills(el, note, null);
+      el.innerHTML = '<div class="muted small">尚無類股資料</div>'; if (note) note.textContent = ""; return;
+    }
     if (note) {
       const up = d.sectors.filter((s) => s.chg_pct > 0).length;
       const down = d.sectors.filter((s) => s.chg_pct < 0).length;
-      note.textContent = `（${d.date}　紅漲 ${up}・綠跌 ${down}，依漲幅排序）`;
+      note.textContent = `（${d.date}　紅漲 ${up}・綠跌 ${down}，面積＝成交值、顏色＝漲跌幅）`;
     }
-    el.innerHTML = d.sectors.map((s) => {
-      const cls = chgClass(s.chg_pct);
-      const arrow = s.chg_pct > 0 ? "▲" : s.chg_pct < 0 ? "▼" : "";
-      const pct = s.chg_pct == null ? "—" : arrow + fmt(Math.abs(s.chg_pct), 2) + "%";
-      return `<div class="sector ${cls}"><span class="sec-name">${s.name}</span><span class="sec-chg">${pct}</span></div>`;
-    }).join("");
+    const nodes = d.sectors
+      .filter((s) => s.turnover && s.chg_pct != null)
+      .map((s) => ({
+        name: s.name, value: s.turnover, chg: s.chg_pct,
+        itemStyle: { color: sectorColor(s.chg_pct) },
+      }));
+    if (!nodes.length) { renderSectorPills(el, note, d.sectors); return; } // 無成交值→退回條列
+    // 切成圖表容器
+    el.classList.remove("sectors");
+    el.style.height = "380px";
+    if (!sectorChart || sectorChart.getDom() !== el) sectorChart = echarts.init(el);
+    sectorChart.setOption({
+      tooltip: {
+        formatter: (p) => {
+          const sign = p.data.chg >= 0 ? "+" : "";
+          return `${p.name}<br/>漲跌 <b>${sign}${fmt(p.data.chg, 2)}%</b><br/>成交值 ${fmt(p.value / 1e8, 1)} 億`;
+        },
+      },
+      series: [{
+        type: "treemap", roam: false, nodeClick: false, animationDuration: 300,
+        breadcrumb: { show: false },
+        left: 1, right: 1, top: 1, bottom: 1,
+        itemStyle: { borderColor: "#0f1419", borderWidth: 2, gapWidth: 2 },
+        label: {
+          show: true, overflow: "truncate",
+          formatter: (p) => {
+            const sign = p.data.chg >= 0 ? "+" : "";
+            return `{n|${p.name}}\n{v|${sign}${fmt(p.data.chg, 2)}%}`;
+          },
+          rich: {
+            n: { fontSize: 13, fontWeight: 700, color: "#fff", lineHeight: 17 },
+            v: { fontSize: 12, color: "#fff", lineHeight: 15 },
+          },
+        },
+        data: nodes,
+      }],
+    }, true);
+    sectorChart.resize();
   } catch (e) { el.innerHTML = '<div class="muted small">類股載入失敗</div>'; }
+}
+
+// 退回原本的條列色塊（後端無成交值時的降級顯示）
+function renderSectorPills(el, note, sectors) {
+  if (sectorChart) { sectorChart.dispose(); sectorChart = null; }
+  el.style.height = ""; el.classList.add("sectors");
+  if (!sectors) { el.innerHTML = ""; return; }
+  el.innerHTML = sectors.map((s) => {
+    const cls = chgClass(s.chg_pct);
+    const arrow = s.chg_pct > 0 ? "▲" : s.chg_pct < 0 ? "▼" : "";
+    const pct = s.chg_pct == null ? "—" : arrow + fmt(Math.abs(s.chg_pct), 2) + "%";
+    return `<div class="sector ${cls}"><span class="sec-name">${s.name}</span><span class="sec-chg">${pct}</span></div>`;
+  }).join("");
 }
 
 // ========== 期權情緒・大額交易人 ==========
@@ -709,7 +771,7 @@ document.querySelectorAll(".rku").forEach((b) => b.addEventListener("click", () 
   document.querySelectorAll(".rku").forEach((x) => x.classList.toggle("active", x === b));
   rankUnit = b.dataset.unit; loadInstRanking();
 }));
-window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); chipChart && chipChart.resize(); stockChipsChart && stockChipsChart.resize(); });
+window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); chipChart && chipChart.resize(); stockChipsChart && stockChipsChart.resize(); sectorChart && sectorChart.resize(); });
 
 // ========== 初始載入 ==========
 (async () => {

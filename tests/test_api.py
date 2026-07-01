@@ -62,11 +62,15 @@ def test_sectors_endpoint_sorted_by_change(tmp_path, monkeypatch):
         {"name": "半導體", "close": 1.0, "chg_pct": 2.0},
         {"name": "金融保險", "close": 1.0, "chg_pct": 0.5},
     ])
+    monkeypatch.setattr(twse, "fetch_sector_turnover", lambda date=None: {"半導體": 88, "航運": 9})
     app = create_app()
     client = TestClient(app)
     r = client.get("/api/sectors").json()
     assert r["date"] == "2026-06-26"  # 預設用最新大盤日期
     assert [s["name"] for s in r["sectors"]] == ["半導體", "金融保險", "航運"]  # 漲幅大→小
+    by = {s["name"]: s for s in r["sectors"]}
+    assert by["半導體"]["turnover"] == 88  # 熱力圖面積＝成交值
+    assert by["金融保險"]["turnover"] is None  # 無成交值→退回條列/不進熱力圖
 
 
 def test_sectors_picks_cross_groups_by_sector(tmp_path, monkeypatch):

@@ -17,6 +17,7 @@ BFI82U_URL = "https://www.twse.com.tw/rwd/zh/fund/BFI82U"
 FMTQIK_RWD = "https://www.twse.com.tw/rwd/zh/afterTrading/FMTQIK"
 MARGIN_RWD = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
 MI_INDEX_RWD = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"  # 各類股指數（族群當日漲跌）
+BFIAMU_RWD = "https://www.twse.com.tw/rwd/zh/afterTrading/BFIAMU"  # 各類指數日成交量值（熱力圖面積）
 T86_URL = "https://www.twse.com.tw/rwd/zh/fund/T86"  # 個股三大法人買賣超
 NET_UNIT = 1e8  # 元 → 億
 
@@ -167,6 +168,32 @@ def parse_sector_indices(payload: dict) -> list[dict]:
             "close": _f(row[ci]) if ci is not None and ci < len(row) else None,
             "chg_pct": pct,
         })
+    return out
+
+
+def norm_sector_name(name: str) -> str:
+    """類股名正規化：去掉「類指數」後綴與尾端「業」，讓 BFIAMU 與價格指數的名稱對齊。
+
+    例：「航運業類指數」→「航運」，對齊 parse_sector_indices 的「航運」。
+    """
+    n = str(name or "").strip()
+    if n.endswith("類指數"):
+        n = n[:-3]
+    if n.endswith("業"):
+        n = n[:-1]
+    return n
+
+
+def parse_sector_turnover(payload: dict) -> dict:
+    """BFIAMU 各類指數日成交量值 → {正規化類股名: 成交金額(元)}。作為熱力圖的面積。"""
+    out: dict[str, int] = {}
+    for r in payload.get("data") or []:
+        if not r or len(r) < 3:
+            continue
+        name = norm_sector_name(r[0])
+        val = _f(r[2])  # 成交金額（元）
+        if name and val is not None:
+            out[name] = int(val)
     return out
 
 
@@ -328,6 +355,20 @@ def fetch_sector_indices(date: datetime.date | None = None) -> list[dict]:
     except Exception:  # noqa: BLE001
         pass
     return []
+
+
+def fetch_sector_turnover(date: datetime.date | None = None) -> dict:
+    """直連 BFIAMU 取指定日各類股成交金額（元），{正規化名: 金額}。查無回空 dict。"""
+    day = date or datetime.date.today()
+    try:
+        j = httpx.get(BFIAMU_RWD,
+                      params={"date": day.strftime("%Y%m%d"), "response": "json"},
+                      timeout=20, follow_redirects=True).json()
+        if j.get("stat") == "OK" and j.get("data"):
+            return parse_sector_turnover(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
 
 
 def fetch_margin(date: datetime.date | None = None) -> dict:
