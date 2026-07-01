@@ -416,7 +416,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     def market_summary(refresh: int = 0):
         c = conn()
         rows = [dict(r) for r in c.execute(
-            "SELECT * FROM market_daily ORDER BY date DESC LIMIT 10").fetchall()]
+            "SELECT * FROM market_daily ORDER BY date DESC LIMIT 6").fetchall()]
         if not rows:
             return gemini.summarize_market({}, cfg.gemini_api_key)
         m = rows[0]
@@ -433,9 +433,13 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         trend.update({label: [r.get(k) for r in hist] for k, label in keys})
         secs = [s for s in _sectors_for(c, m["date"]) if s.get("chg_pct") is not None]
         secs.sort(key=lambda s: -s["chg_pct"])
-        sectors = {"領漲": [[s["name"], s["chg_pct"]] for s in secs[:5]],
-                   "領跌": [[s["name"], s["chg_pct"]] for s in secs[-5:][::-1]]}
-        payload = {"latest": m, "trend": trend, "sectors": sectors}
+        sectors = {"領漲": [[s["name"], s["chg_pct"]] for s in secs[:3]],
+                   "領跌": [[s["name"], s["chg_pct"]] for s in secs[-3:][::-1]]}
+        # 只餵摘要需要的欄位，省 input token
+        keep = ("date", "taiex", "taiex_chg", "inst_foreign", "inst_trust", "inst_dealer",
+                "tx_foreign_oi", "retail_oi_mtx", "retail_ls_mtx", "retail_ls_tmf",
+                "margin_balance", "margin_chg", "short_balance", "vix", "vix_chg")
+        payload = {"latest": {k: m.get(k) for k in keep}, "trend": trend, "sectors": sectors}
         result = gemini.summarize_market(payload, cfg.gemini_api_key)
         if result.get("enabled"):
             set_ai_cache(c, key, result)
