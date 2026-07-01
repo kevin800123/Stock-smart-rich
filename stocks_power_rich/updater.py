@@ -162,8 +162,13 @@ def run_update(conn, intl_tickers: dict) -> dict:
             failed.append({"source": name.split("_")[0], "name": name, "error": str(e)})
 
     upsert_market_daily(conn, row)
-    # 清掉「比資料日期還新」的幽靈列（舊版以執行當天日期誤存所致）
-    conn.execute("DELETE FROM market_daily WHERE date > ?", (row["date"],))
+    # 清理：以「真實今天」為基準刪掉未來幽靈列，並清掉異常過舊(>400天)的髒列。
+    # 不可用抓到的資料日期當基準——若來源偶爾回傳錯誤舊日期，會把正常歷史整批誤刪。
+    now = datetime.now()
+    conn.execute(
+        "DELETE FROM market_daily WHERE date > ? OR date < ?",
+        (now.strftime("%Y-%m-%d"), (now - timedelta(days=400)).strftime("%Y-%m-%d")),
+    )
     conn.commit()
 
     # 校正/回補近期各列的三大法人與融資券（修正日期錯置、初值→定稿、晚間才公布）
