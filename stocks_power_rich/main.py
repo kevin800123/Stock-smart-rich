@@ -533,11 +533,31 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 out["symbol"] = "tx"
                 return out
             # 仍無法取得 → 以高度連動的加權指數近似
-            proxy = kline.fetch_index_kline("taiex", interval)
-            proxy["symbol"] = "tx"
-            proxy["proxy"] = True
-            return proxy
-        return kline.fetch_index_kline(symbol, interval)
+            try:
+                proxy = kline.fetch_index_kline("taiex", interval)
+                proxy["symbol"] = "tx"
+                proxy["proxy"] = True
+                return proxy
+            except Exception:  # noqa: BLE001
+                return {"candles": [], "dates": [], "volumes": [], "symbol": "tx"}
+        # 加權指數等：先試 yfinance；失敗/空 → 加權改用證交所 OHLC（雲端 yfinance 常被擋）
+        try:
+            out = kline.fetch_index_kline(symbol, interval)
+            if out.get("candles"):
+                return out
+        except Exception:  # noqa: BLE001
+            pass
+        if symbol == "taiex":
+            try:
+                rows = twse.fetch_index_ohlc()
+                if rows:
+                    res = kline.ohlc_candles(rows, interval)
+                    res["symbol"] = "taiex"
+                    res["source"] = "twse"
+                    return res
+            except Exception:  # noqa: BLE001
+                pass
+        return {"candles": [], "dates": [], "volumes": [], "symbol": symbol}
 
     if os.path.isdir(WEB_DIR):
         app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")

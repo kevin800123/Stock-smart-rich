@@ -57,6 +57,14 @@ def test_parse_taiex_rwd_latest_row():
     assert out["date"] == "2026-06-25"
 
 
+def test_parse_index_ohlc():
+    recs = [{"Date": "1150630", "OpeningIndex": "45,165.80", "HighestIndex": "46,637.86",
+             "LowestIndex": "45,165.80", "ClosingIndex": "46,125.91"}]
+    out = twse.parse_index_ohlc(recs)
+    assert out == [{"date": "2026-06-30", "open": 45165.80, "high": 46637.86,
+                    "low": 45165.80, "close": 46125.91, "volume": 0}]
+
+
 def test_parse_taiex_history_all_days():
     payload = {
         "fields": ["日期", "成交股數", "成交金額", "成交筆數", "發行量加權股價指數", "漲跌點數"],

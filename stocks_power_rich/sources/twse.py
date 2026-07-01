@@ -79,6 +79,22 @@ def parse_taiex_rwd(payload: dict) -> dict:
     }
 
 
+def parse_index_ohlc(records: list) -> list[dict]:
+    """MI_5MINS_HIST → 加權指數每日 OHLC（供雲端 yfinance 失敗時的 K 線來源）。"""
+    out = []
+    for r in records or []:
+        iso = _roc_to_iso(r.get("Date"))
+        o, h, l, c = (_f(r.get("OpeningIndex")), _f(r.get("HighestIndex")),
+                      _f(r.get("LowestIndex")), _f(r.get("ClosingIndex")))
+        if iso and None not in (o, h, l, c):
+            out.append({"date": iso, "open": o, "high": h, "low": l, "close": c, "volume": 0})
+    return out
+
+
+def fetch_index_ohlc() -> list[dict]:
+    return parse_index_ohlc(_get_openapi("/exchangeReport/MI_5MINS_HIST"))
+
+
 def parse_taiex_history(payload: dict) -> list[dict]:
     """FMTQIK 直連 → 整月每個交易日的加權指數與漲跌（供歷史回補）。"""
     fields = payload.get("fields")
