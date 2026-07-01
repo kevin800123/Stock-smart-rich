@@ -286,13 +286,15 @@ async function loadSectors() {
       const down = d.sectors.filter((s) => s.chg_pct < 0).length;
       note.textContent = `（${d.date}　紅漲 ${up}・綠跌 ${down}，面積＝成交值、顏色＝漲跌幅）`;
     }
-    const nodes = d.sectors
-      .filter((s) => s.turnover && s.chg_pct != null)
-      .map((s) => ({
-        name: s.name, value: s.turnover, chg: s.chg_pct,
-        itemStyle: { color: sectorColor(s.chg_pct) },
-      }));
-    if (!nodes.length) { renderSectorPills(el, note, d.sectors); return; } // 無成交值→退回條列
+    const raw = d.sectors.filter((s) => s.turnover && s.chg_pct != null);
+    if (!raw.length) { renderSectorPills(el, note, d.sectors); return; } // 無成交值→退回條列
+    // 面積＝成交值，但給最小面積下限，讓佔比很低的類股也看得到、點得到
+    const maxV = Math.max(...raw.map((s) => s.turnover));
+    const floor = maxV * 0.014;
+    const nodes = raw.map((s) => ({
+      name: s.name, value: Math.max(s.turnover, floor), real: s.turnover, chg: s.chg_pct,
+      itemStyle: { color: sectorColor(s.chg_pct) },
+    }));
     // 切成圖表容器
     el.classList.remove("sectors");
     el.style.height = "380px";
@@ -300,8 +302,9 @@ async function loadSectors() {
     sectorChart.setOption({
       tooltip: {
         formatter: (p) => {
+          if (p.data.chg == null) return `上市類股合計<br/>成交值 ${fmt(p.value / 1e8, 0)} 億`;
           const sign = p.data.chg >= 0 ? "+" : "";
-          return `${p.name}<br/>漲跌 <b>${sign}${fmt(p.data.chg, 2)}%</b><br/>成交值 ${fmt(p.value / 1e8, 1)} 億`;
+          return `${p.name}<br/>漲跌 <b>${sign}${fmt(p.data.chg, 2)}%</b><br/>成交值 ${fmt(p.data.real / 1e8, 1)} 億<br/><span style="color:#8a94a3">點擊看成分股</span>`;
         },
       },
       series: [{
@@ -323,13 +326,38 @@ async function loadSectors() {
         data: nodes,
       }],
     }, true);
+    sectorChart.off("click");
+    sectorChart.on("click", (p) => { if (p.data && p.data.chg != null) loadSectorStocks(p.name, d.date); });
     sectorChart.resize();
   } catch (e) { el.innerHTML = '<div class="muted small">類股載入失敗</div>'; }
+}
+
+// 點類股 → 載入該族群成分股當日漲跌
+async function loadSectorStocks(sector, date) {
+  const box = $("sector-stocks");
+  if (!box) return;
+  box.innerHTML = `<div class="ss-head"><b>${sector}</b> 成分股　<span class="muted small">載入中…</span></div>`;
+  try {
+    const d = await getJSON(`/api/sectors/${encodeURIComponent(sector)}/stocks?date=${date || ""}`);
+    if (!d.stocks || !d.stocks.length) { box.innerHTML = `<div class="ss-head"><b>${sector}</b> 成分股　<span class="muted small">尚無資料</span></div>`; return; }
+    const cap = 60;
+    const shown = d.stocks.slice(0, cap);
+    const more = d.count > cap ? `（顯示漲幅前 ${cap} 檔，共 ${d.count} 檔）` : `（共 ${d.count} 檔）`;
+    const cells = shown.map((s) => {
+      const cls = chgClass(s.chg_pct);
+      const sign = s.chg_pct > 0 ? "+" : "";
+      return `<div class="ss-cell ${cls}"><span class="ss-name">${s.code} ${s.name || ""}</span><span class="ss-chg">${s.chg_pct == null ? "—" : sign + fmt(s.chg_pct, 2) + "%"}</span></div>`;
+    }).join("");
+    box.innerHTML = `<div class="ss-head"><b>${sector}</b> 成分股 <span class="muted small">${more}</span> <span class="ss-close" title="收合">✕</span></div><div class="ss-grid">${cells}</div>`;
+    const close = box.querySelector(".ss-close");
+    if (close) close.addEventListener("click", () => { box.innerHTML = ""; });
+  } catch (e) { box.innerHTML = `<div class="ss-head"><b>${sector}</b> 成分股　<span class="muted small">載入失敗</span></div>`; }
 }
 
 // 退回原本的條列色塊（後端無成交值時的降級顯示）
 function renderSectorPills(el, note, sectors) {
   if (sectorChart) { sectorChart.dispose(); sectorChart = null; }
+  const ssbox = $("sector-stocks"); if (ssbox) ssbox.innerHTML = "";
   el.style.height = ""; el.classList.add("sectors");
   if (!sectors) { el.innerHTML = ""; return; }
   el.innerHTML = sectors.map((s) => {

@@ -153,6 +153,43 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             set_ai_cache(c, f"sectors:{ds}", {"date": ds, "sectors": secs})
         return secs
 
+    @app.get("/api/sectors/{sector}/stocks")
+    def sector_stocks(sector: str, date: str | None = None):
+        """點選熱力圖類股 → 回傳該類股成分股當日漲跌，依漲跌%由強到弱。"""
+        c = conn()
+        if not date:
+            last = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
+            date = last[0] if last else None
+        if not date:
+            return {"sector": sector, "date": None, "stocks": []}
+        # 個股→類股（靜態，快取一份即可）
+        imap = get_ai_cache(c, "listed_industry")
+        if not imap:
+            imap = twse.fetch_listed_industry()
+            if imap:
+                set_ai_cache(c, "listed_industry", imap)
+        # 當日全個股報價（逐日快取）
+        qkey = f"stock_quotes:{date}"
+        quotes = get_ai_cache(c, qkey)
+        if quotes is None:
+            try:
+                quotes = twse.fetch_stock_quotes(datetime.fromisoformat(date).date())
+            except Exception:  # noqa: BLE001
+                quotes = {}
+            if quotes:
+                set_ai_cache(c, qkey, quotes)
+        stocks = []
+        for code, sec in (imap or {}).items():
+            if sec != sector:
+                continue
+            q = (quotes or {}).get(code)
+            if not q:
+                continue
+            stocks.append({"code": code, "name": q.get("name"),
+                           "chg_pct": q.get("chg_pct"), "close": q.get("close")})
+        stocks.sort(key=lambda s: (s["chg_pct"] is None, -(s["chg_pct"] or 0)))
+        return {"sector": sector, "date": date, "count": len(stocks), "stocks": stocks}
+
     @app.get("/api/sectors/rotation")
     def sectors_rotation(days: int = 5):
         c = conn()

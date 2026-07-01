@@ -82,6 +82,18 @@ body {
 .sector.down .sec-chg { color: var(--down); }
 .sector.flat .sec-chg { color: var(--muted); }
 
+.sector-stocks:not(:empty) { margin-top: 10px; }
+.ss-head { display: flex; align-items: center; gap: 8px; font-size: 14px; margin-bottom: 8px; }
+.ss-head .ss-close { margin-left: auto; cursor: pointer; color: var(--muted); padding: 0 6px; }
+.ss-head .ss-close:hover { color: #fff; }
+.ss-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 6px; }
+.ss-cell { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--muted); border-radius: 6px; padding: 5px 8px; display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 12.5px; }
+.ss-cell .ss-name { color: #cfd6df; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-cell .ss-chg { font-weight: 700; white-space: nowrap; }
+.ss-cell.up { border-left-color: var(--up); } .ss-cell.up .ss-chg { color: var(--up); }
+.ss-cell.down { border-left-color: var(--down); } .ss-cell.down .ss-chg { color: var(--down); }
+.ss-cell.flat .ss-chg { color: var(--muted); }
+
 /* ===== 族群輪動 + 交叉選股 ===== */
 .cross-grp { border: 1px solid var(--border); border-left: 3px solid var(--muted); border-radius: 6px; padding: 8px 11px; margin-bottom: 6px; background: var(--card); }
 .cross-grp.up { border-left-color: var(--up); }

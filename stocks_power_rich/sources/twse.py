@@ -184,6 +184,63 @@ def norm_sector_name(name: str) -> str:
     return n
 
 
+# 上市公司「產業別」代碼 → 官方類股名（對齊 fetch_sector_indices 的類股命名）。
+# 資料源 t187ap03_L 的產業別是代碼而非名稱。存託憑證(91)/管理股票等不對應類股。
+_INDUSTRY_CODE = {
+    "01": "水泥", "02": "食品", "03": "塑膠", "04": "紡織纖維", "05": "電機機械",
+    "06": "電器電纜", "08": "玻璃陶瓷", "09": "造紙", "10": "鋼鐵", "11": "橡膠",
+    "12": "汽車", "14": "建材營造", "15": "航運", "16": "觀光餐旅", "17": "金融保險",
+    "18": "貿易百貨", "20": "其他", "21": "化學", "22": "生技醫療", "23": "油電燃氣",
+    "24": "半導體", "25": "電腦及週邊設備", "26": "光電", "27": "通信網路",
+    "28": "電子零組件", "29": "電子通路", "30": "資訊服務", "31": "其他電子",
+    "35": "綠能環保", "36": "數位雲端", "37": "運動休閒", "38": "居家生活",
+}
+
+
+def parse_listed_industry(records: list) -> dict:
+    """上市公司基本資料 t187ap03_L → {證券代號: 官方類股名}。未知代碼略過。"""
+    out: dict[str, str] = {}
+    for r in records or []:
+        code = str(r.get("公司代號", "")).strip()
+        sec = _INDUSTRY_CODE.get(str(r.get("產業別", "")).strip())
+        if code and sec:
+            out[code] = sec
+    return out
+
+
+def parse_stock_quotes(payload: dict) -> dict:
+    """MI_INDEX(type=ALL) 每日收盤行情(全部) → {代號: {name, close, chg_pct}}。
+
+    漲跌方向以「漲跌(+/-)」欄顏色為準（red 漲/green 跌/其餘平盤），漲跌價差為絕對值，
+    以昨收(收盤−帶號價差)換算漲跌百分比。無收盤或無價差的列略過。
+    """
+    out: dict[str, dict] = {}
+    for tb in payload.get("tables") or []:
+        fields = tb.get("fields") or []
+        if "證券代號" not in fields or "漲跌價差" not in fields:
+            continue
+        idx = {n: i for i, n in enumerate(fields)}
+        ci, ni, cl, di, gi = (idx.get("證券代號"), idx.get("證券名稱"), idx.get("收盤價"),
+                              idx.get("漲跌(+/-)"), idx.get("漲跌價差"))
+        for row in tb.get("data") or []:
+            if ci is None or ci >= len(row):
+                continue
+            code = str(row[ci]).strip()
+            close = _f(row[cl]) if cl is not None and cl < len(row) else None
+            diff = _f(row[gi]) if gi is not None and gi < len(row) else None
+            if not code or close is None or diff is None:
+                continue
+            dcell = str(row[di]) if di is not None and di < len(row) else ""
+            sign = -1 if "green" in dcell else (1 if "red" in dcell else 0)
+            prev = close - sign * abs(diff)
+            pct = round(sign * abs(diff) / prev * 100, 2) if prev else 0.0
+            out[code] = {
+                "name": str(row[ni]).strip() if ni is not None and ni < len(row) else "",
+                "close": close, "chg_pct": pct,
+            }
+    return out
+
+
 def parse_sector_turnover(payload: dict) -> dict:
     """BFIAMU 各類指數日成交量值 → {正規化類股名: 成交金額(元)}。作為熱力圖的面積。"""
     out: dict[str, int] = {}
@@ -366,6 +423,28 @@ def fetch_sector_turnover(date: datetime.date | None = None) -> dict:
                       timeout=20, follow_redirects=True).json()
         if j.get("stat") == "OK" and j.get("data"):
             return parse_sector_turnover(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
+def fetch_listed_industry() -> dict:
+    """上市公司基本資料 → {證券代號: 官方類股名}。屬靜態資料，呼叫端宜快取。"""
+    try:
+        return parse_listed_industry(_get_openapi("/opendata/t187ap03_L"))
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def fetch_stock_quotes(date: datetime.date | None = None) -> dict:
+    """直連 MI_INDEX(type=ALL) 取指定日全上市個股 {代號: {name, close, chg_pct}}。查無回空。"""
+    day = date or datetime.date.today()
+    try:
+        j = httpx.get(MI_INDEX_RWD,
+                      params={"date": day.strftime("%Y%m%d"), "type": "ALL", "response": "json"},
+                      timeout=25, follow_redirects=True).json()
+        if j.get("stat") == "OK" and j.get("tables"):
+            return parse_stock_quotes(j)
     except Exception:  # noqa: BLE001
         pass
     return {}

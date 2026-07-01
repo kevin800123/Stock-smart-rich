@@ -130,6 +130,35 @@ def test_parse_sector_turnover_normalizes_names():
     assert out["半導體"] == 88000000000
 
 
+def test_parse_listed_industry_maps_codes():
+    recs = [
+        {"公司代號": "2330", "產業別": "24"},   # 半導體業
+        {"公司代號": "1101", "產業別": "01"},   # 水泥
+        {"公司代號": "2603", "產業別": "15"},   # 航運業→航運
+        {"公司代號": "9999", "產業別": "91"},   # 存託憑證→不對應
+    ]
+    out = twse.parse_listed_industry(recs)
+    assert out["2330"] == "半導體"
+    assert out["1101"] == "水泥"
+    assert out["2603"] == "航運"          # 對齊 fetch_sector_indices 的「航運」
+    assert "9999" not in out
+
+
+def test_parse_stock_quotes_signs_pct():
+    payload = {"tables": [
+        {"fields": ["證券代號", "收盤價"], "data": [["X", "1"]]},  # 無漲跌價差→略過整表
+        {"fields": ["證券代號", "證券名稱", "收盤價", "漲跌(+/-)", "漲跌價差"], "data": [
+            ["2330", "台積電", "2,505.00", "<p style= color:red>+</p>", "95.00"],
+            ["2317", "鴻海", "248.00", "<p style= color:green>-</p>", "3.00"],
+            ["1101", "台泥", "23.00", "<p>X</p>", "0.00"],
+        ]},
+    ]}
+    out = twse.parse_stock_quotes(payload)
+    assert out["2330"]["name"] == "台積電" and out["2330"]["chg_pct"] == 3.94   # 95/2410
+    assert out["2317"]["chg_pct"] == -1.2                                       # -3/251
+    assert out["1101"]["chg_pct"] == 0.0                                        # 平盤
+
+
 def test_parse_close_prices():
     payload = {"tables": [
         {"fields": ["指數", "收盤指數"], "data": [["加權", "1"]]},  # 非個股表→略過

@@ -73,6 +73,28 @@ def test_sectors_endpoint_sorted_by_change(tmp_path, monkeypatch):
     assert by["金融保險"]["turnover"] is None  # 無成交值→退回條列/不進熱力圖
 
 
+def test_sector_stocks_lists_constituents_by_change(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import twse
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-06-26", "taiex": 100.0})
+    monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {
+        "2330": "半導體", "2454": "半導體", "2603": "航運"})
+    monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {
+        "2330": {"name": "台積電", "close": 2505.0, "chg_pct": 3.94},
+        "2454": {"name": "聯發科", "close": 1000.0, "chg_pct": -1.0},
+        "2603": {"name": "長榮", "close": 200.0, "chg_pct": 5.0}})
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/sectors/半導體/stocks").json()
+    assert r["sector"] == "半導體" and r["date"] == "2026-06-26" and r["count"] == 2
+    assert [s["code"] for s in r["stocks"]] == ["2330", "2454"]  # 依漲跌%由強到弱，且不含航運股
+    assert r["stocks"][0]["name"] == "台積電"
+
+
 def test_sectors_picks_cross_groups_by_sector(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import get_connection, init_db, insert_chip_snapshot
