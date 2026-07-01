@@ -441,7 +441,6 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             set_ai_cache(c, key, result)
         return result
 
-    @app.get("/api/stock/{code}/chips")
     def _insti_for(c, ds: str, market: str) -> dict:
         """某日全市場個股三大法人（market='twse' 用 T86、'tpex' 用櫃買），依日期快取。"""
         key = f"{'t86' if market == 'twse' else 'tpex'}:{ds}"
@@ -456,6 +455,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 set_ai_cache(c, key, t)
         return t or {}
 
+    @app.get("/api/stock/{code}/chips")
     def stock_chips(code: str, days: int = 10):
         c = conn()
         pure = code.split(".")[0]
