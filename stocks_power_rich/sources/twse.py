@@ -216,16 +216,20 @@ def parse_valuation(records: list) -> list[dict]:
 # ---- 網路包裝 ----
 
 def fetch_taiex() -> dict:
-    """直連 FMTQIK 取最新加權指數（當日盤後即有；回傳含資料日期作為全列錨點）。"""
-    for back in (0, 35):  # 跨月初容錯：當月無資料就回看上一個月
-        day = datetime.date.today() - datetime.timedelta(days=back)
+    """直連 FMTQIK 取最新加權指數（當日盤後即有；回傳含資料日期作為全列錨點）。
+
+    月初本月尚無資料時，回看「上月最後一天」而非往回固定天數（避免跳過整個上月）。
+    """
+    today = datetime.date.today()
+    anchors = [today, today.replace(day=1) - datetime.timedelta(days=1)]  # 本月、上月最後一天
+    for day in anchors:
         try:
             j = httpx.get(FMTQIK_RWD, params={"date": day.strftime("%Y%m%d"), "response": "json"},
                           timeout=20, follow_redirects=True).json()
             out = parse_taiex_rwd(j)
             if out["taiex"] is not None:
                 return out
-        except Exception:  # noqa: BLE001 — 試下一個月份
+        except Exception:  # noqa: BLE001 — 試上一個月份
             pass
     return {"taiex": None, "taiex_chg": None, "date": None}
 

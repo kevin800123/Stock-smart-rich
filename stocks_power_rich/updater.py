@@ -100,9 +100,13 @@ def backfill_history(conn, days: int = 30) -> int:
     """
     cutoff = (_date.today() - timedelta(days=days)).isoformat()
     seen: dict = {}
-    for back in (0, 32):  # 本月 + 上月，覆蓋約一個月以上的交易日
-        d0 = _date.today() - timedelta(days=back)
-        for r in twse.fetch_taiex_history(d0):
+    # 近 3 個月錨點（本月、上月、上上月最後一天），避免月初漏掉整個上月
+    anchor, anchors = _date.today(), []
+    for _ in range(3):
+        anchors.append(anchor)
+        anchor = anchor.replace(day=1) - timedelta(days=1)
+    for a in anchors:
+        for r in twse.fetch_taiex_history(a):
             if r["date"] >= cutoff:
                 seen[r["date"]] = r
     for iso in sorted(seen):
