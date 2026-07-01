@@ -26,13 +26,22 @@ def _df_to_candles(df, interval: str = "1d") -> dict:
     return {"dates": dates, "candles": candles, "volumes": volumes, "waves": waves}
 
 
-def _history(code: str, period: str, interval: str):
-    try:
-        return yf.Ticker(code).history(period=period, interval=interval)
-    except Exception:  # noqa: BLE001 — 抓不到視為空
-        import pandas as pd
+def _history(code: str, period: str, interval: str, tries: int = 3):
+    """抓 yfinance 歷史；雲端 IP 常被 Yahoo 偶發限流，故重試數次，全失敗回空 df。"""
+    import time
 
-        return pd.DataFrame()
+    import pandas as pd
+
+    for i in range(tries):
+        try:
+            df = yf.Ticker(code).history(period=period, interval=interval)
+            if df is not None and not df.empty:
+                return df
+        except Exception:  # noqa: BLE001 — 限流/錯誤 → 重試
+            pass
+        if i < tries - 1:
+            time.sleep(0.8)
+    return pd.DataFrame()
 
 
 def fetch_kline(code: str, period: str = "1y", interval: str = "1d") -> dict:
@@ -55,8 +64,8 @@ def fetch_index_kline(symbol: str, interval: str = "1d") -> dict:
     if not ticker:
         return empty
     period = INTERVAL_PERIOD.get(interval, "6mo")
-    df = yf.Ticker(ticker).history(period=period, interval=interval)
-    if df.empty:
+    df = _history(ticker, period, interval)
+    if df is None or df.empty:
         return empty
     return {"symbol": symbol, **_df_to_candles(df, interval)}
 
