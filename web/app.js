@@ -567,9 +567,10 @@ async function loadStockChips(code) {
   try {
     const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/chips?days=10`);
     stockChipsChart.hideLoading();
-    if (!d.total || !d.total.some((v) => v != null)) { stockChipsChart.clear(); if (note) note.textContent = "（查無此股三大法人資料；上櫃股暫不支援）"; return; }
+    if (!d.total || !d.total.some((v) => v != null)) { stockChipsChart.clear(); if (note) note.textContent = "（查無此股三大法人資料）"; return; }
     const last = [...d.total].reverse().find((v) => v != null);
-    if (note) note.textContent = `（最新合計 ${last > 0 ? "+" : ""}${fmt(last, 0)} 張）`;
+    const mk = d.market === "tpex" ? "上櫃" : "上市";
+    if (note) note.textContent = `（${mk}・最新合計 ${last > 0 ? "+" : ""}${fmt(last, 0)} 張）`;
     const bar = (name, arr, color) => ({ name, type: "bar", stack: "三大法人", data: arr, itemStyle: { color } });
     stockChipsChart.setOption({
       tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },

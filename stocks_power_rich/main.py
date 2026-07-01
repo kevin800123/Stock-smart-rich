@@ -10,7 +10,7 @@ from datetime import datetime
 
 from . import analysis, csv_import, exporter, gemini, updater
 from .config import load_config
-from .sources import kline, taifex, tdcc, twse
+from .sources import kline, taifex, tdcc, tpex, twse
 from .db import (
     add_watch,
     get_ai_cache,
@@ -442,23 +442,36 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         return result
 
     @app.get("/api/stock/{code}/chips")
+    def _insti_for(c, ds: str, market: str) -> dict:
+        """某日全市場個股三大法人（market='twse' 用 T86、'tpex' 用櫃買），依日期快取。"""
+        key = f"{'t86' if market == 'twse' else 'tpex'}:{ds}"
+        t = get_ai_cache(c, key)
+        if t is None:
+            try:
+                d = datetime.fromisoformat(ds).date()
+                t = twse.fetch_t86(d) if market == "twse" else tpex.fetch_tpex_insti(d)
+            except Exception:  # noqa: BLE001
+                t = {}
+            if t:
+                set_ai_cache(c, key, t)
+        return t or {}
+
     def stock_chips(code: str, days: int = 10):
         c = conn()
         pure = code.split(".")[0]
         days = max(2, min(days, 20))
         rows = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT ?", (days,)).fetchall()
         dlist = [r[0] for r in reversed(rows)]
+        # 判斷上市/上櫃：最新交易日的 T86 有此股→上市，否則試櫃買
+        market = "twse"
+        if dlist and pure not in _insti_for(c, dlist[-1], "twse"):
+            market = "tpex"
         series = {"foreign": [], "trust": [], "dealer": [], "total": []}
         for ds in dlist:
-            t = get_ai_cache(c, f"t86:{ds}")
-            if t is None:
-                t = twse.fetch_t86(datetime.fromisoformat(ds).date())
-                if t:
-                    set_ai_cache(c, f"t86:{ds}", t)
-            rec = (t or {}).get(pure)
+            rec = _insti_for(c, ds, market).get(pure)
             for k in series:
                 series[k].append(rec.get(k) if rec else None)
-        return {"code": pure, "dates": dlist, **series}
+        return {"code": pure, "market": market, "dates": dlist, **series}
 
     @app.get("/api/stock/{code}/custody")
     def stock_custody(code: str):
