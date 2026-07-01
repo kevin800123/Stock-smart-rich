@@ -326,8 +326,9 @@ async function loadSectors() {
         data: nodes,
       }],
     }, true);
+    const validNames = new Set(nodes.map((n) => n.name));
     sectorChart.off("click");
-    sectorChart.on("click", (p) => { if (p.data && p.data.chg != null) loadSectorStocks(p.name, d.date); });
+    sectorChart.on("click", (p) => { if (p && validNames.has(p.name)) loadSectorStocks(p.name, d.date); });
     sectorChart.resize();
   } catch (e) { el.innerHTML = '<div class="muted small">類股載入失敗</div>'; }
 }

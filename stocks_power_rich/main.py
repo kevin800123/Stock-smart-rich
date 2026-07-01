@@ -635,8 +635,18 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         return {"candles": [], "dates": [], "volumes": [], "symbol": symbol}
 
     if os.path.isdir(WEB_DIR):
-        app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
+        app.mount("/", _NoCacheStatic(directory=WEB_DIR, html=True), name="web")
     return app
+
+
+class _NoCacheStatic(StaticFiles):
+    """前端靜態檔一律加 Cache-Control: no-cache，讓瀏覽器每次都向伺服器驗證（ETag 命中回 304），
+    重新部署後能立即載到最新的 app.js/styles.css，避免使用者看到舊版而『點了沒反應』。"""
+
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
 
 
 app = create_app(enable_scheduler=os.getenv("SPR_ENABLE_SCHEDULER", "0") == "1")
