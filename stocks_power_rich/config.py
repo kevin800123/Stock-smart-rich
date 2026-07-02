@@ -11,6 +11,7 @@ INTL_TICKERS = {
     "n225": "^N225",    # 日經
     "kospi": "^KS11",   # 韓股 KOSPI
     "gold": "GC=F",     # 黃金期貨
+    "jpy": "JPYTWD=X",  # 日圓兌台幣（1 JPY ≒ 0.2x TWD）
     "btc": "BTC-USD",   # 比特幣
     "vix": "^VIX",      # VIX 恐慌指數（CBOE）
 }

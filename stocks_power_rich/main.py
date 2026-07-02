@@ -619,19 +619,22 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         if not force and m["date"] != datetime.now().strftime("%Y-%m-%d"):
             return {"ok": False, "skipped": True, "error": f"資料日 {m['date']} 非今日，略過"}
         secs = [s for s in _sectors_for(c, m["date"]) if s.get("chg_pct") is not None]
-        # 自選股：附當日漲跌（上市報價表；上櫃無報價則只列名）與是否在榜
-        watch = []
+        # 自選股：附股價/當日漲跌（上市報價表；上櫃無當日報價則以最新快照收盤替代）與是否在榜
+        watch, tsmc = [], None
         try:
             quotes = _quotes_for(c, m["date"])
+            tsmc = quotes.get("2330")
             for s in get_watchlist().get("stocks", []):
-                q = quotes.get(s["code"].split(".")[0])
+                q = quotes.get(s["code"].split(".")[0]) or {}
+                chip = s.get("chip") or {}
                 watch.append({"code": s["code"], "name": s.get("name"),
-                              "chg_pct": (q or {}).get("chg_pct"), "in_latest": s.get("in_latest")})
+                              "close": q.get("close") or chip.get("close"),
+                              "chg_pct": q.get("chg_pct"), "in_latest": s.get("in_latest")})
         except Exception:  # noqa: BLE001 — 自選股失敗不影響推播主體
             pass
         ai = market_summary(refresh=0)
         ai_text = (ai.get("text") or "") if ai.get("enabled") else ""
-        txt = line_push.compose_daily_brief(m, secs, watch, ai_text=ai_text, full=full)
+        txt = line_push.compose_daily_brief(m, secs, watch, ai_text=ai_text, full=full, tsmc=tsmc)
         return line_push.broadcast_text(cfg.line_token, txt)
 
     @app.post("/api/line/test")
