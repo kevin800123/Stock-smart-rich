@@ -198,13 +198,17 @@ _INDUSTRY_CODE = {
 
 
 def parse_listed_industry(records: list) -> dict:
-    """上市公司基本資料 t187ap03_L → {證券代號: 官方類股名}。未知代碼略過。"""
-    out: dict[str, str] = {}
+    """上市公司基本資料 t187ap03_L → {代號: {sector, name, shares}}。
+
+    shares＝已發行普通股數（×收盤價≒市值）。產業別代碼未知（存託憑證等）略過。
+    """
+    out: dict[str, dict] = {}
     for r in records or []:
         code = str(r.get("公司代號", "")).strip()
         sec = _INDUSTRY_CODE.get(str(r.get("產業別", "")).strip())
         if code and sec:
-            out[code] = sec
+            out[code] = {"sector": sec, "name": str(r.get("公司簡稱", "")).strip(),
+                         "shares": _f(r.get("已發行普通股數或TDR原股發行股數"))}
     return out
 
 

@@ -73,7 +73,7 @@ def test_sectors_endpoint_sorted_by_change(tmp_path, monkeypatch):
     assert by["金融保險"]["turnover"] is None  # 無成交值→退回條列/不進熱力圖
 
 
-def test_sector_stocks_lists_constituents_by_change(tmp_path, monkeypatch):
+def test_sector_stocks_lists_constituents_by_mcap(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
     from stocks_power_rich.sources import twse
@@ -82,17 +82,22 @@ def test_sector_stocks_lists_constituents_by_change(tmp_path, monkeypatch):
     init_db(c)
     upsert_market_daily(c, {"date": "2026-06-26", "taiex": 100.0})
     monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {
-        "2330": "半導體", "2454": "半導體", "2603": "航運"})
+        "2330": {"sector": "半導體", "name": "台積電", "shares": 25_930_000_000},
+        "2454": {"sector": "半導體", "name": "聯發科", "shares": 1_600_000_000},
+        "6789": {"sector": "半導體", "name": "采鈺", "shares": None},   # 無股數→市值 None 排最後
+        "2603": {"sector": "航運", "name": "長榮", "shares": 2_100_000_000}})
     monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {
         "2330": {"name": "台積電", "close": 2505.0, "chg_pct": 3.94},
         "2454": {"name": "聯發科", "close": 1000.0, "chg_pct": -1.0},
+        "6789": {"name": "采鈺", "close": 300.0, "chg_pct": 4.29},
         "2603": {"name": "長榮", "close": 200.0, "chg_pct": 5.0}})
     app = create_app()
     client = TestClient(app)
     r = client.get("/api/sectors/半導體/stocks").json()
-    assert r["sector"] == "半導體" and r["date"] == "2026-06-26" and r["count"] == 2
-    assert [s["code"] for s in r["stocks"]] == ["2330", "2454"]  # 依漲跌%由強到弱，且不含航運股
-    assert r["stocks"][0]["name"] == "台積電"
+    assert r["sector"] == "半導體" and r["date"] == "2026-06-26" and r["count"] == 3
+    assert [s["code"] for s in r["stocks"]] == ["2330", "2454", "6789"]  # 市值大→小，無股數者最後
+    assert r["stocks"][0]["mcap"] == round(25_930_000_000 * 2505.0 / 1e8, 1)  # 億
+    assert "2603" not in [s["code"] for s in r["stocks"]]  # 不含他類股
 
 
 def test_sectors_picks_cross_groups_by_sector(tmp_path, monkeypatch):
@@ -135,6 +140,8 @@ def test_watchlist_add_track_remove(tmp_path, monkeypatch):
     s = r["stocks"][0]
     assert s["code"] == "2330.TW" and s["in_latest"] is True and s["times"] == 2
     assert s["entry_date"] == "2026-06-25" and s["ret_pct"] == 10.0  # 100→110
+    assert s["name"] == "台積電"                                     # 股名取自快照
+    assert s["chip"]["lan_value"] == 80 and s["chip"]["close"] == 110  # 最新快照籌碼欄位
     assert client.delete("/api/watchlist/2330.TW").json()["stocks"] == []
 
 

@@ -74,6 +74,10 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             except Exception:  # noqa: BLE001 — 排程容錯
                 pass
         updater.run_update(c, cfg.intl_tickers)
+        try:
+            market_summary(refresh=0)  # 數據到齊後自動生成當日盤勢摘要；同簽章直接命中快取，不重複扣費
+        except Exception:  # noqa: BLE001 — 摘要失敗不影響資料更新
+            pass
 
     if enable_scheduler:
         from .scheduler import start_scheduler
@@ -160,20 +164,24 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             set_ai_cache(c, f"sectors:{ds}", {"date": ds, "sectors": secs})
         return secs
 
+    def _industry_map(c) -> dict:
+        """上市個股基本資料 {代號: {sector, name, shares}}（近乎靜態，按月快取，新上市會更新）。"""
+        key = f"listed_ind2:{datetime.now().strftime('%Y-%m')}"
+        m = get_ai_cache(c, key)
+        if not m:
+            m = twse.fetch_listed_industry()
+            if m:
+                set_ai_cache(c, key, m)
+        return m or {}
+
     @app.get("/api/sectors/{sector}/stocks")
     def sector_stocks(sector: str, date: str | None = None):
-        """點選熱力圖類股 → 回傳該類股成分股當日漲跌，依漲跌%由強到弱。"""
+        """點選熱力圖類股 → 回傳該類股成分股當日漲跌，依市值（發行股數×收盤）由大到小。"""
         c = conn()
         date = date or _latest_date(c)
         if not date:
             return {"sector": sector, "date": None, "stocks": []}
-        # 個股→類股（近乎靜態；按月換 key，讓新上市/變更產業別的個股會更新）
-        ikey = f"listed_industry:{date[:7]}"
-        imap = get_ai_cache(c, ikey)
-        if not imap:
-            imap = twse.fetch_listed_industry()
-            if imap:
-                set_ai_cache(c, ikey, imap)
+        imap = _industry_map(c)
         # 當日全個股報價（逐日快取）
         qkey = f"stock_quotes:{date}"
         quotes = get_ai_cache(c, qkey)
@@ -185,15 +193,17 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             if quotes:
                 set_ai_cache(c, qkey, quotes)
         stocks = []
-        for code, sec in (imap or {}).items():
-            if sec != sector:
+        for code, info in imap.items():
+            if info.get("sector") != sector:
                 continue
             q = (quotes or {}).get(code)
             if not q:
                 continue
+            shares, close = info.get("shares"), q.get("close")
+            mcap = round(shares * close / 1e8, 1) if (shares and close) else None  # 億元
             stocks.append({"code": code, "name": q.get("name"),
-                           "chg_pct": q.get("chg_pct"), "close": q.get("close")})
-        stocks.sort(key=lambda s: (s["chg_pct"] is None, -(s["chg_pct"] or 0)))
+                           "chg_pct": q.get("chg_pct"), "close": close, "mcap": mcap})
+        stocks.sort(key=lambda s: (s["mcap"] is None, -(s["mcap"] or 0)))  # 市值大→小
         return {"sector": sector, "date": date, "count": len(stocks), "stocks": stocks}
 
     @app.get("/api/sectors/rotation")
@@ -245,6 +255,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         picks_by_date = {d: _picks_index(c, d) for d in dates}
         latest = dates[-1] if dates else None
         out = []
+        imap = None  # 補股名用（上市基本資料，月快取）；快照都查不到名字才載入
         for w in wl:
             code = w["code"]
             on = [d for d in dates if code in picks_by_date[d]]
@@ -252,9 +263,19 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             ec = picks_by_date[entry][code].get("close") if entry else None
             lc = picks_by_date[latest][code].get("close") if (latest and code in picks_by_date.get(latest, {})) else None
             ret = round((lc - ec) / ec * 100, 2) if (ec and lc) else None
-            nm = w["name"] or next((picks_by_date[d][code].get("name") for d in reversed(dates) if code in picks_by_date[d]), "")
+            # 最新一筆快照的籌碼欄位（不限是否入選股榜，CSV 有此股即有資料）
+            chip_row = c.execute(
+                "SELECT snap_date, name, close, lan_value, lpe, est_profit, rev_yoy, "
+                "holder_drop_ratio, big_holder_ratio FROM chip_snapshot "
+                "WHERE code=? ORDER BY snap_date DESC LIMIT 1", (code,)).fetchone()
+            chip = dict(chip_row) if chip_row else None
+            nm = w["name"] or (chip or {}).get("name") or ""
+            if not nm:
+                if imap is None:
+                    imap = _industry_map(c)
+                nm = (imap.get(code.split(".")[0]) or {}).get("name") or ""
             out.append({**w, "name": nm, "in_latest": bool(latest and code in picks_by_date.get(latest, {})),
-                        "times": len(on), "entry_date": entry, "ret_pct": ret})
+                        "times": len(on), "entry_date": entry, "ret_pct": ret, "chip": chip})
         return {"stocks": out, "latest": latest}
 
     @app.post("/api/watchlist")
@@ -499,7 +520,12 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         if not rows:
             return gemini.summarize_market({}, cfg.gemini_api_key)
         m = rows[0]
-        key = f"market:{m.get('date')}:{m.get('updated_at')}"
+        # 快取鍵＝日期＋四項核心數據(大盤/法人/外資OI/散戶多空比)到位簽章：
+        # 同日數據沒變就直接回快取，不因 updated_at 變動而重新生成（省 token）；
+        # 數據補齊（簽章改變）才自動重生一次。
+        sig = "".join("1" if m.get(k) is not None else "0"
+                      for k in ("taiex", "inst_foreign", "tx_foreign_oi", "retail_ls_mtx"))
+        key = f"market:{m.get('date')}:{sig}"
         cached = get_ai_cache(c, key)
         if cached and not refresh:
             return cached

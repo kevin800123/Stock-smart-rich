@@ -343,11 +343,12 @@ async function loadSectorStocks(sector, date) {
     if (!d.stocks || !d.stocks.length) { box.innerHTML = `<div class="ss-head"><b>${sector}</b> 成分股　<span class="muted small">尚無資料</span></div>`; return; }
     const cap = 60;
     const shown = d.stocks.slice(0, cap);
-    const more = d.count > cap ? `（顯示漲幅前 ${cap} 檔，共 ${d.count} 檔）` : `（共 ${d.count} 檔）`;
+    const more = d.count > cap ? `（依市值排序，顯示前 ${cap} 檔，共 ${d.count} 檔）` : `（依市值排序，共 ${d.count} 檔）`;
     const cells = shown.map((s) => {
       const cls = chgClass(s.chg_pct);
       const sign = s.chg_pct > 0 ? "+" : "";
-      return `<div class="ss-cell ${cls}"><span class="ss-name">${s.code} ${s.name || ""}</span><span class="ss-chg">${s.chg_pct == null ? "—" : sign + fmt(s.chg_pct, 2) + "%"}</span></div>`;
+      const tip = s.mcap == null ? "" : ` title="市值約 ${fmt(s.mcap, 0)} 億"`;
+      return `<div class="ss-cell ${cls}"${tip}><span class="ss-name">${s.code} ${s.name || ""}</span><span class="ss-chg">${s.chg_pct == null ? "—" : sign + fmt(s.chg_pct, 2) + "%"}</span></div>`;
     }).join("");
     box.innerHTML = `<div class="ss-head"><b>${sector}</b> 成分股 <span class="muted small">${more}</span> <span class="ss-close" title="收合">✕</span></div><div class="ss-grid">${cells}</div>`;
     const close = box.querySelector(".ss-close");
@@ -407,12 +408,17 @@ async function loadWatchlist() {
   try {
     const d = await getJSON("/api/watchlist");
     if (!d.stocks || !d.stocks.length) { el.innerHTML = '<div class="muted small">尚無自選股，輸入股號加入。</div>'; return; }
+    const num = (v, d = 2) => `<td style="text-align:right">${v == null ? "—" : fmt(v, d)}</td>`;
     const rows = d.stocks.map((s) => {
       const onb = s.in_latest ? '<span class="status new">在榜</span>' : '<span class="status out">未在榜</span>';
       const ret = s.ret_pct == null ? "—" : `<span class="${s.ret_pct > 0 ? "up" : s.ret_pct < 0 ? "down" : ""}">${s.ret_pct > 0 ? "+" : ""}${fmt(s.ret_pct, 2)}%</span>`;
-      return `<tr><td>${stockLink(s.code, s.name)}</td><td>${onb}</td><td style="text-align:right">${s.times}</td><td>${s.entry_date || "—"}</td><td style="text-align:right">${ret}</td><td><a href="#" class="watch-del" data-code="${s.code}" style="color:#e08585">移除</a></td></tr>`;
+      const ch = s.chip || {};
+      return `<tr><td>${stockLink(s.code, s.name)}</td><td>${onb}</td><td style="text-align:right">${s.times}</td><td>${s.entry_date || "—"}</td><td style="text-align:right">${ret}</td>` +
+        num(ch.close) + num(ch.lan_value, 1) + num(ch.lpe, 1) + num(ch.est_profit) + num(ch.rev_yoy, 1) + num(ch.holder_drop_ratio) + num(ch.big_holder_ratio) +
+        `<td><a href="#" class="watch-del" data-code="${s.code}" style="color:#e08585">移除</a></td></tr>`;
     }).join("");
-    el.innerHTML = `<table><tr><th>股票</th><th>今日選股榜</th><th style="text-align:right">在榜次數</th><th>進榜日</th><th style="text-align:right">自進榜報酬</th><th></th></tr>${rows}</table>`;
+    const rh = (t) => `<th style="text-align:right">${t}</th>`;
+    el.innerHTML = `<table><tr><th>股票</th><th>今日選股榜</th>${rh("在榜次數")}<th>進榜日</th>${rh("自進榜報酬")}${rh("收盤")}${rh("蘭值")}${rh("本益比")}${rh("推估EPS")}${rh("營收年增%")}${rh("人數降比")}${rh("大戶增比")}<th></th></tr>${rows}</table>`;
   } catch (e) { el.innerHTML = '<div class="muted small">載入失敗</div>'; }
 }
 async function addWatch() {
@@ -539,7 +545,7 @@ async function autoUpdate() {
     const fail = (res.failed || []).map((f) => f.name).join("、");
     bar.innerHTML = fail ? `已自動更新（部分來源未取得：${fail}）` : "✅ 已自動更新";
     bar.className = "status-bar " + (fail ? "warn" : "ok");
-    await loadDashboard(); await loadIndexChart(); loadSectors();
+    await loadDashboard(); await loadIndexChart(); loadSectors(); loadMarketSummary(false);
     setTimeout(() => bar.classList.add("hidden"), 5000);
   } catch (e) {
     bar.textContent = "自動更新失敗：" + e.message; bar.className = "status-bar err";
@@ -750,7 +756,6 @@ $("btn-export").addEventListener("click", () => {
   const url = `/api/analysis/export?date=${encodeURIComponent($("date-select").value || "")}` + (subFilter ? `&sub=${encodeURIComponent(subFilter)}` : "");
   window.location.href = url;
 });
-$("btn-ai-market").addEventListener("click", () => loadMarketSummary(true));
 $("btn-ai-csv").addEventListener("click", () => loadCsvSummary(true));
 $("btn-save-settings").addEventListener("click", saveSettings);
 
@@ -807,6 +812,7 @@ window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockCh
   const d = await loadDashboard();
   loadIndexChart();
   loadSectors();
+  loadMarketSummary(false);  // 讀快取即回；排程更新完會自動預先生成，開頁不另扣費
   loadInstRanking();
   loadOptionsSentiment();
   loadDates();

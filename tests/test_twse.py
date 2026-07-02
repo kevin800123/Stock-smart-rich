@@ -132,15 +132,16 @@ def test_parse_sector_turnover_normalizes_names():
 
 def test_parse_listed_industry_maps_codes():
     recs = [
-        {"公司代號": "2330", "產業別": "24"},   # 半導體業
-        {"公司代號": "1101", "產業別": "01"},   # 水泥
-        {"公司代號": "2603", "產業別": "15"},   # 航運業→航運
-        {"公司代號": "9999", "產業別": "91"},   # 存託憑證→不對應
+        {"公司代號": "2330", "公司簡稱": "台積電", "產業別": "24",
+         "已發行普通股數或TDR原股發行股數": "25930380458"},
+        {"公司代號": "1101", "公司簡稱": "台泥", "產業別": "01"},
+        {"公司代號": "2603", "公司簡稱": "長榮", "產業別": "15"},   # 航運業→航運
+        {"公司代號": "9999", "公司簡稱": "某DR", "產業別": "91"},   # 存託憑證→不對應
     ]
     out = twse.parse_listed_industry(recs)
-    assert out["2330"] == "半導體"
-    assert out["1101"] == "水泥"
-    assert out["2603"] == "航運"          # 對齊 fetch_sector_indices 的「航運」
+    assert out["2330"] == {"sector": "半導體", "name": "台積電", "shares": 25930380458}
+    assert out["1101"]["sector"] == "水泥" and out["1101"]["shares"] is None
+    assert out["2603"]["sector"] == "航運"   # 對齊 fetch_sector_indices 的「航運」
     assert "9999" not in out
 
 
