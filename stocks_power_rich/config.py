@@ -33,6 +33,6 @@ def load_config() -> Config:
         schedule_time=os.getenv("SPR_SCHEDULE_TIME", "21:00"),
         db_path=os.getenv("SPR_DB_PATH", "data/spr.sqlite"),
         data_dir=os.getenv("SPR_DATA_DIR", "Date"),
-        line_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""),
+        line_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip(),
         line_push_time=os.getenv("SPR_LINE_PUSH_TIME", "16:00"),
     )
