@@ -75,6 +75,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         if col not in chip_existing and col not in ("snap_date", "code"):
             coltype = "TEXT" if col in ("name", "industry", "sub_industry", "raw_json") else "REAL"
             conn.execute(f"ALTER TABLE chip_snapshot ADD COLUMN {col} {coltype}")
+    # 一次性資料修正：jpy 語意由「日圓兌台幣(~0.2)」改為「美元兌日圓(~150)」，清掉舊語意殘值
+    conn.execute("UPDATE market_daily SET jpy=NULL, jpy_chg=NULL WHERE jpy IS NOT NULL AND jpy < 10")
     conn.commit()
 
 
