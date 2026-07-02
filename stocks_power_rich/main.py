@@ -619,13 +619,27 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         if not force and m["date"] != datetime.now().strftime("%Y-%m-%d"):
             return {"ok": False, "skipped": True, "error": f"資料日 {m['date']} 非今日，略過"}
         secs = [s for s in _sectors_for(c, m["date"]) if s.get("chg_pct") is not None]
-        # 自選股：附股價/當日漲跌（上市報價表；上櫃無當日報價則以最新快照收盤替代）與是否在榜
+        # 自選股：附股價/當日漲跌與是否在榜（上市用 TWSE 報價；上櫃補櫃買 dailyQuotes，
+        # 都查無時以最新快照收盤替代、漲跌留空）
         watch, tsmc = [], None
         try:
             quotes = _quotes_for(c, m["date"])
             tsmc = quotes.get("2330")
-            for s in get_watchlist().get("stocks", []):
-                q = quotes.get(s["code"].split(".")[0]) or {}
+            stocks = get_watchlist().get("stocks", [])
+            otc = {}
+            if any(s["code"].split(".")[0] not in quotes for s in stocks):
+                okey = f"tpex_quotes:{m['date']}"
+                otc = get_ai_cache(c, okey)
+                if otc is None:
+                    try:
+                        otc = tpex.fetch_otc_quotes(datetime.fromisoformat(m["date"]).date())
+                    except Exception:  # noqa: BLE001
+                        otc = {}
+                    if otc:
+                        set_ai_cache(c, okey, otc)
+            for s in stocks:
+                pure = s["code"].split(".")[0]
+                q = quotes.get(pure) or (otc or {}).get(pure) or {}
                 chip = s.get("chip") or {}
                 watch.append({"code": s["code"], "name": s.get("name"),
                               "close": q.get("close") or chip.get("close"),

@@ -16,6 +16,18 @@ def test_parse_otc_names():
     assert out == {"6894": "衛司特", "8383": "千附"}
 
 
+def test_parse_otc_quotes_signs_pct():
+    payload = {"tables": [{"data": [
+        ["6894", "衛司特", "361.50", "-2.00 ", "364.50", "365.00", "352.50", "360.50", "19,920", "7,181,100"],
+        ["8383", "千附", "52.50", "2.50", "50.00", "52.60", "50.00", "51.00", "1,000", "52,500"],
+        ["0000", "停牌股", "---", "---", "", "", "", "", "", ""],   # 無法解析→略過
+    ]}]}
+    out = tpex.parse_otc_quotes(payload)
+    assert out["6894"]["close"] == 361.5 and out["6894"]["chg_pct"] == -0.55   # -2/363.5
+    assert out["8383"]["name"] == "千附" and out["8383"]["chg_pct"] == 5.0     # +2.5/50
+    assert "0000" not in out
+
+
 def test_parse_tpex_insti_positional_in_lots():
     payload = {"tables": [{"fields": ["x"] * 24, "data": [_ROW] * 21}]}  # >=20 列才視為明細表
     out = tpex.parse_tpex_insti(payload)

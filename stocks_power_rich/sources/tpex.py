@@ -10,6 +10,7 @@ import httpx
 
 DAILY_TRADE_URL = "https://www.tpex.org.tw/www/zh-tw/insti/dailyTrade"
 OTC_COMPANY_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"  # 上櫃公司基本資料
+DAILY_QUOTES_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes"  # 上櫃盤後每日行情
 
 
 def _f(v):
@@ -60,6 +61,40 @@ def fetch_otc_names() -> dict:
         return parse_otc_names(j)
     except Exception:  # noqa: BLE001
         return {}
+
+
+def parse_otc_quotes(payload: dict) -> dict:
+    """dailyQuotes 上櫃盤後行情 → {代號: {name, close, chg_pct}}。
+
+    欄位固定位置：0 代號、1 名稱、2 收盤、3 漲跌（帶號價差，元）；以昨收回推漲跌%。
+    """
+    out: dict[str, dict] = {}
+    for t in payload.get("tables") or []:
+        for r in t.get("data") or []:
+            if not r or len(r) < 4:
+                continue
+            code = str(r[0]).strip()
+            close, diff = _f(r[2]), _f(r[3])
+            if not code or close is None or diff is None:
+                continue
+            prev = close - diff
+            out[code] = {"name": str(r[1]).strip(), "close": close,
+                         "chg_pct": round(diff / prev * 100, 2) if prev else 0.0}
+    return out
+
+
+def fetch_otc_quotes(date: datetime.date | None = None) -> dict:
+    """直連櫃買 dailyQuotes 取指定日（預設今天）全上櫃個股收盤與漲跌%。查無回空。"""
+    day = date or datetime.date.today()
+    ds = f"{day.year}/{day.month:02d}/{day.day:02d}"
+    try:
+        j = httpx.get(DAILY_QUOTES_URL, params={"date": ds, "response": "json"},
+                      timeout=25, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}).json()
+        if j.get("stat") == "ok" and j.get("tables"):
+            return parse_otc_quotes(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
 
 
 def fetch_tpex_insti(date: datetime.date | None = None) -> dict:

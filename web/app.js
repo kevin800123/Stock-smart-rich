@@ -235,7 +235,7 @@ function renderCards(m, prev = {}, hist = []) {
     card("日經225", fmt(m.n225), chgPts(m.n225, m.n225_chg), m.n225_chg),
     card("韓股KOSPI", fmt(m.kospi), chgPts(m.kospi, m.kospi_chg), m.kospi_chg),
     card("黃金", fmt(m.gold), chgPts(m.gold, m.gold_chg), m.gold_chg),
-    card("日圓匯率", fmt(m.jpy, 3), null, m.jpy_chg),
+    card("美元兌日圓", fmt(m.jpy, 2), null, m.jpy_chg),
     card("比特幣", fmt(m.btc), chgPts(m.btc, m.btc_chg), m.btc_chg),
   ].join("");
 }
