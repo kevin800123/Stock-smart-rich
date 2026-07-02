@@ -58,6 +58,8 @@ def init_db(conn: sqlite3.Connection) -> None:
         "CREATE TABLE IF NOT EXISTS tx_history ("
         "date TEXT PRIMARY KEY, open REAL, high REAL, low REAL, close REAL, volume REAL)"
     )
+    # 依股號查最新快照（watchlist/個股頁）用；PK 是 (snap_date, code)，無此索引會全表掃描
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_chip_code ON chip_snapshot(code)")
     conn.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS watchlist (code TEXT PRIMARY KEY, name TEXT, added_at TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS custody_dist (week TEXT, code TEXT, big1000_pct REAL, "

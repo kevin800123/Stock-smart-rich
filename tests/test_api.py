@@ -63,14 +63,24 @@ def test_sectors_endpoint_sorted_by_change(tmp_path, monkeypatch):
         {"name": "金融保險", "close": 1.0, "chg_pct": 0.5},
     ])
     monkeypatch.setattr(twse, "fetch_sector_turnover", lambda date=None: {"半導體": 88, "航運": 9})
+    monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {
+        "2330": {"sector": "半導體", "name": "台積電", "shares": 2_000_000_000},
+        "2454": {"sector": "半導體", "name": "聯發科", "shares": 1_000_000_000},
+        "2603": {"sector": "航運", "name": "長榮", "shares": 500_000_000}})
+    monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {
+        "2330": {"name": "台積電", "close": 1000.0, "chg_pct": 2.0},
+        "2454": {"name": "聯發科", "close": 500.0, "chg_pct": 1.0},
+        "2603": {"name": "長榮", "close": 200.0, "chg_pct": -1.0}})
     app = create_app()
     client = TestClient(app)
     r = client.get("/api/sectors").json()
     assert r["date"] == "2026-06-26"  # 預設用最新大盤日期
     assert [s["name"] for s in r["sectors"]] == ["半導體", "金融保險", "航運"]  # 漲幅大→小
     by = {s["name"]: s for s in r["sectors"]}
-    assert by["半導體"]["turnover"] == 88  # 熱力圖面積＝成交值
-    assert by["金融保險"]["turnover"] is None  # 無成交值→退回條列/不進熱力圖
+    assert by["半導體"]["turnover"] == 88          # 成交值（備援面積）
+    assert by["半導體"]["mcap"] == 25000.0         # (20億股×1000 + 10億股×500)/1e8 = 25000 億
+    assert by["航運"]["mcap"] == 1000.0
+    assert by["金融保險"]["mcap"] is None and by["金融保險"]["turnover"] is None  # 無數據→不進熱力圖
 
 
 def test_sector_stocks_lists_constituents_by_mcap(tmp_path, monkeypatch):

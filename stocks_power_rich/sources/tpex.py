@@ -9,6 +9,7 @@ import datetime
 import httpx
 
 DAILY_TRADE_URL = "https://www.tpex.org.tw/www/zh-tw/insti/dailyTrade"
+OTC_COMPANY_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"  # 上櫃公司基本資料
 
 
 def _f(v):
@@ -38,6 +39,27 @@ def parse_tpex_insti(payload: dict) -> dict:
                 "total": lots(len(r) - 1),
             }
     return out
+
+
+def parse_otc_names(records: list) -> dict:
+    """上櫃公司基本資料 mopsfin_t187ap03_O → {代號: 公司簡稱}。"""
+    out: dict[str, str] = {}
+    for r in records or []:
+        code = str(r.get("SecuritiesCompanyCode", "")).strip()
+        name = str(r.get("CompanyAbbreviation", "")).strip()
+        if code and name:
+            out[code] = name
+    return out
+
+
+def fetch_otc_names() -> dict:
+    """上櫃公司 {代號: 簡稱}。近乎靜態，呼叫端宜快取。查無回空 dict。"""
+    try:
+        j = httpx.get(OTC_COMPANY_URL, timeout=25,
+                      headers={"User-Agent": "Mozilla/5.0"}).json()
+        return parse_otc_names(j)
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def fetch_tpex_insti(date: datetime.date | None = None) -> dict:

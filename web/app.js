@@ -127,6 +127,7 @@ function showView(name) {
   if (name === "overview") { idxChart && idxChart.resize(); chipChart && chipChart.resize(); sectorChart && sectorChart.resize(); }
   if (name === "stock") { stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize(); }
   if (name === "rotation") { loadRotation(); loadCross(); }
+  if (name === "weekly") loadCsvSummary(false);  // 讀快取即回；匯入後才會重新生成
   if (name === "watch") loadWatchlist();
   if (name === "settings") loadSettings();
 }
@@ -281,18 +282,22 @@ async function loadSectors() {
       renderSectorPills(el, note, null);
       el.innerHTML = '<div class="muted small">尚無類股資料</div>'; if (note) note.textContent = ""; return;
     }
+    const useMcap = d.sectors.some((s) => s.mcap != null);
     if (note) {
       const up = d.sectors.filter((s) => s.chg_pct > 0).length;
       const down = d.sectors.filter((s) => s.chg_pct < 0).length;
-      note.textContent = `（${d.date}　紅漲 ${up}・綠跌 ${down}，面積＝成交值、顏色＝漲跌幅）`;
+      note.textContent = `（${d.date}　紅漲 ${up}・綠跌 ${down}，面積＝${useMcap ? "市值" : "成交值"}、顏色＝漲跌幅）`;
     }
-    const raw = d.sectors.filter((s) => s.turnover && s.chg_pct != null);
-    if (!raw.length) { renderSectorPills(el, note, d.sectors); return; } // 無成交值→退回條列
-    // 面積＝成交值，但給最小面積下限，讓佔比很低的類股也看得到、點得到
-    const maxV = Math.max(...raw.map((s) => s.turnover));
+    // 面積優先用市值（成分股股數×收盤加總）；抓不到市值時退回成交值
+    const sizeOf = (s) => (useMcap ? s.mcap : s.turnover);
+    const raw = d.sectors.filter((s) => sizeOf(s) && s.chg_pct != null);
+    if (!raw.length) { renderSectorPills(el, note, d.sectors); return; } // 無面積數據→退回條列
+    // 給最小面積下限，讓佔比很低的類股也看得到、點得到
+    const maxV = Math.max(...raw.map(sizeOf));
     const floor = maxV * 0.014;
     const nodes = raw.map((s) => ({
-      name: s.name, value: Math.max(s.turnover, floor), real: s.turnover, chg: s.chg_pct,
+      name: s.name, value: Math.max(sizeOf(s), floor), chg: s.chg_pct,
+      mcap: s.mcap, turnover: s.turnover,
       itemStyle: { color: sectorColor(s.chg_pct) },
     }));
     // 切成圖表容器
@@ -302,9 +307,11 @@ async function loadSectors() {
     sectorChart.setOption({
       tooltip: {
         formatter: (p) => {
-          if (p.data.chg == null) return `上市類股合計<br/>成交值 ${fmt(p.value / 1e8, 0)} 億`;
+          if (p.data.chg == null) return "上市類股";
           const sign = p.data.chg >= 0 ? "+" : "";
-          return `${p.name}<br/>漲跌 <b>${sign}${fmt(p.data.chg, 2)}%</b><br/>成交值 ${fmt(p.data.real / 1e8, 1)} 億<br/><span style="color:#8a94a3">點擊看成分股</span>`;
+          const mc = p.data.mcap == null ? "" : `<br/>市值 ${fmt(p.data.mcap, 0)} 億`;
+          const tv = p.data.turnover == null ? "" : `<br/>成交值 ${fmt(p.data.turnover / 1e8, 1)} 億`;
+          return `${p.name}<br/>漲跌 <b>${sign}${fmt(p.data.chg, 2)}%</b>${mc}${tv}<br/><span style="color:#8a94a3">點擊看成分股</span>`;
         },
       },
       series: [{
@@ -734,6 +741,7 @@ async function applyImportResult(res) {
   if (!res.count) { info.innerHTML = `<span style="color:#e08585">⚠ 讀到 0 檔（${res.snap_date}）。請確認是籌碼匯出檔。</span>`; return; }
   info.textContent = `已匯入 ${res.file ? res.file + "：" : ""}${res.snap_date}，共 ${res.count} 檔`;
   await loadDates(); await loadWeekly();
+  loadCsvSummary(false); // 匯入清了該日快取 → 這次載入會自動重新生成
 }
 async function uploadCsv(file) {
   $("upload-info").textContent = "解析中…";
@@ -756,7 +764,6 @@ $("btn-export").addEventListener("click", () => {
   const url = `/api/analysis/export?date=${encodeURIComponent($("date-select").value || "")}` + (subFilter ? `&sub=${encodeURIComponent(subFilter)}` : "");
   window.location.href = url;
 });
-$("btn-ai-csv").addEventListener("click", () => loadCsvSummary(true));
 $("btn-save-settings").addEventListener("click", saveSettings);
 
 // 大盤圖控制

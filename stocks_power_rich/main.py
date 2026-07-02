@@ -70,14 +70,17 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         path = csv_import.find_latest_file(effective_data_dir())
         if path:
             try:
-                csv_import.import_csv(c, path)
+                snap_date, _ = csv_import.import_csv(c, path)
+                _clear_csv_cache(c, snap_date)  # 重匯同日檔時讓摘要/榜單重算
             except Exception:  # noqa: BLE001 — 排程容錯
                 pass
         updater.run_update(c, cfg.intl_tickers)
-        try:
-            market_summary(refresh=0)  # 數據到齊後自動生成當日盤勢摘要；同簽章直接命中快取，不重複扣費
-        except Exception:  # noqa: BLE001 — 摘要失敗不影響資料更新
-            pass
+        # 數據到齊後自動生成盤勢摘要與 CSV 籌碼分析；已生成（快取命中）就不重複扣費
+        for gen in (lambda: market_summary(refresh=0), lambda: summary(refresh=0)):
+            try:
+                gen()
+            except Exception:  # noqa: BLE001 — 摘要失敗不影響資料更新
+                pass
 
     if enable_scheduler:
         from .scheduler import start_scheduler
@@ -129,13 +132,27 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             result = {"date": date, "sectors": secs}
             if secs:
                 set_ai_cache(c, key, result)
-        _attach_turnover(c, date, result.get("sectors") or [])
+        _attach_size(c, date, result.get("sectors") or [])
         return result
 
-    # 熱力圖面積：各類股成交金額（元）。彙總型/跨市場指數不給面積，避免母子重複計面積。
+    def _quotes_for(c, date: str) -> dict:
+        """某日全上市個股報價 {代號: {name, close, chg_pct}}（逐日快取）。"""
+        qkey = f"stock_quotes:{date}"
+        quotes = get_ai_cache(c, qkey)
+        if quotes is None:
+            try:
+                quotes = twse.fetch_stock_quotes(datetime.fromisoformat(date).date())
+            except Exception:  # noqa: BLE001
+                quotes = {}
+            if quotes:
+                set_ai_cache(c, qkey, quotes)
+        return quotes or {}
+
+    # 彙總型/跨市場指數不給面積，避免母子類股重複計面積（市值依產業代碼彙總，天然只含葉節點）。
     _TURNOVER_EXCLUDE = {"化學生技醫療", "電子工業", "水泥窯製", "塑膠化工", "機電"}
 
-    def _attach_turnover(c, date: str, secs: list) -> None:
+    def _attach_size(c, date: str, secs: list) -> None:
+        """附掛熱力圖面積數據：mcap＝成分股市值加總(億)，turnover＝成交值(元, 備援)。"""
         if not secs:
             return
         tkey = f"sector_turnover:{date}"
@@ -147,8 +164,22 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 tmap = {}
             if tmap:
                 set_ai_cache(c, tkey, tmap)
+        mkey = f"sector_mcap:{date}"
+        mmap = get_ai_cache(c, mkey)
+        if mmap is None:
+            acc: dict[str, float] = {}
+            imap, quotes = _industry_map(c), _quotes_for(c, date)
+            for code, info in imap.items():
+                q, sh = quotes.get(code), info.get("shares")
+                if not q or not sh or q.get("close") is None:
+                    continue
+                acc[info["sector"]] = acc.get(info["sector"], 0) + sh * q["close"]
+            mmap = {k: round(v / 1e8, 1) for k, v in acc.items()}  # 億元
+            if mmap:
+                set_ai_cache(c, mkey, mmap)
         for s in secs:
             name = s.get("name")
+            s["mcap"] = mmap.get(name)
             s["turnover"] = None if name in _TURNOVER_EXCLUDE else tmap.get(twse.norm_sector_name(name))
 
     def _sectors_for(c, ds: str) -> list:
@@ -174,6 +205,16 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 set_ai_cache(c, key, m)
         return m or {}
 
+    def _otc_names(c) -> dict:
+        """上櫃公司 {代號: 簡稱}（按月快取）；自選股補上櫃股名用。"""
+        key = f"otc_names:{datetime.now().strftime('%Y-%m')}"
+        m = get_ai_cache(c, key)
+        if not m:
+            m = tpex.fetch_otc_names()
+            if m:
+                set_ai_cache(c, key, m)
+        return m or {}
+
     @app.get("/api/sectors/{sector}/stocks")
     def sector_stocks(sector: str, date: str | None = None):
         """點選熱力圖類股 → 回傳該類股成分股當日漲跌，依市值（發行股數×收盤）由大到小。"""
@@ -181,22 +222,12 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         date = date or _latest_date(c)
         if not date:
             return {"sector": sector, "date": None, "stocks": []}
-        imap = _industry_map(c)
-        # 當日全個股報價（逐日快取）
-        qkey = f"stock_quotes:{date}"
-        quotes = get_ai_cache(c, qkey)
-        if quotes is None:
-            try:
-                quotes = twse.fetch_stock_quotes(datetime.fromisoformat(date).date())
-            except Exception:  # noqa: BLE001
-                quotes = {}
-            if quotes:
-                set_ai_cache(c, qkey, quotes)
+        imap, quotes = _industry_map(c), _quotes_for(c, date)
         stocks = []
         for code, info in imap.items():
             if info.get("sector") != sector:
                 continue
-            q = (quotes or {}).get(code)
+            q = quotes.get(code)
             if not q:
                 continue
             shares, close = info.get("shares"), q.get("close")
@@ -255,7 +286,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         picks_by_date = {d: _picks_index(c, d) for d in dates}
         latest = dates[-1] if dates else None
         out = []
-        imap = None  # 補股名用（上市基本資料，月快取）；快照都查不到名字才載入
+        imap = omap = None  # 補股名用（上市/上櫃基本資料，月快取）；快照都查不到名字才載入
         for w in wl:
             code = w["code"]
             on = [d for d in dates if code in picks_by_date[d]]
@@ -271,9 +302,14 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             chip = dict(chip_row) if chip_row else None
             nm = w["name"] or (chip or {}).get("name") or ""
             if not nm:
+                pure = code.split(".")[0]
                 if imap is None:
                     imap = _industry_map(c)
-                nm = (imap.get(code.split(".")[0]) or {}).get("name") or ""
+                nm = (imap.get(pure) or {}).get("name") or ""
+                if not nm:  # 上市查不到 → 試上櫃
+                    if omap is None:
+                        omap = _otc_names(c)
+                    nm = omap.get(pure) or ""
             out.append({**w, "name": nm, "in_latest": bool(latest and code in picks_by_date.get(latest, {})),
                         "times": len(on), "entry_date": entry, "ret_pct": ret, "chip": chip})
         return {"stocks": out, "latest": latest}
