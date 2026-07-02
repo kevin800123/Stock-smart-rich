@@ -136,12 +136,24 @@ python -m venv .venv
 | 變數 | 說明 | 預設 |
 |---|---|---|
 | `GEMINI_API_KEY` | Gemini 金鑰（空＝停用 AI 摘要） | （空） |
+| `LINE_CHANNEL_ACCESS_TOKEN` | LINE 官方帳號 Messaging API token（空＝停用推播） | （空） |
+| `SPR_LINE_PUSH_TIME` | 平日盤後速報推播時間 HH:MM | 16:00 |
 | `SPR_SCHEDULE_TIME` | 每日排程時間 HH:MM | 21:00 |
 | `SPR_DB_PATH` | SQLite 路徑 | data/spr.sqlite |
 | `SPR_DATA_DIR` | 「讀取最新檔」的資料夾 | Date |
 | `SPR_ENABLE_SCHEDULER` | 程式內每日自動更新（1 開啟，需程式開著） | 0（啟動.bat 會設 1） |
 
 AI 摘要會快取於當日，只在更新或上傳新檔後重新生成（省 token）。
+
+### LINE 每日推播（選用）
+LINE Notify 已停服，改走你自己的 LINE 官方帳號（LINE@）Messaging API：
+1. 到 [LINE Developers Console](https://developers.line.biz/) 用官方帳號建立 **Messaging API** channel，
+   在「Messaging API」頁籤發行 **Channel access token (long-lived)**。
+2. 用手機把該官方帳號加為好友（訊息用 broadcast 推給全部好友；自用帳號＝只推給你）。
+3. 設定 `LINE_CHANNEL_ACCESS_TOKEN`（本機 .env 或 Zeabur 環境變數）。
+4. 開啟排程後：**平日 16:00** 推「盤後速報」（大盤/法人/期貨/類股/自選股＋AI 解讀），
+   **21:00** 更新完推「完整版」（加融資券）。假日或資料未更新自動不推。
+5. 設定頁有「📱 測試推播」按鈕可立即驗證。免費方案每月 200 則，每日 2 則綽綽有餘。
 
 ## 雲端部署（Zeabur，整包前後端）
 後端本身就 serve 前端，整包部署一個服務即可（不需 CORS／前後端分離）。
@@ -155,6 +167,7 @@ AI 摘要會快取於當日，只在更新或上傳新檔後重新生成（省 t
    | `SPR_ENABLE_SCHEDULER` | `1` | 開每日自動更新 |
    | `SPR_SCHEDULE_TIME` | `21:00` | 排程時間 |
    | `GEMINI_API_KEY` | （金鑰） | 設為密鑰，絕不進前端 |
+   | `LINE_CHANNEL_ACCESS_TOKEN` | （token） | 設為密鑰；LINE 每日推播用（選用） |
 3. **持久化 Volume（務必）**：掛載到 `/data`（對應 `SPR_DB_PATH`）。**未掛 Volume 每次重新部署資料就會清空**（大盤歷史、集保逐週累積、自選股）。
 4. **區域**：選離台灣近者（連 TWSE／TAIFEX／TDCC 較穩）。
 5. **排程備援**：免費方案可能休眠導致 21:00 排程不觸發；可改用平台 Cron／外部排程每日 `POST /api/update/run`。

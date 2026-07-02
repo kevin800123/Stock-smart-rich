@@ -23,6 +23,8 @@ class Config:
     db_path: str = "data/spr.sqlite"
     data_dir: str = "Date"
     intl_tickers: dict = field(default_factory=lambda: dict(INTL_TICKERS))
+    line_token: str = ""            # LINE 官方帳號 Messaging API Channel Access Token
+    line_push_time: str = "16:00"   # 盤後速報推播時間（完整版跟隨 schedule_time）
 
 
 def load_config() -> Config:
@@ -31,4 +33,6 @@ def load_config() -> Config:
         schedule_time=os.getenv("SPR_SCHEDULE_TIME", "21:00"),
         db_path=os.getenv("SPR_DB_PATH", "data/spr.sqlite"),
         data_dir=os.getenv("SPR_DATA_DIR", "Date"),
+        line_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN", ""),
+        line_push_time=os.getenv("SPR_LINE_PUSH_TIME", "16:00"),
     )

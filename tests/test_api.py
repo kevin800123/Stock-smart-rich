@@ -155,6 +155,40 @@ def test_watchlist_add_track_remove(tmp_path, monkeypatch):
     assert client.delete("/api/watchlist/2330.TW").json()["stocks"] == []
 
 
+def test_line_test_endpoint_composes_and_broadcasts(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok-123")
+    from stocks_power_rich import line_push
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import twse
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-06-26", "taiex": 47018.99, "taiex_chg": 893.08,
+                            "inst_foreign": 323.76, "margin_balance": 9414925.0})
+    monkeypatch.setattr(twse, "fetch_sector_indices", lambda date=None: [
+        {"name": "半導體", "close": 1.0, "chg_pct": 3.21}])
+    monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {})
+    sent = {}
+
+    def fake_broadcast(token, text):
+        sent["token"], sent["text"] = token, text
+        return {"ok": True, "status": 200}
+
+    monkeypatch.setattr(line_push, "broadcast_text", fake_broadcast)
+    app = create_app()
+    client = TestClient(app)
+    r = client.post("/api/line/test").json()
+    assert r["ok"] is True
+    assert sent["token"] == "tok-123"
+    assert "47,018.99" in sent["text"] and "外資 +323.8" in sent["text"]
+    assert "融資餘額 9,414,925" in sent["text"]      # 測試端點推完整版
+    assert "🔥 半導體+3.21%" in sent["text"]
+    # settings 只回報狀態，不洩漏 token
+    s = client.get("/api/settings").json()
+    assert s["line_configured"] is True and "tok" not in str(s)
+
+
 def test_options_sentiment_endpoint(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily

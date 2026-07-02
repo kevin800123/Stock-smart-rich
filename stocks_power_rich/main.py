@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from datetime import datetime
 
-from . import analysis, csv_import, exporter, gemini, updater
+from . import analysis, csv_import, exporter, gemini, line_push, updater
 from .config import load_config
 from .sources import kline, taifex, tdcc, tpex, twse
 from .db import (
@@ -81,11 +81,28 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 gen()
             except Exception:  # noqa: BLE001 — 摘要失敗不影響資料更新
                 pass
+        try:
+            _push_line(c, full=True)  # 21:00 完整版（含融資券＋AI）；非當日資料自動略過
+        except Exception:  # noqa: BLE001 — 推播失敗不影響資料更新
+            pass
+
+    def line_brief_job():
+        """16:00 盤後速報：先確保當日數據已抓，再推速報（無融資券）。"""
+        c = conn()
+        updater.run_update(c, cfg.intl_tickers)
+        try:
+            _push_line(c, full=False)
+        except Exception:  # noqa: BLE001
+            pass
 
     if enable_scheduler:
-        from .scheduler import start_scheduler
+        from .scheduler import build_trigger_kwargs, start_scheduler
 
         app.state.scheduler = start_scheduler(scheduled_job, effective_schedule())
+        if cfg.line_token:  # 16:00 盤後速報（平日）；21:00 完整版掛在每日更新 job 尾端
+            app.state.scheduler.add_job(
+                line_brief_job, "cron", **build_trigger_kwargs(cfg.line_push_time),
+                day_of_week="mon-fri", id="line_brief", replace_existing=True)
 
     @app.get("/api/dashboard")
     def dashboard():
@@ -463,6 +480,8 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         last_date = _latest_date(c)
         return {
             "gemini_configured": bool(cfg.gemini_api_key),  # 僅狀態，絕不回傳金鑰值
+            "line_configured": bool(cfg.line_token),        # 僅狀態，絕不回傳 token
+            "line_push_time": cfg.line_push_time,
             "schedule_time": effective_schedule(),
             "scheduler_running": bool(getattr(app.state, "scheduler", None)),
             "data_dir": effective_data_dir(),
@@ -585,6 +604,40 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         if result.get("enabled"):
             set_ai_cache(c, key, result)
         return result
+
+    def _push_line(c, full: bool, force: bool = False) -> dict:
+        """組當日盤後訊息並 broadcast 到 LINE 官方帳號好友（單人自用＝自己）。
+
+        非當日資料（假日/尚未更新）自動略過不推，避免重複推前一交易日；force=True 供手動測試。
+        """
+        if not cfg.line_token:
+            return {"ok": False, "error": "未設定 LINE_CHANNEL_ACCESS_TOKEN"}
+        row = c.execute("SELECT * FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
+        if not row:
+            return {"ok": False, "error": "尚無大盤資料"}
+        m = dict(row)
+        if not force and m["date"] != datetime.now().strftime("%Y-%m-%d"):
+            return {"ok": False, "skipped": True, "error": f"資料日 {m['date']} 非今日，略過"}
+        secs = [s for s in _sectors_for(c, m["date"]) if s.get("chg_pct") is not None]
+        # 自選股：附當日漲跌（上市報價表；上櫃無報價則只列名）與是否在榜
+        watch = []
+        try:
+            quotes = _quotes_for(c, m["date"])
+            for s in get_watchlist().get("stocks", []):
+                q = quotes.get(s["code"].split(".")[0])
+                watch.append({"code": s["code"], "name": s.get("name"),
+                              "chg_pct": (q or {}).get("chg_pct"), "in_latest": s.get("in_latest")})
+        except Exception:  # noqa: BLE001 — 自選股失敗不影響推播主體
+            pass
+        ai = market_summary(refresh=0)
+        ai_text = (ai.get("text") or "") if ai.get("enabled") else ""
+        txt = line_push.compose_daily_brief(m, secs, watch, ai_text=ai_text, full=full)
+        return line_push.broadcast_text(cfg.line_token, txt)
+
+    @app.post("/api/line/test")
+    def line_test():
+        """手動觸發一則完整版推播（不限當日資料），驗證 LINE 設定。"""
+        return _push_line(conn(), full=True, force=True)
 
     def _insti_for(c, ds: str, market: str) -> dict:
         """某日全市場個股三大法人（market='twse' 用 T86、'tpex' 用櫃買），依日期快取。"""

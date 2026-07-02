@@ -141,6 +141,9 @@ async function loadSettings() {
     const g = $("set-gemini");
     g.textContent = s.gemini_configured ? "已設定 ✓" : "未設定";
     g.className = "set-badge " + (s.gemini_configured ? "ok" : "no");
+    const ln = $("set-line");
+    ln.textContent = s.line_configured ? `已設定 ✓（速報 ${s.line_push_time}・完整版 ${s.schedule_time}）` : "未設定";
+    ln.className = "set-badge " + (s.line_configured ? "ok" : "no");
     $("set-stats").innerHTML = [
       ["快照天數", s.snapshots], ["台指期歷史天數", s.tx_history_days], ["最新大盤日期", s.last_market_date || "—"],
     ].map(([k, v]) => `<div class="stat"><div class="stat-k">${k}</div><div class="stat-v">${v}</div></div>`).join("");
@@ -765,6 +768,13 @@ $("btn-export").addEventListener("click", () => {
   window.location.href = url;
 });
 $("btn-save-settings").addEventListener("click", saveSettings);
+$("btn-line-test").addEventListener("click", async () => {
+  const st = $("set-line-status"); st.textContent = "推播中…";
+  try {
+    const r = await (await fetch("/api/line/test", { method: "POST" })).json();
+    st.textContent = r.ok ? "已送出，看手機 ✓" : "失敗：" + (r.error || r.status);
+  } catch (e) { st.textContent = "失敗：" + e.message; }
+});
 
 // 大盤圖控制
 document.querySelectorAll('input[name="idx"]').forEach((el) => el.addEventListener("change", (e) => { idxSymbol = e.target.value; loadIndexChart(); }));
