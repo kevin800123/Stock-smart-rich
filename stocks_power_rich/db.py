@@ -1,6 +1,8 @@
 """SQLite 資料層：建立 schema、每日大盤快照與籌碼快照的 upsert/查詢。"""
+import json
 import os
 import sqlite3
+from datetime import datetime
 
 MARKET_COLS = [
     "date", "taiex", "taiex_chg", "inst_foreign", "inst_trust", "inst_dealer",
@@ -187,8 +189,6 @@ def list_watch(conn: sqlite3.Connection) -> list[dict]:
 
 
 def add_watch(conn: sqlite3.Connection, code: str, name: str = "") -> None:
-    from datetime import datetime
-
     conn.execute(
         "INSERT OR IGNORE INTO watchlist (code, name, added_at) VALUES (?,?,?)",
         (code, name, datetime.now().isoformat()),
@@ -206,16 +206,11 @@ def get_tx_history(conn: sqlite3.Connection) -> list[dict]:
 
 
 def get_ai_cache(conn: sqlite3.Connection, key: str):
-    import json
-
     row = conn.execute("SELECT payload FROM ai_cache WHERE cache_key=?", (key,)).fetchone()
     return json.loads(row[0]) if row else None
 
 
 def set_ai_cache(conn: sqlite3.Connection, key: str, payload: dict) -> None:
-    import json
-    from datetime import datetime
-
     conn.execute(
         "INSERT INTO ai_cache (cache_key, payload, created_at) VALUES (?,?,?) "
         "ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload, created_at=excluded.created_at",

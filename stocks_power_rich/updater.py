@@ -169,6 +169,11 @@ def run_update(conn, intl_tickers: dict) -> dict:
         "DELETE FROM market_daily WHERE date > ? OR date < ?",
         (now.strftime("%Y-%m-%d"), (now - timedelta(days=400)).strftime("%Y-%m-%d")),
     )
+    # ai_cache 多為逐日鍵（sectors/t86/個股報價…），會無限累積；120 天前的直接清掉（都可重抓）
+    conn.execute(
+        "DELETE FROM ai_cache WHERE created_at < ?",
+        ((now - timedelta(days=120)).isoformat(),),
+    )
     conn.commit()
 
     # 校正/回補近期各列的三大法人與融資券（修正日期錯置、初值→定稿、晚間才公布）

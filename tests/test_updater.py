@@ -23,11 +23,20 @@ def test_run_update_collects_and_tolerates_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(updater.intl, "fetch_intl_indices", lambda tickers: boom())
 
+    # 過舊的 ai_cache 應在每日更新時被清掉；近期的保留
+    from stocks_power_rich.db import set_ai_cache
+    set_ai_cache(conn, "sectors:2025-01-02", {"old": True})
+    conn.execute("UPDATE ai_cache SET created_at='2025-01-02T21:00:00' WHERE cache_key='sectors:2025-01-02'")
+    set_ai_cache(conn, "sectors:recent", {"new": True})
+    conn.commit()
+
     result = updater.run_update(conn, intl_tickers={"sox": "^SOX"})
     assert "twse_taiex" in result["success"]
     assert any(f["source"] == "intl" for f in result["failed"])
     row = conn.execute("select taiex, retail_ls_mtx from market_daily").fetchone()
     assert row[0] == 23000.0 and row[1] == -0.2
+    keys = {r[0] for r in conn.execute("SELECT cache_key FROM ai_cache").fetchall()}
+    assert "sectors:2025-01-02" not in keys and "sectors:recent" in keys  # >120 天清除
 
 
 def test_refresh_recent_corrects_inst_and_fills_margin(tmp_path, monkeypatch):

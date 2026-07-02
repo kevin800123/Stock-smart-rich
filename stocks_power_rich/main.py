@@ -45,10 +45,19 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     cfg = load_config()
     app = FastAPI(title="STOCKS POWER RICH")
 
+    initialized: set[str] = set()
+
     def conn():
         c = get_connection(cfg.db_path)
-        init_db(c)
+        if cfg.db_path not in initialized:  # schema 只需建一次，之後每請求免跑 DDL/PRAGMA
+            init_db(c)
+            initialized.add(cfg.db_path)
         return c
+
+    def _latest_date(c) -> str | None:
+        """最新一筆大盤資料日（多數端點的預設查詢日）。"""
+        row = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
+        return row[0] if row else None
 
     def effective_data_dir():
         return get_setting(conn(), "data_dir") or cfg.data_dir
@@ -100,9 +109,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     @app.get("/api/sectors")
     def sectors(date: str | None = None):
         c = conn()
-        if not date:
-            last = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
-            date = last[0] if last else None
+        date = date or _latest_date(c)
         if not date:
             return {"date": None, "sectors": []}
         key = f"sectors:{date}"
@@ -157,17 +164,16 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     def sector_stocks(sector: str, date: str | None = None):
         """點選熱力圖類股 → 回傳該類股成分股當日漲跌，依漲跌%由強到弱。"""
         c = conn()
-        if not date:
-            last = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
-            date = last[0] if last else None
+        date = date or _latest_date(c)
         if not date:
             return {"sector": sector, "date": None, "stocks": []}
-        # 個股→類股（靜態，快取一份即可）
-        imap = get_ai_cache(c, "listed_industry")
+        # 個股→類股（近乎靜態；按月換 key，讓新上市/變更產業別的個股會更新）
+        ikey = f"listed_industry:{date[:7]}"
+        imap = get_ai_cache(c, ikey)
         if not imap:
             imap = twse.fetch_listed_industry()
             if imap:
-                set_ai_cache(c, "listed_industry", imap)
+                set_ai_cache(c, ikey, imap)
         # 當日全個股報價（逐日快取）
         qkey = f"stock_quotes:{date}"
         quotes = get_ai_cache(c, qkey)
@@ -215,14 +221,28 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             set_ai_cache(c, ckey, result)
         return result
 
+    def _picks_index(c, ds: str) -> dict:
+        """某快照日選股榜的精簡索引 {code: {name, close}}。
+
+        快照一經匯入即不變，故可長期快取；重匯入該日 CSV 時由 _clear_csv_cache 失效。
+        避免 watchlist 每次請求都對全部快照日重跑 filtered_picks（隨快照累積越來越慢）。
+        """
+        key = f"watchpicks:{ds}"
+        cached = get_ai_cache(c, key)
+        if cached is not None:
+            return cached
+        idx = {p["code"]: {"name": p.get("name"), "close": p.get("close")}
+               for p in analysis.filtered_picks(get_snapshot(c, ds))}
+        set_ai_cache(c, key, idx)
+        return idx
+
     @app.get("/api/watchlist")
     def get_watchlist():
         c = conn()
         wl = list_watch(c)
         dates = get_snapshot_dates(c)
-        # 各快照日的選股榜（code→pick），用於進出榜與自進榜報酬
-        picks_by_date = {d: {p["code"]: p for p in analysis.filtered_picks(get_snapshot(c, d))}
-                         for d in dates}
+        # 各快照日的選股榜（code→{name, close}），用於進出榜與自進榜報酬
+        picks_by_date = {d: _picks_index(c, d) for d in dates}
         latest = dates[-1] if dates else None
         out = []
         for w in wl:
@@ -254,8 +274,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     @app.get("/api/options-sentiment")
     def options_sentiment():
         c = conn()
-        last = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
-        key = f"optsent:{last[0] if last else 'na'}"
+        key = f"optsent:{_latest_date(c) or 'na'}"
         cached = get_ai_cache(c, key)
         if cached is not None:
             return cached
@@ -279,9 +298,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             who = "foreign"
         if unit not in ("shares", "value"):
             unit = "shares"
-        if not date:
-            last = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
-            date = last[0] if last else None
+        date = date or _latest_date(c)
         if not date:
             return {"date": None, "who": who, "unit": unit, "buy": [], "sell": []}
         t = get_ai_cache(c, f"t86:{date}")
@@ -327,16 +344,22 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         sector_chg = {s["name"]: s["chg_pct"] for s in _sectors_for(c, snap)}
         return {"date": snap, "groups": analysis.picks_by_sector(picks, sector_chg)}
 
+    def _clear_csv_cache(c, snap_date: str) -> None:
+        """重匯入某日 CSV 後，失效該日的衍生快取（AI 摘要、watchlist 選股榜索引）。"""
+        c.execute("DELETE FROM ai_cache WHERE cache_key IN (?,?)",
+                  (f"csv:{snap_date}", f"watchpicks:{snap_date}"))
+        c.commit()
+
     @app.post("/api/csv/upload")
     async def upload(file: UploadFile = File(...)):
         data = await file.read()
-        tmp = os.path.join(tempfile.gettempdir(), file.filename or "upload.csv")
+        # 只取檔名（防 ../ 路徑跳脫），落地到系統暫存目錄
+        tmp = os.path.join(tempfile.gettempdir(), os.path.basename(file.filename or "upload.csv"))
         with open(tmp, "wb") as f:
             f.write(data)
         c = conn()
         snap_date, count = csv_import.import_csv(c, tmp)
-        c.execute("DELETE FROM ai_cache WHERE cache_key=?", (f"csv:{snap_date}",))
-        c.commit()
+        _clear_csv_cache(c, snap_date)
         picks = analysis.filtered_picks(get_snapshot(c, snap_date))
         return {"snap_date": snap_date, "count": count, "picks": picks}
 
@@ -349,8 +372,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                     "error": f"資料夾找不到 CSV/Excel：{data_dir}"}
         c = conn()
         snap_date, count = csv_import.import_csv(c, path)
-        c.execute("DELETE FROM ai_cache WHERE cache_key=?", (f"csv:{snap_date}",))
-        c.commit()
+        _clear_csv_cache(c, snap_date)
         picks = analysis.filtered_picks(get_snapshot(c, snap_date))
         return {"snap_date": snap_date, "count": count, "file": os.path.basename(path),
                 "picks": picks}
@@ -368,8 +390,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         for path in files:
             try:
                 snap_date, count = csv_import.import_csv(c, path)
-                c.execute("DELETE FROM ai_cache WHERE cache_key=?", (f"csv:{snap_date}",))
-                c.commit()
+                _clear_csv_cache(c, snap_date)
                 imported.append({"file": os.path.basename(path), "snap_date": snap_date, "count": count})
             except Exception as e:  # noqa: BLE001 — 單檔失敗不影響其餘
                 imported.append({"file": os.path.basename(path), "error": str(e)})
@@ -382,7 +403,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     @app.get("/api/settings")
     def get_settings():
         c = conn()
-        last = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
+        last_date = _latest_date(c)
         return {
             "gemini_configured": bool(cfg.gemini_api_key),  # 僅狀態，絕不回傳金鑰值
             "schedule_time": effective_schedule(),
@@ -390,7 +411,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             "data_dir": effective_data_dir(),
             "snapshots": len(get_snapshot_dates(c)),
             "tx_history_days": len(get_tx_history(c)),
-            "last_market_date": last[0] if last else None,
+            "last_market_date": last_date,
         }
 
     @app.post("/api/settings")
@@ -524,10 +545,14 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         days = max(2, min(days, 20))
         rows = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT ?", (days,)).fetchall()
         dlist = [r[0] for r in reversed(rows)]
-        # 判斷上市/上櫃：最新交易日的 T86 有此股→上市，否則試櫃買
+        # 判斷上市/上櫃：以「最近一個 T86 有資料的交易日」為準（最新日盤後未公布時
+        # 會回空表，若只看最新日會把所有股票誤判成上櫃、整條序列變空）
         market = "twse"
-        if dlist and pure not in _insti_for(c, dlist[-1], "twse"):
-            market = "tpex"
+        for ds in reversed(dlist):
+            t = _insti_for(c, ds, "twse")
+            if t:
+                market = "twse" if pure in t else "tpex"
+                break
         series = {"foreign": [], "trust": [], "dealer": [], "total": []}
         for ds in dlist:
             rec = _insti_for(c, ds, market).get(pure)
@@ -574,7 +599,8 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 cached = {v["code"]: v for v in twse.fetch_valuation()}
             except Exception:  # noqa: BLE001 — 抓不到就空
                 cached = {}
-            set_ai_cache(c, key, cached)
+            if cached:  # 失敗不快取，稍後重試（否則整天都拿到空值）
+                set_ai_cache(c, key, cached)
         return cached.get(code)
 
     @app.get("/api/stock/{code}/profile")
