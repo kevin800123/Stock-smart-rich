@@ -122,18 +122,23 @@ def fetch_taiex_history(date: datetime.date | None = None) -> list[dict]:
 
 
 def parse_margin_rwd(payload: dict) -> dict:
-    """直連 MI_MARGN（selectType=MS）信用交易統計表 → 大盤融資/融券餘額（張）與日增減。"""
+    """直連 MI_MARGN（selectType=MS）信用交易統計表 → 大盤融資/融券餘額（張）、融資金額（億）與日增減。"""
     tables = payload.get("tables") or []
     table = tables[0] if tables else {}
     fields = table.get("fields") or []
-    res = {"margin_balance": None, "margin_chg": None, "short_balance": None, "short_chg": None}
+    res = {"margin_balance": None, "margin_chg": None, "short_balance": None, "short_chg": None,
+           "margin_value": None, "margin_value_chg": None}
     for row in table.get("data") or []:
         item = str(row[0]) if row else ""
         g = _rwd_row_getter(fields, row)
         today, prev = _f(g("今日餘額")), _f(g("前日餘額"))
         bal = round(today) if today is not None else None
         chg = round(today - prev) if (today is not None and prev is not None) else None
-        if "融資" in item and "單位" in item:
+        if "融資金額" in item:  # 仟元 → 億
+            res["margin_value"] = round(today / 1e5, 1) if today is not None else None
+            res["margin_value_chg"] = (round((today - prev) / 1e5, 1)
+                                       if (today is not None and prev is not None) else None)
+        elif "融資" in item and "單位" in item:
             res["margin_balance"], res["margin_chg"] = bal, chg
         elif "融券" in item and "單位" in item:
             res["short_balance"], res["short_chg"] = bal, chg

@@ -182,7 +182,7 @@ def test_line_test_endpoint_composes_and_broadcasts(tmp_path, monkeypatch):
     assert r["ok"] is True
     assert sent["token"] == "tok-123"
     assert "加權指數 47,018.99" in sent["text"] and "外資　+323.8" in sent["text"]
-    assert "融資餘額 9,414,925" in sent["text"]      # 測試端點推完整版
+    assert "融資 9,414,925張" in sent["text"]        # 測試端點推完整版
     assert "🔥 半導體　　 +3.21%" in sent["text"]    # 新版型：每行一項＋全形空白對齊
     # settings 只回報狀態，不洩漏 token
     s = client.get("/api/settings").json()

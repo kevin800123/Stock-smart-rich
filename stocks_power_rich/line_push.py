@@ -28,25 +28,51 @@ def _pad(label: str, width: int) -> str:
     return label + "　" * max(0, width - len(label))
 
 
+def _px_line(label: str, price, chg) -> str:
+    """「標籤 價格 ▲漲跌（±%）」一行；% 由昨值回推。"""
+    line = f"{_pad(label, 4)} {_fmt(price)}"
+    if chg is not None and price is not None:
+        arrow = "▲" if chg > 0 else ("▼" if chg < 0 else "")
+        base = price - chg
+        pct = round(chg / base * 100, 2) if base else None
+        line += f" {arrow}{_fmt(abs(chg))}"
+        if pct is not None:
+            line += f"（{_signed(pct)}%）"
+    return line
+
+
 def compose_daily_brief(row: dict, sectors: list, watch: list,
                         ai_text: str = "", full: bool = False,
-                        tsmc: dict | None = None) -> str:
+                        tsmc: dict | None = None, prev: dict | None = None) -> str:
     """組盤後訊息。full=True 加融資券（21:00 完整版）；速報（16:00）不含。
 
-    row＝market_daily 最新列（含國際行情欄位）；sectors＝[{name, chg_pct}]；
-    watch＝[{code, name, close, chg_pct, in_latest}]；tsmc＝台積電 {close, chg_pct}。
-    無資料的段落整段省略，缺值以 — 顯示；多空比以百分比呈現（原始值×100）。
+    row＝market_daily 最新列（含國際行情欄位）；prev＝前一交易日列（法人/期貨附「昨」對照）；
+    sectors＝[{name, chg_pct}]；watch＝[{code, name, close, chg_pct, in_latest}]；
+    tsmc＝台積電 {close, chg_pct}。無資料的段落整段省略，缺值以 — 顯示；
+    多空比以百分比呈現（原始值×100）；「(昨…)」緊貼數字不加空白，避免換行。
     """
+    pv = prev or {}
+
+    def _yd(v, d=2, mul=1.0, unit=""):
+        """昨值對照後綴，緊湊不換行；無昨值回空字串。"""
+        return "" if v is None else f"(昨{_signed(v * mul, d)}{unit})"
+
     blocks: list[list[str]] = []
-    # 大盤（含台積電權值指標）
+    # 大盤（加權＋台指期＋台積電權值指標）
+    g = ["【大盤】"]
     taiex, chg = row.get("taiex"), row.get("taiex_chg")
-    prev = (taiex - chg) if (taiex is not None and chg is not None) else None
-    pct = round(chg / prev * 100, 2) if prev else None
-    g = ["【大盤】", f"{_pad('加權指數', 4)} {_fmt(taiex)}"]
+    base = (taiex - chg) if (taiex is not None and chg is not None) else None
+    pct = round(chg / base * 100, 2) if base else None
+    line = f"{_pad('加權指數', 4)} {_fmt(taiex)}"
     if chg is not None:
         arrow = "▲" if chg > 0 else ("▼" if chg < 0 else "")
+        g.append(line)
         g.append(f"{_pad('漲跌幅', 4)} {arrow}{_fmt(abs(chg))}"
                  + (f"（{_signed(pct)}%）" if pct is not None else ""))
+    else:
+        g.append(line)
+    if row.get("tx_price") is not None:
+        g.append(_px_line("台指期", row["tx_price"], row.get("tx_chg")))
     if tsmc and tsmc.get("close") is not None:
         t = f"{_pad('台積電', 4)} {_fmt(tsmc['close'])}"
         if tsmc.get("chg_pct") is not None:
@@ -64,25 +90,33 @@ def compose_daily_brief(row: dict, sectors: list, watch: list,
                     + (f"　{_signed(pc)}%" if pc is not None else ""))
     if intl:
         blocks.append(["【國際行情】"] + intl)
-    # 三大法人
-    inst = [(n, row.get(k)) for n, k in
+    # 三大法人（買賣超金額，附昨值對照）
+    inst = [(n, k) for n, k in
             (("外資", "inst_foreign"), ("投信", "inst_trust"), ("自營", "inst_dealer"))]
-    if any(v is not None for _, v in inst):
-        blocks.append(["【三大法人】(億)"] + [f"{n}　{_signed(v, 1)}" for n, v in inst])
-    # 期貨籌碼（多空比×100 以 % 呈現）
+    if any(row.get(k) is not None for _, k in inst):
+        blocks.append(["【三大法人】買賣超金額(億)"]
+                      + [f"{n}　{_signed(row.get(k), 1)}{_yd(pv.get(k), 1)}" for n, k in inst])
+    # 期貨籌碼（多空比×100 以 % 呈現，附昨值對照）
     fut = []
     if row.get("tx_foreign_oi") is not None:
-        fut.append(f"外資台指OI　{_fmt(row['tx_foreign_oi'], 0)} 口")
+        fut.append(f"外資台指OI　{_fmt(row['tx_foreign_oi'], 0)}口"
+                   f"{_yd(pv.get('tx_foreign_oi'), 0)}")
     for label, k in (("小台多空比", "retail_ls_mtx"), ("微台多空比", "retail_ls_tmf")):
         v = row.get(k)
         if v is not None:
-            fut.append(f"{label}　{_signed(v * 100)}%")
+            fut.append(f"{label}　{_signed(v * 100)}%{_yd(pv.get(k), 2, 100, '%')}")
     if fut:
         blocks.append(["【期貨籌碼】"] + fut)
-    # 融資券（僅完整版且有資料）
-    if full and row.get("margin_balance") is not None:
-        blocks.append(["【融資券】(張)",
-                       f"融資餘額 {_fmt(row['margin_balance'], 0)}（{_signed(row.get('margin_chg'), 0)}）"])
+    # 融資券（僅完整版且有資料）：張數＋金額＋融券，括號為與昨日增減
+    if full and any(row.get(k) is not None for k in ("margin_balance", "margin_value", "short_balance")):
+        g = ["【融資券】"]
+        if row.get("margin_balance") is not None:
+            g.append(f"融資 {_fmt(row['margin_balance'], 0)}張({_signed(row.get('margin_chg'), 0)})")
+        if row.get("margin_value") is not None:
+            g.append(f"融資金額 {_fmt(row['margin_value'], 1)}億({_signed(row.get('margin_value_chg'), 1)})")
+        if row.get("short_balance") is not None:
+            g.append(f"融券 {_fmt(row['short_balance'], 0)}張({_signed(row.get('short_chg'), 0)})")
+        blocks.append(g)
     # 類股強弱
     ups = sorted([s for s in sectors if (s.get("chg_pct") or 0) > 0],
                  key=lambda s: -s["chg_pct"])[:3]

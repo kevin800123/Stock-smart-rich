@@ -595,10 +595,12 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         secs.sort(key=lambda s: -s["chg_pct"])
         sectors = {"領漲": [[s["name"], s["chg_pct"]] for s in secs[:3]],
                    "領跌": [[s["name"], s["chg_pct"]] for s in secs[-3:][::-1]]}
-        # 只餵摘要需要的欄位，省 input token
+        # 只餵摘要需要的欄位，省 input token（含國際行情，AI 先評國際再評台股）
         keep = ("date", "taiex", "taiex_chg", "inst_foreign", "inst_trust", "inst_dealer",
                 "tx_foreign_oi", "retail_oi_mtx", "retail_ls_mtx", "retail_ls_tmf",
-                "margin_balance", "margin_chg", "short_balance", "vix", "vix_chg")
+                "margin_balance", "margin_chg", "short_balance", "vix", "vix_chg",
+                "sox", "sox_chg", "n225", "n225_chg", "kospi", "kospi_chg",
+                "gold", "gold_chg", "jpy", "jpy_chg", "btc", "btc_chg")
         payload = {"latest": {k: m.get(k) for k in keep}, "trend": trend, "sectors": sectors}
         result = gemini.summarize_market(payload, cfg.gemini_api_key)
         if result.get("enabled"):
@@ -612,10 +614,11 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         """
         if not cfg.line_token:
             return {"ok": False, "error": "未設定 LINE_CHANNEL_ACCESS_TOKEN"}
-        row = c.execute("SELECT * FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
-        if not row:
+        rows = c.execute("SELECT * FROM market_daily ORDER BY date DESC LIMIT 2").fetchall()
+        if not rows:
             return {"ok": False, "error": "尚無大盤資料"}
-        m = dict(row)
+        m = dict(rows[0])
+        prev_row = dict(rows[1]) if len(rows) > 1 else {}
         if not force and m["date"] != datetime.now().strftime("%Y-%m-%d"):
             return {"ok": False, "skipped": True, "error": f"資料日 {m['date']} 非今日，略過"}
         secs = [s for s in _sectors_for(c, m["date"]) if s.get("chg_pct") is not None]
@@ -648,7 +651,8 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             pass
         ai = market_summary(refresh=0)
         ai_text = (ai.get("text") or "") if ai.get("enabled") else ""
-        txt = line_push.compose_daily_brief(m, secs, watch, ai_text=ai_text, full=full, tsmc=tsmc)
+        txt = line_push.compose_daily_brief(m, secs, watch, ai_text=ai_text, full=full,
+                                            tsmc=tsmc, prev=prev_row)
         return line_push.broadcast_text(cfg.line_token, txt)
 
     @app.post("/api/line/test")

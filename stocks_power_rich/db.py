@@ -7,6 +7,7 @@ from datetime import datetime
 MARKET_COLS = [
     "date", "taiex", "taiex_chg", "inst_foreign", "inst_trust", "inst_dealer",
     "margin_balance", "margin_chg", "short_balance", "short_chg",
+    "margin_value", "margin_value_chg",
     "tx_price", "tx_chg", "tx_open", "tx_high", "tx_low",
     "fut_inst_net", "retail_ls_mtx", "retail_ls_tmf",
     "tx_foreign_oi", "retail_oi_mtx",

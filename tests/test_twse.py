@@ -96,6 +96,8 @@ def test_parse_margin_rwd_summary_in_lots():
     assert out["margin_chg"] == 168376   # 9,469,030 - 9,300,654
     assert out["short_balance"] == 202194
     assert out["short_chg"] == -2061     # 202,194 - 204,255
+    assert out["margin_value"] == 6074.6      # 607,456,271 仟元 → 億
+    assert out["margin_value_chg"] == 135.3   # (607,456,271-593,930,024) 仟元 → 億
 
 
 def test_parse_sector_indices_filters_strips_and_signs():
