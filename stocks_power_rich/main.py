@@ -585,23 +585,55 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         if cached and not refresh:
             return cached
         hist = list(reversed(rows))  # 由舊到新
+        pv = rows[1] if len(rows) > 1 else {}
+
+        def _streak(k: str) -> int:
+            """由最新往回數的連續同向天數：+N=連 N 買、-N=連 N 賣（0=最新日無值或為 0）。"""
+            vals = [r.get(k) for r in hist if r.get(k) is not None]
+            if not vals or not vals[-1]:
+                return 0
+            sign = 1 if vals[-1] > 0 else -1
+            n = 0
+            for v in reversed(vals):
+                if v and (v > 0) == (sign > 0):
+                    n += 1
+                else:
+                    break
+            return n * sign
+
+        def _pct100(v):
+            return round(v * 100, 2) if v is not None else None
+
+        # 欄位名帶單位、衍生指標先算好（連買賣天數/OI增減/多空比%），AI 只解讀不換算
+        oi, oi_pv = m.get("tx_foreign_oi"), pv.get("tx_foreign_oi")
+        latest = {
+            "日期": m.get("date"),
+            "加權指數": m.get("taiex"), "加權漲跌(點)": m.get("taiex_chg"),
+            "外資買賣超(億)": m.get("inst_foreign"), "外資連買賣(天,正買負賣)": _streak("inst_foreign"),
+            "投信買賣超(億)": m.get("inst_trust"), "投信連買賣(天)": _streak("inst_trust"),
+            "自營買賣超(億)": m.get("inst_dealer"),
+            "外資台指淨未平倉(口)": oi,
+            "外資台指OI較昨增減(口)": (round(oi - oi_pv) if (oi is not None and oi_pv is not None) else None),
+            "散戶小台多空比(%)": _pct100(m.get("retail_ls_mtx")),
+            "散戶微台多空比(%)": _pct100(m.get("retail_ls_tmf")),
+            "融資餘額(張)": m.get("margin_balance"), "融資增減(張)": m.get("margin_chg"),
+            "融資金額(億)": m.get("margin_value"), "融資金額增減(億)": m.get("margin_value_chg"),
+            "VIX": m.get("vix"), "VIX漲跌(%)": m.get("vix_chg"),
+            "費半漲跌(%)": m.get("sox_chg"), "日經漲跌(%)": m.get("n225_chg"),
+            "韓股漲跌(%)": m.get("kospi_chg"), "黃金漲跌(%)": m.get("gold_chg"),
+            "美元兌日圓": m.get("jpy"), "美元兌日圓漲跌(%)": m.get("jpy_chg"),
+            "比特幣漲跌(%)": m.get("btc_chg"),
+        }
+        latest = {k: v for k, v in latest.items() if v is not None}  # 缺值不餵，省 token
         keys = [("inst_foreign", "外資買賣超(億)"), ("inst_trust", "投信買賣超(億)"),
-                ("inst_dealer", "自營買賣超(億)"), ("tx_foreign_oi", "外資台指淨未平倉(口)"),
-                ("retail_ls_mtx", "小台散戶多空比"), ("margin_balance", "融資餘額(張)"),
-                ("taiex", "加權指數")]
+                ("tx_foreign_oi", "外資台指淨未平倉(口)"), ("taiex", "加權指數")]
         trend = {"日期": [r.get("date") for r in hist]}
         trend.update({label: [r.get(k) for r in hist] for k, label in keys})
         secs = [s for s in _sectors_for(c, m["date"]) if s.get("chg_pct") is not None]
         secs.sort(key=lambda s: -s["chg_pct"])
-        sectors = {"領漲": [[s["name"], s["chg_pct"]] for s in secs[:3]],
-                   "領跌": [[s["name"], s["chg_pct"]] for s in secs[-3:][::-1]]}
-        # 只餵摘要需要的欄位，省 input token（含國際行情，AI 先評國際再評台股）
-        keep = ("date", "taiex", "taiex_chg", "inst_foreign", "inst_trust", "inst_dealer",
-                "tx_foreign_oi", "retail_oi_mtx", "retail_ls_mtx", "retail_ls_tmf",
-                "margin_balance", "margin_chg", "short_balance", "vix", "vix_chg",
-                "sox", "sox_chg", "n225", "n225_chg", "kospi", "kospi_chg",
-                "gold", "gold_chg", "jpy", "jpy_chg", "btc", "btc_chg")
-        payload = {"latest": {k: m.get(k) for k in keep}, "trend": trend, "sectors": sectors}
+        sectors = {"領漲(%)": [[s["name"], s["chg_pct"]] for s in secs[:3]],
+                   "領跌(%)": [[s["name"], s["chg_pct"]] for s in secs[-3:][::-1]]}
+        payload = {"最新盤後": latest, "近6日走勢": trend, "類股": sectors}
         result = gemini.summarize_market(payload, cfg.gemini_api_key)
         if result.get("enabled"):
             set_ai_cache(c, key, result)
