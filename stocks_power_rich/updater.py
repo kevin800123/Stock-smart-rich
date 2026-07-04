@@ -112,7 +112,7 @@ def backfill_history(conn, days: int = 30) -> int:
     for iso in sorted(seen):
         r = seen[iso]
         row = {"date": iso, "updated_at": datetime.now().isoformat()}
-        for k in ("taiex", "taiex_chg"):
+        for k in ("taiex", "taiex_chg", "turnover"):
             if r.get(k) is not None:
                 row[k] = r[k]
         d = _iso_to_date(iso)

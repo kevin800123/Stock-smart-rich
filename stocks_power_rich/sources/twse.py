@@ -67,15 +67,21 @@ def _rwd_row_getter(fields: list, row: list):
     return g
 
 
+def _to_yi(v):
+    """元 → 億（1 位小數）。"""
+    return round(v / 1e8, 1) if v is not None else None
+
+
 def parse_taiex_rwd(payload: dict) -> dict:
-    """直連 FMTQIK（{fields, data}）→ 取最新一列的加權指數、漲跌點數、資料日期。"""
+    """直連 FMTQIK（{fields, data}）→ 取最新一列的加權指數、漲跌點數、成交金額（億）、資料日期。"""
     data = payload.get("data") or []
     if not data:
-        return {"taiex": None, "taiex_chg": None, "date": None}
+        return {"taiex": None, "taiex_chg": None, "turnover": None, "date": None}
     g = _rwd_row_getter(payload.get("fields"), data[-1])
     return {
         "taiex": _f(g("發行量加權股價指數")),
         "taiex_chg": _f(g("漲跌點數")),
+        "turnover": _to_yi(_f(g("成交金額"))),
         "date": _roc_to_iso(g("日期")),
     }
 
@@ -104,7 +110,8 @@ def parse_taiex_history(payload: dict) -> list[dict]:
         g = _rwd_row_getter(fields, row)
         iso = _roc_to_iso(g("日期"))
         if iso:
-            out.append({"date": iso, "taiex": _f(g("發行量加權股價指數")), "taiex_chg": _f(g("漲跌點數"))})
+            out.append({"date": iso, "taiex": _f(g("發行量加權股價指數")),
+                        "taiex_chg": _f(g("漲跌點數")), "turnover": _to_yi(_f(g("成交金額")))})
     return out
 
 
@@ -340,7 +347,7 @@ def fetch_taiex() -> dict:
                 return out
         except Exception:  # noqa: BLE001 — 試上一個月份
             pass
-    return {"taiex": None, "taiex_chg": None, "date": None}
+    return {"taiex": None, "taiex_chg": None, "turnover": None, "date": None}
 
 
 def parse_close_prices(payload: dict) -> dict:

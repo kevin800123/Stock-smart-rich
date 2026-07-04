@@ -55,6 +55,7 @@ def test_parse_taiex_rwd_latest_row():
     assert out["taiex"] == 46255.26
     assert out["taiex_chg"] == 211.66
     assert out["date"] == "2026-06-25"
+    assert out["turnover"] == 13556.9   # 1,355,687,298,430 元 → 億
 
 
 def test_parse_index_ohlc():
@@ -69,13 +70,14 @@ def test_parse_taiex_history_all_days():
     payload = {
         "fields": ["日期", "成交股數", "成交金額", "成交筆數", "發行量加權股價指數", "漲跌點數"],
         "data": [
-            ["115/06/24", "1", "1", "1", "46,043.60", "-1,057.05"],
-            ["115/06/25", "1", "1", "1", "46,255.26", "211.66"],
+            ["115/06/24", "1", "1,539,046,268,153", "1", "46,043.60", "-1,057.05"],
+            ["115/06/25", "1", "1,355,687,298,430", "1", "46,255.26", "211.66"],
         ],
     }
     out = twse.parse_taiex_history(payload)
     assert [r["date"] for r in out] == ["2026-06-24", "2026-06-25"]
     assert out[0]["taiex"] == 46043.60 and out[0]["taiex_chg"] == -1057.05
+    assert out[0]["turnover"] == 15390.5 and out[1]["turnover"] == 13556.9  # 元 → 億
 
 
 def test_parse_margin_rwd_summary_in_lots():

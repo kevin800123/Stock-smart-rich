@@ -604,11 +604,16 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         def _pct100(v):
             return round(v * 100, 2) if v is not None else None
 
-        # 欄位名帶單位、衍生指標先算好（連買賣天數/OI增減/多空比%），AI 只解讀不換算
+        # 欄位名帶單位、衍生指標先算好（連買賣天數/OI增減/多空比%/量比），AI 只解讀不換算
         oi, oi_pv = m.get("tx_foreign_oi"), pv.get("tx_foreign_oi")
+        tv = m.get("turnover")
+        prev_tvs = [r.get("turnover") for r in hist[:-1] if r.get("turnover") is not None]
+        vol_vs_avg = (round((tv / (sum(prev_tvs) / len(prev_tvs)) - 1) * 100, 1)
+                      if (tv and prev_tvs) else None)
         latest = {
             "日期": m.get("date"),
             "加權指數": m.get("taiex"), "加權漲跌(點)": m.get("taiex_chg"),
+            "成交金額(億)": tv, "量能較前幾日均量(%)": vol_vs_avg,
             "外資買賣超(億)": m.get("inst_foreign"), "外資連買賣(天,正買負賣)": _streak("inst_foreign"),
             "投信買賣超(億)": m.get("inst_trust"), "投信連買賣(天)": _streak("inst_trust"),
             "自營買賣超(億)": m.get("inst_dealer"),
@@ -626,7 +631,8 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         }
         latest = {k: v for k, v in latest.items() if v is not None}  # 缺值不餵，省 token
         keys = [("inst_foreign", "外資買賣超(億)"), ("inst_trust", "投信買賣超(億)"),
-                ("tx_foreign_oi", "外資台指淨未平倉(口)"), ("taiex", "加權指數")]
+                ("tx_foreign_oi", "外資台指淨未平倉(口)"), ("taiex", "加權指數"),
+                ("turnover", "成交金額(億)")]
         trend = {"日期": [r.get("date") for r in hist]}
         trend.update({label: [r.get(k) for r in hist] for k, label in keys})
         secs = [s for s in _sectors_for(c, m["date"]) if s.get("chg_pct") is not None]

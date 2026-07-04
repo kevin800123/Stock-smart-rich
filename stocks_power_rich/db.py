@@ -5,7 +5,7 @@ import sqlite3
 from datetime import datetime
 
 MARKET_COLS = [
-    "date", "taiex", "taiex_chg", "inst_foreign", "inst_trust", "inst_dealer",
+    "date", "taiex", "taiex_chg", "turnover", "inst_foreign", "inst_trust", "inst_dealer",
     "margin_balance", "margin_chg", "short_balance", "short_chg",
     "margin_value", "margin_value_chg",
     "tx_price", "tx_chg", "tx_open", "tx_high", "tx_low",
