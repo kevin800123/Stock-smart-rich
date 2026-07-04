@@ -53,9 +53,12 @@
 
 ## 三、改善計畫
 
-> 進度：**P0 已於 2026-07-04 實作完成**（H1/H2/H3/M1 皆已修補，含測試，全套 111 passed）。
-> 部署啟用方式：在 Zeabur 環境變數設 `SPR_BASIC_USER` 與 `SPR_BASIC_PASS` 即開啟全站登入。
-> P1、P2 尚未執行。
+> 進度：**P0 + P1 已於 2026-07-04 實作完成**（含測試，全套 115 passed）。
+> - P0：H1 全站 Basic Auth、H2 前端 XSS 跳脫、H3 data_dir 白名單、M1 上傳限制。
+>   啟用方式：Zeabur 環境變數設 `SPR_BASIC_USER` 與 `SPR_BASIC_PASS`（已啟用）。
+> - P1：M3 每日 DB 備份輪替、L1 安全性回應標頭（CSP 等）。M2 速率限制經評估後降級暫緩
+>   （Basic Auth 已擋掉未授權濫用者，主要風險已消除）。
+> - P2 尚未執行。
 
 ### 第一階段 P0（高風險止血，約半天）— ✅ 已完成
 
@@ -73,12 +76,14 @@
 
 ### 第二階段 P1（一週內）
 
-5. **輕量速率限制**（修 M2）：程式內 in-memory 計數（單 worker 即可），
-   對 update/backfill/line/test/AI refresh 設每分鐘上限；超限回 429。
-6. **每日 DB 備份**（修 M3）：排程 job 內以 SQLite `VACUUM INTO` 產生
-   `/data/backup/spr-YYYYMMDD.sqlite`，保留 7 份輪替；另提供（認證後的）下載端點以便異地備援。
-7. **安全標頭 middleware**（修 L1）：`X-Content-Type-Options: nosniff`、
-   `X-Frame-Options: DENY`、基本 CSP（`default-src 'self'` + ECharts CDN 白名單）。
+5. ⏸️ **輕量速率限制**（修 M2）— **暫緩**：Basic Auth 啟用後，未授權者無法觸達昂貴端點，
+   放大/濫用風險已消除；登入使用者自我重放的殘餘風險極低，故降級暫不實作。
+6. ✅ **每日 DB 備份**（修 M3）：`db.backup_db` 以 SQLite 線上備份 API 複製整庫到
+   DB 同目錄 `backup/spr-YYYYMMDD.sqlite`，輪替保留最近 7 份；掛在 21:00 排程 job，
+   另有（認證保護的）`POST /api/db/backup` 可手動觸發。
+7. ✅ **安全標頭 middleware**（修 L1）：`X-Content-Type-Options: nosniff`、`X-Frame-Options: DENY`、
+   `Referrer-Policy: no-referrer`、CSP（`default-src 'self'`、script 限自站+jsdelivr、無 unsafe-eval、
+   style 放行 inline、`frame-ancestors 'none'`）。已於瀏覽器實測 ECharts 正常、無 CSP 違規。
 
 ### 第三階段 P2（持續性）
 
@@ -101,5 +106,6 @@
 - [ ] settings 設 data_dir=/etc → 拒絕
 - [ ] 上傳 20MB 檔 → 413/明確拒絕
 - [ ] 1 分鐘內連打 /api/line/test 10 次 → 大部分 429，LINE 額度未被消耗
-- [ ] /data/backup/ 每日出現新備份且自動輪替
-- [ ] 全測試套件通過；LINE 排程推播、每日更新不受影響
+- [x] /data/backup/ 每日出現新備份且自動輪替（21:00 排程 + `POST /api/db/backup`，保留 7 份）
+- [x] 回應帶 CSP / X-Frame-Options / X-Content-Type-Options，且 ECharts 正常無 CSP 違規
+- [x] 全測試套件通過（115）；LINE 排程推播、每日更新不受影響

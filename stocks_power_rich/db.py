@@ -1,4 +1,5 @@
 """SQLite 資料層：建立 schema、每日大盤快照與籌碼快照的 upsert/查詢。"""
+import glob
 import json
 import os
 import sqlite3
@@ -21,6 +22,36 @@ CHIP_COLS = [
     "trust_3d", "foreign_3d", "custody", "w55", "market_cap", "capital",
     "est_profit", "lan_score", "lpe", "lan_value", "raw_json",
 ]
+
+
+def backup_db(db_path: str, keep: int = 7, stamp: str | None = None) -> str | None:
+    """以 SQLite 線上備份 API 複製整個 DB 到同目錄 backup/spr-YYYYMMDD.sqlite，輪替保留最近 keep 份。
+
+    用官方 Connection.backup（可在服務運行中安全備份，不鎖庫）；來源不存在回 None。
+    集保逐週資料等無法重建，故排程每日執行以防 Volume 故障/誤刪造成永久遺失。
+    """
+    if not os.path.exists(db_path):
+        return None
+    bdir = os.path.join(os.path.dirname(db_path) or ".", "backup")
+    os.makedirs(bdir, exist_ok=True)
+    stamp = stamp or datetime.now().strftime("%Y%m%d")
+    dest = os.path.join(bdir, f"spr-{stamp}.sqlite")
+    src = sqlite3.connect(db_path)
+    try:
+        dst = sqlite3.connect(dest)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+    files = sorted(glob.glob(os.path.join(bdir, "spr-*.sqlite")))
+    for old in files[:-keep]:  # 只留最近 keep 份（檔名日期字典序＝時序）
+        try:
+            os.remove(old)
+        except OSError:
+            pass
+    return dest
 
 
 def get_connection(db_path: str) -> sqlite3.Connection:

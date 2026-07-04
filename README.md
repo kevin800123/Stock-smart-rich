@@ -175,7 +175,7 @@ LINE Notify 已停服，改走你自己的 LINE 官方帳號（LINE@）Messaging
    | `SPR_SCHEDULE_TIME` | `21:00` | 排程時間 |
    | `GEMINI_API_KEY` | （金鑰） | 設為密鑰，絕不進前端 |
    | `LINE_CHANNEL_ACCESS_TOKEN` | （token） | 設為密鑰；LINE 每日推播用（選用） |
-3. **持久化 Volume（務必）**：掛載到 `/data`（對應 `SPR_DB_PATH`）。**未掛 Volume 每次重新部署資料就會清空**（大盤歷史、集保逐週累積、自選股）。
+3. **持久化 Volume（務必）**：掛載到 `/data`（對應 `SPR_DB_PATH`）。**未掛 Volume 每次重新部署資料就會清空**（大盤歷史、集保逐週累積、自選股）。每日 21:00 排程會自動備份到 `/data/backup/`（輪替保留 7 份），也可按需 `POST /api/db/backup`；要異地保存可從 Volume 下載該資料夾。
 4. **區域**：選離台灣近者（連 TWSE／TAIFEX／TDCC 較穩）。
 5. **排程備援**：免費方案可能休眠導致 21:00 排程不觸發；可改用平台 Cron／外部排程每日 `POST /api/update/run`。
 6. **冷啟動補資料**（首次部署或 Volume 剛掛好，DB 是空的）：瀏覽器打開一次

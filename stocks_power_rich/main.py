@@ -16,6 +16,7 @@ from .config import load_config
 from .sources import kline, taifex, tdcc, tpex, twse
 from .db import (
     add_watch,
+    backup_db,
     get_ai_cache,
     get_connection,
     get_custody_trend,
@@ -86,6 +87,21 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 return await call_next(request)
             return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="SPR"'})
 
+    # 安全性回應標頭（後註冊＝最外層，套用於所有回應含 401）。CSP 只允許自站與 ECharts CDN，
+    # 無 unsafe-eval（app.js/ECharts 皆不用 eval）；inline style 屬性大量使用故 style 放行 inline。
+    @app.middleware("http")
+    async def _security_headers(request, call_next):
+        resp = await call_next(request)
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["X-Frame-Options"] = "DENY"
+        resp.headers["Referrer-Policy"] = "no-referrer"
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+            "font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+        )
+        return resp
+
     initialized: set[str] = set()
 
     def conn():
@@ -125,6 +141,10 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         try:
             _push_line(c, full=True)  # 21:00 完整版（含融資券＋AI）；非當日資料自動略過
         except Exception:  # noqa: BLE001 — 推播失敗不影響資料更新
+            pass
+        try:
+            backup_db(cfg.db_path)  # 每日備份輪替，防 Volume 故障/誤刪永久遺失
+        except Exception:  # noqa: BLE001 — 備份失敗不影響資料更新
             pass
 
     def line_brief_job():
@@ -519,6 +539,18 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     @app.get("/api/snapshots")
     def snapshots():
         return {"dates": get_snapshot_dates(conn())}
+
+    @app.post("/api/db/backup")
+    def db_backup():
+        """手動觸發一次資料庫備份（受全站認證保護）；回目前保留的備份清單。"""
+        import glob as _glob
+        try:
+            dest = backup_db(cfg.db_path)
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+        bdir = os.path.join(os.path.dirname(cfg.db_path) or ".", "backup")
+        files = [os.path.basename(p) for p in sorted(_glob.glob(os.path.join(bdir, "spr-*.sqlite")))]
+        return {"ok": bool(dest), "file": os.path.basename(dest) if dest else None, "backups": files}
 
     @app.get("/api/settings")
     def get_settings():

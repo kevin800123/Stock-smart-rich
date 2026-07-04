@@ -58,3 +58,33 @@ def test_chip_snapshot_roundtrip(tmp_path):
     assert get_snapshot_dates(conn) == ["2026-06-15"]
     got = get_snapshot(conn, "2026-06-15")
     assert got[0]["code"] == "2330.TW" and got[0]["big_holder_ratio"] == 0.5
+
+
+def test_backup_db_creates_rotates_and_is_readable(tmp_path):
+    import glob
+    import os
+    from stocks_power_rich.db import backup_db
+
+    db = str(tmp_path / "spr.sqlite")
+    c = get_connection(db)
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-07-01", "taiex": 47000.0})
+
+    # 連續 9 天備份，輪替後只保留最近 7 份
+    days = [f"202601{d:02d}" for d in range(1, 10)]
+    for stamp in days:
+        p = backup_db(db, keep=7, stamp=stamp)
+        assert p and os.path.exists(p)
+    files = sorted(glob.glob(str(tmp_path / "backup" / "spr-*.sqlite")))
+    assert len(files) == 7                                   # 只留 7 份
+    assert files[0].endswith("spr-20260103.sqlite")         # 最舊兩份被刪
+    assert files[-1].endswith("spr-20260109.sqlite")
+
+    # 備份檔可獨立開啟且含原資料
+    bc = get_connection(files[-1])
+    assert bc.execute("SELECT taiex FROM market_daily").fetchone()[0] == 47000.0
+
+
+def test_backup_db_missing_source_returns_none(tmp_path):
+    from stocks_power_rich.db import backup_db
+    assert backup_db(str(tmp_path / "nope.sqlite")) is None

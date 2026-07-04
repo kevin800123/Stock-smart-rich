@@ -597,3 +597,29 @@ def test_upload_rejects_bad_extension_and_oversize(tmp_path, monkeypatch):
     big = client.post("/api/csv/upload",
                       files={"file": ("big.csv", b"x" * (10 * 1024 * 1024 + 5), "text/csv")}).json()
     assert big["count"] == 0 and "10" in big.get("error", "")
+
+
+def test_security_headers_present(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    app = create_app()
+    client = TestClient(app)
+    h = client.get("/api/dashboard").headers
+    assert h["X-Content-Type-Options"] == "nosniff"
+    assert h["X-Frame-Options"] == "DENY"
+    assert "default-src 'self'" in h["Content-Security-Policy"]
+    assert "https://cdn.jsdelivr.net" in h["Content-Security-Policy"]   # ECharts CDN 放行
+
+
+def test_db_backup_endpoint(tmp_path, monkeypatch):
+    db = str(tmp_path / "spr.sqlite")
+    monkeypatch.setenv("SPR_DB_PATH", db)
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    c = get_connection(db)
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-07-01", "taiex": 1.0})
+    app = create_app()
+    client = TestClient(app)
+    r = client.post("/api/db/backup").json()
+    assert r["ok"] is True and r["file"].startswith("spr-") and r["file"].endswith(".sqlite")
+    assert r["file"] in r["backups"]
+    assert os.path.exists(os.path.join(str(tmp_path), "backup", r["file"]))
