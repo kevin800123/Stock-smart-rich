@@ -49,6 +49,14 @@ def parse_custody_distribution(text: str) -> dict:
 
 
 def fetch_custody_distribution() -> dict:
-    # verify=False：TDCC 憑證缺 Subject Key Identifier，否則連線失敗
+    # verify=False：TDCC 憑證（CN=epassbook.tdcc.com.tw，TWCA 簽發）缺 Subject Key Identifier
+    # 擴充欄位，Python 嚴格鏈驗證會拒絕，故此主機停用 TLS 驗證（已評估、範圍窄，見下）。
+    #
+    # 已評估的替代方案與捨棄原因（docs/SECURITY.md M4）：
+    # - 釘選此葉憑證指紋：憑證效期至 2026-09-04，到期即失效，需人工追蹤更新，維運成本高。
+    # - 手動驗證憑證鏈（跳過 SKI 檢查）：需自刻加密驗證邏輯，複雜度與潛在 bug 風險
+    #   高於現狀，且憑證輪替時仍要同步維護。
+    # 資料本身是 TDCC 每週公開發布的集保戶股權分散統計（非帳密、非個資），
+    # 即使遭竄改頂多造成分析數字失準，非機敏資料外洩。故維持現狀，僅窄範圍套用於此主機。
     r = httpx.get(TDCC_URL, params={"id": "1-5"}, timeout=90, follow_redirects=True, verify=False)
     return parse_custody_distribution(r.content.decode("utf-8-sig", errors="replace"))

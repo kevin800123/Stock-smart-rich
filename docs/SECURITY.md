@@ -53,12 +53,13 @@
 
 ## 三、改善計畫
 
-> 進度：**P0 + P1 已於 2026-07-04 實作完成**（含測試，全套 115 passed）。
+> 進度：**P0 + P1 + P2 已於 2026-07-04 實作完成**（含測試，全套 115 passed）。
 > - P0：H1 全站 Basic Auth、H2 前端 XSS 跳脫、H3 data_dir 白名單、M1 上傳限制。
 >   啟用方式：Zeabur 環境變數設 `SPR_BASIC_USER` 與 `SPR_BASIC_PASS`（已啟用）。
 > - P1：M3 每日 DB 備份輪替、L1 安全性回應標頭（CSP 等）。M2 速率限制經評估後降級暫緩
 >   （Basic Auth 已擋掉未授權濫用者，主要風險已消除）。
-> - P2 尚未執行。
+> - P2：L2 依賴鎖版 + pip-audit 掃描（無已知漏洞）。M4、L4 經評估後維持現狀並記錄理由
+>   （詳見下方 P2 段落）；L3 CSRF 隨 P0 導入認證時已一併評估、風險仍低。
 
 ### 第一階段 P0（高風險止血，約半天）— ✅ 已完成
 
@@ -85,11 +86,22 @@
    `Referrer-Policy: no-referrer`、CSP（`default-src 'self'`、script 限自站+jsdelivr、無 unsafe-eval、
    style 放行 inline、`frame-ancestors 'none'`）。已於瀏覽器實測 ECharts 正常、無 CSP 違規。
 
-### 第三階段 P2（持續性）
+### 第三階段 P2（持續性）— ✅ 已評估／已完成
 
-8. **依賴治理**（修 L2）：`pip freeze` 產生 lock 檔；定期 `pip-audit`（可進 CI）。
-9. **TDCC 憑證**（修 M4）：改以固定 CA bundle 驗證；不可行則維持現狀並保留此已知風險記錄。
-10. **錯誤訊息淨化**（修 L4）：對外回應改通用訊息，細節僅寫 log。
+8. ✅ **依賴治理**（修 L2）：`requirements-lock.txt` 為 `pip freeze` 完整解析快照（63 個套件，
+   供重現性對照）；`pip-audit -r requirements.txt` 掃描結果為 **無已知漏洞**
+   （2026-07-04；稽核工具用完即解除安裝，避免其相依套件混入 app 環境/鎖定檔）。
+   定期做法：往後每次改動 requirements.txt 或每季，重跑上述兩步驟。
+9. ⏸️ **TDCC 憑證**（M4）— **維持現狀，經評估記錄**：實查該憑證為合法 TWCA 簽發
+   （CN=epassbook.tdcc.com.tw，效期至 2026-09-04），僅缺 Subject Key Identifier 擴充欄位
+   導致 Python 嚴格鏈驗證失敗。評估兩種釘選方案皆不划算：釘葉憑證 2 個月後到期即失效、
+   需人工追蹤更新；釘 CA 需自刻手動鏈驗證，複雜度與潛在 bug 風險更高。且該資料為 TDCC
+   每週公開發布的集保戶股權分散統計（非帳密、非個資），遭竄改頂多分析數字失準。
+   決策：維持 `verify=False`（已窄範圍限定僅此一處），理由已寫入 `tdcc.py` 程式碼註解。
+10. ⏸️ **錯誤訊息淨化**（L4）— **維持現狀，經評估記錄**：這些回應（如「AI 摘要失敗：…」、
+    updater 各來源失敗訊息）皆已被 P0 的全站 Basic Auth 保護，僅認證後的擁有者本人可見；
+    淨化細節在此威脅模型下安全效益低，反而犧牲日常除錯能力（判斷哪個資料源、為何失敗）。
+    與 M2 的降級理由一致：認證上線後，風險評估基準已改變。
 11. **金鑰輪替習慣**：LINE token / Gemini key 每半年重發一次；洩漏疑慮時立即重發
     （兩者皆可於原後台重發，服務只需更新 env）。
 
@@ -108,4 +120,5 @@
 - [ ] 1 分鐘內連打 /api/line/test 10 次 → 大部分 429，LINE 額度未被消耗
 - [x] /data/backup/ 每日出現新備份且自動輪替（21:00 排程 + `POST /api/db/backup`，保留 7 份）
 - [x] 回應帶 CSP / X-Frame-Options / X-Content-Type-Options，且 ECharts 正常無 CSP 違規
+- [x] `pip-audit -r requirements.txt` 無已知漏洞；`requirements-lock.txt` 與目前環境一致
 - [x] 全測試套件通過（115）；LINE 排程推播、每日更新不受影響
