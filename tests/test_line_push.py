@@ -2,7 +2,7 @@ from stocks_power_rich import line_push
 
 _ROW = {
     "date": "2026-07-01", "taiex": 47018.99, "taiex_chg": 893.08,
-    "tx_price": 47100.0, "tx_chg": -35.0,
+    "turnover": 10780.3, "tx_price": 47100.0, "tx_chg": -35.0,
     "inst_foreign": 323.76, "inst_trust": 156.03, "inst_dealer": 59.38,
     "tx_foreign_oi": -84168, "retail_ls_mtx": 0.0769, "retail_ls_tmf": -0.123,
     "margin_balance": 9414925, "margin_chg": -20530,
@@ -13,7 +13,7 @@ _ROW = {
     "btc": 98500.0, "btc_chg": -2.1,
 }
 _PREV = {
-    "date": "2026-06-30",
+    "date": "2026-06-30", "turnover": 12860.0,
     "inst_foreign": -1431.89, "inst_trust": 55.21, "inst_dealer": -707.34,
     "tx_foreign_oi": -83000, "retail_ls_mtx": 0.0811, "retail_ls_tmf": -0.101,
 }
@@ -33,6 +33,7 @@ def test_compose_brief_aligned_format():
     assert "【大盤】" in txt
     assert "加權指數 47,018.99" in txt
     assert "漲跌幅　 ▲893.08（+1.94%）" in txt
+    assert "成交金額 10,780億(昨12,860億)" in txt
     assert "台指期　 47,100.00 ▼35.00（-0.07%）" in txt
     assert "台積電　 2,505.00（+3.94%）" in txt
     # 國際：日圓＝美元兌日圓

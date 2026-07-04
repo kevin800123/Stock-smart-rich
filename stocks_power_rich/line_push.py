@@ -71,6 +71,11 @@ def compose_daily_brief(row: dict, sectors: list, watch: list,
                  + (f"（{_signed(pct)}%）" if pct is not None else ""))
     else:
         g.append(line)
+    if row.get("turnover") is not None:
+        line = f"{_pad('成交金額', 4)} {_fmt(row['turnover'], 0)}億"
+        if pv.get("turnover") is not None:
+            line += f"(昨{_fmt(pv['turnover'], 0)}億)"
+        g.append(line)
     if row.get("tx_price") is not None:
         g.append(_px_line("台指期", row["tx_price"], row.get("tx_chg")))
     if tsmc and tsmc.get("close") is not None:
