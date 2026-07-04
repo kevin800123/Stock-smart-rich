@@ -26,6 +26,8 @@ class Config:
     intl_tickers: dict = field(default_factory=lambda: dict(INTL_TICKERS))
     line_token: str = ""            # LINE 官方帳號 Messaging API Channel Access Token
     line_push_time: str = "16:00"   # 盤後速報推播時間（完整版跟隨 schedule_time）
+    basic_user: str = ""            # HTTP Basic Auth 帳號（與密碼皆設定才啟用全站認證）
+    basic_pass: str = ""            # HTTP Basic Auth 密碼
 
 
 def load_config() -> Config:
@@ -36,4 +38,6 @@ def load_config() -> Config:
         data_dir=os.getenv("SPR_DATA_DIR", "Date"),
         line_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip(),
         line_push_time=os.getenv("SPR_LINE_PUSH_TIME", "16:00"),
+        basic_user=os.getenv("SPR_BASIC_USER", "").strip(),
+        basic_pass=os.getenv("SPR_BASIC_PASS", "").strip(),
     )

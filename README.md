@@ -135,6 +135,7 @@ python -m venv .venv
 ## 設定（.env）
 | 變數 | 說明 | 預設 |
 |---|---|---|
+| `SPR_BASIC_USER` / `SPR_BASIC_PASS` | 全站登入帳密（兩者皆填才啟用；雲端建議設定） | （空＝不啟用） |
 | `GEMINI_API_KEY` | Gemini 金鑰（空＝停用 AI 摘要） | （空） |
 | `LINE_CHANNEL_ACCESS_TOKEN` | LINE 官方帳號 Messaging API token（空＝停用推播） | （空） |
 | `SPR_LINE_PUSH_TIME` | 平日盤後速報推播時間 HH:MM | 16:00 |
@@ -155,6 +156,11 @@ LINE Notify 已停服，改走你自己的 LINE 官方帳號（LINE@）Messaging
    **21:00** 更新完推「完整版」（加融資券）。假日或資料未更新自動不推。
 5. 設定頁有「📱 測試推播」按鈕可立即驗證。免費方案每月 200 則，每日 2 則綽綽有餘。
 
+### 安全性（雲端務必設定）
+服務預設無認證，任何人知道網址即可存取。**部署到公網前，請在環境變數設定
+`SPR_BASIC_USER` 與 `SPR_BASIC_PASS`**（兩者皆設定才啟用），啟用全站 HTTP Basic 登入；
+瀏覽器會跳一次帳密視窗，記住後日常無感。詳見 [docs/SECURITY.md](docs/SECURITY.md)。
+
 ## 雲端部署（Zeabur，整包前後端）
 後端本身就 serve 前端，整包部署一個服務即可（不需 CORS／前後端分離）。
 
@@ -163,6 +169,7 @@ LINE Notify 已停服，改走你自己的 LINE 官方帳號（LINE@）Messaging
    | 變數 | 值 | 說明 |
    |---|---|---|
    | `TZ` | `Asia/Taipei` | **必設**；容器預設 UTC，否則資料日期／排程判斷會差 8 小時 |
+   | `SPR_BASIC_USER` / `SPR_BASIC_PASS` | （帳號 / 密碼） | **建議必設**；啟用全站登入保護，否則任何人可存取 |
    | `SPR_DB_PATH` | `/data/spr.sqlite` | 指到持久化 Volume |
    | `SPR_ENABLE_SCHEDULER` | `1` | 開每日自動更新 |
    | `SPR_SCHEDULE_TIME` | `21:00` | 排程時間 |

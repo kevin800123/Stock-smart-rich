@@ -1,6 +1,10 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+// HTML 跳脫：所有嵌入 innerHTML 的外部/CSV 字串（股名、產業、檔名、錯誤訊息）都要經過，
+// 防止惡意 CSV 的股名如 <img onerror> 被當標記執行（儲存型 XSS）。兼顧屬性情境（含 " '）。
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => (
+  { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const fmt = (v, d = 2) => (v === null || v === undefined || v === "" ? "—" : Number(v).toLocaleString("en-US", { maximumFractionDigits: d }));
 const chgClass = (v) => (v > 0 ? "up" : v < 0 ? "down" : "flat");
 const chgText = (v) => (v === null || v === undefined ? "" : (v > 0 ? "▲" : v < 0 ? "▼" : "") + fmt(Math.abs(v)));
@@ -315,7 +319,7 @@ async function loadSectors() {
           const sign = p.data.chg >= 0 ? "+" : "";
           const mc = p.data.mcap == null ? "" : `<br/>市值 ${fmt(p.data.mcap, 0)} 億`;
           const tv = p.data.turnover == null ? "" : `<br/>成交值 ${fmt(p.data.turnover / 1e8, 1)} 億`;
-          return `${p.name}<br/>漲跌 <b>${sign}${fmt(p.data.chg, 2)}%</b>${mc}${tv}<br/><span style="color:#8a94a3">點擊看成分股</span>`;
+          return `${esc(p.name)}<br/>漲跌 <b>${sign}${fmt(p.data.chg, 2)}%</b>${mc}${tv}<br/><span style="color:#8a94a3">點擊看成分股</span>`;
         },
       },
       series: [{
@@ -327,7 +331,7 @@ async function loadSectors() {
           show: true, overflow: "truncate",
           formatter: (p) => {
             const sign = p.data.chg >= 0 ? "+" : "";
-            return `{n|${p.name}}\n{v|${sign}${fmt(p.data.chg, 2)}%}`;
+            return `{n|${esc(p.name)}}\n{v|${sign}${fmt(p.data.chg, 2)}%}`;
           },
           rich: {
             n: { fontSize: 13, fontWeight: 700, color: "#fff", lineHeight: 17 },
@@ -348,10 +352,10 @@ async function loadSectors() {
 async function loadSectorStocks(sector, date) {
   const box = $("sector-stocks");
   if (!box) return;
-  box.innerHTML = `<div class="ss-head"><b>${sector}</b> 成分股　<span class="muted small">載入中…</span></div>`;
+  box.innerHTML = `<div class="ss-head"><b>${esc(sector)}</b> 成分股　<span class="muted small">載入中…</span></div>`;
   try {
     const d = await getJSON(`/api/sectors/${encodeURIComponent(sector)}/stocks?date=${date || ""}`);
-    if (!d.stocks || !d.stocks.length) { box.innerHTML = `<div class="ss-head"><b>${sector}</b> 成分股　<span class="muted small">尚無資料</span></div>`; return; }
+    if (!d.stocks || !d.stocks.length) { box.innerHTML = `<div class="ss-head"><b>${esc(sector)}</b> 成分股　<span class="muted small">尚無資料</span></div>`; return; }
     const cap = 60;
     const shown = d.stocks.slice(0, cap);
     const more = d.count > cap ? `（依市值排序，顯示前 ${cap} 檔，共 ${d.count} 檔）` : `（依市值排序，共 ${d.count} 檔）`;
@@ -359,12 +363,12 @@ async function loadSectorStocks(sector, date) {
       const cls = chgClass(s.chg_pct);
       const sign = s.chg_pct > 0 ? "+" : "";
       const tip = s.mcap == null ? "" : ` title="市值約 ${fmt(s.mcap, 0)} 億"`;
-      return `<div class="ss-cell ${cls}"${tip}><span class="ss-name">${s.code} ${s.name || ""}</span><span class="ss-chg">${s.chg_pct == null ? "—" : sign + fmt(s.chg_pct, 2) + "%"}</span></div>`;
+      return `<div class="ss-cell ${cls}"${tip}><span class="ss-name">${esc(s.code)} ${esc(s.name || "")}</span><span class="ss-chg">${s.chg_pct == null ? "—" : sign + fmt(s.chg_pct, 2) + "%"}</span></div>`;
     }).join("");
-    box.innerHTML = `<div class="ss-head"><b>${sector}</b> 成分股 <span class="muted small">${more}</span> <span class="ss-close" title="收合">✕</span></div><div class="ss-grid">${cells}</div>`;
+    box.innerHTML = `<div class="ss-head"><b>${esc(sector)}</b> 成分股 <span class="muted small">${more}</span> <span class="ss-close" title="收合">✕</span></div><div class="ss-grid">${cells}</div>`;
     const close = box.querySelector(".ss-close");
     if (close) close.addEventListener("click", () => { box.innerHTML = ""; });
-  } catch (e) { box.innerHTML = `<div class="ss-head"><b>${sector}</b> 成分股　<span class="muted small">載入失敗</span></div>`; }
+  } catch (e) { box.innerHTML = `<div class="ss-head"><b>${esc(sector)}</b> 成分股　<span class="muted small">載入失敗</span></div>`; }
 }
 
 // 退回原本的條列色塊（後端無成交值時的降級顯示）
@@ -377,7 +381,7 @@ function renderSectorPills(el, note, sectors) {
     const cls = chgClass(s.chg_pct);
     const arrow = s.chg_pct > 0 ? "▲" : s.chg_pct < 0 ? "▼" : "";
     const pct = s.chg_pct == null ? "—" : arrow + fmt(Math.abs(s.chg_pct), 2) + "%";
-    return `<div class="sector ${cls}"><span class="sec-name">${s.name}</span><span class="sec-chg">${pct}</span></div>`;
+    return `<div class="sector ${cls}"><span class="sec-name">${esc(s.name)}</span><span class="sec-chg">${pct}</span></div>`;
   }).join("");
 }
 
@@ -452,7 +456,7 @@ async function loadRotation() {
     const cell = (v) => v == null ? '<td class="muted" style="text-align:right">—</td>'
       : `<td class="${chgClass(v)}" style="text-align:right">${v > 0 ? "+" : ""}${fmt(v, 2)}</td>`;
     const head = "<tr><th>類股</th>" + d.dates.map((dt) => `<th style="text-align:right">${dt.slice(5)}</th>`).join("") + '<th style="text-align:right">累計</th></tr>';
-    const body = d.sectors.map((s) => `<tr><td>${s.name}</td>${s.series.map(cell).join("")}<td class="${chgClass(s.sum)}" style="text-align:right;font-weight:700">${s.sum > 0 ? "+" : ""}${fmt(s.sum, 2)}</td></tr>`).join("");
+    const body = d.sectors.map((s) => `<tr><td>${esc(s.name)}</td>${s.series.map(cell).join("")}<td class="${chgClass(s.sum)}" style="text-align:right;font-weight:700">${s.sum > 0 ? "+" : ""}${fmt(s.sum, 2)}</td></tr>`).join("");
     el.innerHTML = `<table>${head}${body}</table>`;
   } catch (e) { el.innerHTML = '<div class="muted small">輪動載入失敗</div>'; }
 }
@@ -469,7 +473,7 @@ async function loadCross() {
       const arrow = g.chg_pct > 0 ? "▲" : g.chg_pct < 0 ? "▼" : "";
       const pct = g.chg_pct == null ? '<span class="muted">—</span>' : `<span class="${cls}">${arrow}${fmt(Math.abs(g.chg_pct), 2)}%</span>`;
       const stocks = g.stocks.map((s) => stockLink(s.code, s.name)).join("　");
-      return `<div class="cross-grp ${cls}"><div class="cross-h"><b>${g.sector}</b>　${pct}　<span class="muted">· ${g.count} 檔</span></div><div class="cross-stocks">${stocks}</div></div>`;
+      return `<div class="cross-grp ${cls}"><div class="cross-h"><b>${esc(g.sector)}</b>　${pct}　<span class="muted">· ${g.count} 檔</span></div><div class="cross-stocks">${stocks}</div></div>`;
     }).join("");
   } catch (e) { el.innerHTML = '<div class="muted small">交叉選股載入失敗</div>'; }
 }
@@ -565,7 +569,7 @@ async function autoUpdate() {
 }
 
 // ========== 選股清單 ==========
-function stockLink(code, name) { return `<a href="#" class="stock" data-code="${code}" data-name="${name || ""}">${code} ${name || ""}</a>`; }
+function stockLink(code, name) { const c = esc(code), n = esc(name || ""); return `<a href="#" class="stock" data-code="${c}" data-name="${n}">${c} ${n}</a>`; }
 function lanCell(v) { if (v === null || v === undefined) return "—"; return v > 60 ? `<b style="color:var(--up)">${fmt(v, 1)}</b>` : fmt(v, 1); }
 
 const sortState = {};
@@ -612,7 +616,7 @@ let currentPicks = [], subFilter = null;
 function renderSubFilterChip() {
   const el = $("sub-filter");
   if (subFilter) {
-    el.innerHTML = `篩選：<b>${subFilter}</b>（${currentPicks.filter((p) => p.sub_industry === subFilter).length} 檔） <a href="#" id="clear-sub">✕ 全部</a>`;
+    el.innerHTML = `篩選：<b>${esc(subFilter)}</b>（${currentPicks.filter((p) => p.sub_industry === subFilter).length} 檔） <a href="#" id="clear-sub">✕ 全部</a>`;
     const clr = $("clear-sub"); if (clr) clr.addEventListener("click", (e) => { e.preventDefault(); subFilter = null; renderDailyView(); });
   } else { el.innerHTML = `共 ${currentPicks.length} 檔`; }
 }
@@ -647,7 +651,7 @@ function renderWeekly(data) {
   if (!rows.length) { $("weekly").innerHTML = '<div class="muted">本週與上週無新進榜／加速／退榜（或兩份資料相同）。</div>'; return; }
   rows.sort((a, b) => (b.custody_delta || -999) - (a.custody_delta || -999));
   const head = "<tr><th>股票</th><th>狀態</th><th>集保Δ</th><th>大戶增比</th><th>產業</th></tr>";
-  const body = rows.map((r) => `<tr><td>${stockLink(r.code, r.name)}</td><td>${statusBadge(r.status)}</td><td>${fmt(r.custody_delta, 2)}</td><td>${fmt(r.big_holder_ratio, 2)}</td><td>${r.industry || ""}</td></tr>`).join("");
+  const body = rows.map((r) => `<tr><td>${stockLink(r.code, r.name)}</td><td>${statusBadge(r.status)}</td><td>${fmt(r.custody_delta, 2)}</td><td>${fmt(r.big_holder_ratio, 2)}</td><td>${esc(r.industry || "")}</td></tr>`).join("");
   $("weekly").innerHTML = `<table>${head}${body}</table>`;
 }
 async function loadWeekly() { try { renderWeekly(await getJSON("/api/analysis/weekly")); } catch (e) { /* 忽略 */ } }
@@ -741,7 +745,7 @@ async function loadStock(code, name) {
 // ========== 上傳 / 匯入 ==========
 async function applyImportResult(res) {
   const info = $("upload-info");
-  if (res.error && !res.count) { info.innerHTML = `<span style="color:#e08585">⚠ ${res.error}</span>`; return; }
+  if (res.error && !res.count) { info.innerHTML = `<span style="color:#e08585">⚠ ${esc(res.error)}</span>`; return; }
   if (!res.count) { info.innerHTML = `<span style="color:#e08585">⚠ 讀到 0 檔（${res.snap_date}）。請確認是籌碼匯出檔。</span>`; return; }
   info.textContent = `已匯入 ${res.file ? res.file + "：" : ""}${res.snap_date}，共 ${res.count} 檔`;
   await loadDates(); await loadWeekly();

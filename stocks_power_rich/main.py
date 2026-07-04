@@ -1,5 +1,8 @@
 """FastAPI 入口：提供 JSON API 與前端靜態頁。"""
+import base64
+import binascii
 import os
+import secrets
 import tempfile
 
 from fastapi import Body, FastAPI, File, UploadFile
@@ -30,6 +33,35 @@ from .db import (
 )
 
 WEB_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "web"))
+REPO_DIR = os.path.dirname(WEB_DIR)  # 專案根目錄（data_dir 白名單的預設允許根）
+
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # CSV 上傳大小上限 10MB（防記憶體/磁碟耗盡）
+UPLOAD_EXTS = (".csv", ".xlsx", ".xlsm")
+
+
+def _check_basic(auth_header: str, user: str, pw: str) -> bool:
+    """驗證 HTTP Basic Auth 標頭；以 compare_digest 做等時間比較避免時序側錄。"""
+    if not auth_header.startswith("Basic "):
+        return False
+    try:
+        u, _, p = base64.b64decode(auth_header[6:]).decode("utf-8").partition(":")
+    except (binascii.Error, ValueError, UnicodeDecodeError):
+        return False
+    # 兩者都比對（避免因先短路而洩漏帳號是否正確）
+    return secrets.compare_digest(u, user) & secrets.compare_digest(p, pw)
+
+
+def _dir_within(candidate: str, roots: list[str]) -> bool:
+    """candidate 解析後（跟隨符號連結）是否落在任一允許根目錄內；防目錄跳脫。"""
+    try:
+        real = os.path.realpath(candidate)
+    except (OSError, ValueError):
+        return False
+    for root in roots:
+        r = os.path.realpath(root)
+        if real == r or real.startswith(r + os.sep):
+            return True
+    return False
 
 
 def data_is_stale(data_date, today: str, weekday: int) -> bool:
@@ -44,6 +76,15 @@ def data_is_stale(data_date, today: str, weekday: int) -> bool:
 def create_app(enable_scheduler: bool = False) -> FastAPI:
     cfg = load_config()
     app = FastAPI(title="STOCKS POWER RICH")
+
+    # 全站 HTTP Basic Auth：帳密兩者皆設定才啟用（本機開發未設即不啟用、無感）。
+    # 覆蓋所有請求含靜態頁；出站的 LINE 推播與進程內排程不經 HTTP，不受影響。
+    if cfg.basic_user and cfg.basic_pass:
+        @app.middleware("http")
+        async def _basic_auth(request, call_next):
+            if _check_basic(request.headers.get("Authorization", ""), cfg.basic_user, cfg.basic_pass):
+                return await call_next(request)
+            return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="SPR"'})
 
     initialized: set[str] = set()
 
@@ -426,9 +467,14 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
 
     @app.post("/api/csv/upload")
     async def upload(file: UploadFile = File(...)):
-        data = await file.read()
-        # 只取檔名（防 ../ 路徑跳脫），落地到系統暫存目錄
-        tmp = os.path.join(tempfile.gettempdir(), os.path.basename(file.filename or "upload.csv"))
+        fname = os.path.basename(file.filename or "upload.csv")  # 只取檔名，防 ../ 路徑跳脫
+        if not fname.lower().endswith(UPLOAD_EXTS):
+            return {"snap_date": None, "count": 0,
+                    "error": f"僅接受 {'/'.join(UPLOAD_EXTS)} 檔案"}
+        data = await file.read(MAX_UPLOAD_BYTES + 1)  # 有界讀取，避免超大檔耗盡記憶體
+        if len(data) > MAX_UPLOAD_BYTES:
+            return {"snap_date": None, "count": 0, "error": "檔案過大（上限 10MB）"}
+        tmp = os.path.join(tempfile.gettempdir(), fname)
         with open(tmp, "wb") as f:
             f.write(data)
         c = conn()
@@ -503,8 +549,13 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                     sched.reschedule_job("daily_update", trigger="cron", **build_trigger_kwargs(st))
                 except Exception:  # noqa: BLE001
                     pass
-        if payload.get("data_dir"):
-            set_setting(c, "data_dir", str(payload["data_dir"]))
+        dd = payload.get("data_dir")
+        if dd:
+            # 白名單：僅允許專案根或 env 指定的資料根之下，杜絕指向 /etc 等任意路徑做匯入
+            if _dir_within(str(dd), [REPO_DIR, cfg.data_dir]):
+                set_setting(c, "data_dir", str(dd))
+            else:
+                return {"ok": False, "error": "資料夾不在允許範圍（僅限專案目錄下）", **get_settings()}
         return {"ok": True, **get_settings()}
 
     @app.get("/api/analysis/daily")

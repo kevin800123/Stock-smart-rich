@@ -55,6 +55,8 @@ View-switching SPA + ECharts (CDN). Candlestick data is `[open, close, low, high
 
 LINE push (`line_push.py`): `LINE_CHANNEL_ACCESS_TOKEN` (Messaging API **broadcast** — the user's OA has only themselves as friend; LINE Notify is discontinued) + `SPR_LINE_PUSH_TIME` (default 16:00 weekday brief, no 融資券; the `SPR_SCHEDULE_TIME` job pushes the full version). Non-today data auto-skips pushes; `POST /api/line/test` forces one. Never expose the token (settings returns `line_configured: bool` only).
 
+Security (`docs/SECURITY.md`, P0 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` enable a global HTTP Basic Auth middleware (both must be set; unset = off for local dev) — gates all routes incl. static. Frontend must `esc()` any external/CSV string before innerHTML (XSS). `data_dir` from settings is whitelisted to `REPO_DIR`/`SPR_DATA_DIR` via `_dir_within`. CSV upload capped at 10MB + extension allowlist. P1/P2 (rate-limit, DB backup, security headers, dep audit) not yet done.
+
 ## Cloud deploy (Zeabur, one service)
 `Procfile` + `zbpack.json` start `uvicorn ... --port ${PORT:-8080}` (single worker only — multiple workers duplicate the scheduler and contend on SQLite). Must mount a **persistent Volume at `/data`** with `SPR_DB_PATH=/data/spr.sqlite`, else every redeploy wipes the DB. Cold-start / one-off helpers: `GET /api/backfill?days=35` (backfills ~1 month of 加權/現貨法人/融資券), `GET /api/csv/import-all` (imports every CSV in `Date/`). Daily use: the web "上傳今日檔" button → `POST /api/csv/upload` (no redeploy). "讀取資料夾最新檔" only sees `Date/` committed to the repo.
 

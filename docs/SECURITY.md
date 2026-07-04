@@ -53,18 +53,23 @@
 
 ## 三、改善計畫
 
-### 第一階段 P0（高風險止血，約半天）
+> 進度：**P0 已於 2026-07-04 實作完成**（H1/H2/H3/M1 皆已修補，含測試，全套 111 passed）。
+> 部署啟用方式：在 Zeabur 環境變數設 `SPR_BASIC_USER` 與 `SPR_BASIC_PASS` 即開啟全站登入。
+> P1、P2 尚未執行。
 
-1. **全站 Basic Auth**（修 H1，並讓 H2/H3 從「任何人」降為「僅本人」）
-   - Starlette middleware 攔所有請求（含靜態頁），比對 `SPR_BASIC_USER/SPR_BASIC_PASS` env
-     （`secrets.compare_digest` 防時序攻擊）；未設定 env 時不啟用（本機開發不受影響）。
-   - 瀏覽器原生帳密視窗，記住密碼後日常無感；LINE 推播為出站不受影響。
-   - 排程為進程內呼叫不經 HTTP，不受影響；`cli.py`/外部 cron 需帶帳密。
-2. **前端統一 HTML escape**（修 H2）
-   - 加 `esc()` 工具函數，對所有嵌入 innerHTML 的動態字串（股名/產業/檔名等）跳脫。
-3. **data_dir 白名單**（修 H3）：限制為 repo 內 `Date/`（或以 env `SPR_DATA_DIR` 為根，
-   settings 僅允許其子目錄；`os.path.realpath` 驗證）。
-4. **上傳限制**（修 M1）：大小上限 10MB、副檔名白名單 .csv/.xlsx/.xlsm（讀入前先檢查）。
+### 第一階段 P0（高風險止血，約半天）— ✅ 已完成
+
+1. ✅ **全站 Basic Auth**（修 H1，並讓 H2/H3 從「任何人」降為「僅本人」）
+   - `@app.middleware("http")` 攔所有請求（含靜態頁），`_check_basic` 以 `secrets.compare_digest`
+     等時間比對 `SPR_BASIC_USER/SPR_BASIC_PASS`；兩者皆設定才啟用（未設定＝本機開發不受影響）。
+   - 瀏覽器原生帳密視窗，記住密碼後日常無感；LINE 推播為出站、排程為進程內呼叫，皆不受影響。
+   - 平台健檢即使收到 401 仍代表服務存活（Zeabur 預設只檢查連線）。
+2. ✅ **前端統一 HTML escape**（修 H2）
+   - `esc()` 跳脫 `& < > " '`，套用於 `stockLink()` 及所有嵌入 innerHTML 的股名/產業/類股/
+     細產業/檔名/錯誤訊息與 ECharts tooltip/label。已於瀏覽器實測：惡意股名以純文字顯示、不執行。
+3. ✅ **data_dir 白名單**（修 H3）：`_dir_within` 以 `realpath` 驗證，settings 僅允許
+   專案根 `REPO_DIR` 或 env `SPR_DATA_DIR` 之下的路徑；根外（如 /etc、C:\Windows）一律拒絕。
+4. ✅ **上傳限制**（修 M1）：副檔名白名單 .csv/.xlsx/.xlsm、大小上限 10MB（`read(N+1)` 有界讀取）。
 
 ### 第二階段 P1（一週內）
 

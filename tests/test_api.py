@@ -1,3 +1,5 @@
+import os
+
 from fastapi.testclient import TestClient
 
 from stocks_power_rich.main import create_app
@@ -364,12 +366,20 @@ def test_settings_get_hides_gemini_key(tmp_path, monkeypatch):
 
 def test_settings_post_updates_schedule_and_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    # 以外部絕對路徑當資料根（env 為信任來源），其下子目錄才可由設定頁指定
+    ext = tmp_path / "mydata"
+    (ext / "sub").mkdir(parents=True)
+    monkeypatch.setenv("SPR_DATA_DIR", str(ext))
     app = create_app()
     client = TestClient(app)
-    assert client.post("/api/settings", json={"schedule_time": "09:05", "data_dir": "D:/mydata"}).status_code == 200
+    # 排程時間可更新；資料夾指到白名單根之下的子目錄可接受
+    r = client.post("/api/settings", json={"schedule_time": "09:05", "data_dir": str(ext / "sub")})
+    assert r.json()["ok"] is True
     s = client.get("/api/settings").json()
     assert s["schedule_time"] == "09:05"
-    assert s["data_dir"] == "D:/mydata"
+    assert s["data_dir"] == str(ext / "sub")
+    # 根外任意路徑被拒
+    assert client.post("/api/settings", json={"data_dir": str(tmp_path.parent)}).json()["ok"] is False
 
 
 def test_export_returns_xlsx(tmp_path, monkeypatch):
@@ -517,3 +527,73 @@ def test_index_kline_tx_from_history(tmp_path, monkeypatch):
     assert not out.get("proxy")
     assert len(out["candles"]) == 20
     assert out["candles"][0] == [45001.0, 45003.0, 44996.0, 45006.0]  # 第1天 [open, close, low, high]
+
+
+# ========== P0 資安：認證 / 上傳限制 / 路徑白名單 ==========
+
+def test_check_basic_credentials():
+    import base64
+    from stocks_power_rich.main import _check_basic
+
+    good = "Basic " + base64.b64encode(b"kevin:s3cret").decode()
+    assert _check_basic(good, "kevin", "s3cret") is True
+    assert _check_basic(good, "kevin", "wrong") is False
+    assert _check_basic(good, "other", "s3cret") is False
+    assert _check_basic("Bearer xxx", "kevin", "s3cret") is False   # 非 Basic
+    assert _check_basic("", "kevin", "s3cret") is False             # 無標頭
+    assert _check_basic("Basic !!not-base64!!", "kevin", "s3cret") is False
+
+
+def test_basic_auth_gates_all_requests(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("SPR_BASIC_USER", "kevin")
+    monkeypatch.setenv("SPR_BASIC_PASS", "s3cret")
+    app = create_app()
+    client = TestClient(app)
+    # 無帳密 → 401 且帶 WWW-Authenticate（含 API 與靜態頁）
+    r = client.get("/api/dashboard")
+    assert r.status_code == 401 and "Basic" in r.headers.get("WWW-Authenticate", "")
+    assert client.post("/api/line/test").status_code == 401
+    # 錯帳密 → 401
+    assert client.get("/api/dashboard", auth=("kevin", "nope")).status_code == 401
+    # 正確帳密 → 放行
+    assert client.get("/api/dashboard", auth=("kevin", "s3cret")).status_code == 200
+
+
+def test_no_auth_when_unconfigured(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.delenv("SPR_BASIC_USER", raising=False)
+    monkeypatch.delenv("SPR_BASIC_PASS", raising=False)
+    app = create_app()
+    client = TestClient(app)
+    assert client.get("/api/dashboard").status_code == 200   # 未設定即不啟用（本機開發無感）
+
+
+def test_settings_rejects_data_dir_outside_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    app = create_app()
+    client = TestClient(app)
+    bad = "/etc" if os.name != "nt" else "C:\Windows"
+    r = client.post("/api/settings", json={"data_dir": bad})
+    assert r.json().get("data_dir") != bad          # 未被採用
+    assert client.get("/api/settings").json()["data_dir"] != bad
+    # 合法子目錄可被接受
+    sub = str(tmp_path / "Date")
+    os.makedirs(sub, exist_ok=True)
+    r2 = client.post("/api/settings", json={"data_dir": "Date"})
+    assert r2.json()["ok"] is True
+
+
+def test_upload_rejects_bad_extension_and_oversize(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    app = create_app()
+    client = TestClient(app)
+    # 非白名單副檔名 → 拒絕（不寫檔、不匯入）
+    bad = client.post("/api/csv/upload", files={"file": ("evil.exe", b"MZ...", "application/octet-stream")}).json()
+    assert bad["count"] == 0 and bad.get("error")
+    # 超過大小上限 → 拒絕
+    big = client.post("/api/csv/upload",
+                      files={"file": ("big.csv", b"x" * (10 * 1024 * 1024 + 5), "text/csv")}).json()
+    assert big["count"] == 0 and "10" in big.get("error", "")
