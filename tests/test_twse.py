@@ -58,6 +58,22 @@ def test_parse_taiex_rwd_latest_row():
     assert out["turnover"] == 13556.9   # 1,355,687,298,430 元 → 億
 
 
+def test_parse_index_ohlc_rwd_monthly():
+    payload = {
+        "stat": "OK",
+        "fields": ["日期", "開盤指數", "最高指數", "最低指數", "收盤指數"],
+        "data": [
+            ["115/06/03", "46,000.00", "46,500.00", "45,800.00", "46,300.00"],
+            ["115/06/04", "46,300.00", "46,400.00", "46,000.00", "46,100.00"],
+            ["115/06/05", "--", "--", "--", "--"],  # 缺值列略過
+        ],
+    }
+    out = twse.parse_index_ohlc_rwd(payload)
+    assert out[0] == {"date": "2026-06-03", "open": 46000.0, "high": 46500.0,
+                      "low": 45800.0, "close": 46300.0, "volume": 0}
+    assert [r["date"] for r in out] == ["2026-06-03", "2026-06-04"]  # 缺值列被濾掉
+
+
 def test_parse_index_ohlc():
     recs = [{"Date": "1150630", "OpeningIndex": "45,165.80", "HighestIndex": "46,637.86",
              "LowestIndex": "45,165.80", "ClosingIndex": "46,125.91"}]

@@ -623,3 +623,27 @@ def test_db_backup_endpoint(tmp_path, monkeypatch):
     assert r["ok"] is True and r["file"].startswith("spr-") and r["file"].endswith(".sqlite")
     assert r["file"] in r["backups"]
     assert os.path.exists(os.path.join(str(tmp_path), "backup", r["file"]))
+
+
+def test_index_kline_falls_back_to_multimonth_twse(tmp_path, monkeypatch):
+    """雲端 yfinance 被擋（回空）時，加權 K 線改用證交所多月 OHLC，而非只有當月幾天。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.sources import kline, twse
+    monkeypatch.setattr(kline, "fetch_index_kline",
+                        lambda symbol, interval="1d": {"symbol": symbol, "candles": [], "dates": [], "volumes": []})
+    sample = [{"date": f"2026-0{m}-{d:02d}", "open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 0}
+              for m in (5, 6, 7) for d in (1, 8, 15, 22)]   # 3 個月共 12 天
+    calls = {"n": 0}
+
+    def fake_hist(months=12):
+        calls["n"] += 1
+        return sample
+
+    monkeypatch.setattr(twse, "fetch_index_ohlc_history", fake_hist)
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/index/kline?symbol=taiex&interval=1d").json()
+    assert r["source"] == "twse" and len(r["candles"]) == 12   # 多月歷史
+    # 再打一次應命中快取，不重複逐月抓取
+    client.get("/api/index/kline?symbol=taiex&interval=1d")
+    assert calls["n"] == 1

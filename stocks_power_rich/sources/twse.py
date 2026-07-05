@@ -19,6 +19,7 @@ MARGIN_RWD = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN"
 MI_INDEX_RWD = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"  # 各類股指數（族群當日漲跌）
 BFIAMU_RWD = "https://www.twse.com.tw/rwd/zh/afterTrading/BFIAMU"  # 各類指數日成交量值（熱力圖面積）
 T86_URL = "https://www.twse.com.tw/rwd/zh/fund/T86"  # 個股三大法人買賣超
+INDEX_OHLC_RWD = "https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST"  # 加權指數整月每日 OHLC（帶 date）
 NET_UNIT = 1e8  # 元 → 億
 
 
@@ -100,6 +101,40 @@ def parse_index_ohlc(records: list) -> list[dict]:
 
 def fetch_index_ohlc() -> list[dict]:
     return parse_index_ohlc(_get_openapi("/exchangeReport/MI_5MINS_HIST"))
+
+
+def parse_index_ohlc_rwd(payload: dict) -> list[dict]:
+    """RWD TAIEX/MI_5MINS_HIST（{fields, data}）→ 該月每日加權指數 OHLC。"""
+    fields = payload.get("fields")
+    out = []
+    for row in payload.get("data") or []:
+        g = _rwd_row_getter(fields, row)
+        iso = _roc_to_iso(g("日期"))
+        o, h, l, c = (_f(g("開盤指數")), _f(g("最高指數")), _f(g("最低指數")), _f(g("收盤指數")))
+        if iso and None not in (o, h, l, c):
+            out.append({"date": iso, "open": o, "high": h, "low": l, "close": c, "volume": 0})
+    return out
+
+
+def fetch_index_ohlc_history(months: int = 12) -> list[dict]:
+    """近 months 個月的加權指數每日 OHLC（逐月直連 RWD，去重後由舊到新）。
+
+    openapi 版只回當月（月初僅寥寥數日），故雲端 yfinance 被擋時改用此多月來源補足歷史。
+    """
+    anchor = datetime.date.today()
+    seen: dict[str, dict] = {}
+    for _ in range(max(1, months)):
+        try:
+            j = httpx.get(INDEX_OHLC_RWD,
+                          params={"date": anchor.strftime("%Y%m%d"), "response": "json"},
+                          timeout=20, follow_redirects=True).json()
+            if j.get("stat") == "OK":
+                for r in parse_index_ohlc_rwd(j):
+                    seen[r["date"]] = r
+        except Exception:  # noqa: BLE001 — 單月失敗略過，其餘照補
+            pass
+        anchor = anchor.replace(day=1) - datetime.timedelta(days=1)  # 跳到上個月最後一天
+    return [seen[d] for d in sorted(seen)]
 
 
 def parse_taiex_history(payload: dict) -> list[dict]:

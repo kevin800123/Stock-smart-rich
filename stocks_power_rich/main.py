@@ -898,16 +898,23 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 return proxy
             except Exception:  # noqa: BLE001
                 return {"candles": [], "dates": [], "volumes": [], "symbol": "tx"}
-        # 加權指數等：先試 yfinance；失敗/空 → 加權改用證交所 OHLC（雲端 yfinance 常被擋）
+        # 加權指數等：先試 yfinance（本機可取整年）；雲端常被擋而回空/寥寥數筆 → 改用證交所多月 OHLC
         try:
             out = kline.fetch_index_kline(symbol, interval)
-            if out.get("candles"):
+            if len(out.get("candles") or []) > 5:  # 有實質歷史才用；空/退化就往下補
                 return out
         except Exception:  # noqa: BLE001
             pass
         if symbol == "taiex":
             try:
-                rows = twse.fetch_index_ohlc()
+                c = conn()
+                # 近 12 個月每日 OHLC，逐月直連較慢，故按日快取一份、各時間框架共用（週/月由此聚合）
+                key = f"idxohlc:{datetime.now().strftime('%Y%m%d')}"
+                rows = get_ai_cache(c, key)
+                if rows is None:
+                    rows = twse.fetch_index_ohlc_history(12)
+                    if rows:
+                        set_ai_cache(c, key, rows)
                 if rows:
                     res = kline.ohlc_candles(rows, interval)
                     res["symbol"] = "taiex"
