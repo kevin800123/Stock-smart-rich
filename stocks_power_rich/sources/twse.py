@@ -292,6 +292,54 @@ def parse_stock_quotes(payload: dict) -> dict:
     return out
 
 
+def _int(v):
+    f = _f(v)
+    return int(f) if f is not None else None
+
+
+def parse_advance_decline(payload: dict) -> dict | None:
+    """MI_INDEX(type=ALL) 的「漲跌證券數合計」表 → 上市個股漲/跌/平家數與漲停/跌停家數。
+
+    取「股票」欄（排除 ETF/權證等），儲存格格式為「家數(漲停或跌停家數)」如 828(57)。
+    """
+    for tb in payload.get("tables") or []:
+        if "漲跌證券數" not in str(tb.get("title") or ""):
+            continue
+        idx = {n: i for i, n in enumerate(tb.get("fields") or [])}
+        col = idx.get("股票")
+        if col is None:
+            continue
+        res: dict = {}
+        for row in tb.get("data") or []:
+            if not row or col >= len(row):
+                continue
+            label = str(row[0])
+            main, _, paren = str(row[col]).partition("(")
+            m, p = _int(main), _int(paren.rstrip(")")) if paren else None
+            if "上漲" in label:
+                res["up"], res["up_limit"] = m, p
+            elif "下跌" in label:
+                res["down"], res["down_limit"] = m, p
+            elif "持平" in label:
+                res["flat"] = m
+        return res or None
+    return None
+
+
+def fetch_advance_decline(date: datetime.date | None = None) -> dict | None:
+    """直連 MI_INDEX(type=ALL) 取指定日上市個股漲跌家數。查無回 None。"""
+    day = date or datetime.date.today()
+    try:
+        j = httpx.get(MI_INDEX_RWD,
+                      params={"date": day.strftime("%Y%m%d"), "type": "ALL", "response": "json"},
+                      timeout=25, follow_redirects=True).json()
+        if j.get("stat") == "OK" and j.get("tables"):
+            return parse_advance_decline(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def parse_sector_turnover(payload: dict) -> dict:
     """BFIAMU 各類指數日成交量值 → {正規化類股名: 成交金額(元)}。作為熱力圖的面積。"""
     out: dict[str, int] = {}

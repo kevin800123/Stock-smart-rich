@@ -191,6 +191,26 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         n = updater.backfill_history(conn(), max(5, min(days, 60)))
         return {"backfilled_days": n}
 
+    @app.get("/api/breadth")
+    def breadth(date: str | None = None):
+        """台股漲跌家數（上市個股上漲/下跌/平盤與漲停/跌停家數），逐日快取。"""
+        c = conn()
+        date = date or _latest_date(c)
+        if not date:
+            return {"date": None}
+        key = f"breadth:{date}"
+        cached = get_ai_cache(c, key)
+        if cached is not None:
+            return cached
+        try:
+            b = twse.fetch_advance_decline(datetime.fromisoformat(date).date())
+        except Exception:  # noqa: BLE001
+            b = None
+        result = {"date": date, **(b or {})}
+        if b:
+            set_ai_cache(c, key, result)
+        return result
+
     @app.get("/api/sectors")
     def sectors(date: str | None = None):
         c = conn()

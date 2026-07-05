@@ -58,6 +58,21 @@ def test_parse_taiex_rwd_latest_row():
     assert out["turnover"] == 13556.9   # 1,355,687,298,430 元 → 億
 
 
+def test_parse_advance_decline_stock_column():
+    payload = {"tables": [
+        {"title": "115年07月03日 大盤統計資訊", "fields": ["成交統計"], "data": []},  # 非目標表
+        {"title": "漲跌證券數合計", "fields": ["類型", "整體市場", "股票"], "data": [
+            ["上漲(漲停)", "6,941(247)", "828(57)"],
+            ["下跌(跌停)", "4,530(58)", "192(3)"],
+            ["持平", "866", "48"],
+            ["未成交", "14,909", "3"],
+            ["無比價", "2,846", "7"],
+        ]},
+    ]}
+    out = twse.parse_advance_decline(payload)
+    assert out == {"up": 828, "up_limit": 57, "down": 192, "down_limit": 3, "flat": 48}
+
+
 def test_parse_index_ohlc_rwd_monthly():
     payload = {
         "stat": "OK",

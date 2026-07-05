@@ -71,6 +71,20 @@ body {
 .down { color: var(--down); }
 .flat { color: var(--muted); }
 
+/* ===== 漲跌家數 ===== */
+.breadth-nums { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; font-size: 14px; font-weight: 700; margin-bottom: 7px; }
+.breadth-nums .up { color: var(--up); }
+.breadth-nums .down { color: var(--down); }
+.breadth-nums .flat { color: var(--muted); }
+.bd-lim { font-size: 12px; font-weight: 700; padding: 1px 7px; border-radius: 10px; }
+.bd-lim.up { background: #3a1717; color: #f0a0a0; }
+.bd-lim.down { background: #15301c; color: #7ee2a0; }
+.breadth-bar { display: flex; height: 22px; border-radius: 6px; overflow: hidden; border: 1px solid var(--border); }
+.breadth-bar .seg { height: 100%; transition: width .3s; }
+.breadth-bar .seg.up { background: var(--up); }
+.breadth-bar .seg.flat { background: #4a5262; }
+.breadth-bar .seg.down { background: var(--down); }
+
 /* ===== 當日漲跌族群 ===== */
 .sectors { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; }
 .sector { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--muted); border-radius: 6px; padding: 6px 9px; display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }

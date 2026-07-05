@@ -280,6 +280,32 @@ function sectorColor(chg) {
   return _hex("#2b3038", chg >= 0 ? "#e04545" : "#2ea043", t);
 }
 
+// 台股漲跌家數：紅漲綠跌的市場氣氛長條 + 漲停/跌停家數
+async function loadBreadth() {
+  const el = $("breadth"); if (!el) return;
+  const note = $("breadth-note");
+  try {
+    const d = await getJSON("/api/breadth");
+    if (d.up == null && d.down == null) { el.innerHTML = ""; if (note) note.textContent = ""; return; }
+    const up = d.up || 0, flat = d.flat || 0, down = d.down || 0, tot = up + flat + down || 1;
+    const w = (n) => (n / tot * 100).toFixed(1) + "%";
+    if (note) note.textContent = `（${d.date}）`;
+    const ul = d.up_limit ? `<span class="bd-lim up">漲停 ${d.up_limit}</span>` : "";
+    const dl = d.down_limit ? `<span class="bd-lim down">跌停 ${d.down_limit}</span>` : "";
+    el.innerHTML = `
+      <div class="breadth-nums">
+        <span class="up">▲ 上漲 ${fmt(up, 0)}</span>${ul}
+        <span class="flat">－ 平盤 ${fmt(flat, 0)}</span>
+        <span class="down">▼ 下跌 ${fmt(down, 0)}</span>${dl}
+      </div>
+      <div class="breadth-bar">
+        <div class="seg up" style="width:${w(up)}" title="上漲 ${fmt(up, 0)}"></div>
+        <div class="seg flat" style="width:${w(flat)}" title="平盤 ${fmt(flat, 0)}"></div>
+        <div class="seg down" style="width:${w(down)}" title="下跌 ${fmt(down, 0)}"></div>
+      </div>`;
+  } catch (e) { el.innerHTML = ""; }
+}
+
 async function loadSectors() {
   const el = $("sectors");
   if (!el) return;
@@ -560,7 +586,7 @@ async function autoUpdate() {
     const fail = (res.failed || []).map((f) => f.name).join("、");
     bar.innerHTML = fail ? `已自動更新（部分來源未取得：${fail}）` : "✅ 已自動更新";
     bar.className = "status-bar " + (fail ? "warn" : "ok");
-    await loadDashboard(); await loadIndexChart(); loadSectors(); loadMarketSummary(false);
+    await loadDashboard(); await loadIndexChart(); loadBreadth(); loadSectors(); loadMarketSummary(false);
     setTimeout(() => bar.classList.add("hidden"), 5000);
   } catch (e) {
     bar.textContent = "自動更新失敗：" + e.message; bar.className = "status-bar err";
@@ -833,6 +859,7 @@ window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockCh
 (async () => {
   const d = await loadDashboard();
   loadIndexChart();
+  loadBreadth();
   loadSectors();
   loadMarketSummary(false);  // 讀快取即回；排程更新完會自動預先生成，開頁不另扣費
   loadInstRanking();
