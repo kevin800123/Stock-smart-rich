@@ -13,7 +13,7 @@ from datetime import datetime
 
 from . import analysis, csv_import, exporter, gemini, line_push, updater
 from .config import load_config
-from .sources import kline, taifex, tdcc, tpex, twse
+from .sources import intl, kline, taifex, tdcc, tpex, twse
 from .db import (
     add_watch,
     backup_db,
@@ -146,6 +146,10 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             backup_db(cfg.db_path)  # 每日備份輪替，防 Volume 故障/誤刪永久遺失
         except Exception:  # noqa: BLE001 — 備份失敗不影響資料更新
             pass
+        try:
+            _os_futures(refresh=True)  # 刷新海期監控快取
+        except Exception:  # noqa: BLE001
+            pass
 
     def line_brief_job():
         """16:00 盤後速報：先確保當日數據已抓，再推速報（無融資券）。"""
@@ -153,6 +157,10 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         updater.run_update(c, cfg.intl_tickers)
         try:
             _push_line(c, full=False)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            _os_futures(refresh=True)  # 刷新海期監控快取
         except Exception:  # noqa: BLE001
             pass
 
@@ -190,6 +198,36 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         """回補近 N 日歷史（加權／三大法人現貨／融資券）。雲端冷啟動補歷史用；逐日入庫，可重跑續補。"""
         n = updater.backfill_history(conn(), max(5, min(days, 60)))
         return {"backfilled_days": n}
+
+    def _os_futures(refresh: bool = False) -> dict:
+        """海期監控：批次抓國際期貨/美股（延遲），單一鍵快取；注入本地可靠的加權/台指期。"""
+        c = conn()
+        cached = get_ai_cache(c, "osfut:current")
+        if cached is not None and not refresh:
+            return cached
+        try:
+            cats = intl.fetch_futures_monitor()
+        except Exception:  # noqa: BLE001
+            cats = []
+        last = c.execute("SELECT taiex, taiex_chg, tx_price, tx_chg FROM market_daily "
+                         "ORDER BY date DESC LIMIT 1").fetchone()
+        idx = next((g for g in cats if g["category"] == "指數期貨"), None)
+        if last and idx:
+            local = []
+            for val, chg, name in ((last[0], last[1], "加權指數"), (last[2], last[3], "台指期")):
+                if val is not None:
+                    base = (val - chg) if chg is not None else None
+                    local.append({"name": name, "value": val, "chg": chg,
+                                  "chg_pct": round(chg / base * 100, 2) if base else None})
+            idx["items"] = local + idx["items"]
+        result = {"categories": cats, "updated_at": datetime.now().isoformat()}
+        if cats:
+            set_ai_cache(c, "osfut:current", result)
+        return result
+
+    @app.get("/api/os-futures")
+    def os_futures(refresh: int = 0):
+        return _os_futures(refresh=bool(refresh))
 
     @app.get("/api/breadth")
     def breadth(date: str | None = None):

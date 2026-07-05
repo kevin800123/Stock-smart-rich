@@ -23,6 +23,7 @@
       <a class="nav" data-view="stock"><span class="ico">🔍</span><span class="lbl">個股查詢</span></a>
       <a class="nav" data-view="rotation"><span class="ico">🔄</span><span class="lbl">族群輪動</span></a>
       <a class="nav" data-view="watch"><span class="ico">⭐</span><span class="lbl">自選股</span></a>
+      <a class="nav" data-view="osfut"><span class="ico">🌏</span><span class="lbl">海期監控</span></a>
       <a class="nav" data-view="weekly"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
       <a class="nav" data-view="settings"><span class="ico">⚙️</span><span class="lbl">設定</span></a>
     </nav>
@@ -166,6 +167,17 @@
           <span class="muted small">追蹤個股是否在選股榜、在榜次數、自進榜報酬（依已上傳的 CSV 快照計算）；點股號開 K 線</span>
         </div>
         <div id="watch-table" class="table-wrap fill"></div>
+      </section>
+
+      <!-- ===== 海期監控 ===== -->
+      <section id="view-osfut" class="view">
+        <div class="toolbar">
+          <span class="pane-title" style="margin:0">海期監控</span>
+          <button id="btn-osfut-refresh" class="file-label">🔄 更新報價</button>
+          <span id="osfut-time" class="muted small"></span>
+          <span class="muted small">國際期貨/美股，延遲報價（隨排程與手動更新）</span>
+        </div>
+        <div id="osfut"></div>
       </section>
 
       <!-- ===== 跨週 ＋ AI ===== -->

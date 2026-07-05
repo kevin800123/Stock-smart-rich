@@ -16,6 +16,22 @@ def test_fetch_intl_indices(monkeypatch):
     assert out["btc"]["value"] == 110.0
 
 
+def test_fetch_futures_monitor_groups(monkeypatch):
+    def fake_download(tickers, period=None, **kw):
+        idx = pd.to_datetime(["2026-06-12", "2026-06-13"])
+        data = {("Close", t): [100.0, 110.0] for t in tickers.split()}
+        return pd.DataFrame(data, index=idx)
+
+    monkeypatch.setattr(intl.time, "sleep", lambda s: None)
+    monkeypatch.setattr(intl.yf, "download", fake_download)
+    cats = intl.fetch_futures_monitor()
+    assert [g["category"] for g in cats] == ["指數期貨", "能源金屬", "農產品", "外匯", "美股"]
+    gold = next(it for g in cats if g["category"] == "能源金屬"
+                for it in g["items"] if it["name"] == "黃金")
+    assert gold["value"] == 110.0 and gold["chg"] == 10.0 and gold["chg_pct"] == 10.0
+    assert len(next(g for g in cats if g["category"] == "美股")["items"]) == 14
+
+
 def test_fetch_intl_indices_retries_missing_ticker(monkeypatch):
     """單一代碼首抓回 NaN（雲端 yfinance 偶發）→ 重試補抓，不影響其他代碼。"""
     calls = {"n": 0}

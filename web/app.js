@@ -131,6 +131,7 @@ function showView(name) {
   if (name === "overview") { idxChart && idxChart.resize(); chipChart && chipChart.resize(); sectorChart && sectorChart.resize(); }
   if (name === "stock") { stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize(); }
   if (name === "rotation") { loadRotation(); loadCross(); }
+  if (name === "osfut") loadOsFutures(false);  // 首次切換載入（讀快取即回）
   if (name === "weekly") loadCsvSummary(false);  // 讀快取即回；匯入後才會重新生成
   if (name === "watch") loadWatchlist();
   if (name === "settings") loadSettings();
@@ -304,6 +305,32 @@ async function loadBreadth() {
         <div class="seg down" style="width:${w(down)}" title="下跌 ${fmt(down, 0)}"></div>
       </div>`;
   } catch (e) { el.innerHTML = ""; }
+}
+
+// 海期監控：五大分類色階卡片（名稱/價格上排、漲跌%/點數下排）
+function osDecimals(v) { const a = Math.abs(v); return a >= 1000 ? 0 : a >= 10 ? 2 : 4; }
+async function loadOsFutures(refresh) {
+  const el = $("osfut"); if (!el) return;
+  if (refresh || !el.innerHTML) el.innerHTML = '<div class="muted small">載入報價中…（首次抓取約 5–10 秒）</div>';
+  try {
+    const d = await getJSON("/api/os-futures" + (refresh ? "?refresh=1" : ""));
+    const t = $("osfut-time");
+    if (t && d.updated_at) t.textContent = "更新：" + d.updated_at.slice(0, 16).replace("T", " ");
+    if (!d.categories || !d.categories.every) { el.innerHTML = '<div class="muted small">暫無報價，稍後按更新重試</div>'; return; }
+    el.innerHTML = d.categories.filter((g) => g.items.length).map((g) => {
+      const cards = g.items.map((it) => {
+        const dp = osDecimals(it.value);
+        const ps = it.chg_pct == null ? "" : (it.chg_pct >= 0 ? "+" : "") + fmt(it.chg_pct, 2) + "%";
+        const cs = it.chg == null ? "" : (it.chg >= 0 ? "+" : "") + fmt(it.chg, dp);
+        return `<div class="mv-card" style="background:${sectorColor(it.chg_pct)}">
+          <div class="of-top"><span class="of-name">${esc(it.name)}</span><span class="of-price">${fmt(it.value, dp)}</span></div>
+          <div class="of-bot"><span>${ps}</span><span>${cs}</span></div>
+        </div>`;
+      }).join("");
+      return `<div class="card-group"><div class="group-title">${esc(g.category)}</div><div class="mv-grid">${cards}</div></div>`;
+    }).join("");
+    if (!el.innerHTML) el.innerHTML = '<div class="muted small">暫無報價，稍後按更新重試</div>';
+  } catch (e) { el.innerHTML = '<div class="muted small">載入失敗：' + esc(e.message) + "</div>"; }
 }
 
 // 權值股貢獻大盤點數：色階卡片（依漲跌幅上色），主秀「貢獻幾點」
@@ -819,6 +846,7 @@ $("btn-export").addEventListener("click", () => {
   window.location.href = url;
 });
 $("btn-save-settings").addEventListener("click", saveSettings);
+$("btn-osfut-refresh").addEventListener("click", () => loadOsFutures(true));
 $("btn-line-test").addEventListener("click", async () => {
   const st = $("set-line-status"); st.textContent = "推播中…";
   try {
