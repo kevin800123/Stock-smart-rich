@@ -211,6 +211,50 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             set_ai_cache(c, key, result)
         return result
 
+    @app.get("/api/index-movers")
+    def index_movers(date: str | None = None, top: int = 20):
+        """權值股對加權指數的『點數貢獻』(盤後歸因：市值加權、正規化到實際指數漲跌)。"""
+        c = conn()
+        date = date or _latest_date(c)
+        if not date:
+            return {"date": None, "movers": []}
+        row = c.execute("SELECT taiex, taiex_chg FROM market_daily WHERE date=?", (date,)).fetchone()
+        if not row or row[0] is None or row[1] is None:
+            return {"date": date, "index": row[0] if row else None, "index_chg": None, "movers": []}
+        taiex, taiex_chg = row[0], row[1]
+        top = max(5, min(top, 40))
+        key = f"movers:{date}:{top}"
+        cached = get_ai_cache(c, key)
+        if cached is not None:
+            return cached
+        prev_index = taiex - taiex_chg
+        imap, quotes = _industry_map(c), _quotes_for(c, date)
+        items, total_prev = [], 0.0
+        for code, info in imap.items():
+            sh, q = info.get("shares"), quotes.get(code)
+            if not sh or not q or q.get("close") is None or q.get("chg_pct") is None:
+                continue
+            close, chg = q["close"], q["chg_pct"]
+            denom = 1 + chg / 100
+            if denom <= 0:
+                continue
+            prev = close / denom
+            total_prev += sh * prev
+            items.append({"code": code, "name": q.get("name") or info.get("name"),
+                          "close": close, "chg_pct": chg, "_d": sh * (close - prev), "_p": sh * prev})
+        if total_prev <= 0:
+            return {"date": date, "index": taiex, "index_chg": taiex_chg, "movers": []}
+        raw_total = sum(i["_d"] for i in items) / total_prev * prev_index
+        scale = (taiex_chg / raw_total) if raw_total else 1.0  # 正規化：各股貢獻合計＝實際指數漲跌
+        for i in items:
+            i["contribution"] = round(i["_d"] / total_prev * prev_index * scale, 2)
+            i["weight"] = round(i["_p"] / total_prev * 100, 2)
+            del i["_d"], i["_p"]
+        items.sort(key=lambda i: -abs(i["contribution"]))
+        result = {"date": date, "index": taiex, "index_chg": taiex_chg, "movers": items[:top]}
+        set_ai_cache(c, key, result)
+        return result
+
     @app.get("/api/sectors")
     def sectors(date: str | None = None):
         c = conn()

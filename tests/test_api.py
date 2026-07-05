@@ -647,3 +647,28 @@ def test_index_kline_falls_back_to_multimonth_twse(tmp_path, monkeypatch):
     # 再打一次應命中快取，不重複逐月抓取
     client.get("/api/index/kline?symbol=taiex&interval=1d")
     assert calls["n"] == 1
+
+
+def test_index_movers_point_contribution(tmp_path, monkeypatch):
+    """權值股貢獻點數：依市值加權算各股對大盤的點數貢獻，正規化到實際指數漲跌。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import twse
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-07-03", "taiex": 1000.0, "taiex_chg": 20.0})  # 昨指數 980
+    monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {
+        "2330": {"sector": "半導體", "name": "台積電", "shares": 100},
+        "2317": {"sector": "電子零組件", "name": "鴻海", "shares": 50}})
+    monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {
+        "2330": {"name": "台積電", "close": 110.0, "chg_pct": 10.0},   # 昨100, 市值+1000
+        "2317": {"name": "鴻海", "close": 90.0, "chg_pct": -10.0}})    # 昨100, 市值-500
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/index-movers?top=10").json()
+    assert r["index"] == 1000.0 and r["index_chg"] == 20.0
+    mv = {m["code"]: m for m in r["movers"]}
+    assert [m["code"] for m in r["movers"]] == ["2330", "2317"]     # 依貢獻絕對值排序
+    assert mv["2330"]["contribution"] == 40.0 and mv["2317"]["contribution"] == -20.0
+    assert round(sum(m["contribution"] for m in r["movers"]), 2) == 20.0  # 合計＝實際指數漲跌

@@ -306,6 +306,26 @@ async function loadBreadth() {
   } catch (e) { el.innerHTML = ""; }
 }
 
+// 權值股貢獻大盤點數：色階卡片（依漲跌幅上色），主秀「貢獻幾點」
+async function loadMovers() {
+  const el = $("movers"); if (!el) return;
+  const note = $("movers-note");
+  try {
+    const d = await getJSON("/api/index-movers?top=18");
+    if (!d.movers || !d.movers.length) { el.innerHTML = ""; if (note) note.textContent = ""; return; }
+    if (note) note.textContent = `（${d.date}　大盤 ${fmt(d.index, 0)} ${d.index_chg >= 0 ? "+" : ""}${fmt(d.index_chg, 2)} 點）`;
+    el.innerHTML = d.movers.map((m) => {
+      const cs = m.contribution >= 0 ? "+" : "";
+      const ps = m.chg_pct >= 0 ? "+" : "";
+      return `<div class="mv-card" style="background:${sectorColor(m.chg_pct)}" title="權重 ${fmt(m.weight, 2)}%">
+        <div class="mv-name">${esc(m.name || m.code)}</div>
+        <div class="mv-contrib">${cs}${fmt(m.contribution, 1)}<span class="mv-unit">點</span></div>
+        <div class="mv-sub">${fmt(m.close, 1)}　${ps}${fmt(m.chg_pct, 2)}%</div>
+      </div>`;
+    }).join("");
+  } catch (e) { el.innerHTML = ""; }
+}
+
 async function loadSectors() {
   const el = $("sectors");
   if (!el) return;
@@ -586,7 +606,7 @@ async function autoUpdate() {
     const fail = (res.failed || []).map((f) => f.name).join("、");
     bar.innerHTML = fail ? `已自動更新（部分來源未取得：${fail}）` : "✅ 已自動更新";
     bar.className = "status-bar " + (fail ? "warn" : "ok");
-    await loadDashboard(); await loadIndexChart(); loadBreadth(); loadSectors(); loadMarketSummary(false);
+    await loadDashboard(); await loadIndexChart(); loadBreadth(); loadMovers(); loadSectors(); loadMarketSummary(false);
     setTimeout(() => bar.classList.add("hidden"), 5000);
   } catch (e) {
     bar.textContent = "自動更新失敗：" + e.message; bar.className = "status-bar err";
@@ -860,6 +880,7 @@ window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockCh
   const d = await loadDashboard();
   loadIndexChart();
   loadBreadth();
+  loadMovers();
   loadSectors();
   loadMarketSummary(false);  // 讀快取即回；排程更新完會自動預先生成，開頁不另扣費
   loadInstRanking();
