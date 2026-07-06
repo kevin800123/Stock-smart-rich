@@ -75,3 +75,17 @@ def test_compose_full_margin_three_lines_and_handles_missing():
 def test_broadcast_without_token_degrades():
     r = line_push.broadcast_text("", "hi")
     assert r["ok"] is False and "LINE" in r["error"]
+
+
+def test_compose_cup_section_breakout_and_new():
+    cup = {"count": 82,
+           "breakout": [{"code": "8069", "name": "元太", "close": 45.2, "resistance": 44.8}],
+           "new": [{"code": "2812", "name": "台中銀"}, {"code": "1227", "name": "佳格"}]}
+    txt = line_push.compose_daily_brief(_ROW, [], [], full=False, cup=cup)
+    assert "【杯柄型態】符合 82 檔" in txt
+    assert "🚀 突破 元太 45.20(壓44.80)" in txt
+    assert "🆕 新符合 台中銀、佳格" in txt
+    # 沒有新訊號也沒突破 → 整段省略
+    quiet = line_push.compose_daily_brief(_ROW, [], [], full=False,
+                                          cup={"count": 82, "breakout": [], "new": []})
+    assert "杯柄" not in quiet

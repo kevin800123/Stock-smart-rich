@@ -406,6 +406,30 @@ function renderCupChips() {
   drawCupChart(cupMatches[0]);
 }
 
+// 杯柄訊號回測報告：突破率、各持有期勝率/平均報酬、近期交易明細
+let cupBtLoaded = false;
+async function loadCupBacktest() {
+  const box = $("cup-bt"); if (!box) return;
+  box.innerHTML = '<span class="muted small">回測計算中…（掃全市場歷史，首次約 30–90 秒）</span>';
+  try {
+    const d = await getJSON("/api/patterns/cup-handle/backtest");
+    cupBtLoaded = true;
+    if (d.note) { box.innerHTML = `<span class="muted small">${esc(d.note)}</span>`; return; }
+    const h = d.horizons || {};
+    const stat = (k, v) => `<div class="stat"><div class="stat-k">${k}</div><div class="stat-v">${v}</div></div>`;
+    const hz = (n) => h[n] ? `${fmt(h[n].win_rate, 1)}%勝／均${h[n].avg >= 0 ? "+" : ""}${fmt(h[n].avg, 2)}%` : "—";
+    const rows = (d.trades || []).slice(0, 15).map((t) =>
+      `<tr><td>${stockLink(t.code, t.name)}</td><td>${t.entry_date}</td><td style="text-align:right">${fmt(t.entry, 2)}</td>` +
+      ["ret5", "ret10", "ret20"].map((k) => { const v = t[k]; return `<td style="text-align:right" class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${v == null ? "—" : (v > 0 ? "+" : "") + fmt(v, 1) + "%"}</td>`; }).join("") + "</tr>").join("");
+    box.innerHTML =
+      `<div class="stats-grid" style="max-width:none">` +
+      stat("訊號次數", d.signals) + stat("突破進場", `${d.trades_n}（${fmt(d.breakout_rate, 1)}%）`) +
+      stat("持有5日", hz("5")) + stat("持有10日", hz("10")) + stat("持有20日", hz("20")) + `</div>` +
+      `<div class="muted small" style="margin:6px 0">假設突破日收盤進場；未含手續費/稅/滑價（來回約0.6%）；樣本不含已下市股（存活者偏差）；歷史不代表未來。資料 ${d.bars} 天（${d.date} 止）。</div>` +
+      (rows ? `<div class="table-wrap" style="max-height:38vh"><table><tr><th>股票</th><th>進場日</th><th style="text-align:right">進場價</th><th style="text-align:right">+5日</th><th style="text-align:right">+10日</th><th style="text-align:right">+20日</th></tr>${rows}</table></div>` : "");
+  } catch (e) { box.innerHTML = '<span class="muted small">回測載入失敗：' + esc(e.message) + "</span>"; }
+}
+
 // 海期監控：五大分類色階卡片（名稱/價格上排、漲跌%/點數下排）
 function osDecimals(v) { const a = Math.abs(v); return a >= 1000 ? 0 : a >= 10 ? 2 : 4; }
 async function loadOsFutures(refresh) {
@@ -951,6 +975,13 @@ $("btn-cup-picks").addEventListener("click", (e) => {
   cupPicksOnly = !cupPicksOnly;
   e.target.classList.toggle("active", cupPicksOnly);
   renderCupChips();
+});
+$("btn-cup-bt").addEventListener("click", (e) => {
+  const box = $("cup-bt");
+  const show = box.classList.contains("hidden");
+  box.classList.toggle("hidden", !show);
+  e.target.classList.toggle("active", show);
+  if (show && !cupBtLoaded) loadCupBacktest();
 });
 $("nav-order").addEventListener("click", (e) => {
   const up = e.target.closest(".no-up"), dn = e.target.closest(".no-dn");

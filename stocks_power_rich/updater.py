@@ -14,7 +14,7 @@ from .db import (
     upsert_market_daily,
     upsert_tx_history,
 )
-from .sources import intl, taifex, tdcc, twse
+from .sources import intl, taifex, tdcc, tpex, twse
 
 
 def _accumulate_custody(conn) -> str | None:
@@ -127,27 +127,50 @@ def backfill_history(conn, days: int = 30) -> int:
     return len(seen)
 
 
-def backfill_ohlc(conn, target: int = 377, max_fetch: int = 60) -> dict:
-    """回補全市場個股每日 OHLC 到 target 個交易日；每次最多抓 max_fetch 個新交易日（可重跑續補）。
+# 指標股：以其是否存在判斷某日「該市場已回補」（2330 上市必有；上櫃取三檔大型股任一）
+_TW_BELL = ("2330",)
+_OTC_BELL = ("8069", "5483", "3105")
 
-    逐日直連 MI_INDEX(ALLBUT0999)，跳過已存日期與週末；資料量大故分次，避免單次請求逾時。
-    """
-    have = set(ohlc_dates(conn))
+
+def _dates_with(conn, codes) -> set:
+    ph = ",".join("?" * len(codes))
+    return {r[0] for r in conn.execute(
+        f"SELECT DISTINCT date FROM stock_ohlc WHERE code IN ({ph})", list(codes))}
+
+
+def backfill_ohlc(conn, target: int = 377, max_fetch: int = 60) -> dict:
+    """回補全市場（上市＋上櫃）個股每日 OHLC 到 target 個交易日；每次最多處理 max_fetch 個
+    交易日（可重跑續補）。兩市場各自追蹤已存日期（指標股法），舊資料只補缺的那個市場。"""
+    have_tw = _dates_with(conn, _TW_BELL)
+    have_otc = _dates_with(conn, _OTC_BELL)
     added = 0
     anchor = _date.today()
     floor = anchor - timedelta(days=target * 2 + 40)  # 日曆下限，避免無限迴圈
-    while len(have) < target and added < max_fetch and anchor >= floor:
-        if anchor.weekday() >= 5 or anchor.isoformat() in have:  # 週末或已存→跳過
+    while (len(have_tw) < target or len(have_otc) < target) and added < max_fetch and anchor >= floor:
+        if anchor.weekday() >= 5:
             anchor -= timedelta(days=1)
             continue
         ds = anchor.isoformat()
-        rows = twse.fetch_stock_ohlc(anchor)
-        if rows:
-            bulk_upsert_ohlc(conn, ds, rows)
-            have.add(ds)
-            added += 1
+        attempted = False
+        if ds not in have_tw and len(have_tw) < target:
+            attempted = True
+            rows = twse.fetch_stock_ohlc(anchor)
+            if rows:
+                bulk_upsert_ohlc(conn, ds, rows)
+                have_tw.add(ds)
+        if ds not in have_otc and len(have_otc) < target:
+            attempted = True
+            rows = tpex.fetch_otc_ohlc(anchor)
+            if rows:
+                bulk_upsert_ohlc(conn, ds, rows)
+                have_otc.add(ds)
+        if attempted:
+            added += 1  # 以「處理過的日數」計次（含休市日抓空），確保單次呼叫有界
         anchor -= timedelta(days=1)
-    return {"stored_days": len(have), "added": added, "done": len(have) >= target}
+    done = len(have_tw) >= target and len(have_otc) >= target
+    return {"stored_days": min(len(have_tw), len(have_otc)),
+            "twse_days": len(have_tw), "otc_days": len(have_otc),
+            "added": added, "done": done}
 
 
 def run_update(conn, intl_tickers: dict) -> dict:
@@ -223,10 +246,14 @@ def run_update(conn, intl_tickers: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         failed.append({"source": "tdcc", "name": "custody", "error": str(e)})
 
-    # 當日全市場個股 OHLC（型態選股用，逐日累積）
+    # 當日全市場個股 OHLC（型態選股用，逐日累積；上市＋上櫃）
     try:
         if D:
             ohlc = twse.fetch_stock_ohlc(D)
+            try:
+                ohlc.update(tpex.fetch_otc_ohlc(D))  # 上櫃失敗不影響上市入庫
+            except Exception:  # noqa: BLE001
+                pass
             if ohlc:
                 bulk_upsert_ohlc(conn, row["date"], ohlc)
                 success.append("stock_ohlc")

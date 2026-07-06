@@ -676,13 +676,19 @@ def test_index_movers_point_contribution(tmp_path, monkeypatch):
 
 def test_ohlc_backfill_stores_trading_days(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
-    from stocks_power_rich.sources import twse
+    from stocks_power_rich.sources import tpex, twse
     monkeypatch.setattr(twse, "fetch_stock_ohlc",
                         lambda date=None: {"2330": {"open": 1.0, "high": 2.0, "low": 1.0, "close": 1.5}})
+    monkeypatch.setattr(tpex, "fetch_otc_ohlc",
+                        lambda date=None: {"8069": {"open": 44.0, "high": 45.0, "low": 43.5, "close": 44.8}})
     app = create_app()
     client = TestClient(app)
     r = client.get("/api/ohlc/backfill?days=60&max_fetch=5").json()
     assert r["added"] == 5 and r["stored_days"] == 5 and r["done"] is False
+    assert r["twse_days"] == 5 and r["otc_days"] == 5   # 兩市場各自追蹤
+    # 上櫃資料確實入庫
+    o = client.get("/api/stock/8069/ohlc?bars=60").json()
+    assert len(o["candles"]) == 5 and o["candles"][0][1] == 44.8
 
 
 def test_cup_handle_screen_endpoint(tmp_path, monkeypatch):

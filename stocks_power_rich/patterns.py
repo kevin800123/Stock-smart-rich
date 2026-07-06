@@ -58,6 +58,47 @@ def cup_handle(highs, lows, closes) -> dict | None:
     }
 
 
+def cup_handle_signals(highs, lows, closes):
+    """向量化版：對整段歷史回傳 (每日訊號布林陣列, 每日壓力位陣列)，供回測掃描。
+
+    與 cup_handle() 的逐日判定完全一致（有等價性測試鎖住）；HighestBar 同值取最近一次。
+    """
+    import numpy as np
+    from numpy.lib.stride_tricks import sliding_window_view as swv
+
+    H = np.asarray(highs, dtype=float)
+    L = np.asarray(lows, dtype=float)
+    C = np.asarray(closes, dtype=float)
+    n = len(H)
+    sig = np.zeros(n, dtype=bool)
+    res = np.full(n, np.nan)
+    if n < LOOKBACK or len(L) != n or len(C) != n:
+        return sig, res
+
+    def tail(arr, w):
+        """rolling 結果對齊到「視窗結尾＝當日」的完整長度陣列（前段補 NaN）。"""
+        out = np.full(n, np.nan)
+        out[w - 1:] = arr
+        return out
+
+    w377, w55, w13 = swv(H, LOOKBACK), swv(H, 55), swv(H, 13)
+    M377, M55, M13 = tail(w377.max(1), LOOKBACK), tail(w55.max(1), 55), tail(w13.max(1), 13)
+    m8 = tail(swv(L, 8).min(1), 8)
+    m21 = tail(swv(L, 21).min(1), 21)
+    m55 = tail(swv(L, 55).min(1), 55)
+    # HighestBar：反轉視窗取 argmax＝「幾根前」（同值取最近，與 _highest_bar 一致）
+    hb377 = tail(w377[:, ::-1].argmax(1).astype(float), LOOKBACK)
+    hb55 = tail(w55[:, ::-1].argmax(1).astype(float), 55)
+    rng = M55 - m55
+    with np.errstate(invalid="ignore", divide="ignore"):
+        pr = np.where(rng > 0, (C - m55) / rng * 100, 0.0)
+    valid = ~np.isnan(M377)
+    cond1 = (M377 > M55) & (M13 < M55) & (m8 > m21) & (pr - 50 > 0)
+    cond2 = (hb377 - hb55) > 55
+    sig = np.where(valid, cond1 & cond2, False)
+    return sig, M55
+
+
 def screen_cup_handle(ohlc_by_code: dict) -> list[dict]:
     """對 {code: {name, dates[], highs[], lows[], closes[]}} 逐檔篩杯柄，回符合清單（附錨點）。"""
     out = []

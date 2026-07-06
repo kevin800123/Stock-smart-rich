@@ -28,6 +28,18 @@ def test_parse_otc_quotes_signs_pct():
     assert "0000" not in out
 
 
+def test_parse_otc_ohlc_positions_and_filter():
+    payload = {"tables": [{"data": [
+        ["6894", "衛司特", "361.50", "-2.00 ", "364.50", "365.00", "352.50", "360.50", "19,920", "7,181,100"],
+        ["006201", "元大富櫃50", "20.0", "0.1", "19.9", "20.1", "19.8", "20.0", "1", "1"],  # ETF→排除
+        ["8069", "元太", "45.20", "0.40", "44.80", "45.60", "44.50", "45.0", "1", "1"],
+    ]}]}
+    out = tpex.parse_otc_ohlc(payload)
+    assert out["6894"] == {"open": 364.5, "high": 365.0, "low": 352.5, "close": 361.5}
+    assert out["8069"]["close"] == 45.2
+    assert "006201" not in out
+
+
 def test_parse_tpex_insti_positional_in_lots():
     payload = {"tables": [{"fields": ["x"] * 24, "data": [_ROW] * 21}]}  # >=20 列才視為明細表
     out = tpex.parse_tpex_insti(payload)

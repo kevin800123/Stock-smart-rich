@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from datetime import datetime
 
-from . import analysis, csv_import, exporter, gemini, line_push, patterns, updater
+from . import analysis, backtest, csv_import, exporter, gemini, line_push, patterns, updater
 from .config import load_config
 from .sources import intl, kline, taifex, tdcc, tpex, twse
 from .db import (
@@ -254,9 +254,40 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
 
     @app.get("/api/ohlc/backfill")
     def ohlc_backfill(days: int = 377, max_fetch: int = 60):
-        """回補全市場個股每日 OHLC（型態選股用）。資料量大分次，回傳可重跑續補。"""
-        return updater.backfill_ohlc(conn(), target=max(60, min(days, 400)),
+        """回補全市場個股每日 OHLC（型態選股/回測用）。資料量大分次，回傳可重跑續補。"""
+        return updater.backfill_ohlc(conn(), target=max(60, min(days, 800)),
                                      max_fetch=max(1, min(max_fetch, 120)))
+
+    def _ohlc_names(c) -> dict:
+        """個股名對照：上市基本資料 + 上櫃公司簡稱（杯柄篩選/回測共用）。"""
+        imap, omap = _industry_map(c), _otc_names(c)
+        names = {code: (info.get("name") or code) for code, info in imap.items()}
+        for code, nm in omap.items():
+            names.setdefault(code, nm)
+        return names
+
+    @app.get("/api/patterns/cup-handle/backtest")
+    def cup_backtest():
+        """杯柄訊號歷史回測：訊號→突破進場→持有5/10/20日報酬統計（依已存歷史，逐日快取）。"""
+        c = conn()
+        ods = ohlc_dates(c)
+        need = patterns.LOOKBACK + 30
+        if len(ods) < need:
+            return {"note": f"目前歷史 {len(ods)} 天，回測至少需 {need} 天（訊號要能走出未來報酬）。"
+                            f"請先回補更多：/api/ohlc/backfill?days=800（可重跑續補）",
+                    "bars": len(ods)}
+        key = f"cupbt:{ods[-1]}:{len(ods)}"
+        cached = get_ai_cache(c, key)
+        if cached is not None:
+            return cached
+        data = get_all_ohlc(c, min_bars=patterns.LOOKBACK + 1)
+        names = _ohlc_names(c)
+        for code, s in data.items():
+            s["name"] = names.get(code) or code
+        result = backtest.backtest_cup(data)
+        result.update({"date": ods[-1], "bars": len(ods)})
+        set_ai_cache(c, key, result)
+        return result
 
     @app.get("/api/patterns/cup-handle")
     def cup_handle_screen():
@@ -271,12 +302,16 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         result = get_ai_cache(c, key)
         if result is None:
             data = get_all_ohlc(c, min_bars=patterns.LOOKBACK)
-            imap = _industry_map(c)
+            names = _ohlc_names(c)
             for code, s in data.items():
-                s["name"] = (imap.get(code) or {}).get("name") or code
+                s["name"] = names.get(code) or code
             matches = patterns.screen_cup_handle(data)
             result = {"date": latest, "bars": len(ods), "count": len(matches), "stocks": matches}
             set_ai_cache(c, key, result)
+            # 每日訊號快照（LINE 推播比對「新符合/突破壓力」用）
+            set_ai_cache(c, f"cupsig:{latest}",
+                         [{"code": m["code"], "name": m["name"], "resistance": m["resistance"]}
+                          for m in matches])
         # 疊加「籌碼/基本選股」標記（以最新 CSV 快照為準，即時計算不進快取，換檔即更新）
         picks = _picks_code_set(c)
         for m in result["stocks"]:
@@ -888,6 +923,36 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             set_ai_cache(c, key, result)
         return result
 
+    def _cup_push_info(c) -> dict | None:
+        """組推播用杯柄資訊：今日符合數＋昨日訊號股今日『突破壓力』＋今日『新符合』。"""
+        ods = ohlc_dates(c)
+        if not ods:
+            return None
+        scr = cup_handle_screen()
+        if scr.get("note") or not scr.get("date"):
+            return None
+        today = scr["date"]
+        stocks = scr.get("stocks") or []
+        prev_ds = ods[-2] if len(ods) >= 2 else None
+        prev = get_ai_cache(c, f"cupsig:{prev_ds}") if prev_ds else None
+        new = []
+        if prev is not None:  # 首日無前一日快照 → 不標新進，避免整串都算新
+            prev_codes = {p["code"] for p in prev}
+            new = [{"code": s["code"], "name": s["name"]} for s in stocks
+                   if s["code"] not in prev_codes]
+        breakout = []
+        if prev:
+            codes = [p["code"] for p in prev]
+            ph = ",".join("?" * len(codes))
+            closes = {r[0]: r[1] for r in c.execute(
+                f"SELECT code, close FROM stock_ohlc WHERE date=? AND code IN ({ph})",
+                [today] + codes)}
+            for p in prev:
+                cl = closes.get(p["code"])
+                if cl is not None and p.get("resistance") is not None and cl > p["resistance"]:
+                    breakout.append({**p, "close": cl})
+        return {"count": len(stocks), "new": new[:6], "breakout": breakout[:6]}
+
     def _push_line(c, full: bool, force: bool = False) -> dict:
         """組當日盤後訊息並 broadcast 到 LINE 官方帳號好友（單人自用＝自己）。
 
@@ -932,8 +997,12 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             pass
         ai = market_summary(refresh=0)
         ai_text = (ai.get("text") or "") if ai.get("enabled") else ""
+        try:
+            cup = _cup_push_info(c)
+        except Exception:  # noqa: BLE001 — 杯柄資訊失敗不影響推播主體
+            cup = None
         txt = line_push.compose_daily_brief(m, secs, watch, ai_text=ai_text, full=full,
-                                            tsmc=tsmc, prev=prev_row)
+                                            tsmc=tsmc, prev=prev_row, cup=cup)
         return line_push.broadcast_text(cfg.line_token, txt)
 
     @app.post("/api/line/test")

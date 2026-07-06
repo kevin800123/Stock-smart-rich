@@ -43,7 +43,8 @@ def _px_line(label: str, price, chg) -> str:
 
 def compose_daily_brief(row: dict, sectors: list, watch: list,
                         ai_text: str = "", full: bool = False,
-                        tsmc: dict | None = None, prev: dict | None = None) -> str:
+                        tsmc: dict | None = None, prev: dict | None = None,
+                        cup: dict | None = None) -> str:
     """組盤後訊息。full=True 加融資券（21:00 完整版）；速報（16:00）不含。
 
     row＝market_daily 最新列（含國際行情欄位）；prev＝前一交易日列（法人/期貨附「昨」對照）；
@@ -144,6 +145,15 @@ def compose_daily_brief(row: dict, sectors: list, watch: list,
             if w.get("in_latest"):
                 item += " ●在榜"
             g.append(item)
+        blocks.append(g)
+    # 杯柄型態（有「新符合」或「突破壓力」才顯示，避免天天重複整串清單）
+    if cup and (cup.get("new") or cup.get("breakout")):
+        g = [f"【杯柄型態】符合 {cup.get('count', 0)} 檔"]
+        for b in (cup.get("breakout") or [])[:6]:
+            g.append(f"🚀 突破 {b.get('name') or b.get('code')} {_fmt(b.get('close'))}(壓{_fmt(b.get('resistance'))})")
+        new = (cup.get("new") or [])[:6]
+        if new:
+            g.append("🆕 新符合 " + "、".join(f"{s.get('name') or s.get('code')}" for s in new))
         blocks.append(g)
     # AI 解讀
     if ai_text:

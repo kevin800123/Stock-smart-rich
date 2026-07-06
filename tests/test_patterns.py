@@ -49,3 +49,56 @@ def test_screen_runs_over_multiple_codes():
     out = patterns.screen_cup_handle(data)
     assert [m["code"] for m in out] == ["2330"]
     assert out[0]["name"] == "台積電" and out[0]["right_price"] == 90.0
+
+
+def test_signals_equivalent_to_scalar_on_random_walks():
+    """向量化 cup_handle_signals 的最後一日判定，必須與逐日 cup_handle 完全一致。"""
+    import random
+    rng = random.Random(42)
+    agree = 0
+    for _ in range(60):
+        n = 420
+        px = [100.0]
+        for _ in range(n - 1):
+            px.append(max(1.0, px[-1] * (1 + rng.uniform(-0.05, 0.052))))
+        highs = [p * (1 + rng.uniform(0, 0.02)) for p in px]
+        lows = [p * (1 - rng.uniform(0, 0.02)) for p in px]
+        sig, res = patterns.cup_handle_signals(highs, lows, px)
+        scalar = patterns.cup_handle(highs, lows, px)
+        assert bool(sig[-1]) == (scalar is not None)
+        if scalar is not None:
+            assert abs(res[-1] - scalar["resistance"]) < 1e-9
+        agree += 1
+    assert agree == 60
+
+
+def test_backtest_cup_breakout_and_stats():
+    """合成杯柄→隔日突破→續漲：回測應記 1 筆交易且各持有期報酬為正。"""
+    from stocks_power_rich import backtest
+
+    highs, lows, closes = _make_cup_handle()      # 400 根，訊號在最後一日、壓力=90
+    px = 92.0
+    for i in range(25):                            # 加 25 天：立刻突破後每日 +1%
+        closes.append(round(px, 2)); highs.append(round(px * 1.01, 2)); lows.append(round(px * 0.99, 2))
+        px *= 1.01
+    dates = [f"D{i:03d}" for i in range(len(closes))]
+    data = {"2330": {"name": "台積電", "dates": dates, "highs": highs, "lows": lows, "closes": closes}}
+    r = backtest.backtest_cup(data)
+    assert r["signals"] >= 1 and r["trades_n"] == 1 and r["expired"] == r["signals"] - 1
+    tr = r["trades"][0]
+    assert tr["entry"] > tr["resistance"] == 90.0
+    for h in (5, 10, 20):
+        assert tr[f"ret{h}"] > 0
+    assert r["horizons"]["5"]["win_rate"] == 100.0
+
+
+def test_backtest_cup_counts_expired_when_no_breakout():
+    from stocks_power_rich import backtest
+
+    highs, lows, closes = _make_cup_handle()
+    for _ in range(25):                            # 加 25 天橫盤(收 80 < 壓力 90)：不突破
+        closes.append(80.0); highs.append(84.0); lows.append(76.0)
+    dates = [f"D{i:03d}" for i in range(len(closes))]
+    data = {"9999": {"name": "盤整股", "dates": dates, "highs": highs, "lows": lows, "closes": closes}}
+    r = backtest.backtest_cup(data)
+    assert r["trades_n"] == 0 and r["expired"] >= 1

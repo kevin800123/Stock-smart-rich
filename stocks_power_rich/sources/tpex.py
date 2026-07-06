@@ -83,6 +83,39 @@ def parse_otc_quotes(payload: dict) -> dict:
     return out
 
 
+def parse_otc_ohlc(payload: dict) -> dict:
+    """dailyQuotes 上櫃盤後行情 → {代號: {open,high,low,close}}。
+
+    位置欄位：0 代號、2 收盤、4 開盤、5 最高、6 最低。只取 4 位數普通股（排除 ETF 00xx）。
+    """
+    out: dict[str, dict] = {}
+    for t in payload.get("tables") or []:
+        for r in t.get("data") or []:
+            if not r or len(r) < 7:
+                continue
+            code = str(r[0]).strip()
+            if not (len(code) == 4 and code.isdigit() and not code.startswith("00")):
+                continue
+            c, o, h, l = _f(r[2]), _f(r[4]), _f(r[5]), _f(r[6])
+            if None not in (o, h, l, c):
+                out[code] = {"open": o, "high": h, "low": l, "close": c}
+    return out
+
+
+def fetch_otc_ohlc(date: datetime.date | None = None) -> dict:
+    """直連櫃買 dailyQuotes 取指定日全上櫃個股 OHLC（型態選股用）。查無回空。"""
+    day = date or datetime.date.today()
+    ds = f"{day.year}/{day.month:02d}/{day.day:02d}"
+    try:
+        j = httpx.get(DAILY_QUOTES_URL, params={"date": ds, "response": "json"},
+                      timeout=25, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}).json()
+        if j.get("stat") == "ok" and j.get("tables"):
+            return parse_otc_ohlc(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
 def fetch_otc_quotes(date: datetime.date | None = None) -> dict:
     """直連櫃買 dailyQuotes 取指定日（預設今天）全上櫃個股收盤與漲跌%。查無回空。"""
     day = date or datetime.date.today()
