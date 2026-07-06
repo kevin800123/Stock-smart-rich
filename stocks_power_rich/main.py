@@ -268,17 +268,29 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                     "note": "尚未回補個股歷史，請先執行 /api/ohlc/backfill"}
         latest = ods[-1]
         key = f"cuphandle:{latest}:{len(ods)}"
-        cached = get_ai_cache(c, key)
-        if cached is not None:
-            return cached
-        data = get_all_ohlc(c, min_bars=patterns.LOOKBACK)
-        imap = _industry_map(c)
-        for code, s in data.items():
-            s["name"] = (imap.get(code) or {}).get("name") or code
-        matches = patterns.screen_cup_handle(data)
-        result = {"date": latest, "bars": len(ods), "count": len(matches), "stocks": matches}
-        set_ai_cache(c, key, result)
+        result = get_ai_cache(c, key)
+        if result is None:
+            data = get_all_ohlc(c, min_bars=patterns.LOOKBACK)
+            imap = _industry_map(c)
+            for code, s in data.items():
+                s["name"] = (imap.get(code) or {}).get("name") or code
+            matches = patterns.screen_cup_handle(data)
+            result = {"date": latest, "bars": len(ods), "count": len(matches), "stocks": matches}
+            set_ai_cache(c, key, result)
+        # 疊加「籌碼/基本選股」標記（以最新 CSV 快照為準，即時計算不進快取，換檔即更新）
+        picks = _picks_code_set(c)
+        for m in result["stocks"]:
+            m["in_picks"] = m["code"] in picks
+        result["has_picks"] = bool(picks)
+        result["picks_count"] = sum(1 for m in result["stocks"] if m["in_picks"])
         return result
+
+    def _picks_code_set(c) -> set:
+        """最新 CSV 快照的『籌碼/基本選股』代號集合（去 .TW，供杯柄交集）。"""
+        dates = get_snapshot_dates(c)
+        if not dates:
+            return set()
+        return {p["code"].split(".")[0] for p in analysis.filtered_picks(get_snapshot(c, dates[-1]))}
 
     @app.get("/api/stock/{code}/ohlc")
     def stock_ohlc(code: str, bars: int = 400):
@@ -707,6 +719,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             "snapshots": len(get_snapshot_dates(c)),
             "tx_history_days": len(get_tx_history(c)),
             "last_market_date": last_date,
+            "nav_order": (get_setting(c, "nav_order") or "").split(",") if get_setting(c, "nav_order") else None,
         }
 
     @app.post("/api/settings")
@@ -729,6 +742,12 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 set_setting(c, "data_dir", str(dd))
             else:
                 return {"ok": False, "error": "資料夾不在允許範圍（僅限專案目錄下）", **get_settings()}
+        no = payload.get("nav_order")
+        if isinstance(no, list) and no:
+            # 分頁順序（view id）；只留簡單字母 slug，逗號分隔存字串
+            ids = [str(x) for x in no if str(x).isalnum()]
+            if ids:
+                set_setting(c, "nav_order", ",".join(ids))
         return {"ok": True, **get_settings()}
 
     @app.get("/api/analysis/daily")

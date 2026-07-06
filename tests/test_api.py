@@ -692,6 +692,7 @@ def test_cup_handle_screen_endpoint(tmp_path, monkeypatch):
     from stocks_power_rich.sources import twse
     from tests.test_patterns import _make_cup_handle
 
+    from stocks_power_rich.db import insert_chip_snapshot
     c = get_connection(str(tmp_path / "t.sqlite"))
     init_db(c)
     highs, lows, closes = _make_cup_handle()
@@ -699,6 +700,9 @@ def test_cup_handle_screen_endpoint(tmp_path, monkeypatch):
     for i, (h, l, cl) in enumerate(zip(highs, lows, closes)):
         ds = (base + timedelta(days=i)).isoformat()
         bulk_upsert_ohlc(c, ds, {"2330": {"open": cl, "high": h, "low": l, "close": cl}})
+    # 2330 同時進「籌碼/基本選股」榜（W55∧大戶∧營收∧EPS），供交集標記
+    insert_chip_snapshot(c, "2025-03-01", [{"code": "2330.TW", "name": "台積電", "w55": 1,
+                         "big_holder_ratio": 0.5, "rev_yoy": 10, "est_profit": 1, "lan_value": 80}])
     monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1}})
     app = create_app()
     client = TestClient(app)
@@ -708,6 +712,20 @@ def test_cup_handle_screen_endpoint(tmp_path, monkeypatch):
     assert m["code"] == "2330" and m["name"] == "台積電"
     assert m["right_price"] == 90.0 and m["resistance"] == 90.0
     assert m["left_date"] and m["right_date"]        # 畫線用日期
+    assert m["in_picks"] is True and r["has_picks"] is True and r["picks_count"] == 1  # 交集標記
     # 個股 OHLC 端點供畫線
     o = client.get("/api/stock/2330/ohlc?bars=400").json()
     assert len(o["candles"]) == 400 and o["candles"][0][0] is not None
+
+
+def test_settings_nav_order_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    app = create_app()
+    client = TestClient(app)
+    assert client.get("/api/settings").json()["nav_order"] is None       # 預設未設
+    order = ["overview", "cup", "picks", "settings"]
+    client.post("/api/settings", json={"nav_order": order})
+    assert client.get("/api/settings").json()["nav_order"] == order
+    # 非字母 slug 被濾掉（防注入），仍存有效項
+    client.post("/api/settings", json={"nav_order": ["overview", "../evil", "cup"]})
+    assert client.get("/api/settings").json()["nav_order"] == ["overview", "cup"]

@@ -19,7 +19,7 @@
 
     <nav class="sidebar">
       <a class="nav active" data-view="overview"><span class="ico">📊</span><span class="lbl">總覽</span></a>
-      <a class="nav" data-view="picks"><span class="ico">🎯</span><span class="lbl">選股清單</span></a>
+      <a class="nav" data-view="picks"><span class="ico">🎯</span><span class="lbl">籌碼/基本選股</span></a>
       <a class="nav" data-view="stock"><span class="ico">🔍</span><span class="lbl">個股查詢</span></a>
       <a class="nav" data-view="rotation"><span class="ico">🔄</span><span class="lbl">族群輪動</span></a>
       <a class="nav" data-view="watch"><span class="ico">⭐</span><span class="lbl">自選股</span></a>
@@ -118,7 +118,7 @@
             <div id="industry" class="table-wrap fill"></div>
           </div>
           <div class="picks-main">
-            <div class="pane-title">選股清單　<span id="sub-filter" class="muted"></span></div>
+            <div class="pane-title">籌碼/基本選股　<span id="sub-filter" class="muted"></span></div>
             <div class="muted small">W55翻多 ＋ 大戶增比&gt;0 ＋ 營收年增&gt;0 ＋ 推估EPS&gt;0，依蘭值排序（點欄位排序、點細產業聯動）</div>
             <div id="daily" class="table-wrap fill"></div>
           </div>
@@ -155,8 +155,8 @@
       <section id="view-rotation" class="view">
         <div class="pane-title">族群輪動　近 N 日類股漲跌%（依累計強弱排序，紅漲綠跌）<span id="rotation-note" class="muted small"></span></div>
         <div id="rotation" class="table-wrap fill-half"></div>
-        <div class="pane-title" style="margin-top:10px">交叉選股　你的選股清單 × 當日族群<span id="cross-note" class="muted small"></span></div>
-        <div class="muted small">同一族群把命中個股聚在一起，依族群當日漲跌排序；點股號開 K 線。需先在「選股清單」載入當日 CSV。</div>
+        <div class="pane-title" style="margin-top:10px">交叉選股　你的籌碼/基本選股 × 當日族群<span id="cross-note" class="muted small"></span></div>
+        <div class="muted small">同一族群把命中個股聚在一起，依族群當日漲跌排序；點股號開 K 線。需先在「籌碼/基本選股」載入當日 CSV。</div>
         <div id="cross"></div>
       </section>
 
@@ -175,6 +175,7 @@
         <div class="toolbar">
           <span class="pane-title" style="margin:0">亞當杯柄型態選股</span>
           <button id="btn-cup-refresh" class="file-label">🔄 重新篩選</button>
+          <button id="btn-cup-picks" class="ctf">同時符合籌碼/基本</button>
           <span id="cup-note" class="muted small"></span>
         </div>
         <div id="cup-list" class="cup-list"></div>
@@ -209,6 +210,9 @@
           <div class="set-row"><label>LINE 推播</label><span id="set-line" class="set-badge"></span><button id="btn-line-test" class="file-label">📱 測試推播</button><span id="set-line-status" class="muted small"></span></div>
           <div class="set-row"><button id="btn-save-settings" class="file-label">💾 儲存設定</button><span id="set-saved" class="muted"></span></div>
         </div>
+        <div class="ai-head" style="margin-top:8px"><span>左側分頁順序 <span class="muted small">（用 ↑↓ 調整，儲存後雲端同步）</span></span></div>
+        <div id="nav-order" class="nav-order"></div>
+
         <div class="ai-head" style="margin-top:8px"><span>資料庫狀態</span></div>
         <div id="set-stats" class="stats-grid"></div>
       </section>

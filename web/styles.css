@@ -93,6 +93,9 @@ body {
 .cup-chip.active { background: var(--accent); color: #1a1a1a; font-weight: 700; border-color: var(--accent); }
 .cup-chip .cup-r { font-size: 11px; opacity: .8; }
 .cup-chip.active .cup-r { opacity: 1; }
+.cup-chip.pick { border-color: var(--down); }               /* 同時符合籌碼/基本：綠框標記 */
+.cup-chip.pick::before { content: "●"; color: var(--down); font-size: 9px; margin-right: -2px; }
+.cup-chip.active.pick::before { color: #1a5c2f; }
 
 /* ===== 權值股貢獻（色階卡片，供海期監控共用） ===== */
 .mv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(122px, 1fr)); gap: 6px; }
@@ -227,6 +230,12 @@ a.stock:hover { text-decoration: underline; }
 .set-badge.ok { background: #1f4030; color: #7ee2a0; }
 .set-badge.no { background: #3a1717; color: #e08585; }
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; max-width: 640px; }
+.nav-order { display: flex; flex-direction: column; gap: 4px; max-width: 380px; }
+.no-row { display: flex; align-items: center; gap: 8px; background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+.no-lbl { flex: 1; font-size: 14px; }
+.no-row button { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 5px; width: 32px; height: 30px; cursor: pointer; font-size: 15px; }
+.no-row button:hover:not(:disabled) { border-color: var(--accent); }
+.no-row button:disabled { opacity: .35; cursor: default; }
 .stat { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
 .stat-k { font-size: 12px; color: var(--muted); }
 .stat-v { font-size: 18px; font-weight: 700; margin-top: 3px; }

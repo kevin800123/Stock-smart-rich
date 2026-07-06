@@ -154,7 +154,34 @@ async function loadSettings() {
     $("set-stats").innerHTML = [
       ["快照天數", s.snapshots], ["台指期歷史天數", s.tx_history_days], ["最新大盤日期", s.last_market_date || "—"],
     ].map(([k, v]) => `<div class="stat"><div class="stat-k">${k}</div><div class="stat-v">${v}</div></div>`).join("");
+    renderNavOrder();
   } catch (e) { /* 忽略 */ }
+}
+
+// 左側分頁順序：套用（重排 .nav DOM，側欄與手機底部列共用同一批元素）
+function applyNavOrder(order) {
+  const bar = document.querySelector(".sidebar"); if (!bar) return;
+  const byView = {}; bar.querySelectorAll(".nav").forEach((n) => { byView[n.dataset.view] = n; });
+  const all = [...bar.querySelectorAll(".nav")].map((n) => n.dataset.view);
+  const full = (order || []).filter((v) => byView[v]).concat(all.filter((v) => !(order || []).includes(v)));
+  full.forEach((v) => bar.appendChild(byView[v]));  // 依序移到尾端＝完成重排
+}
+function renderNavOrder() {
+  const box = $("nav-order"); if (!box) return;
+  const navs = [...document.querySelectorAll(".sidebar .nav")];
+  box.innerHTML = navs.map((n, i) =>
+    `<div class="no-row"><span class="no-lbl">${esc(n.querySelector(".lbl").textContent)}</span>` +
+    `<button class="no-up" data-i="${i}"${i === 0 ? " disabled" : ""}>↑</button>` +
+    `<button class="no-dn" data-i="${i}"${i === navs.length - 1 ? " disabled" : ""}>↓</button></div>`).join("");
+}
+async function moveNav(i, dir) {
+  const bar = document.querySelector(".sidebar");
+  const navs = [...bar.querySelectorAll(".nav")];
+  const j = i + dir; if (j < 0 || j >= navs.length) return;
+  if (dir < 0) bar.insertBefore(navs[i], navs[j]); else bar.insertBefore(navs[j], navs[i]);
+  renderNavOrder();
+  const order = [...bar.querySelectorAll(".nav")].map((n) => n.dataset.view);
+  try { await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nav_order: order }) }); } catch (e) { /* ignore */ }
 }
 async function saveSettings() {
   $("set-saved").textContent = "儲存中…";
@@ -354,20 +381,29 @@ async function drawCupChart(m) {
     cupChart.setOption(cupChartOption(d, m), true);
   } catch (e) { cupChart.hideLoading(); }
 }
+let cupData = null, cupPicksOnly = false;
 async function loadCupHandle() {
-  const list = $("cup-list"), note = $("cup-note"); if (!list) return;
+  const list = $("cup-list"); if (!list) return;
   list.innerHTML = '<span class="muted small">篩選中…</span>';
   try {
-    const d = await getJSON("/api/patterns/cup-handle");
+    cupData = await getJSON("/api/patterns/cup-handle");
     cupLoaded = true;
-    if (d.note) { list.innerHTML = `<span class="muted small">${esc(d.note)}</span>`; if (note) note.textContent = ""; return; }
-    cupMatches = d.stocks || [];
-    if (note) note.textContent = `（${d.date}　符合 ${d.count} 檔／掃描 ${d.bars} 根）`;
-    if (!cupMatches.length) { list.innerHTML = '<span class="muted small">今日無符合杯柄型態的個股</span>'; if (cupChart) cupChart.clear(); return; }
-    list.innerHTML = cupMatches.map((m, i) =>
-      `<a href="#" class="cup-chip${i === 0 ? " active" : ""}" data-i="${i}">${esc(m.code)} ${esc(m.name || "")}<span class="cup-r">%R ${fmt(m.percent_r, 0)}</span></a>`).join("");
-    drawCupChart(cupMatches[0]);
+    renderCupChips();
   } catch (e) { list.innerHTML = '<span class="muted small">載入失敗</span>'; }
+}
+function renderCupChips() {
+  const list = $("cup-list"), note = $("cup-note"); if (!list || !cupData) return;
+  const d = cupData;
+  if (d.note) { list.innerHTML = `<span class="muted small">${esc(d.note)}</span>`; if (note) note.textContent = ""; return; }
+  const all = d.stocks || [];
+  cupMatches = cupPicksOnly ? all.filter((m) => m.in_picks) : all;
+  if (note) note.textContent = `（${d.date}　符合 ${d.count} 檔`
+    + (d.has_picks ? `／同時符合籌碼基本 ${d.picks_count} 檔` : "") + `／掃描 ${d.bars} 根）`;
+  if (cupPicksOnly && !d.has_picks) { list.innerHTML = '<span class="muted small">尚未載入當日 CSV，無「籌碼/基本選股」可交集（請先到該分頁上傳）</span>'; if (cupChart) cupChart.clear(); return; }
+  if (!cupMatches.length) { list.innerHTML = `<span class="muted small">${cupPicksOnly ? "無同時符合兩者的個股" : "今日無符合杯柄型態的個股"}</span>`; if (cupChart) cupChart.clear(); return; }
+  list.innerHTML = cupMatches.map((m, i) =>
+    `<a href="#" class="cup-chip${i === 0 ? " active" : ""}${m.in_picks ? " pick" : ""}" data-i="${i}">${esc(m.code)} ${esc(m.name || "")}<span class="cup-r">%R ${fmt(m.percent_r, 0)}</span></a>`).join("");
+  drawCupChart(cupMatches[0]);
 }
 
 // 海期監控：五大分類色階卡片（名稱/價格上排、漲跌%/點數下排）
@@ -602,7 +638,7 @@ async function loadCross() {
   const note = $("cross-note");
   try {
     const d = await getJSON("/api/sectors/picks");
-    if (!d.groups || !d.groups.length) { el.innerHTML = '<div class="muted small">尚無選股或族群資料（請先到「選股清單」載入當日 CSV）。</div>'; if (note) note.textContent = ""; return; }
+    if (!d.groups || !d.groups.length) { el.innerHTML = '<div class="muted small">尚無選股或族群資料（請先到「籌碼/基本選股」載入當日 CSV）。</div>'; if (note) note.textContent = ""; return; }
     if (note) note.textContent = `（選股日 ${d.date || ""}，共 ${d.groups.length} 族群）`;
     el.innerHTML = d.groups.map((g) => {
       const cls = chgClass(g.chg_pct);
@@ -911,6 +947,15 @@ $("btn-export").addEventListener("click", () => {
 $("btn-save-settings").addEventListener("click", saveSettings);
 $("btn-osfut-refresh").addEventListener("click", () => loadOsFutures(true));
 $("btn-cup-refresh").addEventListener("click", loadCupHandle);
+$("btn-cup-picks").addEventListener("click", (e) => {
+  cupPicksOnly = !cupPicksOnly;
+  e.target.classList.toggle("active", cupPicksOnly);
+  renderCupChips();
+});
+$("nav-order").addEventListener("click", (e) => {
+  const up = e.target.closest(".no-up"), dn = e.target.closest(".no-dn");
+  if (up) moveNav(+up.dataset.i, -1); else if (dn) moveNav(+dn.dataset.i, 1);
+});
 $("cup-list").addEventListener("click", (e) => {
   const a = e.target.closest(".cup-chip"); if (!a) return;
   e.preventDefault();
@@ -975,6 +1020,7 @@ window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockCh
 
 // ========== 初始載入 ==========
 (async () => {
+  try { applyNavOrder((await getJSON("/api/settings")).nav_order); } catch (e) { /* 用預設順序 */ }
   const d = await loadDashboard();
   loadIndexChart();
   loadBreadth();
