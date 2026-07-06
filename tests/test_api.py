@@ -672,3 +672,42 @@ def test_index_movers_point_contribution(tmp_path, monkeypatch):
     assert [m["code"] for m in r["movers"]] == ["2330", "2317"]     # 依貢獻絕對值排序
     assert mv["2330"]["contribution"] == 40.0 and mv["2317"]["contribution"] == -20.0
     assert round(sum(m["contribution"] for m in r["movers"]), 2) == 20.0  # 合計＝實際指數漲跌
+
+
+def test_ohlc_backfill_stores_trading_days(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.sources import twse
+    monkeypatch.setattr(twse, "fetch_stock_ohlc",
+                        lambda date=None: {"2330": {"open": 1.0, "high": 2.0, "low": 1.0, "close": 1.5}})
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/ohlc/backfill?days=60&max_fetch=5").json()
+    assert r["added"] == 5 and r["stored_days"] == 5 and r["done"] is False
+
+
+def test_cup_handle_screen_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import date, timedelta
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc
+    from stocks_power_rich.sources import twse
+    from tests.test_patterns import _make_cup_handle
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    highs, lows, closes = _make_cup_handle()
+    base = date(2025, 1, 1)
+    for i, (h, l, cl) in enumerate(zip(highs, lows, closes)):
+        ds = (base + timedelta(days=i)).isoformat()
+        bulk_upsert_ohlc(c, ds, {"2330": {"open": cl, "high": h, "low": l, "close": cl}})
+    monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1}})
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/patterns/cup-handle").json()
+    assert r["count"] == 1
+    m = r["stocks"][0]
+    assert m["code"] == "2330" and m["name"] == "台積電"
+    assert m["right_price"] == 90.0 and m["resistance"] == 90.0
+    assert m["left_date"] and m["right_date"]        # 畫線用日期
+    # 個股 OHLC 端點供畫線
+    o = client.get("/api/stock/2330/ohlc?bars=400").json()
+    assert len(o["candles"]) == 400 and o["candles"][0][0] is not None

@@ -7,8 +7,10 @@ from datetime import date as _date, datetime, timedelta
 
 from .db import (
     bulk_upsert_custody,
+    bulk_upsert_ohlc,
     custody_week_exists,
     latest_custody_week,
+    ohlc_dates,
     upsert_market_daily,
     upsert_tx_history,
 )
@@ -125,6 +127,29 @@ def backfill_history(conn, days: int = 30) -> int:
     return len(seen)
 
 
+def backfill_ohlc(conn, target: int = 377, max_fetch: int = 60) -> dict:
+    """回補全市場個股每日 OHLC 到 target 個交易日；每次最多抓 max_fetch 個新交易日（可重跑續補）。
+
+    逐日直連 MI_INDEX(ALLBUT0999)，跳過已存日期與週末；資料量大故分次，避免單次請求逾時。
+    """
+    have = set(ohlc_dates(conn))
+    added = 0
+    anchor = _date.today()
+    floor = anchor - timedelta(days=target * 2 + 40)  # 日曆下限，避免無限迴圈
+    while len(have) < target and added < max_fetch and anchor >= floor:
+        if anchor.weekday() >= 5 or anchor.isoformat() in have:  # 週末或已存→跳過
+            anchor -= timedelta(days=1)
+            continue
+        ds = anchor.isoformat()
+        rows = twse.fetch_stock_ohlc(anchor)
+        if rows:
+            bulk_upsert_ohlc(conn, ds, rows)
+            have.add(ds)
+            added += 1
+        anchor -= timedelta(days=1)
+    return {"stored_days": len(have), "added": added, "done": len(have) >= target}
+
+
 def run_update(conn, intl_tickers: dict) -> dict:
     today = datetime.now().strftime("%Y-%m-%d")
     row = {"date": today, "updated_at": datetime.now().isoformat()}
@@ -197,6 +222,16 @@ def run_update(conn, intl_tickers: dict) -> dict:
             success.append(f"tdcc_custody:{wk}")
     except Exception as e:  # noqa: BLE001
         failed.append({"source": "tdcc", "name": "custody", "error": str(e)})
+
+    # 當日全市場個股 OHLC（型態選股用，逐日累積）
+    try:
+        if D:
+            ohlc = twse.fetch_stock_ohlc(D)
+            if ohlc:
+                bulk_upsert_ohlc(conn, row["date"], ohlc)
+                success.append("stock_ohlc")
+    except Exception as e:  # noqa: BLE001
+        failed.append({"source": "twse", "name": "stock_ohlc", "error": str(e)})
 
     # 台指期歷史日K（期交所官方下載），刷新近期
     try:

@@ -96,6 +96,10 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS watchlist (code TEXT PRIMARY KEY, name TEXT, added_at TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS custody_dist (week TEXT, code TEXT, big1000_pct REAL, "
                  "big400_pct REAL, big_holders REAL, PRIMARY KEY(week, code))")
+    # 全市場個股每日 OHLC（型態選股用；由 MI_INDEX ALLBUT0999 逐日回補與累積）
+    conn.execute("CREATE TABLE IF NOT EXISTS stock_ohlc (date TEXT, code TEXT, open REAL, high REAL, "
+                 "low REAL, close REAL, PRIMARY KEY(date, code))")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ohlc_code ON stock_ohlc(code, date)")
     # 既有資料庫補上後來新增的欄位
     mkt_existing = {r[1] for r in conn.execute("PRAGMA table_info(market_daily)").fetchall()}
     for col in MARKET_COLS:
@@ -211,6 +215,42 @@ def bulk_upsert_custody(conn: sqlite3.Connection, week: str, data: dict) -> int:
     )
     conn.commit()
     return len(rows)
+
+
+def bulk_upsert_ohlc(conn: sqlite3.Connection, date: str, rows: dict) -> int:
+    """一日全市場 OHLC 批次入庫。rows＝{code: {open,high,low,close}}。"""
+    data = [(date, code, v.get("open"), v.get("high"), v.get("low"), v.get("close"))
+            for code, v in rows.items()]
+    conn.executemany(
+        "INSERT INTO stock_ohlc (date, code, open, high, low, close) VALUES (?,?,?,?,?,?) "
+        "ON CONFLICT(date, code) DO UPDATE SET open=excluded.open, high=excluded.high, "
+        "low=excluded.low, close=excluded.close",
+        data,
+    )
+    conn.commit()
+    return len(data)
+
+
+def ohlc_dates(conn: sqlite3.Connection) -> list[str]:
+    return [r[0] for r in conn.execute(
+        "SELECT DISTINCT date FROM stock_ohlc ORDER BY date").fetchall()]
+
+
+def get_all_ohlc(conn: sqlite3.Connection, min_bars: int = 1) -> dict:
+    """{code: {dates[], highs[], lows[], closes[]}}（各檔由舊到新）；不足 min_bars 者略過。"""
+    out: dict[str, dict] = {}
+    for code, d, h, l, c in conn.execute(
+            "SELECT code, date, high, low, close FROM stock_ohlc ORDER BY code, date"):
+        s = out.setdefault(code, {"dates": [], "highs": [], "lows": [], "closes": []})
+        s["dates"].append(d); s["highs"].append(h); s["lows"].append(l); s["closes"].append(c)
+    return {code: s for code, s in out.items() if len(s["dates"]) >= min_bars}
+
+
+def get_ohlc_history(conn: sqlite3.Connection, code: str) -> list[dict]:
+    return [{"date": d, "open": o, "high": h, "low": l, "close": c}
+            for d, o, h, l, c in conn.execute(
+                "SELECT date, open, high, low, close FROM stock_ohlc WHERE code=? ORDER BY date",
+                (code,))]
 
 
 def get_custody_trend(conn: sqlite3.Connection, code: str) -> list[dict]:

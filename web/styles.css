@@ -85,6 +85,15 @@ body {
 .breadth-bar .seg.flat { background: #4a5262; }
 .breadth-bar .seg.down { background: var(--down); }
 
+/* ===== 杯柄選股 ===== */
+.cup-list { display: flex; flex-wrap: wrap; gap: 6px; flex: 0 0 auto; margin-bottom: 6px; }
+.cup-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--card); border: 1px solid var(--border);
+  border-radius: 16px; padding: 5px 12px; font-size: 13px; color: var(--text); text-decoration: none; white-space: nowrap; cursor: pointer; }
+.cup-chip:hover { border-color: var(--accent); }
+.cup-chip.active { background: var(--accent); color: #1a1a1a; font-weight: 700; border-color: var(--accent); }
+.cup-chip .cup-r { font-size: 11px; opacity: .8; }
+.cup-chip.active .cup-r { opacity: 1; }
+
 /* ===== 權值股貢獻（色階卡片，供海期監控共用） ===== */
 .mv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(122px, 1fr)); gap: 6px; }
 .mv-card { border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; color: #fff; overflow: hidden; }

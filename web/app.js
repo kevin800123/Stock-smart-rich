@@ -24,6 +24,7 @@ let lastIndexData = null, lastStockData = null;
 let chipChart = null, chipMetric = "inst", lastHistory = [];
 let stockChipsChart = null, stockCustodyChart = null;
 let sectorChart = null;
+let cupChart = null, cupMatches = [], cupLoaded = false;
 let rankWho = "foreign", rankUnit = "shares";
 const MA_DEFS = [
   { n: 5, color: "#5b8ff9" }, { n: 20, color: "#5ad8a6" },
@@ -132,6 +133,7 @@ function showView(name) {
   if (name === "stock") { stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize(); }
   if (name === "rotation") { loadRotation(); loadCross(); }
   if (name === "osfut") loadOsFutures(false);  // 首次切換載入（讀快取即回）
+  if (name === "cup") { if (!cupLoaded) loadCupHandle(); else cupChart && cupChart.resize(); }
   if (name === "weekly") loadCsvSummary(false);  // 讀快取即回；匯入後才會重新生成
   if (name === "watch") loadWatchlist();
   if (name === "settings") loadSettings();
@@ -305,6 +307,67 @@ async function loadBreadth() {
         <div class="seg down" style="width:${w(down)}" title="下跌 ${fmt(down, 0)}"></div>
       </div>`;
   } catch (e) { el.innerHTML = ""; }
+}
+
+// 亞當杯柄型態選股：清單 + K 線疊「趨勢線(左緣→右緣)＋壓力線(右緣水平)」
+function cupChartOption(d, m) {
+  const closes = d.candles.map((c) => c[1]);
+  const maSeries = MA_DEFS.map((x) => ({ name: "MA" + x.n, type: "line", data: ma(closes, x.n),
+    smooth: true, showSymbol: false, lineStyle: { width: 1, color: x.color } }));
+  const lastDate = d.dates[d.dates.length - 1];
+  const candle = {
+    name: "K線", type: "candlestick", data: d.candles,
+    itemStyle: { color: "#e04545", color0: "#2ea043", borderColor: "#e04545", borderColor0: "#2ea043" },
+    markLine: {
+      symbol: ["none", "none"], label: { show: true, color: "#fff", fontSize: 11 },
+      data: [
+        [{ name: "趨勢線", coord: [m.left_date, m.left_price], lineStyle: { color: "#f0a500", width: 2 } },
+         { coord: [m.right_date, m.right_price] }],
+        [{ name: "壓力", coord: [m.right_date, m.resistance], lineStyle: { color: "#6cb6ff", width: 2, type: "dashed" } },
+         { coord: [lastDate, m.resistance] }],
+      ],
+    },
+    markPoint: {
+      symbol: "pin", symbolSize: 34, label: { color: "#1a1a1a", fontSize: 10, fontWeight: 700, formatter: (p) => p.data.value },
+      data: [{ value: "左緣", coord: [m.left_date, m.left_price], itemStyle: { color: "#f0a500" } },
+             { value: "右緣", coord: [m.right_date, m.right_price], itemStyle: { color: "#f0a500" } }],
+    },
+  };
+  return {
+    tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
+    legend: { data: ["K線", ...MA_DEFS.map((x) => "MA" + x.n)], textStyle: { color: "#ccc" } },
+    grid: { left: 55, right: 18, top: 30, bottom: 50 },
+    xAxis: { type: "category", data: d.dates, axisLabel: { color: "#999" } },
+    yAxis: { scale: true, axisLabel: { color: "#999" } },
+    dataZoom: [{ type: "inside", start: 35 }, { type: "slider", start: 35, bottom: 0, height: 16 }],
+    series: [candle, ...maSeries],
+  };
+}
+async function drawCupChart(m) {
+  const el = $("cup-chart"); if (!el) return;
+  if (!cupChart || cupChart.getDom() !== el) cupChart = echarts.init(el);
+  cupChart.showLoading();
+  try {
+    const d = await getJSON(`/api/stock/${encodeURIComponent(m.code)}/ohlc?bars=400`);
+    cupChart.hideLoading();
+    if (!d.candles || !d.candles.length) { cupChart.clear(); return; }
+    cupChart.setOption(cupChartOption(d, m), true);
+  } catch (e) { cupChart.hideLoading(); }
+}
+async function loadCupHandle() {
+  const list = $("cup-list"), note = $("cup-note"); if (!list) return;
+  list.innerHTML = '<span class="muted small">篩選中…</span>';
+  try {
+    const d = await getJSON("/api/patterns/cup-handle");
+    cupLoaded = true;
+    if (d.note) { list.innerHTML = `<span class="muted small">${esc(d.note)}</span>`; if (note) note.textContent = ""; return; }
+    cupMatches = d.stocks || [];
+    if (note) note.textContent = `（${d.date}　符合 ${d.count} 檔／掃描 ${d.bars} 根）`;
+    if (!cupMatches.length) { list.innerHTML = '<span class="muted small">今日無符合杯柄型態的個股</span>'; if (cupChart) cupChart.clear(); return; }
+    list.innerHTML = cupMatches.map((m, i) =>
+      `<a href="#" class="cup-chip${i === 0 ? " active" : ""}" data-i="${i}">${esc(m.code)} ${esc(m.name || "")}<span class="cup-r">%R ${fmt(m.percent_r, 0)}</span></a>`).join("");
+    drawCupChart(cupMatches[0]);
+  } catch (e) { list.innerHTML = '<span class="muted small">載入失敗</span>'; }
 }
 
 // 海期監控：五大分類色階卡片（名稱/價格上排、漲跌%/點數下排）
@@ -847,6 +910,13 @@ $("btn-export").addEventListener("click", () => {
 });
 $("btn-save-settings").addEventListener("click", saveSettings);
 $("btn-osfut-refresh").addEventListener("click", () => loadOsFutures(true));
+$("btn-cup-refresh").addEventListener("click", loadCupHandle);
+$("cup-list").addEventListener("click", (e) => {
+  const a = e.target.closest(".cup-chip"); if (!a) return;
+  e.preventDefault();
+  document.querySelectorAll("#cup-list .cup-chip").forEach((x) => x.classList.toggle("active", x === a));
+  drawCupChart(cupMatches[+a.dataset.i]);
+});
 $("btn-line-test").addEventListener("click", async () => {
   const st = $("set-line-status"); st.textContent = "推播中…";
   try {
@@ -901,7 +971,7 @@ document.querySelectorAll(".rku").forEach((b) => b.addEventListener("click", () 
   document.querySelectorAll(".rku").forEach((x) => x.classList.toggle("active", x === b));
   rankUnit = b.dataset.unit; loadInstRanking();
 }));
-window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); chipChart && chipChart.resize(); stockChipsChart && stockChipsChart.resize(); sectorChart && sectorChart.resize(); });
+window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); chipChart && chipChart.resize(); stockChipsChart && stockChipsChart.resize(); sectorChart && sectorChart.resize(); cupChart && cupChart.resize(); });
 
 // ========== 初始載入 ==========
 (async () => {

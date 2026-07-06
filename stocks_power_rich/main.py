@@ -11,21 +11,24 @@ from fastapi.staticfiles import StaticFiles
 
 from datetime import datetime
 
-from . import analysis, csv_import, exporter, gemini, line_push, updater
+from . import analysis, csv_import, exporter, gemini, line_push, patterns, updater
 from .config import load_config
 from .sources import intl, kline, taifex, tdcc, tpex, twse
 from .db import (
     add_watch,
     backup_db,
     get_ai_cache,
+    get_all_ohlc,
     get_connection,
     get_custody_trend,
+    get_ohlc_history,
     get_setting,
     get_snapshot,
     get_snapshot_dates,
     get_tx_history,
     init_db,
     list_watch,
+    ohlc_dates,
     remove_watch,
     set_ai_cache,
     set_setting,
@@ -248,6 +251,42 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         if b:
             set_ai_cache(c, key, result)
         return result
+
+    @app.get("/api/ohlc/backfill")
+    def ohlc_backfill(days: int = 377, max_fetch: int = 60):
+        """回補全市場個股每日 OHLC（型態選股用）。資料量大分次，回傳可重跑續補。"""
+        return updater.backfill_ohlc(conn(), target=max(60, min(days, 400)),
+                                     max_fetch=max(1, min(max_fetch, 120)))
+
+    @app.get("/api/patterns/cup-handle")
+    def cup_handle_screen():
+        """全市場篩選『亞當／杯柄』型態；依收盤強度排序，逐日快取。"""
+        c = conn()
+        ods = ohlc_dates(c)
+        if not ods:
+            return {"date": None, "count": 0, "stocks": [],
+                    "note": "尚未回補個股歷史，請先執行 /api/ohlc/backfill"}
+        latest = ods[-1]
+        key = f"cuphandle:{latest}:{len(ods)}"
+        cached = get_ai_cache(c, key)
+        if cached is not None:
+            return cached
+        data = get_all_ohlc(c, min_bars=patterns.LOOKBACK)
+        imap = _industry_map(c)
+        for code, s in data.items():
+            s["name"] = (imap.get(code) or {}).get("name") or code
+        matches = patterns.screen_cup_handle(data)
+        result = {"date": latest, "bars": len(ods), "count": len(matches), "stocks": matches}
+        set_ai_cache(c, key, result)
+        return result
+
+    @app.get("/api/stock/{code}/ohlc")
+    def stock_ohlc(code: str, bars: int = 400):
+        """個股已存 OHLC（型態畫線用），candles=[open,close,low,high]，附日期。"""
+        pure = code.split(".")[0]
+        rows = get_ohlc_history(conn(), pure)[-max(60, min(bars, 500)):]
+        return {"code": pure, "dates": [r["date"] for r in rows],
+                "candles": [[r["open"], r["close"], r["low"], r["high"]] for r in rows]}
 
     @app.get("/api/index-movers")
     def index_movers(date: str | None = None, top: int = 20):

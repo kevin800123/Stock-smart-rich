@@ -24,6 +24,7 @@
       <a class="nav" data-view="rotation"><span class="ico">🔄</span><span class="lbl">族群輪動</span></a>
       <a class="nav" data-view="watch"><span class="ico">⭐</span><span class="lbl">自選股</span></a>
       <a class="nav" data-view="osfut"><span class="ico">🌏</span><span class="lbl">海期監控</span></a>
+      <a class="nav" data-view="cup"><span class="ico">🏆</span><span class="lbl">杯柄選股</span></a>
       <a class="nav" data-view="weekly"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
       <a class="nav" data-view="settings"><span class="ico">⚙️</span><span class="lbl">設定</span></a>
     </nav>
@@ -167,6 +168,17 @@
           <span class="muted small">追蹤個股是否在選股榜、在榜次數、自進榜報酬（依已上傳的 CSV 快照計算）；點股號開 K 線</span>
         </div>
         <div id="watch-table" class="table-wrap fill"></div>
+      </section>
+
+      <!-- ===== 杯柄選股 ===== -->
+      <section id="view-cup" class="view">
+        <div class="toolbar">
+          <span class="pane-title" style="margin:0">亞當杯柄型態選股</span>
+          <button id="btn-cup-refresh" class="file-label">🔄 重新篩選</button>
+          <span id="cup-note" class="muted small"></span>
+        </div>
+        <div id="cup-list" class="cup-list"></div>
+        <div id="cup-chart" class="chart-big"></div>
       </section>
 
       <!-- ===== 海期監控 ===== -->

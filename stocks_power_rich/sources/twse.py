@@ -433,6 +433,42 @@ def fetch_taiex() -> dict:
     return {"taiex": None, "taiex_chg": None, "turnover": None, "date": None}
 
 
+def parse_stock_ohlc(payload: dict) -> dict:
+    """MI_INDEX 每日收盤行情 → {代號: {open,high,low,close}}。只取 4 位數上市普通股（排除 ETF 00xx/權證）。"""
+    out = {}
+    for tb in payload.get("tables") or []:
+        f = tb.get("fields") or []
+        if "證券代號" not in f or "收盤價" not in f:
+            continue
+        idx = {n: i for i, n in enumerate(f)}
+        ci = idx["證券代號"]
+        oi, hi, li, cli = idx.get("開盤價"), idx.get("最高價"), idx.get("最低價"), idx.get("收盤價")
+        if None in (oi, hi, li, cli):
+            continue
+        for row in tb.get("data") or []:
+            code = str(row[ci]).strip()
+            if not (len(code) == 4 and code.isdigit() and not code.startswith("00")):
+                continue
+            o, h, l, c = _f(row[oi]), _f(row[hi]), _f(row[li]), _f(row[cli])
+            if None not in (o, h, l, c):
+                out[code] = {"open": o, "high": h, "low": l, "close": c}
+    return out
+
+
+def fetch_stock_ohlc(date: datetime.date | None = None) -> dict:
+    """直連 MI_INDEX(type=ALLBUT0999) 取指定日全市場個股 OHLC（不含權證，較輕）。查無回空。"""
+    day = date or datetime.date.today()
+    try:
+        j = httpx.get(MI_INDEX_RWD,
+                      params={"date": day.strftime("%Y%m%d"), "type": "ALLBUT0999", "response": "json"},
+                      timeout=25, follow_redirects=True).json()
+        if j.get("stat") == "OK" and j.get("tables"):
+            return parse_stock_ohlc(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
 def parse_close_prices(payload: dict) -> dict:
     """MI_INDEX(type=ALLBUT0999) 個股表 → {代號: 收盤價}。"""
     out = {}
