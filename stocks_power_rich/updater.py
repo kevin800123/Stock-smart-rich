@@ -234,7 +234,20 @@ def backfill_ohlc(conn, target: int = 377, max_fetch: int = 60) -> dict:
     done = len(have_tw) >= target and (len(have_otc) >= target or otc_aborted)
     return {"stored_days": min(len(have_tw), len(have_otc)),
             "twse_days": len(have_tw), "otc_days": len(have_otc),
-            "added": added, "otc_exhausted": otc_aborted, "done": done}
+            "added": added, "twse_exhausted": tw_aborted, "otc_exhausted": otc_aborted, "done": done}
+
+
+def reset_ohlc_progress(conn) -> None:
+    """清掉持久化的回補進度（游標／兩市場失敗計數／熔斷旗標），供誤判熔斷時強制重來一次。
+
+    不刪除已存的 OHLC 資料本身，只重置「掃到哪裡、失敗幾次」的狀態；下次呼叫會從今天
+    重新往回掃，已存日期仍會被快速跳過（見 _dates_with），故不會重工，只是重新給熔斷
+    判定一次機會（例如懷疑先前是暫時性問題被誤判成永久底線時使用）。
+    """
+    for key in ("ohlc_cursor", "ohlc_fails_tw", "ohlc_fails_otc",
+                "ohlc_exhausted_tw", "ohlc_exhausted_otc"):
+        conn.execute("DELETE FROM settings WHERE key=?", (key,))
+    conn.commit()
 
 
 def run_update(conn, intl_tickers: dict) -> dict:

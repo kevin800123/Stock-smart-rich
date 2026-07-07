@@ -163,3 +163,29 @@ def test_backfill_ohlc_progress_persists_across_separate_calls(tmp_path, monkeyp
     assert r["twse_days"] >= 30                    # 上市最終達標
     assert r["otc_exhausted"] is True               # 上櫃失敗次數跨呼叫累積，終究觸發熔斷
     assert r["done"] is True
+
+
+def test_reset_ohlc_progress_clears_state_and_unsticks(tmp_path, monkeypatch):
+    """回歸情境：兩市場都被判定熔斷（真假難辨）後，reset 應清掉游標/失敗計數/熔斷旗標，
+    讓下次呼叫重新給機會判定——且不影響已經存好的 OHLC 資料本身。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    monkeypatch.setattr(updater.time, "sleep", lambda s: None)
+    monkeypatch.setattr(updater.twse, "fetch_stock_ohlc", lambda d=None: {})   # 先讓兩邊都熔斷
+    monkeypatch.setattr(updater.tpex, "fetch_otc_ohlc", lambda d=None: {})
+    r = updater.backfill_ohlc(conn, target=10, max_fetch=100)
+    assert r["twse_exhausted"] is True and r["otc_exhausted"] is True and r["added"] == 20
+
+    # 熔斷後再打一次：兩邊都已標記，理應完全不再嘗試任何日期（added 應為 0）
+    r_stuck = updater.backfill_ohlc(conn, target=10, max_fetch=100)
+    assert r_stuck["added"] == 0 and r_stuck["twse_days"] == r["twse_days"]
+
+    # 重置後改回會成功的來源，應該能重新前進（不受舊熔斷旗標卡住）
+    updater.reset_ohlc_progress(conn)
+    monkeypatch.setattr(updater.twse, "fetch_stock_ohlc",
+                        lambda d=None: {"2330": {"open": 1.0, "high": 2.0, "low": 1.0, "close": 1.5}})
+    monkeypatch.setattr(updater.tpex, "fetch_otc_ohlc",
+                        lambda d=None: {"8069": {"open": 40.0, "high": 41.0, "low": 39.0, "close": 40.5}})
+    r2 = updater.backfill_ohlc(conn, target=10, max_fetch=100)
+    assert r2["twse_days"] == 10 and r2["otc_days"] == 10
+    assert r2["twse_exhausted"] is False and r2["otc_exhausted"] is False and r2["done"] is True

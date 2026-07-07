@@ -806,3 +806,21 @@ def test_intraday_picks_only_toggle_filters_watchlist(tmp_path, monkeypatch):
     c.commit()
     r2 = client.post("/api/intraday/test").json()
     assert r2["checked"] == 1 and [h["code"] for h in r2["hits"]] == ["2812"]
+
+
+def test_ohlc_backfill_reset_query_param(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.sources import tpex, twse
+    monkeypatch.setattr(twse, "fetch_stock_ohlc", lambda date=None: {})   # 讓兩邊先熔斷
+    monkeypatch.setattr(tpex, "fetch_otc_ohlc", lambda date=None: {})
+    app = create_app()
+    client = TestClient(app)
+    r1 = client.get("/api/ohlc/backfill?days=60&max_fetch=100").json()
+    assert r1["twse_exhausted"] is True and r1["otc_exhausted"] is True
+    r2 = client.get("/api/ohlc/backfill?days=60&max_fetch=100").json()
+    assert r2["added"] == 0   # 熔斷後卡住
+
+    monkeypatch.setattr(twse, "fetch_stock_ohlc",
+                        lambda date=None: {"2330": {"open": 1.0, "high": 2.0, "low": 1.0, "close": 1.5}})
+    r3 = client.get("/api/ohlc/backfill?days=60&max_fetch=5&reset=1").json()
+    assert r3["added"] > 0 and r3["twse_exhausted"] is False   # reset 後解除卡住

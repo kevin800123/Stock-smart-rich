@@ -247,15 +247,19 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     _backfill_lock = threading.Lock()
 
     @app.get("/api/ohlc/backfill")
-    def ohlc_backfill(days: int = 377, max_fetch: int = 60):
+    def ohlc_backfill(days: int = 377, max_fetch: int = 60, reset: int = 0):
         """回補全市場個股每日 OHLC（型態選股/回測用）。資料量大分次，回傳可重跑續補。
 
         單飛鎖：同時只允許一個回補在跑——重複呼叫直接回 busy，避免執行緒堆疊把服務打掛。
+        ?reset=1：清掉持久化的游標/失敗計數/熔斷旗標後才開始這次掃描（懷疑誤判熔斷時用）。
         """
         if not _backfill_lock.acquire(blocking=False):
             return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
         try:
-            return updater.backfill_ohlc(conn(), target=max(60, min(days, 800)),
+            c = conn()
+            if reset:
+                updater.reset_ohlc_progress(c)
+            return updater.backfill_ohlc(c, target=max(60, min(days, 800)),
                                          max_fetch=max(1, min(max_fetch, 120)))
         finally:
             _backfill_lock.release()
