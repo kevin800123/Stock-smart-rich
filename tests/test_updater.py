@@ -107,5 +107,34 @@ def test_backfill_ohlc_otc_floor_circuit_breaker(tmp_path, monkeypatch):
     r = updater.backfill_ohlc(conn, target=20, max_fetch=120)
     assert r["twse_days"] == 20 and r["otc_days"] == 0
     assert r["otc_exhausted"] is True and r["done"] is True     # 底線＝完成，不會卡死
-    assert calls["otc"] == 5                                     # 熔斷後不再浪費請求
+    assert calls["otc"] == 20                                    # 熔斷後不再浪費請求
     assert calls["tw"] == 20                                     # 配額全讓給上市
+
+
+def test_backfill_ohlc_survives_multiday_holiday_gap(tmp_path, monkeypatch):
+    """連續假期(如農曆春節封關 5~6 個工作日)兩市場同時休市 → 不可誤判成歷史底線卡死；
+    斷路器閾值需高於假期長度，才能穿越假期繼續往更舊的日期補（回歸測試：曾在此卡死）。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    monkeypatch.setattr(updater.time, "sleep", lambda s: None)
+    # 以「距今第 N 個交易日」模擬一段連續 6 個工作日的假期（兩市場同時休市）
+    holiday_start, holiday_len = 20, 6
+
+    def make_fetch(payload):
+        counter = {"n": -1}
+
+        def fetch(d=None):
+            counter["n"] += 1
+            if holiday_start <= counter["n"] < holiday_start + holiday_len:
+                return {}  # 假期：真的休市，兩邊都回空
+            return payload
+        return fetch
+
+    monkeypatch.setattr(updater.twse, "fetch_stock_ohlc",
+                        make_fetch({"2330": {"open": 1.0, "high": 2.0, "low": 1.0, "close": 1.5}}))
+    monkeypatch.setattr(updater.tpex, "fetch_otc_ohlc",
+                        make_fetch({"8069": {"open": 40.0, "high": 41.0, "low": 39.0, "close": 40.5}}))
+    r = updater.backfill_ohlc(conn, target=40, max_fetch=200)
+    # 假期前後都要補到，證明穿越了假期而非卡死在假期邊界
+    assert r["twse_days"] == 40 and r["otc_days"] == 40
+    assert r["done"] is True
