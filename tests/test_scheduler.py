@@ -29,3 +29,18 @@ def test_create_app_enables_scheduler(tmp_path, monkeypatch):
     finally:
         app.state.scheduler.shutdown(wait=False)
 
+
+def test_create_app_with_line_token_registers_all_jobs(tmp_path, monkeypatch):
+    """設 LINE_CHANNEL_ACCESS_TOKEN 才會觸發 line_brief/intraday_watch 的註冊分支——
+    這是雲端生產設定（Zeabur 皆設此變數）；曾因 job 函式定義順序問題整個 app 起不來。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "dummy-token")
+    from stocks_power_rich.main import create_app
+
+    app = create_app(enable_scheduler=True)
+    try:
+        ids = {j.id for j in app.state.scheduler.get_jobs()}
+        assert ids == {"daily_update", "line_brief", "intraday_watch"}
+    finally:
+        app.state.scheduler.shutdown(wait=False)
+

@@ -168,19 +168,6 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         except Exception:  # noqa: BLE001
             pass
 
-    if enable_scheduler:
-        from .scheduler import build_trigger_kwargs, start_scheduler
-
-        app.state.scheduler = start_scheduler(scheduled_job, effective_schedule())
-        if cfg.line_token:  # 16:00 盤後速報（平日）；21:00 完整版掛在每日更新 job 尾端
-            app.state.scheduler.add_job(
-                line_brief_job, "cron", **build_trigger_kwargs(cfg.line_push_time),
-                day_of_week="mon-fri", id="line_brief", replace_existing=True)
-            # 盤中突破哨兵：平日 09:00–13:55 每 5 分鐘掃一輪（job 內再擋 13:35 後）
-            app.state.scheduler.add_job(
-                intraday_watch_job, "cron", day_of_week="mon-fri",
-                hour="9-13", minute="*/5", id="intraday_watch", replace_existing=True)
-
     @app.get("/api/dashboard")
     def dashboard():
         c = conn()
@@ -1224,6 +1211,22 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             except Exception:  # noqa: BLE001
                 pass
         return {"candles": [], "dates": [], "volumes": [], "symbol": symbol}
+
+    # 排程註冊放在所有 job 函式定義之後（scheduled_job/line_brief_job/intraday_watch_job
+    # 皆已在上方定義完畢）；曾因這段被放在函式較早處、引用尚未賦值的 intraday_watch_job
+    # 導致 enable_scheduler=True（雲端啟動排程）時 UnboundLocalError、整個 app 起不來。
+    if enable_scheduler:
+        from .scheduler import build_trigger_kwargs, start_scheduler
+
+        app.state.scheduler = start_scheduler(scheduled_job, effective_schedule())
+        if cfg.line_token:  # 16:00 盤後速報（平日）；21:00 完整版掛在每日更新 job 尾端
+            app.state.scheduler.add_job(
+                line_brief_job, "cron", **build_trigger_kwargs(cfg.line_push_time),
+                day_of_week="mon-fri", id="line_brief", replace_existing=True)
+            # 盤中突破哨兵：平日 09:00–13:55 每 5 分鐘掃一輪（job 內再擋 13:35 後）
+            app.state.scheduler.add_job(
+                intraday_watch_job, "cron", day_of_week="mon-fri",
+                hour="9-13", minute="*/5", id="intraday_watch", replace_existing=True)
 
     if os.path.isdir(WEB_DIR):
         app.mount("/", _NoCacheStatic(directory=WEB_DIR, html=True), name="web")
