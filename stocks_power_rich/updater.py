@@ -10,8 +10,10 @@ from .db import (
     bulk_upsert_custody,
     bulk_upsert_ohlc,
     custody_week_exists,
+    get_setting,
     latest_custody_week,
     ohlc_dates,
+    set_setting,
     upsert_market_daily,
     upsert_tx_history,
 )
@@ -140,32 +142,54 @@ def _dates_with(conn, codes) -> set:
         f"SELECT DISTINCT date FROM stock_ohlc WHERE code IN ({ph})", list(codes))}
 
 
-_FAIL_ABORT = 20     # 單一市場連續失敗 N 個日期 → 本輪熔斷該市場（歷史底線或來源異常）
-                     # 需大於台股最長連續休市（農曆春節封關最多約 5~6 個工作日），
-                     # 否則假期會被誤判成歷史底線：斷路器在該處觸發、下次呼叫又從今天
-                     # 重新往回掃到同一個假期、又觸發熔斷，永遠卡在同一天數（實際踩過的坑）
+_FAIL_ABORT = 20     # 單一市場「累計」連續失敗 N 個日期 → 熔斷該市場（判定為歷史底線）
+                     # 需大於台股最長連續休市（農曆春節封關最多約 5~6 個工作日），否則假期
+                     # 會被誤判成歷史底線；也需容許「單次呼叫時間預算不足以一口氣試到門檻」
+                     # 的情況——見下方游標/失敗計數皆持久化的設計說明
 _TIME_BUDGET = 25.0  # 單次呼叫時間上限（秒）：在反向代理逾時前先回傳部分進度，避免 502
 _THROTTLE = 0.25     # 每處理一個日期的間隔，對官方來源溫柔
 
 
-def backfill_ohlc(conn, target: int = 377, max_fetch: int = 60) -> dict:
-    """回補全市場（上市＋上櫃）個股每日 OHLC 到 target 個交易日（分次可續補）。
+def _get_date_setting(conn, key: str, fallback):
+    v = get_setting(conn, key)
+    try:
+        return _date.fromisoformat(v) if v else fallback
+    except ValueError:
+        return fallback
 
-    - 兩市場各自追蹤已存日期（指標股法），舊資料只補缺的那個市場。
-    - 連續失敗熔斷：某市場連 5 個日期抓不到就本輪放棄它，配額讓給另一市場
-      （TPEx dailyQuotes 僅提供約 1.4 年歷史，更舊必然失敗——不熔斷會卡死在同一批日期）。
-    - done 語意：上市達標，且上櫃「達標或已到官方歷史底線」（以同輪上市抓取成功佐證連線正常，
-      避免把單純斷線誤判成底線）。
+
+def _get_int_setting(conn, key: str, fallback: int = 0) -> int:
+    v = get_setting(conn, key)
+    try:
+        return int(v) if v is not None else fallback
+    except ValueError:
+        return fallback
+
+
+def backfill_ohlc(conn, target: int = 377, max_fetch: int = 60) -> dict:
+    """回補全市場（上市＋上櫃）個股每日 OHLC 到 target 個交易日（分次可續補、狀態持久化）。
+
+    兩市場共用同一個日期游標一起往回掃（指標股法各自追蹤已存天數），但**游標位置與各市場
+    連續失敗次數都持久化於 settings、跨越多次呼叫累積，不隨每次呼叫重新歸零**。
+
+    這是關鍵設計：早期版本每次呼叫都從「今天」重新掃、失敗計數重算，若單次呼叫的時間預算
+    (`_TIME_BUDGET`) 不足以撐到熔斷門檻（官方伺服器慢、一次只夠試個位數天數），就會每次都
+    在同一批日期打轉、真實進度掛零（實測：連續 30+ 次呼叫卡在同一天數不動）。持久化後，
+    即使每次只推進一點，累積終究會抵達目標或觸發熔斷；任一天成功即重置失敗計數，短暫的
+    連續假期（如農曆春節封關）不會被誤判成官方歷史底線。
+    殘餘限制：若來源發生跨越多次呼叫的長時間暫時性故障（非假期、非真底線），失敗計數仍可能
+    累積到門檻而誤判熔斷；此情境機率低、且僅影響「提早放棄該市場」，非資料錯誤，故接受此權衡。
     """
     have_tw = _dates_with(conn, _TW_BELL)
     have_otc = _dates_with(conn, _OTC_BELL)
     added = 0
-    tw_fails = otc_fails = 0
-    tw_ok_this_call = False
-    tw_aborted = otc_aborted = False
     start = time.monotonic()
-    anchor = _date.today()
-    floor = anchor - timedelta(days=target * 2 + 40)  # 日曆下限，避免無限迴圈
+    anchor = _get_date_setting(conn, "ohlc_cursor", _date.today())
+    tw_fails = _get_int_setting(conn, "ohlc_fails_tw")
+    otc_fails = _get_int_setting(conn, "ohlc_fails_otc")
+    tw_aborted = get_setting(conn, "ohlc_exhausted_tw") == "1"
+    otc_aborted = get_setting(conn, "ohlc_exhausted_otc") == "1"
+    floor = _date.today() - timedelta(days=target * 2 + 40)  # 日曆下限，避免無限迴圈
     while (len(have_tw) < target or len(have_otc) < target) and added < max_fetch and anchor >= floor:
         if time.monotonic() - start > _TIME_BUDGET:
             break
@@ -180,7 +204,7 @@ def backfill_ohlc(conn, target: int = 377, max_fetch: int = 60) -> dict:
             if rows:
                 bulk_upsert_ohlc(conn, ds, rows)
                 have_tw.add(ds)
-                tw_fails, tw_ok_this_call = 0, True
+                tw_fails = 0
             else:
                 tw_fails += 1
                 tw_aborted = tw_fails >= _FAIL_ABORT
@@ -200,11 +224,17 @@ def backfill_ohlc(conn, target: int = 377, max_fetch: int = 60) -> dict:
         if tw_aborted and otc_aborted:
             break
         anchor -= timedelta(days=1)
-    otc_exhausted = otc_aborted and (tw_ok_this_call or len(have_tw) >= target)
-    done = len(have_tw) >= target and (len(have_otc) >= target or otc_exhausted)
+    set_setting(conn, "ohlc_cursor", anchor.isoformat())
+    set_setting(conn, "ohlc_fails_tw", str(tw_fails))
+    set_setting(conn, "ohlc_fails_otc", str(otc_fails))
+    if tw_aborted:
+        set_setting(conn, "ohlc_exhausted_tw", "1")
+    if otc_aborted:
+        set_setting(conn, "ohlc_exhausted_otc", "1")
+    done = len(have_tw) >= target and (len(have_otc) >= target or otc_aborted)
     return {"stored_days": min(len(have_tw), len(have_otc)),
             "twse_days": len(have_tw), "otc_days": len(have_otc),
-            "added": added, "otc_exhausted": otc_exhausted, "done": done}
+            "added": added, "otc_exhausted": otc_aborted, "done": done}
 
 
 def run_update(conn, intl_tickers: dict) -> dict:

@@ -138,3 +138,28 @@ def test_backfill_ohlc_survives_multiday_holiday_gap(tmp_path, monkeypatch):
     # 假期前後都要補到，證明穿越了假期而非卡死在假期邊界
     assert r["twse_days"] == 40 and r["otc_days"] == 40
     assert r["done"] is True
+
+
+def test_backfill_ohlc_progress_persists_across_separate_calls(tmp_path, monkeypatch):
+    """回歸測試：曾發生「單次呼叫時間預算不足以撐到熔斷門檻」時，游標/失敗計數若不持久化，
+    每次獨立呼叫都從今天重新掃、在同一批日期打轉，連續多次呼叫進度永遠掛零。
+
+    模擬：每次呼叫只給極小 max_fetch（如同官方伺服器慢、單次呼叫只夠試幾天），
+    連續呼叫 15 次，驗證天數單調不減、最終達標或觸發熔斷（而非停在同一數字不動）。
+    """
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    monkeypatch.setattr(updater.time, "sleep", lambda s: None)
+    monkeypatch.setattr(updater.twse, "fetch_stock_ohlc",
+                        lambda d=None: {"2330": {"open": 1.0, "high": 2.0, "low": 1.0, "close": 1.5}})
+    monkeypatch.setattr(updater.tpex, "fetch_otc_ohlc", lambda d=None: {})  # 上櫃永遠失敗（模擬底線）
+
+    progress = []
+    r = None
+    for _ in range(15):
+        r = updater.backfill_ohlc(conn, target=30, max_fetch=3)
+        progress.append(r["twse_days"])
+    assert progress == sorted(progress) and progress[-1] > progress[0]  # 持續前進，非卡死
+    assert r["twse_days"] >= 30                    # 上市最終達標
+    assert r["otc_exhausted"] is True               # 上櫃失敗次數跨呼叫累積，終究觸發熔斷
+    assert r["done"] is True
