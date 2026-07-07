@@ -5,6 +5,7 @@ import os
 import secrets
 import tempfile
 import threading
+import time
 
 from fastapi import Body, FastAPI, File, UploadFile
 from fastapi.responses import Response
@@ -1023,65 +1024,89 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         """手動跑一輪盤中突破掃描（驗證雲端連通性/邏輯）。預設乾跑不推播；?push=1 才真推。"""
         return _intraday_scan(conn(), push=bool(push))
 
+    def _note_push_fail(c, full: bool, err) -> None:
+        """持久化推播失敗記錄；下次成功推播時於訊息頂部告知並清除（見 _push_line）。"""
+        set_setting(c, "line_push_fail",
+                    f"{datetime.now().strftime('%m-%d %H:%M')} "
+                    f"{'完整版' if full else '速報'} {str(err)[:80]}")
+
     def _push_line(c, full: bool, force: bool = False) -> dict:
         """組當日盤後訊息並 broadcast 到 LINE 官方帳號好友（單人自用＝自己）。
 
         非當日資料（假日/尚未更新）自動略過不推，避免重複推前一交易日；force=True 供手動測試。
+        失敗不靜默（回歸：2026-07-07 16:00 速報失敗、使用者毫不知情）：broadcast 失敗先自動
+        重試一次；仍失敗（或組稿例外）則持久化記錄，下次成功推播時在訊息頂部標註後清除。
         """
         if not cfg.line_token:
             return {"ok": False, "error": "未設定 LINE_CHANNEL_ACCESS_TOKEN"}
-        rows = c.execute("SELECT * FROM market_daily ORDER BY date DESC LIMIT 2").fetchall()
-        if not rows:
-            return {"ok": False, "error": "尚無大盤資料"}
-        m = dict(rows[0])
-        prev_row = dict(rows[1]) if len(rows) > 1 else {}
-        if not force and m["date"] != datetime.now().strftime("%Y-%m-%d"):
-            return {"ok": False, "skipped": True, "error": f"資料日 {m['date']} 非今日，略過"}
-        secs = [s for s in _sectors_for(c, m["date"]) if s.get("chg_pct") is not None]
-        # 自選股：附股價/當日漲跌與是否在榜（上市用 TWSE 報價；上櫃補櫃買 dailyQuotes，
-        # 都查無時以最新快照收盤替代、漲跌留空）
-        watch, tsmc = [], None
         try:
-            quotes = _quotes_for(c, m["date"])
-            tsmc = quotes.get("2330")
-            stocks = get_watchlist().get("stocks", [])
-            otc = {}
-            if any(s["code"].split(".")[0] not in quotes for s in stocks):
-                okey = f"tpex_quotes:{m['date']}"
-                otc = get_ai_cache(c, okey)
-                if otc is None:
-                    try:
-                        otc = tpex.fetch_otc_quotes(datetime.fromisoformat(m["date"]).date())
-                    except Exception:  # noqa: BLE001
-                        otc = {}
-                    if otc:
-                        set_ai_cache(c, okey, otc)
-            for s in stocks:
-                pure = s["code"].split(".")[0]
-                q = quotes.get(pure) or (otc or {}).get(pure) or {}
-                chip = s.get("chip") or {}
-                close, pct = q.get("close"), q.get("chg_pct")
-                if pct is None:  # 兩市場報價都查無（來源當日失敗等）→ 以日K收盤回推漲跌%
-                    o = c.execute("SELECT date, close FROM stock_ohlc WHERE code=? "
-                                  "ORDER BY date DESC LIMIT 2", (pure,)).fetchall()
-                    if o and o[0]["date"] == m["date"] and o[0]["close"] is not None:
-                        close = close or o[0]["close"]
-                        if len(o) > 1 and o[1]["close"]:
-                            pct = round((o[0]["close"] - o[1]["close"]) / o[1]["close"] * 100, 2)
-                watch.append({"code": s["code"], "name": s.get("name"),
-                              "close": close or chip.get("close"),
-                              "chg_pct": pct, "in_latest": s.get("in_latest")})
-        except Exception:  # noqa: BLE001 — 自選股失敗不影響推播主體
-            pass
-        ai = market_summary(refresh=0)
-        ai_text = (ai.get("text") or "") if ai.get("enabled") else ""
-        try:
-            cup = _cup_push_info(c)
-        except Exception:  # noqa: BLE001 — 杯柄資訊失敗不影響推播主體
-            cup = None
-        txt = line_push.compose_daily_brief(m, secs, watch, ai_text=ai_text, full=full,
-                                            tsmc=tsmc, prev=prev_row, cup=cup)
-        return line_push.broadcast_text(cfg.line_token, txt)
+            rows = c.execute("SELECT * FROM market_daily ORDER BY date DESC LIMIT 2").fetchall()
+            if not rows:
+                return {"ok": False, "error": "尚無大盤資料"}
+            m = dict(rows[0])
+            prev_row = dict(rows[1]) if len(rows) > 1 else {}
+            if not force and m["date"] != datetime.now().strftime("%Y-%m-%d"):
+                return {"ok": False, "skipped": True, "error": f"資料日 {m['date']} 非今日，略過"}
+            secs = [s for s in _sectors_for(c, m["date"]) if s.get("chg_pct") is not None]
+            # 自選股：附股價/當日漲跌與是否在榜（上市用 TWSE 報價；上櫃補櫃買 dailyQuotes，
+            # 都查無時以最新快照收盤替代、漲跌留空）
+            watch, tsmc = [], None
+            try:
+                quotes = _quotes_for(c, m["date"])
+                tsmc = quotes.get("2330")
+                stocks = get_watchlist().get("stocks", [])
+                otc = {}
+                if any(s["code"].split(".")[0] not in quotes for s in stocks):
+                    okey = f"tpex_quotes:{m['date']}"
+                    otc = get_ai_cache(c, okey)
+                    if otc is None:
+                        try:
+                            otc = tpex.fetch_otc_quotes(datetime.fromisoformat(m["date"]).date())
+                        except Exception:  # noqa: BLE001
+                            otc = {}
+                        if otc:
+                            set_ai_cache(c, okey, otc)
+                for s in stocks:
+                    pure = s["code"].split(".")[0]
+                    q = quotes.get(pure) or (otc or {}).get(pure) or {}
+                    chip = s.get("chip") or {}
+                    close, pct = q.get("close"), q.get("chg_pct")
+                    if pct is None:  # 兩市場報價都查無（來源當日失敗等）→ 以日K收盤回推漲跌%
+                        o = c.execute("SELECT date, close FROM stock_ohlc WHERE code=? "
+                                      "ORDER BY date DESC LIMIT 2", (pure,)).fetchall()
+                        if o and o[0]["date"] == m["date"] and o[0]["close"] is not None:
+                            close = close or o[0]["close"]
+                            if len(o) > 1 and o[1]["close"]:
+                                pct = round((o[0]["close"] - o[1]["close"]) / o[1]["close"] * 100, 2)
+                    watch.append({"code": s["code"], "name": s.get("name"),
+                                  "close": close or chip.get("close"),
+                                  "chg_pct": pct, "in_latest": s.get("in_latest")})
+            except Exception:  # noqa: BLE001 — 自選股失敗不影響推播主體
+                pass
+            ai = market_summary(refresh=0)
+            ai_text = (ai.get("text") or "") if ai.get("enabled") else ""
+            try:
+                cup = _cup_push_info(c)
+            except Exception:  # noqa: BLE001 — 杯柄資訊失敗不影響推播主體
+                cup = None
+            txt = line_push.compose_daily_brief(m, secs, watch, ai_text=ai_text, full=full,
+                                                tsmc=tsmc, prev=prev_row, cup=cup)
+        except Exception as e:  # noqa: BLE001 — 組稿失敗也要留下記錄，不再靜默消失
+            _note_push_fail(c, full, e)
+            return {"ok": False, "error": str(e)}
+        prev_fail = get_setting(c, "line_push_fail")
+        if prev_fail:
+            txt = f"⚠️ 前次推播失敗（{prev_fail}），數據以本則為準\n" + txt
+        r = line_push.broadcast_text(cfg.line_token, txt)
+        if not r.get("ok"):
+            time.sleep(2)  # 網路/LINE 瞬斷佔多數：短暫等待後自動重試一次
+            r = line_push.broadcast_text(cfg.line_token, txt)
+        if r.get("ok"):
+            if prev_fail:
+                set_setting(c, "line_push_fail", "")
+        else:
+            _note_push_fail(c, full, r.get("error") or f"HTTP {r.get('status')}")
+        return r
 
     @app.post("/api/line/test")
     def line_test():

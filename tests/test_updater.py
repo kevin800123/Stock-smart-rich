@@ -1,3 +1,5 @@
+import threading
+import time
 from datetime import date, timedelta
 
 from stocks_power_rich import updater
@@ -163,6 +165,28 @@ def test_backfill_ohlc_progress_persists_across_separate_calls(tmp_path, monkeyp
     assert r["twse_days"] >= 30                    # 上市最終達標
     assert r["otc_exhausted"] is True               # 上櫃失敗次數跨呼叫累積，終究觸發熔斷
     assert r["done"] is True
+
+
+def test_backfill_ohlc_hard_deadline_abandons_hung_fetch(tmp_path, monkeypatch):
+    """回歸（2026-07-07 事故）：單一對外請求超過來源自身 httpx timeout 仍掛死
+    （DNS/TLS 等階段不受 httpx timeout 涵蓋）→ 回補鎖不釋放、整個服務卡死需人工重啟。
+    加硬性截止後：逾時視同該日抓不到（計入該市場失敗），另一市場照常補、不再卡死。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    monkeypatch.setattr(updater.time, "sleep", lambda s: None)
+    monkeypatch.setattr(updater, "_FETCH_DEADLINE", 0.05)
+
+    def hung(d=None):
+        threading.Event().wait(2)   # 模擬掛死（不受上面 time.sleep 打樁影響）
+        return {"2330": {"open": 1.0, "high": 2.0, "low": 1.0, "close": 1.5}}
+
+    monkeypatch.setattr(updater.twse, "fetch_stock_ohlc", hung)
+    monkeypatch.setattr(updater.tpex, "fetch_otc_ohlc",
+                        lambda d=None: {"8069": {"open": 40.0, "high": 41.0, "low": 39.0, "close": 40.5}})
+    start = time.monotonic()
+    r = updater.backfill_ohlc(conn, target=3, max_fetch=8)
+    assert time.monotonic() - start < 5                    # 不會傻等掛死的請求
+    assert r["otc_days"] == 3 and r["twse_days"] == 0      # 掛死市場視同失敗、另一市場照補
 
 
 def test_reset_ohlc_progress_clears_state_and_unsticks(tmp_path, monkeypatch):

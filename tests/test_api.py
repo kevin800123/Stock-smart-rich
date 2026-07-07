@@ -191,6 +191,43 @@ def test_line_test_endpoint_composes_and_broadcasts(tmp_path, monkeypatch):
     assert s["line_configured"] is True and "tok" not in str(s)
 
 
+def test_line_push_failure_recorded_retry_and_recovery_notice(tmp_path, monkeypatch):
+    """推播失敗不再靜默（回歸：2026-07-07 16:00 速報失敗、使用者毫不知情）：
+    broadcast 失敗先自動重試一次；仍失敗則持久化記錄，下次成功推播時
+    在訊息頂部標註「前次推播失敗」，成功後清除、不重複標註。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok-x")
+    import time as _time
+    from stocks_power_rich import line_push
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import twse
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-07-07", "taiex": 45479.11})
+    monkeypatch.setattr(twse, "fetch_sector_indices", lambda date=None: [])
+    monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {})
+    monkeypatch.setattr(_time, "sleep", lambda s: None)   # 跳過重試間隔
+    script = [{"ok": False, "error": "500 upstream"}, {"ok": False, "error": "500 upstream"},
+              {"ok": True, "status": 200}, {"ok": True, "status": 200}]
+    sent = []
+
+    def fake_broadcast(token, text):
+        sent.append(text)
+        return script[len(sent) - 1]
+
+    monkeypatch.setattr(line_push, "broadcast_text", fake_broadcast)
+    app = create_app()
+    client = TestClient(app)
+    r1 = client.post("/api/line/test").json()
+    assert r1["ok"] is False and len(sent) == 2            # 失敗後有自動重試一次
+    r2 = client.post("/api/line/test").json()              # 恢復 → 頂部帶前次失敗告警
+    assert r2["ok"] is True
+    assert sent[2].startswith("⚠️ 前次推播失敗") and "500 upstream" in sent[2]
+    r3 = client.post("/api/line/test").json()              # 記錄已清除 → 不再標註
+    assert r3["ok"] is True and not sent[3].startswith("⚠️")
+
+
 def test_line_watchlist_pct_falls_back_to_ohlc(tmp_path, monkeypatch):
     """自選股報價源查無（上市/上櫃報價都沒有）→ 以 stock_ohlc 日K收盤回推漲跌%，
     不再出現「有價無漲跌%」的缺行（衛司特/亞通實例）。"""
