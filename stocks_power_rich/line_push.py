@@ -122,6 +122,11 @@ def compose_daily_brief(row: dict, sectors: list, watch: list,
             g.append(f"融資金額 {_fmt(row['margin_value'], 1)}億({_signed(row.get('margin_value_chg'), 1)})")
         if row.get("short_balance") is not None:
             g.append(f"融券 {_fmt(row['short_balance'], 0)}張({_signed(row.get('short_chg'), 0)})")
+        if row.get("margin_maintenance") is not None:
+            line = f"融資維持率 {_fmt(row['margin_maintenance'], 1)}%"
+            if pv.get("margin_maintenance") is not None:
+                line += f"(昨{_fmt(pv['margin_maintenance'], 1)}%)"
+            g.append(line)
         blocks.append(g)
     # 類股強弱
     ups = sorted([s for s in sectors if (s.get("chg_pct") or 0) > 0],
@@ -164,10 +169,17 @@ def compose_daily_brief(row: dict, sectors: list, watch: list,
 
 
 def compose_breakout_alert(hits: list[dict], hhmm: str) -> str:
-    """盤中突破警示訊息。hits＝[{code,name,price,resistance}]，同輪多檔合併成一則。"""
+    """盤中突破警示訊息。hits＝[{code,name,price,resistance,pick}]，同輪多檔合併成一則。
+
+    pick=True（同時符合籌碼/基本選股）標 ⭐，並排在前面。
+    """
+    ordered = sorted(hits, key=lambda h: not h.get("pick"))
     lines = [f"🚀 盤中突破壓力 {hhmm}"]
-    for h in hits[:10]:
-        lines.append(f"{h.get('name') or h.get('code')} {_fmt(h.get('price'))}(壓{_fmt(h.get('resistance'))})")
+    for h in ordered[:10]:
+        star = "⭐" if h.get("pick") else ""
+        lines.append(f"{star}{h.get('name') or h.get('code')} {_fmt(h.get('price'))}(壓{_fmt(h.get('resistance'))})")
+    if any(h.get("pick") for h in hits):
+        lines.append("⭐=同時符合籌碼/基本選股")
     lines.append("（盤中價有延遲，確認量價後再行動）")
     return "\n".join(lines)[:MAX_LEN]
 

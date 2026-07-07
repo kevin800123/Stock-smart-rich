@@ -187,6 +187,40 @@ def parse_margin_rwd(payload: dict) -> dict:
     return res
 
 
+def parse_margin_detail(payload: dict) -> dict:
+    """MI_MARGN（selectType=ALL）個股融資融券彙總 → {代號: 融資今日餘額(張)}。
+
+    欄位名重複（融資/融券兩組同名），故用固定位置：0 代號、6 融資今日餘額。
+    """
+    out: dict[str, int] = {}
+    for tb in payload.get("tables") or []:
+        fields = tb.get("fields") or []
+        if "代號" not in fields:
+            continue
+        for row in tb.get("data") or []:
+            if not row or len(row) < 7:
+                continue
+            code = str(row[0]).strip()
+            bal = _f(row[6])
+            if code and bal is not None:
+                out[code] = int(bal)
+    return out
+
+
+def fetch_margin_detail(date: datetime.date | None = None) -> dict:
+    """直連 MI_MARGN(ALL) 取指定日個股融資餘額（張），算大盤融資維持率用。查無回空。"""
+    day = date or datetime.date.today()
+    try:
+        j = httpx.get(MARGIN_RWD,
+                      params={"date": day.strftime("%Y%m%d"), "selectType": "ALL", "response": "json"},
+                      timeout=30, follow_redirects=True).json()
+        if j.get("stat") == "OK" and j.get("tables"):
+            return parse_margin_detail(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
 def parse_sector_indices(payload: dict) -> list[dict]:
     """MI_INDEX(type=IND) 價格指數表 → 各產業類股當日漲跌 [{name, close, chg_pct}]。
 

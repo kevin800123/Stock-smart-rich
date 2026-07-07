@@ -759,6 +759,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             "tx_history_days": len(get_tx_history(c)),
             "last_market_date": last_date,
             "nav_order": (get_setting(c, "nav_order") or "").split(",") if get_setting(c, "nav_order") else None,
+            "intraday_picks_only": get_setting(c, "intraday_picks_only") == "1",
         }
 
     @app.post("/api/settings")
@@ -781,6 +782,8 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 set_setting(c, "data_dir", str(dd))
             else:
                 return {"ok": False, "error": "資料夾不在允許範圍（僅限專案目錄下）", **get_settings()}
+        if "intraday_picks_only" in payload:
+            set_setting(c, "intraday_picks_only", "1" if payload["intraday_picks_only"] else "0")
         no = payload.get("nav_order")
         if isinstance(no, list) and no:
             # 分頁順序（view id）；只留簡單字母 slug，逗號分隔存字串
@@ -905,6 +908,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             "散戶微台多空比(%)": _pct100(m.get("retail_ls_tmf")),
             "融資餘額(張)": m.get("margin_balance"), "融資增減(張)": m.get("margin_chg"),
             "融資金額(億)": m.get("margin_value"), "融資金額增減(億)": m.get("margin_value_chg"),
+            "融資維持率(%)": m.get("margin_maintenance"),
             "VIX": m.get("vix"), "VIX漲跌(%)": m.get("vix_chg"),
             "費半漲跌(%)": m.get("sox_chg"), "日經漲跌(%)": m.get("n225_chg"),
             "韓股漲跌(%)": m.get("kospi_chg"), "黃金漲跌(%)": m.get("gold_chg"),
@@ -968,6 +972,10 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         today = datetime.now().strftime("%Y-%m-%d")
         alerted = set(get_ai_cache(c, f"cupalerted:{today}") or [])
         pending = [s for s in sig if s["code"] not in alerted and s.get("resistance")]
+        # 交集標記：同時符合「籌碼/基本選股」者標 ⭐；設定開啟且有 CSV 榜時可只盯交集
+        picks = _picks_code_set(c)
+        if picks and get_setting(c, "intraday_picks_only") == "1":
+            pending = [s for s in pending if s["code"] in picks]
         if not pending:
             return {"checked": 0, "hits": [], "note": "無待監控訊號（或今日皆已警示）"}
         otc = _otc_names(c)
@@ -983,7 +991,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 _mis_state["warned"] = True
             return {"checked": len(pending), "hits": [], "note": "查無報價"}
         _mis_state.update({"date": today, "fails": 0})
-        hits = [{**s, "price": prices[s["code"]]} for s in pending
+        hits = [{**s, "price": prices[s["code"]], "pick": s["code"] in picks} for s in pending
                 if s["code"] in prices and prices[s["code"]] > s["resistance"]]
         if hits and push:
             txt = line_push.compose_breakout_alert(hits, datetime.now().strftime("%H:%M"))

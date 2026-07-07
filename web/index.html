@@ -182,6 +182,18 @@
         <div id="cup-bt" class="hidden"></div>
         <div id="cup-list" class="cup-list"></div>
         <div id="cup-chart" class="chart-big"></div>
+        <div class="wave-help">
+          <b>選股邏輯（亞當杯柄，全市場上市＋上櫃每日掃描）</b><br/>
+          同時滿足四個條件才入選：<br/>
+          ① <b>杯的左緣</b>：近 377 天（約 1.5 年）的大高點仍未被超越（VALUE2 &gt; VALUE3）——曾經的強勢股。<br/>
+          ② <b>杯身夠寬</b>：左緣比近 55 天高點（右緣）早 55 根 K 棒以上——排除雙頂、確保是「杯」。<br/>
+          ③ <b>柄：回檔淺而守穩</b>：近 13 天沒再創 55 天新高（從右緣回檔中），且近 8 天低點高於近 21 天低點（沒破低、賣壓收斂）。<br/>
+          ④ <b>強度濾網</b>：收盤位於近 55 天高低區間的上半部（PercentR(55) &gt; 50，即 Call_5W &gt; 0）——弱勢整理不要。<br/>
+          <span class="dot orange">●</span><b>趨勢線</b>＝左緣→右緣（杯口斜率）；<span class="dot blue">●</span><b>壓力線</b>＝右緣水平延伸，<b>突破壓力線＝進場訊號</b>。<br/>
+          清單依 %R（收盤強度）排序；綠框●＝同時符合「籌碼/基本選股」（W55翻多∧大戶增比&gt;0∧營收年增&gt;0∧推估EPS&gt;0）。<br/>
+          盤中 09:00–13:35 哨兵每 5 分鐘盯這份清單，現價突破壓力線即 LINE 警示（⭐＝交集股）。
+          進場前請先看「📊 回測報告」確認此策略的歷史勝率與報酬（未含手續費稅約 0.6%，歷史不代表未來）。
+        </div>
       </section>
 
       <!-- ===== 海期監控 ===== -->
@@ -210,6 +222,7 @@
           <div class="set-row"><label>「讀取最新檔」資料夾</label><input type="text" id="set-datadir" class="stock-input" placeholder="例如 Date 或完整路徑" /></div>
           <div class="set-row"><label>Gemini 金鑰</label><span id="set-gemini" class="set-badge"></span><span class="muted small">（金鑰只能透過 .env 設定，此處不顯示也不輸入）</span></div>
           <div class="set-row"><label>LINE 推播</label><span id="set-line" class="set-badge"></span><button id="btn-line-test" class="file-label">📱 測試推播</button><span id="set-line-status" class="muted small"></span></div>
+          <div class="set-row"><label>盤中突破哨兵</label><label class="wave-toggle" style="margin:0"><input type="checkbox" id="set-picks-only" /> 只警示「同時符合籌碼/基本選股」的突破</label><span class="muted small">（未勾＝全部杯柄股都盯，交集股標 ⭐）</span></div>
           <div class="set-row"><button id="btn-save-settings" class="file-label">💾 儲存設定</button><span id="set-saved" class="muted"></span></div>
         </div>
         <div class="ai-head" style="margin-top:8px"><span>左側分頁順序 <span class="muted small">（用 ↑↓ 調整，儲存後雲端同步）</span></span></div>

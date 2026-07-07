@@ -77,6 +77,21 @@ def industry_to_sector(industry: str | None) -> str | None:
     return _SECTOR_ALIAS.get(name, name)
 
 
+def margin_maintenance(lots_by_code: dict, closes: dict, margin_value_yi) -> float | None:
+    """大盤整體融資維持率(%)≒ Σ(個股融資餘額張×1000×收盤) ÷ 融資金額 ×100。
+
+    lots_by_code＝{代號: 融資餘額(張)}、closes＝{代號: 收盤}、margin_value_yi＝融資金額(億)。
+    只加總兩邊都有的代號；缺報價的融資部位不在分子（比實際略低，屬保守估）。
+    """
+    if not margin_value_yi or margin_value_yi <= 0:
+        return None
+    value = sum(lots * 1000 * closes[code]
+                for code, lots in lots_by_code.items() if code in closes and lots)
+    if value <= 0:
+        return None
+    return round(value / (margin_value_yi * 1e8) * 100, 1)
+
+
 def picks_by_sector(picks: list[dict], sector_chg: dict) -> list[dict]:
     """把選股清單依官方類股分組，附該類股當日漲跌%，依漲跌%由強到弱排序。
 

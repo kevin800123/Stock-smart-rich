@@ -6,7 +6,7 @@ _ROW = {
     "inst_foreign": 323.76, "inst_trust": 156.03, "inst_dealer": 59.38,
     "tx_foreign_oi": -84168, "retail_ls_mtx": 0.0769, "retail_ls_tmf": -0.123,
     "margin_balance": 9414925, "margin_chg": -20530,
-    "margin_value": 6074.6, "margin_value_chg": 135.3,
+    "margin_value": 6074.6, "margin_value_chg": 135.3, "margin_maintenance": 165.2,
     "short_balance": 202194, "short_chg": -2061,
     "n225": 40123.0, "n225_chg": 1.2, "kospi": 2650.0, "kospi_chg": -0.3,
     "gold": 3340.0, "gold_chg": 0.5, "jpy": 151.25, "jpy_chg": -0.07,
@@ -65,6 +65,7 @@ def test_compose_full_margin_three_lines_and_handles_missing():
     assert "融資 9,414,925張(-20,530)" in txt
     assert "融資金額 6,074.6億(+135.3)" in txt
     assert "融券 202,194張(-2,061)" in txt
+    assert "融資維持率 165.2%" in txt         # prev 空 → 無(昨…)
     assert "【AI 解讀】" not in txt and "【自選股】" not in txt   # 無資料的段落整段省略
     # 無昨值（prev 空）→ 法人行不出現 (昨…)
     assert "(昨" not in txt
@@ -93,8 +94,14 @@ def test_compose_cup_section_breakout_and_new():
 
 def test_compose_breakout_alert():
     hits = [{"code": "8069", "name": "元太", "price": 213.5, "resistance": 212.0},
-            {"code": "2812", "name": "台中銀", "price": 19.85, "resistance": 19.8}]
+            {"code": "2812", "name": "台中銀", "price": 19.85, "resistance": 19.8, "pick": True}]
     txt = line_push.compose_breakout_alert(hits, "10:35")
     assert txt.startswith("🚀 盤中突破壓力 10:35")
-    assert "元太 213.50(壓212.00)" in txt and "台中銀 19.85(壓19.80)" in txt
+    assert "元太 213.50(壓212.00)" in txt
+    assert "⭐台中銀 19.85(壓19.80)" in txt              # 交集股標⭐
+    assert txt.index("台中銀") < txt.index("元太")        # ⭐排前面
+    assert "⭐=同時符合籌碼/基本選股" in txt
     assert "確認量價後再行動" in txt
+    # 無交集股 → 不出現圖例
+    plain = line_push.compose_breakout_alert([hits[0]], "10:35")
+    assert "⭐" not in plain

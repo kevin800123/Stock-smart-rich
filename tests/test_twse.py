@@ -133,6 +133,21 @@ def test_parse_margin_rwd_summary_in_lots():
     assert out["margin_value_chg"] == 135.3   # (607,456,271-593,930,024) 仟元 → 億
 
 
+def test_parse_margin_detail_positional():
+    payload = {"tables": [
+        {"fields": ["項目", "買進"], "data": [["融資(交易單位)", "1"]]},  # 統計表→略過
+        {"fields": ["代號", "名稱", "買進", "賣出", "現金償還", "前日餘額", "今日餘額", "限額",
+                    "買進", "賣出", "現券償還", "前日餘額", "今日餘額", "限額"],
+         "data": [
+             ["2330", "台積電", "100", "50", "0", "9,000", "9,050", "50,000", "1", "1", "0", "10", "10", "5"],
+             ["00405A", "某ETF", "5", "5", "0", "1,000", "1,020", "9,999", "0", "0", "0", "0", "0", "1"],
+         ]},
+    ]}
+    out = twse.parse_margin_detail(payload)
+    assert out["2330"] == 9050        # 位置 6＝融資今日餘額
+    assert out["00405A"] == 1020      # ETF 也計入（融資金額總計含 ETF）
+
+
 def test_parse_sector_indices_filters_strips_and_signs():
     payload = {"tables": [{
         "fields": ["指數", "收盤指數", "漲跌(+/-)", "漲跌點數", "漲跌百分比(%)", "特殊處理註記"],

@@ -14,6 +14,7 @@ from .db import (
     upsert_market_daily,
     upsert_tx_history,
 )
+from . import analysis
 from .sources import intl, taifex, tdcc, tpex, twse
 
 
@@ -208,6 +209,20 @@ def run_update(conn, intl_tickers: dict) -> dict:
             success.append(name)
         except Exception as e:  # noqa: BLE001 — 容錯：單一來源失敗不影響其餘
             failed.append({"source": name.split("_")[0], "name": name, "error": str(e)})
+
+    # 大盤融資維持率（需融資金額＋個股融資明細＋全市場收盤；約 21:00 融資公布後才算得出）
+    try:
+        if D and row.get("margin_value"):
+            lots = twse.fetch_margin_detail(D)
+            quotes = twse.fetch_stock_quotes(D)
+            mm = analysis.margin_maintenance(
+                lots, {c: q["close"] for c, q in quotes.items() if q.get("close")},
+                row["margin_value"])
+            if mm:
+                row["margin_maintenance"] = mm
+                success.append("margin_maintenance")
+    except Exception as e:  # noqa: BLE001
+        failed.append({"source": "twse", "name": "margin_maintenance", "error": str(e)})
 
     upsert_market_daily(conn, row)
     # 清理：以「真實今天」為基準刪掉未來幽靈列，並清掉異常過舊(>400天)的髒列。

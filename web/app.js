@@ -151,6 +151,7 @@ async function loadSettings() {
     const ln = $("set-line");
     ln.textContent = s.line_configured ? `已設定 ✓（速報 ${s.line_push_time}・完整版 ${s.schedule_time}）` : "未設定";
     ln.className = "set-badge " + (s.line_configured ? "ok" : "no");
+    $("set-picks-only").checked = !!s.intraday_picks_only;
     $("set-stats").innerHTML = [
       ["快照天數", s.snapshots], ["台指期歷史天數", s.tx_history_days], ["最新大盤日期", s.last_market_date || "—"],
     ].map(([k, v]) => `<div class="stat"><div class="stat-k">${k}</div><div class="stat-v">${v}</div></div>`).join("");
@@ -186,7 +187,7 @@ async function moveNav(i, dir) {
 async function saveSettings() {
   $("set-saved").textContent = "儲存中…";
   try {
-    await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ schedule_time: $("set-schedule").value, data_dir: $("set-datadir").value }) });
+    await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ schedule_time: $("set-schedule").value, data_dir: $("set-datadir").value, intraday_picks_only: $("set-picks-only").checked }) });
     $("set-saved").textContent = "已儲存 ✓"; setTimeout(() => { $("set-saved").textContent = ""; }, 2000);
     loadSettings();
   } catch (e) { $("set-saved").textContent = "儲存失敗：" + e.message; }
