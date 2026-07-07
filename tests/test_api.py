@@ -735,3 +735,35 @@ def test_settings_nav_order_roundtrip(tmp_path, monkeypatch):
     # 非字母 slug 被濾掉（防注入），仍存有效項
     client.post("/api/settings", json={"nav_order": ["overview", "../evil", "cup"]})
     assert client.get("/api/settings").json()["nav_order"] == ["overview", "cup"]
+
+
+def test_intraday_breakout_scan_alerts_and_dedupes(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok-x")
+    from stocks_power_rich import line_push
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc, set_ai_cache
+    from stocks_power_rich.sources import mis, tpex
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    bulk_upsert_ohlc(c, "2026-07-04", {"2330": {"open": 1, "high": 2, "low": 1, "close": 1.5}})
+    set_ai_cache(c, "cupsig:2026-07-04", [
+        {"code": "8069", "name": "元太", "resistance": 212.0},
+        {"code": "2812", "name": "台中銀", "resistance": 19.8},
+    ])
+    monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {"8069": "元太"})
+    monkeypatch.setattr(mis, "fetch_mis_quotes",
+                        lambda tokens: {"8069": 213.5, "2812": 19.5})  # 元太突破、台中銀未過
+    sent = []
+    monkeypatch.setattr(line_push, "broadcast_text", lambda tok, txt: sent.append(txt) or {"ok": True})
+    app = create_app()
+    client = TestClient(app)
+    r = client.post("/api/intraday/test?push=1").json()
+    assert [h["code"] for h in r["hits"]] == ["8069"] and r["checked"] == 2
+    assert len(sent) == 1 and "元太 213.50(壓212.00)" in sent[0]
+    # 同日第二輪：元太已警示過 → 只剩台中銀待監控、不再重複推播
+    r2 = client.post("/api/intraday/test?push=1").json()
+    assert r2["checked"] == 1 and r2["hits"] == [] and len(sent) == 1
+    # 乾跑不推播
+    r3 = client.post("/api/intraday/test").json()
+    assert len(sent) == 1

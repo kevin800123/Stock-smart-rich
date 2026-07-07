@@ -66,6 +66,15 @@ screen endpoint → **必須接 #1 的 backtest.py 統計**（`backtest_cup` 泛
 
 ---
 
+## 即時監控的定位（2026-07-07 與使用者討論的結論）
+- 使用者目標＝**盤中突破警示**（分鐘級足夠）→ 已實作 A 方案：`sources/mis.py` 輪詢證交所
+  盤中快照（非官方、低頻、含哨兵離線告警），平日 09:00–13:35 每 5 分掃杯柄訊號股，
+  現價 > 壓力線即 LINE 警示（每檔每日一次）。`POST /api/intraday/test` 可手動驗證。
+- **統一期貨 API**（使用者持有）＝第二階段選項：僅覆蓋期貨/海期（無台股個股行情）、
+  Windows .NET 元件 → 需「使用者本機收集器 + 回報雲端」架構（使用者已接受盤中開機）。
+  適用場景：台指期/海期 tick 級看盤、或 mis 來源失效時的備援。指派 Opus 4.8，
+  開工前先驗證其 Python 文件與 Linux 不相容性假設。
+
 ## 已完成（供接手者理解現狀）
 - #1 `backtest.py`＋`patterns.cup_handle_signals`（向量化，等價性測試）＋
   `/api/patterns/cup-handle/backtest`（逐日快取）＋杯柄頁「📊 回測報告」面板。

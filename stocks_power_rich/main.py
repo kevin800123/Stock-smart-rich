@@ -13,7 +13,7 @@ from datetime import datetime
 
 from . import analysis, backtest, csv_import, exporter, gemini, line_push, patterns, updater
 from .config import load_config
-from .sources import intl, kline, taifex, tdcc, tpex, twse
+from .sources import intl, kline, mis, taifex, tdcc, tpex, twse
 from .db import (
     add_watch,
     backup_db,
@@ -175,6 +175,10 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             app.state.scheduler.add_job(
                 line_brief_job, "cron", **build_trigger_kwargs(cfg.line_push_time),
                 day_of_week="mon-fri", id="line_brief", replace_existing=True)
+            # 盤中突破哨兵：平日 09:00–13:55 每 5 分鐘掃一輪（job 內再擋 13:35 後）
+            app.state.scheduler.add_job(
+                intraday_watch_job, "cron", day_of_week="mon-fri",
+                hour="9-13", minute="*/5", id="intraday_watch", replace_existing=True)
 
     @app.get("/api/dashboard")
     def dashboard():
@@ -952,6 +956,55 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 if cl is not None and p.get("resistance") is not None and cl > p["resistance"]:
                     breakout.append({**p, "close": cl})
         return {"count": len(stocks), "new": new[:6], "breakout": breakout[:6]}
+
+    _mis_state = {"date": None, "fails": 0, "warned": False}  # 哨兵離線偵測（進程內即可）
+
+    def _intraday_scan(c, push: bool = True) -> dict:
+        """盤中突破掃描一輪：最新杯柄訊號股 × 盤中現價 > 壓力線 → LINE 警示（每檔每日一次）。"""
+        ods = ohlc_dates(c)
+        if not ods:
+            return {"checked": 0, "hits": [], "note": "無 OHLC 歷史"}
+        sig = get_ai_cache(c, f"cupsig:{ods[-1]}") or []
+        today = datetime.now().strftime("%Y-%m-%d")
+        alerted = set(get_ai_cache(c, f"cupalerted:{today}") or [])
+        pending = [s for s in sig if s["code"] not in alerted and s.get("resistance")]
+        if not pending:
+            return {"checked": 0, "hits": [], "note": "無待監控訊號（或今日皆已警示）"}
+        otc = _otc_names(c)
+        tokens = [f"{'otc' if s['code'] in otc else 'tse'}_{s['code']}.tw" for s in pending]
+        prices = mis.fetch_mis_quotes(tokens)
+        # 離線偵測：整批查無 → 連續 6 輪（約 30 分鐘）發一次「哨兵離線」告警，不默默失敗
+        if not prices:
+            if _mis_state["date"] != today:
+                _mis_state.update({"date": today, "fails": 0, "warned": False})
+            _mis_state["fails"] += 1
+            if _mis_state["fails"] >= 6 and not _mis_state["warned"] and push:
+                line_push.broadcast_text(cfg.line_token, "⚠️ 盤中突破哨兵連續無法取得報價（來源可能失效），今日暫停警示。")
+                _mis_state["warned"] = True
+            return {"checked": len(pending), "hits": [], "note": "查無報價"}
+        _mis_state.update({"date": today, "fails": 0})
+        hits = [{**s, "price": prices[s["code"]]} for s in pending
+                if s["code"] in prices and prices[s["code"]] > s["resistance"]]
+        if hits and push:
+            txt = line_push.compose_breakout_alert(hits, datetime.now().strftime("%H:%M"))
+            line_push.broadcast_text(cfg.line_token, txt)
+            set_ai_cache(c, f"cupalerted:{today}", sorted(alerted | {h["code"] for h in hits}))
+        return {"checked": len(pending), "hits": hits}
+
+    def intraday_watch_job():
+        """平日 09:00–13:35 每 5 分鐘執行（cron 控時間窗）。"""
+        now = datetime.now()
+        if now.hour == 13 and now.minute > 35:  # 13:30 收盤，13:35 後不再掃
+            return
+        try:
+            _intraday_scan(conn(), push=True)
+        except Exception:  # noqa: BLE001 — 單輪失敗等下一輪
+            pass
+
+    @app.post("/api/intraday/test")
+    def intraday_test(push: int = 0):
+        """手動跑一輪盤中突破掃描（驗證雲端連通性/邏輯）。預設乾跑不推播；?push=1 才真推。"""
+        return _intraday_scan(conn(), push=bool(push))
 
     def _push_line(c, full: bool, force: bool = False) -> dict:
         """組當日盤後訊息並 broadcast 到 LINE 官方帳號好友（單人自用＝自己）。

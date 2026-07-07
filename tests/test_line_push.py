@@ -89,3 +89,12 @@ def test_compose_cup_section_breakout_and_new():
     quiet = line_push.compose_daily_brief(_ROW, [], [], full=False,
                                           cup={"count": 82, "breakout": [], "new": []})
     assert "杯柄" not in quiet
+
+
+def test_compose_breakout_alert():
+    hits = [{"code": "8069", "name": "元太", "price": 213.5, "resistance": 212.0},
+            {"code": "2812", "name": "台中銀", "price": 19.85, "resistance": 19.8}]
+    txt = line_push.compose_breakout_alert(hits, "10:35")
+    assert txt.startswith("🚀 盤中突破壓力 10:35")
+    assert "元太 213.50(壓212.00)" in txt and "台中銀 19.85(壓19.80)" in txt
+    assert "確認量價後再行動" in txt

@@ -163,6 +163,15 @@ def compose_daily_brief(row: dict, sectors: list, watch: list,
     return (title + "\n" + SEP + "\n" + body)[:MAX_LEN]
 
 
+def compose_breakout_alert(hits: list[dict], hhmm: str) -> str:
+    """盤中突破警示訊息。hits＝[{code,name,price,resistance}]，同輪多檔合併成一則。"""
+    lines = [f"🚀 盤中突破壓力 {hhmm}"]
+    for h in hits[:10]:
+        lines.append(f"{h.get('name') or h.get('code')} {_fmt(h.get('price'))}(壓{_fmt(h.get('resistance'))})")
+    lines.append("（盤中價有延遲，確認量價後再行動）")
+    return "\n".join(lines)[:MAX_LEN]
+
+
 def broadcast_text(token: str, text: str) -> dict:
     """推播文字給官方帳號全部好友。回 {ok, status?/error?}，失敗不拋例外。"""
     if not token:
