@@ -836,6 +836,39 @@ def test_cup_handle_screen_endpoint(tmp_path, monkeypatch):
     assert len(o["candles"]) == 400 and o["candles"][0][0] is not None
 
 
+def test_cup_handle_position_fields_and_loss_tolerance(tmp_path, monkeypatch):
+    """#5 部位管理：每檔附 ATR(14) 與建議停損（突破價−2×ATR）；
+    設定 loss_tolerance（單筆可容忍虧損）往返存取，杯柄 API 一併回傳供前端算建議部位。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import date, timedelta
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc
+    from stocks_power_rich.sources import tpex, twse
+    from tests.test_patterns import _make_cup_handle
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    highs, lows, closes = _make_cup_handle()
+    base = date(2025, 1, 1)
+    for i, (h, l, cl) in enumerate(zip(highs, lows, closes)):
+        bulk_upsert_ohlc(c, (base + timedelta(days=i)).isoformat(),
+                         {"2330": {"open": cl, "high": h, "low": l, "close": cl}})
+    monkeypatch.setattr(twse, "fetch_listed_industry",
+                        lambda: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1}})
+    monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {})
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/patterns/cup-handle").json()
+    m = r["stocks"][0]
+    assert m["atr"] and m["atr"] > 0
+    assert m["stop_loss"] == round(m["resistance"] - 2 * m["atr"], 2)
+    assert r["loss_tolerance"] is None                       # 未設定
+    client.post("/api/settings", json={"loss_tolerance": 20000})
+    assert client.get("/api/settings").json()["loss_tolerance"] == 20000
+    assert client.get("/api/patterns/cup-handle").json()["loss_tolerance"] == 20000
+    client.post("/api/settings", json={"loss_tolerance": 0})  # 清空＝不啟用
+    assert client.get("/api/settings").json()["loss_tolerance"] is None
+
+
 def test_settings_nav_order_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     app = create_app()

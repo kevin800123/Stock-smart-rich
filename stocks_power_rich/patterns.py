@@ -99,6 +99,25 @@ def cup_handle_signals(highs, lows, closes):
     return sig, M55
 
 
+def atr(highs, lows, closes, n: int = 14) -> float | None:
+    """ATR(n)＝近 n 根 True Range 的簡單平均（部位管理用，非 Wilder 平滑——
+    停損只取粗略波動尺度，簡單平均可測試性高且差異對 2×ATR 停損無實質影響）。
+
+    TR = max(H−L, |H−昨收|, |L−昨收|)——含跳空缺口，不是單純 H−L。
+    需至少 n+1 根（首根供昨收）；長度不符或含缺值回 None。
+    已知失真：除權息隔日跳空會讓 ATR 短暫偏大（停損偏寬），不另作還原調整。
+    """
+    m = len(highs)
+    if m < n + 1 or len(lows) != m or len(closes) != m:
+        return None
+    window = highs[-(n + 1):] + lows[-(n + 1):] + closes[-(n + 1):]
+    if any(v is None for v in window):
+        return None
+    trs = [max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+           for i in range(m - n, m)]
+    return round(sum(trs) / n, 4)
+
+
 def screen_cup_handle(ohlc_by_code: dict) -> list[dict]:
     """對 {code: {name, dates[], highs[], lows[], closes[]}} 逐檔篩杯柄，回符合清單（附錨點）。"""
     out = []

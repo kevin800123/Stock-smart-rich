@@ -40,6 +40,19 @@ def test_cup_handle_rejects_when_handle_not_pulled_back():
     assert patterns.cup_handle(highs, lows, closes) is None
 
 
+def test_atr_true_range_includes_gaps():
+    """ATR 用 True Range（含跳空缺口），非單純 H-L；資料不足/含 None 回 None。"""
+    highs = [10.0, 12.0, 11.0]
+    lows = [9.0, 10.0, 9.5]
+    closes = [9.5, 11.0, 10.0]
+    # TR1=max(12-10, |12-9.5|, |10-9.5|)=2.5；TR2=max(1.5, 0, 1.5)=1.5 → ATR(2)=2.0
+    assert patterns.atr(highs, lows, closes, n=2) == 2.0
+    # 向下跳空：整根 K 在昨收下方 → TR 取 |L-昨收|=2.5，而非 H-L=0.5
+    assert patterns.atr([12.0, 9.0], [10.0, 8.5], [11.0, 8.6], n=1) == 2.5
+    assert patterns.atr([10.0], [9.0], [9.5], n=14) is None       # 不足 n+1 根
+    assert patterns.atr([10.0, None], [9.0, 8.0], [9.5, 8.5], n=1) is None  # 缺值防呆
+
+
 def test_screen_runs_over_multiple_codes():
     highs, lows, closes = _make_cup_handle()
     data = {

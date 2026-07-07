@@ -325,6 +325,19 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             m["in_picks"] = m["code"] in picks
         result["has_picks"] = bool(picks)
         result["picks_count"] = sum(1 for m in result["stocks"] if m["in_picks"])
+        # 部位管理（#5）：每檔附 ATR(14) 與建議停損＝突破價(壓力線)−2×ATR。
+        # 即時計算不進快取：每檔只查最近 15 根、成本極低，且快取結果可能出自
+        # 尚無此欄位的舊版程式；loss_tolerance 一併回傳供前端換算建議部位
+        # （建議股數＝可容忍虧損 ÷ 每股風險(2×ATR)，設定可隨時改，故不能進快取）。
+        for m in result["stocks"]:
+            o = c.execute("SELECT high, low, close FROM stock_ohlc WHERE code=? "
+                          "ORDER BY date DESC LIMIT 15", (m["code"],)).fetchall()
+            rows = list(reversed(o))
+            a = patterns.atr([r["high"] for r in rows], [r["low"] for r in rows],
+                             [r["close"] for r in rows])
+            m["atr"] = a
+            m["stop_loss"] = round(m["resistance"] - 2 * a, 2) if (a and m.get("resistance")) else None
+        result["loss_tolerance"] = int(get_setting(c, "loss_tolerance") or 0) or None
         return result
 
     def _picks_code_set(c) -> set:
@@ -763,6 +776,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             "last_market_date": last_date,
             "nav_order": (get_setting(c, "nav_order") or "").split(",") if get_setting(c, "nav_order") else None,
             "intraday_picks_only": get_setting(c, "intraday_picks_only") == "1",
+            "loss_tolerance": int(get_setting(c, "loss_tolerance") or 0) or None,  # 單筆可容忍虧損(元)
         }
 
     @app.post("/api/settings")
@@ -787,6 +801,13 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 return {"ok": False, "error": "資料夾不在允許範圍（僅限專案目錄下）", **get_settings()}
         if "intraday_picks_only" in payload:
             set_setting(c, "intraday_picks_only", "1" if payload["intraday_picks_only"] else "0")
+        if "loss_tolerance" in payload:
+            # 單筆可容忍虧損（元，部位管理用）；0/空/非數字＝清除不啟用
+            try:
+                v = int(payload["loss_tolerance"] or 0)
+            except (TypeError, ValueError):
+                v = 0
+            set_setting(c, "loss_tolerance", str(v) if v > 0 else "")
         no = payload.get("nav_order")
         if isinstance(no, list) and no:
             # 分頁順序（view id）；只留簡單字母 slug，逗號分隔存字串

@@ -181,6 +181,7 @@
         </div>
         <div id="cup-bt" class="hidden"></div>
         <div id="cup-list" class="cup-list"></div>
+        <div id="cup-risk" class="muted small" style="margin:4px 0"></div>
         <div id="cup-chart" class="chart-big"></div>
         <div class="wave-help">
           <b>選股邏輯（亞當杯柄，全市場上市＋上櫃每日掃描）</b><br/>
@@ -193,6 +194,18 @@
           清單依 %R（收盤強度）排序；綠框●＝同時符合「籌碼/基本選股」（W55翻多∧大戶增比&gt;0∧營收年增&gt;0∧推估EPS&gt;0）。<br/>
           盤中 09:00–13:35 哨兵每 5 分鐘盯這份清單，現價突破壓力線即 LINE 警示（⭐＝交集股）。
           進場前請先看「📊 回測報告」確認此策略的歷史勝率與報酬（未含手續費稅約 0.6%，歷史不代表未來）。
+          <br/><br/>
+          <b>停損與建議部位（風險管理）</b><br/>
+          每檔訊號股附「🛡️ 建議停損價」與「💰 建議部位」，K 線圖上紅色虛線＝停損線：<br/>
+          ・<b>停損價＝突破價（壓力線）− 2×ATR(14)</b>。ATR 是近 14 天「真實波幅」（含跳空缺口）的平均，
+          代表這檔股票的日常呼吸幅度；停損放在 2 倍日常波動之外，正常震盪洗不掉你，
+          <b>跌破則代表型態失敗、無條件出場認錯</b>。<br/>
+          ・<b>建議部位＝單筆可容忍虧損 ÷ 每股風險（突破價−停損價）</b>。先到「設定」填入你單筆願意賠的金額
+          （建議＝總資金的 1–2%），之後無論股價高低，每筆交易最壞就賠那個數——
+          高價股自動買少、低價股自動買多，賠錢金額一致，這就是部位管理的核心。<br/>
+          注意：①以「突破壓力線進場」為前提估算，實際進場價與滑價/手續費未計；
+          ②除權息隔日的跳空會讓 ATR 暫時偏大（停損偏寬），屬已知失真；
+          ③停損是紀律不是預測——碰到就出場，讓「小賠大賺」的期望值替你工作。
         </div>
       </section>
 
@@ -223,6 +236,7 @@
           <div class="set-row"><label>Gemini 金鑰</label><span id="set-gemini" class="set-badge"></span><span class="muted small">（金鑰只能透過 .env 設定，此處不顯示也不輸入）</span></div>
           <div class="set-row"><label>LINE 推播</label><span id="set-line" class="set-badge"></span><button id="btn-line-test" class="file-label">📱 測試推播</button><span id="set-line-status" class="muted small"></span></div>
           <div class="set-row"><label>盤中突破哨兵</label><label class="wave-toggle" style="margin:0"><input type="checkbox" id="set-picks-only" /> 只警示「同時符合籌碼/基本選股」的突破</label><span class="muted small">（未勾＝全部杯柄股都盯，交集股標 ⭐）</span></div>
+          <div class="set-row"><label>單筆可容忍虧損（元）</label><input type="number" id="set-loss-tol" class="stock-input" min="0" step="1000" placeholder="例如 20000" /><span class="muted small">（杯柄頁自動算建議部位＝此金額 ÷ 每股風險；建議填總資金的 1–2%，清空＝不啟用）</span></div>
           <div class="set-row"><button id="btn-save-settings" class="file-label">💾 儲存設定</button><span id="set-saved" class="muted"></span></div>
         </div>
         <div class="ai-head" style="margin-top:8px"><span>左側分頁順序 <span class="muted small">（用 ↑↓ 調整，儲存後雲端同步）</span></span></div>

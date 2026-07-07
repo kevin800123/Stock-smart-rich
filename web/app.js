@@ -152,6 +152,7 @@ async function loadSettings() {
     ln.textContent = s.line_configured ? `已設定 ✓（速報 ${s.line_push_time}・完整版 ${s.schedule_time}）` : "未設定";
     ln.className = "set-badge " + (s.line_configured ? "ok" : "no");
     $("set-picks-only").checked = !!s.intraday_picks_only;
+    $("set-loss-tol").value = s.loss_tolerance || "";
     $("set-stats").innerHTML = [
       ["快照天數", s.snapshots], ["台指期歷史天數", s.tx_history_days], ["最新大盤日期", s.last_market_date || "—"],
     ].map(([k, v]) => `<div class="stat"><div class="stat-k">${k}</div><div class="stat-v">${v}</div></div>`).join("");
@@ -187,7 +188,7 @@ async function moveNav(i, dir) {
 async function saveSettings() {
   $("set-saved").textContent = "儲存中…";
   try {
-    await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ schedule_time: $("set-schedule").value, data_dir: $("set-datadir").value, intraday_picks_only: $("set-picks-only").checked }) });
+    await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ schedule_time: $("set-schedule").value, data_dir: $("set-datadir").value, intraday_picks_only: $("set-picks-only").checked, loss_tolerance: parseInt($("set-loss-tol").value, 10) || 0 }) });
     $("set-saved").textContent = "已儲存 ✓"; setTimeout(() => { $("set-saved").textContent = ""; }, 2000);
     loadSettings();
   } catch (e) { $("set-saved").textContent = "儲存失敗：" + e.message; }
@@ -361,6 +362,10 @@ function cupChartOption(d, m) {
              { value: "右緣", coord: [m.right_date, m.right_price], itemStyle: { color: "#f0a500" } }],
     },
   };
+  if (m.stop_loss != null && m.stop_loss > 0)  // 停損線＝突破價−2×ATR14（部位管理，見下方說明）
+    candle.markLine.data.push(
+      [{ name: "停損", coord: [m.right_date, m.stop_loss], lineStyle: { color: "#e04545", width: 2, type: "dashed" } },
+       { coord: [lastDate, m.stop_loss] }]);
   return {
     tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
     legend: { data: ["K線", ...MA_DEFS.map((x) => "MA" + x.n)], textStyle: { color: "#ccc" } },
@@ -400,11 +405,33 @@ function renderCupChips() {
   cupMatches = cupPicksOnly ? all.filter((m) => m.in_picks) : all;
   if (note) note.textContent = `（${d.date}　符合 ${d.count} 檔`
     + (d.has_picks ? `／同時符合籌碼基本 ${d.picks_count} 檔` : "") + `／掃描 ${d.bars} 根）`;
-  if (cupPicksOnly && !d.has_picks) { list.innerHTML = '<span class="muted small">尚未載入當日 CSV，無「籌碼/基本選股」可交集（請先到該分頁上傳）</span>'; if (cupChart) cupChart.clear(); return; }
-  if (!cupMatches.length) { list.innerHTML = `<span class="muted small">${cupPicksOnly ? "無同時符合兩者的個股" : "今日無符合杯柄型態的個股"}</span>`; if (cupChart) cupChart.clear(); return; }
+  if (cupPicksOnly && !d.has_picks) { list.innerHTML = '<span class="muted small">尚未載入當日 CSV，無「籌碼/基本選股」可交集（請先到該分頁上傳）</span>'; if (cupChart) cupChart.clear(); renderCupRisk(null); return; }
+  if (!cupMatches.length) { list.innerHTML = `<span class="muted small">${cupPicksOnly ? "無同時符合兩者的個股" : "今日無符合杯柄型態的個股"}</span>`; if (cupChart) cupChart.clear(); renderCupRisk(null); return; }
   list.innerHTML = cupMatches.map((m, i) =>
     `<a href="#" class="cup-chip${i === 0 ? " active" : ""}${m.in_picks ? " pick" : ""}" data-i="${i}">${esc(m.code)} ${esc(m.name || "")}<span class="cup-r">%R ${fmt(m.percent_r, 0)}</span></a>`).join("");
   drawCupChart(cupMatches[0]);
+  renderCupRisk(cupMatches[0]);
+}
+
+// 部位管理（#5）：選中個股的停損/建議部位資訊列。
+// 建議股數＝可容忍虧損 ÷ 每股風險（突破價−停損價＝2×ATR14）——高價股自動買少、
+// 低價股自動買多，單筆最壞虧損固定；公式與限制見頁面下方「停損與建議部位」說明。
+function renderCupRisk(m) {
+  const el = $("cup-risk"); if (!el) return;
+  if (!m || m.stop_loss == null) { el.innerHTML = ""; return; }
+  const risk = m.resistance - m.stop_loss;
+  let txt = `🛡️ ${esc(m.name || m.code)} 建議停損 <b>${fmt(m.stop_loss, 2)}</b>`
+    + `（突破價 ${fmt(m.resistance, 2)} − 2×ATR ${fmt(m.atr, 2)}）`;
+  const tol = cupData && cupData.loss_tolerance;
+  if (tol && risk > 0) {
+    const sh = Math.floor(tol / risk);
+    const lots = Math.floor(sh / 1000), odd = sh % 1000;
+    const pos = lots ? `${lots} 張${odd ? ` + ${odd} 股` : ""}` : `${odd} 股`;
+    txt += `　💰 建議部位 <b>${pos}</b>（可容忍虧損 ${fmt(tol, 0)} 元 ÷ 每股風險 ${fmt(risk, 2)} 元）`;
+  } else {
+    txt += `　<span class="muted">到「設定」填「單筆可容忍虧損」即自動算建議部位</span>`;
+  }
+  el.innerHTML = txt;
 }
 
 // 杯柄訊號回測報告：突破率、各持有期勝率/平均報酬、近期交易明細
@@ -993,6 +1020,7 @@ $("cup-list").addEventListener("click", (e) => {
   e.preventDefault();
   document.querySelectorAll("#cup-list .cup-chip").forEach((x) => x.classList.toggle("active", x === a));
   drawCupChart(cupMatches[+a.dataset.i]);
+  renderCupRisk(cupMatches[+a.dataset.i]);
 });
 $("btn-line-test").addEventListener("click", async () => {
   const st = $("set-line-status"); st.textContent = "推播中…";
