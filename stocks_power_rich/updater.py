@@ -3,6 +3,7 @@
 容錯：每個來源獨立 try/except，單一來源失敗只記錄，不影響其餘；
 回傳 {date, success: [...], failed: [{source, name, error}]}。
 """
+import time
 from datetime import date as _date, datetime, timedelta
 
 from .db import (
@@ -139,39 +140,68 @@ def _dates_with(conn, codes) -> set:
         f"SELECT DISTINCT date FROM stock_ohlc WHERE code IN ({ph})", list(codes))}
 
 
+_FAIL_ABORT = 5      # 單一市場連續失敗 N 個日期 → 本輪熔斷該市場（歷史底線或來源異常）
+_TIME_BUDGET = 25.0  # 單次呼叫時間上限（秒）：在反向代理逾時前先回傳部分進度，避免 502
+_THROTTLE = 0.25     # 每處理一個日期的間隔，對官方來源溫柔
+
+
 def backfill_ohlc(conn, target: int = 377, max_fetch: int = 60) -> dict:
-    """回補全市場（上市＋上櫃）個股每日 OHLC 到 target 個交易日；每次最多處理 max_fetch 個
-    交易日（可重跑續補）。兩市場各自追蹤已存日期（指標股法），舊資料只補缺的那個市場。"""
+    """回補全市場（上市＋上櫃）個股每日 OHLC 到 target 個交易日（分次可續補）。
+
+    - 兩市場各自追蹤已存日期（指標股法），舊資料只補缺的那個市場。
+    - 連續失敗熔斷：某市場連 5 個日期抓不到就本輪放棄它，配額讓給另一市場
+      （TPEx dailyQuotes 僅提供約 1.4 年歷史，更舊必然失敗——不熔斷會卡死在同一批日期）。
+    - done 語意：上市達標，且上櫃「達標或已到官方歷史底線」（以同輪上市抓取成功佐證連線正常，
+      避免把單純斷線誤判成底線）。
+    """
     have_tw = _dates_with(conn, _TW_BELL)
     have_otc = _dates_with(conn, _OTC_BELL)
     added = 0
+    tw_fails = otc_fails = 0
+    tw_ok_this_call = False
+    tw_aborted = otc_aborted = False
+    start = time.monotonic()
     anchor = _date.today()
     floor = anchor - timedelta(days=target * 2 + 40)  # 日曆下限，避免無限迴圈
     while (len(have_tw) < target or len(have_otc) < target) and added < max_fetch and anchor >= floor:
+        if time.monotonic() - start > _TIME_BUDGET:
+            break
         if anchor.weekday() >= 5:
             anchor -= timedelta(days=1)
             continue
         ds = anchor.isoformat()
         attempted = False
-        if ds not in have_tw and len(have_tw) < target:
+        if ds not in have_tw and len(have_tw) < target and not tw_aborted:
             attempted = True
             rows = twse.fetch_stock_ohlc(anchor)
             if rows:
                 bulk_upsert_ohlc(conn, ds, rows)
                 have_tw.add(ds)
-        if ds not in have_otc and len(have_otc) < target:
+                tw_fails, tw_ok_this_call = 0, True
+            else:
+                tw_fails += 1
+                tw_aborted = tw_fails >= _FAIL_ABORT
+        if ds not in have_otc and len(have_otc) < target and not otc_aborted:
             attempted = True
             rows = tpex.fetch_otc_ohlc(anchor)
             if rows:
                 bulk_upsert_ohlc(conn, ds, rows)
                 have_otc.add(ds)
+                otc_fails = 0
+            else:
+                otc_fails += 1
+                otc_aborted = otc_fails >= _FAIL_ABORT
         if attempted:
-            added += 1  # 以「處理過的日數」計次（含休市日抓空），確保單次呼叫有界
+            added += 1  # 以「處理過的日數」計次，確保單次呼叫有界
+            time.sleep(_THROTTLE)
+        if tw_aborted and otc_aborted:
+            break
         anchor -= timedelta(days=1)
-    done = len(have_tw) >= target and len(have_otc) >= target
+    otc_exhausted = otc_aborted and (tw_ok_this_call or len(have_tw) >= target)
+    done = len(have_tw) >= target and (len(have_otc) >= target or otc_exhausted)
     return {"stored_days": min(len(have_tw), len(have_otc)),
             "twse_days": len(have_tw), "otc_days": len(have_otc),
-            "added": added, "done": done}
+            "added": added, "otc_exhausted": otc_exhausted, "done": done}
 
 
 def run_update(conn, intl_tickers: dict) -> dict:

@@ -84,3 +84,28 @@ def test_accumulate_custody_stores_new_week_then_skips(tmp_path, monkeypatch):
     n = conn.execute("SELECT COUNT(*) FROM custody_dist WHERE week=?", (wk,)).fetchone()[0]
     assert n == 2
     assert updater._accumulate_custody(conn) is None  # 本週已有 → 跳過
+
+
+def test_backfill_ohlc_otc_floor_circuit_breaker(tmp_path, monkeypatch):
+    """上櫃到官方歷史底線（一直回空）→ 連續失敗熔斷，配額讓給上市續補；
+    上市達標且同輪上市有成功抓取 → otc_exhausted=True 且 done=True（不再無限重試）。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    monkeypatch.setattr(updater.time, "sleep", lambda s: None)
+    calls = {"tw": 0, "otc": 0}
+
+    def tw_fetch(d=None):
+        calls["tw"] += 1
+        return {"2330": {"open": 1.0, "high": 2.0, "low": 1.0, "close": 1.5}}
+
+    def otc_fetch(d=None):
+        calls["otc"] += 1
+        return {}  # 模擬 TPEx 歷史底線：永遠抓不到
+
+    monkeypatch.setattr(updater.twse, "fetch_stock_ohlc", tw_fetch)
+    monkeypatch.setattr(updater.tpex, "fetch_otc_ohlc", otc_fetch)
+    r = updater.backfill_ohlc(conn, target=20, max_fetch=120)
+    assert r["twse_days"] == 20 and r["otc_days"] == 0
+    assert r["otc_exhausted"] is True and r["done"] is True     # 底線＝完成，不會卡死
+    assert calls["otc"] == 5                                     # 熔斷後不再浪費請求
+    assert calls["tw"] == 20                                     # 配額全讓給上市

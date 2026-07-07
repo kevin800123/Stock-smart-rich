@@ -4,6 +4,7 @@ import binascii
 import os
 import secrets
 import tempfile
+import threading
 
 from fastapi import Body, FastAPI, File, UploadFile
 from fastapi.responses import Response
@@ -256,11 +257,21 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             set_ai_cache(c, key, result)
         return result
 
+    _backfill_lock = threading.Lock()
+
     @app.get("/api/ohlc/backfill")
     def ohlc_backfill(days: int = 377, max_fetch: int = 60):
-        """回補全市場個股每日 OHLC（型態選股/回測用）。資料量大分次，回傳可重跑續補。"""
-        return updater.backfill_ohlc(conn(), target=max(60, min(days, 800)),
-                                     max_fetch=max(1, min(max_fetch, 120)))
+        """回補全市場個股每日 OHLC（型態選股/回測用）。資料量大分次，回傳可重跑續補。
+
+        單飛鎖：同時只允許一個回補在跑——重複呼叫直接回 busy，避免執行緒堆疊把服務打掛。
+        """
+        if not _backfill_lock.acquire(blocking=False):
+            return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
+        try:
+            return updater.backfill_ohlc(conn(), target=max(60, min(days, 800)),
+                                         max_fetch=max(1, min(max_fetch, 120)))
+        finally:
+            _backfill_lock.release()
 
     def _ohlc_names(c) -> dict:
         """個股名對照：上市基本資料 + 上櫃公司簡稱（杯柄篩選/回測共用）。"""
