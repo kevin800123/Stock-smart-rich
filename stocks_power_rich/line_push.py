@@ -152,8 +152,10 @@ def compose_daily_brief(row: dict, sectors: list, watch: list,
             g.append(item)
         blocks.append(g)
     # 杯柄型態（有「新符合」或「突破壓力」才顯示，避免天天重複整串清單）
+    # picks=True＝清單已過「籌碼/基本選股」交集，標題明示；無 CSV 榜當日退回全杯柄
     if cup and (cup.get("new") or cup.get("breakout")):
-        g = [f"【杯柄型態】符合 {cup.get('count', 0)} 檔"]
+        label = "杯柄型態&籌碼/基本" if cup.get("picks") else "杯柄型態"
+        g = [f"【{label}】符合 {cup.get('count', 0)} 檔"]
         for b in (cup.get("breakout") or [])[:6]:
             g.append(f"🚀 突破 {b.get('name') or b.get('code')} {_fmt(b.get('close'))}(壓{_fmt(b.get('resistance'))})")
         new = (cup.get("new") or [])[:6]

@@ -90,6 +90,9 @@ def test_compose_cup_section_breakout_and_new():
     quiet = line_push.compose_daily_brief(_ROW, [], [], full=False,
                                           cup={"count": 82, "breakout": [], "new": []})
     assert "杯柄" not in quiet
+    # picks=True（清單已過「籌碼/基本選股」交集）→ 標題明示交集
+    inter = line_push.compose_daily_brief(_ROW, [], [], full=False, cup={**cup, "picks": True})
+    assert "【杯柄型態&籌碼/基本】符合 82 檔" in inter and "【杯柄型態】" not in inter
 
 
 def test_compose_breakout_alert():

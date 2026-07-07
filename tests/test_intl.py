@@ -3,6 +3,49 @@ import pandas as pd
 from stocks_power_rich.sources import intl
 
 
+def _chart_payload(closes):
+    return {"chart": {"result": [{"indicators": {"quote": [{"close": closes}]}}], "error": None}}
+
+
+def test_parse_chart_payload():
+    # 中間有 null（Yahoo 常見）→ 取最後兩個有效收盤算漲跌%
+    p = intl.parse_chart_payload(_chart_payload([100.0, None, 110.0]))
+    assert p == {"value": 110.0, "chg_pct": 10.0}
+    assert intl.parse_chart_payload(_chart_payload([110.0])) == {"value": 110.0, "chg_pct": None}
+    assert intl.parse_chart_payload(_chart_payload([])) is None
+    assert intl.parse_chart_payload({"chart": {"result": None}}) is None
+    assert intl.parse_chart_payload({}) is None
+
+
+def test_fetch_intl_indices_chart_fallback(monkeypatch):
+    """yfinance 整批一直失敗（機房 IP 被限流）→ 直連 Yahoo chart API 逐檔備援補抓。"""
+    def bad_download(*a, **kw):
+        raise RuntimeError("rate limited")
+
+    class _Resp:
+        status_code = 200
+
+        def __init__(self, sym):
+            self._sym = sym
+
+        def json(self):
+            return _chart_payload([100.0, 123.0])
+
+    urls = []
+
+    def fake_get(url, **kw):
+        urls.append(url)
+        return _Resp(url)
+
+    monkeypatch.setattr(intl.time, "sleep", lambda s: None)
+    monkeypatch.setattr(intl.yf, "download", bad_download)
+    monkeypatch.setattr(intl.httpx, "get", fake_get)
+    out = intl.fetch_intl_indices({"sox": "^SOX", "btc": "BTC-USD"})
+    assert out["sox"] == {"value": 123.0, "chg_pct": 23.0}
+    assert out["btc"]["value"] == 123.0
+    assert any("%5ESOX" in u for u in urls)   # ^ 需 URL 編碼進路徑
+
+
 def test_fetch_intl_indices(monkeypatch):
     def fake_download(tickers, period=None, **kw):
         idx = pd.to_datetime(["2026-06-12", "2026-06-13"])

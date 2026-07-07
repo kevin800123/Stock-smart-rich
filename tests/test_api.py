@@ -191,6 +191,81 @@ def test_line_test_endpoint_composes_and_broadcasts(tmp_path, monkeypatch):
     assert s["line_configured"] is True and "tok" not in str(s)
 
 
+def test_line_watchlist_pct_falls_back_to_ohlc(tmp_path, monkeypatch):
+    """自選股報價源查無（上市/上櫃報價都沒有）→ 以 stock_ohlc 日K收盤回推漲跌%，
+    不再出現「有價無漲跌%」的缺行（衛司特/亞通實例）。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok-x")
+    from stocks_power_rich import line_push
+    from stocks_power_rich.db import (get_connection, init_db, upsert_market_daily,
+                                      bulk_upsert_ohlc, insert_chip_snapshot)
+    from stocks_power_rich.sources import tpex, twse
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-07-07", "taiex": 45479.11})
+    # 日K：昨收 100 → 今收 105（+5%）；今日日期需與 market_daily 最新日一致
+    bulk_upsert_ohlc(c, "2026-07-06", {"6894": {"open": 99, "high": 101, "low": 98, "close": 100.0}})
+    bulk_upsert_ohlc(c, "2026-07-07", {"6894": {"open": 101, "high": 106, "low": 100, "close": 105.0}})
+    insert_chip_snapshot(c, "2026-07-07", [{"code": "6894.TW", "name": "衛司特", "close": 105.0}])
+    monkeypatch.setattr(twse, "fetch_sector_indices", lambda date=None: [])
+    monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {})   # 上市報價查無
+    monkeypatch.setattr(tpex, "fetch_otc_quotes", lambda date=None: {})     # 上櫃報價也查無
+    monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {})          # 杯柄段落的股名對照
+    monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {})
+    sent = []
+    monkeypatch.setattr(line_push, "broadcast_text", lambda tok, txt: sent.append(txt) or {"ok": True})
+    app = create_app()
+    client = TestClient(app)
+    client.post("/api/watchlist", json={"code": "6894"})
+    assert client.post("/api/line/test").json()["ok"] is True
+    assert "衛司特" in sent[0] and "105.00" in sent[0] and "+5.00%" in sent[0]
+
+
+def test_line_cup_section_only_picks_intersection(tmp_path, monkeypatch):
+    """推播的杯柄段落只列「杯柄∧籌碼/基本選股」交集（有 CSV 榜時）；
+    標題改為【杯柄型態&籌碼/基本】、count＝交集檔數。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok-x")
+    from datetime import date, timedelta
+    from stocks_power_rich import line_push
+    from stocks_power_rich.db import (get_connection, init_db, bulk_upsert_ohlc,
+                                      insert_chip_snapshot, set_ai_cache, upsert_market_daily)
+    from stocks_power_rich.sources import tpex, twse
+    from tests.test_patterns import _make_cup_handle
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    highs, lows, closes = _make_cup_handle()
+    base = date(2025, 1, 1)
+    for i, (h, l, cl) in enumerate(zip(highs, lows, closes)):
+        ds = (base + timedelta(days=i)).isoformat()
+        bulk_upsert_ohlc(c, ds, {"2330": {"open": cl, "high": h, "low": l, "close": cl},
+                                 "8069": {"open": cl, "high": h, "low": l, "close": cl}})
+    last_ds, prev_ds = ds, (base + timedelta(days=i - 1)).isoformat()
+    upsert_market_daily(c, {"date": last_ds, "taiex": 45479.11})
+    set_ai_cache(c, f"cupsig:{prev_ds}", [])   # 有前日快照（空）→ 今日符合者全算「新符合」
+    # 只有 2330 進「籌碼/基本選股」榜；8069 一樣符合杯柄但不在榜 → 應被過濾掉
+    insert_chip_snapshot(c, last_ds, [{"code": "2330.TW", "name": "台積電", "w55": 1,
+                         "big_holder_ratio": 0.5, "rev_yoy": 10, "est_profit": 1, "lan_value": 80}])
+    monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {
+        "2330": {"sector": "半導體", "name": "台積電", "shares": 1},
+        "8069": {"sector": "光電", "name": "元太", "shares": 1}})
+    monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {})
+    monkeypatch.setattr(twse, "fetch_sector_indices", lambda date=None: [])
+    monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {})
+    monkeypatch.setattr(tpex, "fetch_otc_quotes", lambda date=None: {})
+    sent = []
+    monkeypatch.setattr(line_push, "broadcast_text", lambda tok, txt: sent.append(txt) or {"ok": True})
+    app = create_app()
+    client = TestClient(app)
+    assert client.post("/api/line/test").json()["ok"] is True
+    txt = sent[0]
+    assert "【杯柄型態&籌碼/基本】符合 1 檔" in txt
+    assert "台積電" in txt.split("杯柄型態&籌碼/基本")[1].split("━")[0]
+    assert "元太" not in txt   # 非交集股不出現
+
+
 def test_options_sentiment_endpoint(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily

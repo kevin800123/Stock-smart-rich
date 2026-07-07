@@ -1,11 +1,17 @@
 """國際指數抓取：費半(^SOX)、日經(^N225)、KOSPI(^KS11)、黃金(GC=F)、日圓(JPY=X 美元兌日圓)、比特幣(BTC-USD)。
 
 來源 yfinance；回傳每個 key 的最新值與相對前一日漲跌百分比。
-雲端（資料中心 IP）yfinance 偶發限流／單一代碼整欄 NaN，故批次抓後對缺漏代碼重試補抓。
+雲端（資料中心 IP）yfinance 偶發限流／單一代碼整欄 NaN，故批次抓後對缺漏代碼重試補抓；
+重試仍缺者再直連 Yahoo chart API 備援（同代碼、免 cookie/crumb 握手，機房 IP 較不易被擋）。
 """
 import time
+from urllib.parse import quote
 
+import httpx
 import yfinance as yf
+
+_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"
+_CHART_UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 
 def _extract_series(df, sym):
@@ -23,6 +29,33 @@ def _parse_series(series) -> dict | None:
         return {"value": round(last, 2), "chg_pct": chg}
     if len(series) == 1:
         return {"value": round(float(series.iloc[-1]), 2), "chg_pct": None}
+    return None
+
+
+def parse_chart_payload(payload) -> dict | None:
+    """從 Yahoo v8 chart JSON 取最後兩個有效收盤（中間常夾 null），回 {value, chg_pct}。"""
+    try:
+        closes = payload["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    vals = [v for v in (closes or []) if v is not None]
+    if not vals:
+        return None
+    last = float(vals[-1])
+    chg = round((last - vals[-2]) / vals[-2] * 100, 2) if len(vals) >= 2 and vals[-2] else None
+    return {"value": round(last, 2), "chg_pct": chg}
+
+
+def _fetch_chart(sym: str) -> dict | None:
+    """直連 chart API 抓單一代碼（^ 等符號需編碼進路徑）。失敗回 None、維持缺值。"""
+    try:
+        r = httpx.get(_CHART_URL + quote(sym, safe=""),
+                      params={"range": "5d", "interval": "1d"},
+                      timeout=15, headers=_CHART_UA)
+        if r.status_code == 200:
+            return parse_chart_payload(r.json())
+    except Exception:  # noqa: BLE001 — 備援失敗不影響其他代碼
+        pass
     return None
 
 
@@ -47,6 +80,12 @@ def fetch_intl_indices(tickers: dict, tries: int = 3) -> dict:
             if parsed is not None:
                 out[key] = parsed
                 remaining.pop(key)
+    # yfinance 重試後仍缺的代碼 → 直連 chart API 逐檔備援
+    for key, sym in list(remaining.items()):
+        parsed = _fetch_chart(sym)
+        if parsed is not None:
+            out[key] = parsed
+            remaining.pop(key)
     return out
 
 

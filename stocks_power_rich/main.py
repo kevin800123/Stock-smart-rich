@@ -943,6 +943,10 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             return None
         today = scr["date"]
         stocks = scr.get("stocks") or []
+        # 只推「杯柄∧籌碼/基本選股」交集（去雜訊）；當日無 CSV 榜時退回全部（同哨兵不斷線原則）
+        picks = _picks_code_set(c)
+        if picks:
+            stocks = [s for s in stocks if s["code"] in picks]
         prev_ds = ods[-2] if len(ods) >= 2 else None
         prev = get_ai_cache(c, f"cupsig:{prev_ds}") if prev_ds else None
         new = []
@@ -950,6 +954,8 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             prev_codes = {p["code"] for p in prev}
             new = [{"code": s["code"], "name": s["name"]} for s in stocks
                    if s["code"] not in prev_codes]
+        if prev and picks:  # 昨日訊號股同樣只看交集
+            prev = [p for p in prev if p["code"] in picks]
         breakout = []
         if prev:
             codes = [p["code"] for p in prev]
@@ -961,7 +967,8 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 cl = closes.get(p["code"])
                 if cl is not None and p.get("resistance") is not None and cl > p["resistance"]:
                     breakout.append({**p, "close": cl})
-        return {"count": len(stocks), "new": new[:6], "breakout": breakout[:6]}
+        return {"count": len(stocks), "new": new[:6], "breakout": breakout[:6],
+                "picks": bool(picks)}
 
     _mis_state = {"date": None, "fails": 0, "warned": False}  # 哨兵離線偵測（進程內即可）
 
@@ -1053,9 +1060,17 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 pure = s["code"].split(".")[0]
                 q = quotes.get(pure) or (otc or {}).get(pure) or {}
                 chip = s.get("chip") or {}
+                close, pct = q.get("close"), q.get("chg_pct")
+                if pct is None:  # 兩市場報價都查無（來源當日失敗等）→ 以日K收盤回推漲跌%
+                    o = c.execute("SELECT date, close FROM stock_ohlc WHERE code=? "
+                                  "ORDER BY date DESC LIMIT 2", (pure,)).fetchall()
+                    if o and o[0]["date"] == m["date"] and o[0]["close"] is not None:
+                        close = close or o[0]["close"]
+                        if len(o) > 1 and o[1]["close"]:
+                            pct = round((o[0]["close"] - o[1]["close"]) / o[1]["close"] * 100, 2)
                 watch.append({"code": s["code"], "name": s.get("name"),
-                              "close": q.get("close") or chip.get("close"),
-                              "chg_pct": q.get("chg_pct"), "in_latest": s.get("in_latest")})
+                              "close": close or chip.get("close"),
+                              "chg_pct": pct, "in_latest": s.get("in_latest")})
         except Exception:  # noqa: BLE001 — 自選股失敗不影響推播主體
             pass
         ai = market_summary(refresh=0)
