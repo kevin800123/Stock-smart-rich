@@ -303,6 +303,41 @@ def test_line_cup_section_only_picks_intersection(tmp_path, monkeypatch):
     assert "元太" not in txt   # 非交集股不出現
 
 
+def test_trades_endpoints_flow(tmp_path, monkeypatch):
+    """#6 交易帳本：記一筆（自動補股名）→ 未平倉以最新收盤估 → 平倉 → 統計 → 刪除。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import (get_connection, init_db, bulk_upsert_ohlc,
+                                      insert_chip_snapshot, upsert_market_daily)
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-06-01", "taiex": 45000.0})
+    upsert_market_daily(c, {"date": "2026-06-10", "taiex": 45900.0})
+    bulk_upsert_ohlc(c, "2026-06-10", {"2330": {"open": 1, "high": 1, "low": 1, "close": 110.0}})
+    insert_chip_snapshot(c, "2026-06-01", [{"code": "2330.TW", "name": "台積電", "close": 100.0}])
+    app = create_app()
+    client = TestClient(app)
+    r = client.post("/api/trades", json={"code": "2330", "shares": 1000,
+                                         "entry_date": "2026-06-01", "entry_price": 100.0}).json()
+    assert r["ok"] is True
+    t = r["trades"][0]
+    assert t["name"] == "台積電"                        # 股名自動從快照補
+    assert t["status"] == "open" and t["mark"] == 110.0  # 未平倉以最新收盤估
+    assert t["net_pct"] == 9.41                          # 毛+10% − 0.585% 費用（浮點捨入）
+    tid = t["id"]
+    # 缺必填欄位擋下
+    assert client.post("/api/trades", json={"code": "", "shares": 0}).json()["ok"] is False
+    r2 = client.post(f"/api/trades/{tid}/close",
+                     json={"exit_date": "2026-06-10", "exit_price": 110.0}).json()
+    t2 = r2["trades"][0]
+    assert t2["status"] == "closed" and t2["pnl"] == 9415
+    assert t2["mkt_pct"] == 2.0 and t2["alpha"] == 7.41  # 同期大盤對照
+    assert r2["stats"]["closed_n"] == 1 and r2["stats"]["win_rate"] == 100.0
+    assert client.post("/api/trades/999/close", json={"exit_price": 1.0}).json()["ok"] is False
+    r3 = client.delete(f"/api/trades/{tid}").json()
+    assert r3["ok"] is True and r3["trades"] == []
+
+
 def test_options_sentiment_endpoint(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily

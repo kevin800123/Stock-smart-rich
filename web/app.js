@@ -136,7 +136,63 @@ function showView(name) {
   if (name === "cup") { if (!cupLoaded) loadCupHandle(); else cupChart && cupChart.resize(); }
   if (name === "weekly") loadCsvSummary(false);  // 讀快取即回；匯入後才會重新生成
   if (name === "watch") loadWatchlist();
+  if (name === "trades") loadTrades();
   if (name === "settings") loadSettings();
+}
+
+// ========== 交易帳本（#6）：實單/模擬單記錄與績效統計 ==========
+async function loadTrades() {
+  if (!$("tr-open")) return;
+  if (!$("tr-date").value) {  // 進場日預設今天（本地時區，避免 toISOString 的 UTC 偏移）
+    const d = new Date();
+    $("tr-date").value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  try { renderTrades(await getJSON("/api/trades")); }
+  catch (e) { $("tr-open").innerHTML = '<span class="muted small">載入失敗</span>'; }
+}
+function renderTrades(d) {
+  const cls = (v) => (v > 0 ? "up" : v < 0 ? "down" : "");
+  const pct = (v) => v == null ? "—" : (v > 0 ? "+" : "") + fmt(v, 2) + "%";
+  const money = (v) => v == null ? "—" : (v > 0 ? "+" : "") + fmt(v, 0);
+  const R = 'style="text-align:right"';
+  const s = d.stats || {};
+  $("tr-stats").innerHTML = [
+    ["已平倉筆數", s.closed_n], ["勝率", s.win_rate == null ? "—" : fmt(s.win_rate, 1) + "%"],
+    ["平均賺", pct(s.avg_win)], ["平均賠", pct(s.avg_loss)],
+    ["賺賠比", s.payoff == null ? "—" : fmt(s.payoff, 2)], ["期望值/筆", pct(s.expectancy)],
+    ["已實現損益", money(s.realized_pnl)], ["未實現損益", money(s.open_pnl)],
+    ["平均勝過大盤", pct(s.avg_alpha)],
+  ].map(([k, v]) => `<div class="stat"><div class="stat-k">${k}</div><div class="stat-v">${v == null ? "—" : v}</div></div>`).join("");
+  const ts = d.trades || [], op = ts.filter(t => t.status === "open"), cl = ts.filter(t => t.status === "closed");
+  $("tr-open").innerHTML = op.length
+    ? `<table><tr><th>股票</th><th>進場日</th><th ${R}>進場價</th><th ${R}>股數</th><th ${R}>現價</th><th ${R}>未實現%</th><th ${R}>未實現損益</th><th ${R}>同期大盤</th><th></th></tr>`
+      + op.map(t => `<tr title="${esc(t.note || "")}"><td>${stockLink(t.code, t.name)}</td><td>${esc(t.entry_date)}</td>`
+        + `<td ${R}>${fmt(t.entry_price, 2)}</td><td ${R}>${fmt(t.shares, 0)}</td><td ${R}>${t.mark == null ? "—" : fmt(t.mark, 2)}</td>`
+        + `<td ${R} class="${cls(t.net_pct)}">${pct(t.net_pct)}</td><td ${R} class="${cls(t.pnl)}">${money(t.pnl)}</td>`
+        + `<td ${R}>${pct(t.mkt_pct)}</td><td><button class="file-label tr-close" data-id="${t.id}">平倉</button> <button class="file-label tr-del" data-id="${t.id}">刪</button></td></tr>`).join("") + "</table>"
+    : '<span class="muted small">無未平倉部位（上方「＋記一筆」開始記錄）</span>';
+  $("tr-closed").innerHTML = cl.length
+    ? `<table><tr><th>股票</th><th>持有期間</th><th ${R}>進→出</th><th ${R}>股數</th><th ${R}>淨報酬</th><th ${R}>損益</th><th ${R}>同期大盤</th><th ${R}>勝過大盤</th><th></th></tr>`
+      + cl.map(t => `<tr title="${esc(t.note || "")}"><td>${stockLink(t.code, t.name)}</td><td>${esc(t.entry_date)} → ${esc(t.exit_date)}</td>`
+        + `<td ${R}>${fmt(t.entry_price, 2)} → ${fmt(t.exit_price, 2)}</td><td ${R}>${fmt(t.shares, 0)}</td>`
+        + `<td ${R} class="${cls(t.net_pct)}">${pct(t.net_pct)}</td><td ${R} class="${cls(t.pnl)}">${money(t.pnl)}</td>`
+        + `<td ${R}>${pct(t.mkt_pct)}</td><td ${R} class="${cls(t.alpha)}">${pct(t.alpha)}</td>`
+        + `<td><button class="file-label tr-del" data-id="${t.id}">刪</button></td></tr>`).join("") + "</table>"
+    : '<span class="muted small">尚無已平倉交易</span>';
+}
+async function trTableClick(e) {
+  const cbtn = e.target.closest(".tr-close"), dbtn = e.target.closest(".tr-del");
+  if (cbtn) {
+    const p = parseFloat(prompt("出場價？") || ""); if (!p || p <= 0) return;
+    const ds = (prompt("出場日（YYYY-MM-DD，留空＝今天）") || "").trim();
+    const body = ds ? { exit_price: p, exit_date: ds } : { exit_price: p };
+    const r = await fetch(`/api/trades/${cbtn.dataset.id}/close`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then((x) => x.json());
+    if (r.ok) renderTrades(r); else alert(r.error || "平倉失敗");
+  } else if (dbtn) {
+    if (!confirm("確定刪除這筆交易？（不可復原）")) return;
+    const r = await fetch(`/api/trades/${dbtn.dataset.id}`, { method: "DELETE" }).then((x) => x.json());
+    if (r.ok) renderTrades(r); else alert(r.error || "刪除失敗");
+  }
 }
 
 async function loadSettings() {
@@ -1015,6 +1071,21 @@ $("nav-order").addEventListener("click", (e) => {
   const up = e.target.closest(".no-up"), dn = e.target.closest(".no-dn");
   if (up) moveNav(+up.dataset.i, -1); else if (dn) moveNav(+dn.dataset.i, 1);
 });
+$("btn-tr-add").addEventListener("click", async () => {
+  const st = $("tr-status"); st.textContent = "記錄中…";
+  try {
+    const r = await fetch("/api/trades", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: $("tr-code").value.trim(), shares: parseInt($("tr-shares").value, 10) || 0,
+        entry_date: $("tr-date").value, entry_price: parseFloat($("tr-price").value) || 0,
+        note: $("tr-note").value.trim() }) }).then((x) => x.json());
+    if (!r.ok) { st.textContent = r.error || "記錄失敗"; return; }
+    ["tr-code", "tr-shares", "tr-price", "tr-note"].forEach((id) => { $(id).value = ""; });
+    st.textContent = "已記錄 ✓"; setTimeout(() => { st.textContent = ""; }, 1500);
+    renderTrades(r);
+  } catch (e) { st.textContent = "記錄失敗：" + e.message; }
+});
+$("tr-open").addEventListener("click", trTableClick);
+$("tr-closed").addEventListener("click", trTableClick);
 $("cup-list").addEventListener("click", (e) => {
   const a = e.target.closest(".cup-chip"); if (!a) return;
   e.preventDefault();

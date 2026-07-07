@@ -100,6 +100,11 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS stock_ohlc (date TEXT, code TEXT, open REAL, high REAL, "
                  "low REAL, close REAL, PRIMARY KEY(date, code))")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ohlc_code ON stock_ohlc(code, date)")
+    # 交易帳本（實單/模擬單；fee_pct=來回費用%，NULL=用預設 0.585）
+    conn.execute("CREATE TABLE IF NOT EXISTS trades ("
+                 "id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT, name TEXT, shares INTEGER, "
+                 "entry_date TEXT, entry_price REAL, exit_date TEXT, exit_price REAL, "
+                 "fee_pct REAL, note TEXT, created_at TEXT)")
     # 既有資料庫補上後來新增的欄位
     mkt_existing = {r[1] for r in conn.execute("PRAGMA table_info(market_daily)").fetchall()}
     for col in MARKET_COLS:
@@ -275,6 +280,35 @@ def add_watch(conn: sqlite3.Connection, code: str, name: str = "") -> None:
 def remove_watch(conn: sqlite3.Connection, code: str) -> None:
     conn.execute("DELETE FROM watchlist WHERE code=?", (code,))
     conn.commit()
+
+
+def list_trades(conn: sqlite3.Connection) -> list[dict]:
+    return [dict(r) for r in conn.execute(
+        "SELECT * FROM trades ORDER BY entry_date DESC, id DESC").fetchall()]
+
+
+def add_trade(conn: sqlite3.Connection, t: dict) -> int:
+    cur = conn.execute(
+        "INSERT INTO trades (code, name, shares, entry_date, entry_price, "
+        "exit_date, exit_price, fee_pct, note, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (t["code"], t.get("name") or "", int(t["shares"]), t["entry_date"],
+         float(t["entry_price"]), t.get("exit_date"), t.get("exit_price"),
+         t.get("fee_pct"), t.get("note") or "", datetime.now().isoformat()))
+    conn.commit()
+    return cur.lastrowid
+
+
+def close_trade(conn: sqlite3.Connection, tid: int, exit_date: str, exit_price: float) -> bool:
+    cur = conn.execute("UPDATE trades SET exit_date=?, exit_price=? WHERE id=?",
+                       (exit_date, float(exit_price), int(tid)))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def delete_trade(conn: sqlite3.Connection, tid: int) -> bool:
+    cur = conn.execute("DELETE FROM trades WHERE id=?", (int(tid),))
+    conn.commit()
+    return cur.rowcount > 0
 
 
 def get_tx_history(conn: sqlite3.Connection) -> list[dict]:

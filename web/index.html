@@ -25,6 +25,7 @@
       <a class="nav" data-view="watch"><span class="ico">⭐</span><span class="lbl">自選股</span></a>
       <a class="nav" data-view="osfut"><span class="ico">🌏</span><span class="lbl">海期監控</span></a>
       <a class="nav" data-view="cup"><span class="ico">🏆</span><span class="lbl">杯柄選股</span></a>
+      <a class="nav" data-view="trades"><span class="ico">📒</span><span class="lbl">交易帳本</span></a>
       <a class="nav" data-view="weekly"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
       <a class="nav" data-view="settings"><span class="ico">⚙️</span><span class="lbl">設定</span></a>
     </nav>
@@ -206,6 +207,41 @@
           注意：①以「突破壓力線進場」為前提估算，實際進場價與滑價/手續費未計；
           ②除權息隔日的跳空會讓 ATR 暫時偏大（停損偏寬），屬已知失真；
           ③停損是紀律不是預測——碰到就出場，讓「小賠大賺」的期望值替你工作。
+        </div>
+      </section>
+
+      <!-- ===== 交易帳本 ===== -->
+      <section id="view-trades" class="view">
+        <div class="toolbar">
+          <span class="pane-title" style="margin:0">交易帳本</span>
+          <span class="muted small">記錄實單/模擬單，用真實數據驗證這套選股到底賺不賺錢</span>
+        </div>
+        <div class="toolbar" style="flex-wrap:wrap">
+          <input type="text" id="tr-code" class="stock-input" placeholder="代號 如2330" style="width:100px" />
+          <input type="number" id="tr-shares" class="stock-input" placeholder="股數(1張=1000)" style="width:120px" />
+          <input type="date" id="tr-date" class="stock-input" style="width:140px" />
+          <input type="number" id="tr-price" class="stock-input" placeholder="進場價" step="0.01" style="width:90px" />
+          <input type="text" id="tr-note" class="stock-input" placeholder="備註（如：杯柄突破）" style="width:170px" />
+          <button id="btn-tr-add" class="file-label">＋記一筆</button>
+          <span id="tr-status" class="muted small"></span>
+        </div>
+        <div id="tr-stats" class="stats-grid" style="max-width:none"></div>
+        <div class="ai-head"><span>未平倉</span></div>
+        <div id="tr-open" class="table-wrap"></div>
+        <div class="ai-head"><span>已平倉</span></div>
+        <div id="tr-closed" class="table-wrap"></div>
+        <div class="wave-help">
+          <b>怎麼用</b><br/>
+          每筆買進先「＋記一筆」（<b>模擬單也記</b>——用假錢先驗證系統，比用真錢學便宜）；
+          賣出時按該筆的「平倉」填出場價；帳本存在資料庫，雲端跟著每日備份。<br/><br/>
+          <b>統計怎麼讀</b><br/>
+          ・所有報酬與損益皆為「淨值」＝已扣來回費用 0.585%（買賣手續費 0.1425%×2＋賣出證交稅 0.3%）。<br/>
+          ・未平倉以資料庫最新收盤估值（盤後更新，非即時）。<br/>
+          ・<b>期望值</b>＝勝率×平均賺%＋(1−勝率)×平均賠%：每做一筆的平均期望報酬，
+          <b>&gt;0 才是長期可玩的系統</b>——這一個數字就是「這套方法賺不賺錢」的答案。<br/>
+          ・<b>賺賠比</b>＝平均賺÷平均賠：勝率低沒關係，賺賠比夠大照樣賺（小賠大賺的本質）。<br/>
+          ・<b>勝過大盤</b>＝同持有期間你的淨報酬 vs 加權指數：長期跑輸大盤的話，直接買 0050 比較輕鬆。<br/>
+          至少累積 20～30 筆已平倉交易，統計才有參考意義；前幾筆數字跳動很大是正常的。
         </div>
       </section>
 

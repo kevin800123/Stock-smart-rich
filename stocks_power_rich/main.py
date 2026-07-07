@@ -17,8 +17,11 @@ from . import analysis, backtest, csv_import, exporter, gemini, line_push, patte
 from .config import load_config
 from .sources import intl, kline, mis, taifex, tdcc, tpex, twse
 from .db import (
+    add_trade,
     add_watch,
     backup_db,
+    close_trade,
+    delete_trade,
     get_ai_cache,
     get_all_ohlc,
     get_connection,
@@ -29,6 +32,7 @@ from .db import (
     get_snapshot_dates,
     get_tx_history,
     init_db,
+    list_trades,
     list_watch,
     ohlc_dates,
     remove_watch,
@@ -613,6 +617,72 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     def del_watchlist(code: str):
         remove_watch(conn(), code)
         return get_watchlist()
+
+    # ===== 交易帳本（#6）：實單/模擬單記錄與績效統計 =====
+    def _trades_payload(c) -> dict:
+        """帳本＋統計：未平倉補最新收盤估值、附同期大盤對照（計算見 analysis.trade_stats）。"""
+        trades = list_trades(c)
+        closes = {}
+        for code in {t["code"] for t in trades if t["exit_price"] is None}:
+            r = c.execute("SELECT close FROM stock_ohlc WHERE code=? ORDER BY date DESC LIMIT 1",
+                          (code,)).fetchone()
+            if r and r[0]:
+                closes[code] = r[0]
+        taiex = {r[0]: r[1] for r in c.execute(
+            "SELECT date, taiex FROM market_daily WHERE taiex IS NOT NULL").fetchall()}
+        return {"ok": True, **analysis.trade_stats(trades, closes, taiex)}
+
+    @app.get("/api/trades")
+    def trades_list():
+        return _trades_payload(conn())
+
+    @app.post("/api/trades")
+    def trades_add(payload: dict = Body(...)):
+        c = conn()
+        code = str(payload.get("code") or "").strip().split(".")[0]
+        try:
+            shares = int(payload.get("shares") or 0)
+            entry_price = float(payload.get("entry_price") or 0)
+        except (TypeError, ValueError):
+            shares, entry_price = 0, 0.0
+        if not code or shares <= 0 or entry_price <= 0:
+            return {"ok": False, "error": "代號/股數/進場價必填且需為正數"}
+        name = str(payload.get("name") or "").strip()
+        if not name:  # 股名自動從 CSV 快照補（無網路呼叫；查無留空）
+            r = c.execute("SELECT name FROM chip_snapshot WHERE code=? OR code LIKE ? "
+                          "ORDER BY snap_date DESC LIMIT 1", (code, code + ".%")).fetchone()
+            name = r[0] if r and r[0] else ""
+        try:
+            fee = float(payload["fee_pct"]) if payload.get("fee_pct") not in (None, "") else None
+        except (TypeError, ValueError):
+            fee = None
+        add_trade(c, {"code": code, "name": name, "shares": shares,
+                      "entry_date": str(payload.get("entry_date")
+                                        or datetime.now().strftime("%Y-%m-%d")),
+                      "entry_price": entry_price, "fee_pct": fee,
+                      "note": str(payload.get("note") or "")[:200]})
+        return _trades_payload(c)
+
+    @app.post("/api/trades/{tid}/close")
+    def trades_close(tid: int, payload: dict = Body(...)):
+        c = conn()
+        try:
+            price = float(payload.get("exit_price") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        if price <= 0:
+            return {"ok": False, "error": "出場價必填且需為正數"}
+        if not close_trade(c, tid, str(payload.get("exit_date")
+                                       or datetime.now().strftime("%Y-%m-%d")), price):
+            return {"ok": False, "error": f"查無交易 #{tid}"}
+        return _trades_payload(c)
+
+    @app.delete("/api/trades/{tid}")
+    def trades_delete(tid: int):
+        c = conn()
+        if not delete_trade(c, tid):
+            return {"ok": False, "error": f"查無交易 #{tid}"}
+        return _trades_payload(c)
 
     @app.get("/api/options-sentiment")
     def options_sentiment():
