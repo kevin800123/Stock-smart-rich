@@ -1056,7 +1056,10 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         ai = market_summary(refresh=0)
         intl = [{"key": k, "label": lb, "value": m.get(k), "chg_pct": m.get(k + "_chg")}
                 for k, lb in _PUBLIC_INTL_FIELDS if m.get(k) is not None]
+        # 法人買賣超個股排行（外資／張）：借用既有 inst_ranking()，只取前 5 檔精簡呈現
+        rank = inst_ranking(who="foreign", top=5, unit="shares")
         return {"date": m.get("date"),
+                "inst_rank": {"buy": rank["buy"], "sell": rank["sell"]},
                 "taiex": m.get("taiex"), "taiex_chg": m.get("taiex_chg"), "turnover": m.get("turnover"),
                 "tx_price": m.get("tx_price"), "tx_chg": m.get("tx_chg"),
                 "intl": intl,
@@ -1087,6 +1090,10 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     .yd{color:var(--muted);font-size:11px;margin-left:4px}
     .muted{color:var(--muted);font-size:13px} .ai{white-space:pre-wrap;font-size:14px}
     a{color:var(--accent)}
+    .rank-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+    .rank-grid h4{grid-column:1/-1;margin:2px 0 4px;font-size:12px;font-weight:400}
+    .rank-row{display:flex;justify-content:space-between;font-size:13px;padding:3px 0}
+    .rank-row .code{color:var(--muted);font-size:11px;margin-right:3px}
     """
 
     def _public_shell(title: str, body: str) -> str:
@@ -1125,6 +1132,16 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         document.getElementById("intl-card").style.display = "";
         intlEl.innerHTML = d.intl.map(x =>
           row(esc(x.label), fmt(x.value) + (x.chg_pct!=null ? ` <span class="${cls(x.chg_pct)}">${signed(x.chg_pct)}%</span>` : ""))).join("");
+      }
+
+      // 法人買賣超個股排行（外資／張，前5檔）
+      const rk = d.inst_rank || {};
+      if ((rk.buy||[]).length || (rk.sell||[]).length) {
+        document.getElementById("rank-card").style.display = "";
+        const line = s => `<div class="rank-row"><span><span class="code">${esc(s.code)}</span>${esc(s.name)}</span><span class="${cls(s.net)}">${signed(s.net,0)}</span></div>`;
+        document.getElementById("rank").innerHTML =
+          `<h4 class="up">買超 Top5</h4>${(rk.buy||[]).map(line).join("")}` +
+          `<h4 class="down">賣超 Top5</h4>${(rk.sell||[]).map(line).join("")}`;
       }
 
       // 三大法人
@@ -1184,6 +1201,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         <div id="tx-row"></div></div>
         <div class="card" id="intl-card" style="display:none"><div class="card-title">國際行情</div><div id="intl"></div></div>
         <div class="card" id="inst-card" style="display:none"><div class="card-title">三大法人買賣超</div><div id="inst"></div></div>
+        <div class="card" id="rank-card" style="display:none"><div class="card-title">法人買賣超個股排行（外資／張）</div><div class="rank-grid" id="rank"></div></div>
         <div class="card" id="fut-card" style="display:none"><div class="card-title">期貨籌碼</div><div id="fut"></div></div>
         <div class="card" id="margin-card" style="display:none"><div class="card-title">融資券</div><div id="margin"></div></div>
         <div class="card"><div class="card-title">類股強弱</div><div id="secs"></div></div>

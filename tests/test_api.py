@@ -726,6 +726,8 @@ def test_public_pages_bypass_basic_auth(tmp_path, monkeypatch):
                             "margin_maintenance": 186.1})
     monkeypatch.setattr(twse, "fetch_sector_indices", lambda date=None: [
         {"name": "半導體", "close": 1.0, "chg_pct": 2.0}, {"name": "航運", "close": 1.0, "chg_pct": -1.5}])
+    monkeypatch.setattr(twse, "fetch_t86", lambda date=None: {
+        "2330": {"name": "台積電", "foreign": 29635}, "2317": {"name": "鴻海", "foreign": -17934}})
     app = create_app()
     client = TestClient(app)
     for path in ("/public/overview", "/public/overview.js", "/public/logic",
@@ -743,6 +745,9 @@ def test_public_pages_bypass_basic_auth(tmp_path, monkeypatch):
     assert r["fut"]["tx_foreign_oi"] == -80042.0 and r["fut"]["retail_ls_mtx"] == 0.1655
     assert r["margin"]["balance"] == 9531735.0 and r["margin"]["chg"] == -130236.0
     assert r["margin"]["maintenance"] == 186.1 and r["margin"]["maintenance_prev"] == 180.0
+    # 法人買賣超個股排行（使用者反應「三大法人買賣超的個股沒有放」）
+    assert r["inst_rank"]["buy"][0]["code"] == "2330" and r["inst_rank"]["buy"][0]["net"] == 29635
+    assert r["inst_rank"]["sell"][0]["code"] == "2317" and r["inst_rank"]["sell"][0]["net"] == -17934
     # 個人資料端點仍需帳密（不可因新增的 /public 放行條件被誤放行）
     assert client.get("/api/trades").status_code == 401
     assert client.get("/api/settings").status_code == 401
