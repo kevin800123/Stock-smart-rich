@@ -404,28 +404,36 @@ function cupChartOption(d, m) {
     name: "K線", type: "candlestick", data: d.candles,
     itemStyle: { color: "#e04545", color0: "#2ea043", borderColor: "#e04545", borderColor0: "#2ea043" },
     markLine: {
-      symbol: ["none", "none"], label: { show: true, color: "#fff", fontSize: 11 },
+      symbol: ["none", "none"],
+      // 標籤放線段中段（非末端）：末端貼右緣會被 grid 裁切破版；中段有留白、也不會
+      // 跟右緣 pin 疊在一起（右緣點＝趨勢線終點＝壓力線起點，三者同座標）
+      label: { show: true, position: "middle", color: "#fff", fontSize: 11,
+               backgroundColor: "rgba(0,0,0,0.55)", padding: [2, 4], borderRadius: 3 },
       data: [
-        [{ name: "趨勢線", coord: [m.left_date, m.left_price], lineStyle: { color: "#f0a500", width: 2 } },
+        // 趨勢線不標字（左右緣已有 pin），避免與右緣 pin 疊字
+        [{ coord: [m.left_date, m.left_price], lineStyle: { color: "#f0a500", width: 2 }, label: { show: false } },
          { coord: [m.right_date, m.right_price] }],
-        [{ name: "壓力", coord: [m.right_date, m.resistance], lineStyle: { color: "#6cb6ff", width: 2, type: "dashed" } },
+        [{ name: `壓力 ${fmt(m.resistance, 2)}`, coord: [m.right_date, m.resistance],
+          lineStyle: { color: "#6cb6ff", width: 2, type: "dashed" } },
          { coord: [lastDate, m.resistance] }],
       ],
     },
     markPoint: {
-      symbol: "pin", symbolSize: 34, label: { color: "#1a1a1a", fontSize: 10, fontWeight: 700, formatter: (p) => p.data.value },
+      symbol: "pin", symbolSize: 34, symbolOffset: [0, -2],
+      label: { color: "#1a1a1a", fontSize: 10, fontWeight: 700, formatter: (p) => p.data.value },
       data: [{ value: "左緣", coord: [m.left_date, m.left_price], itemStyle: { color: "#f0a500" } },
              { value: "右緣", coord: [m.right_date, m.right_price], itemStyle: { color: "#f0a500" } }],
     },
   };
   if (m.stop_loss != null && m.stop_loss > 0)  // 停損線＝突破價−2×ATR14（部位管理，見下方說明）
     candle.markLine.data.push(
-      [{ name: "停損", coord: [m.right_date, m.stop_loss], lineStyle: { color: "#e04545", width: 2, type: "dashed" } },
+      [{ name: `停損 ${fmt(m.stop_loss, 2)}`, coord: [m.right_date, m.stop_loss],
+        lineStyle: { color: "#e04545", width: 2, type: "dashed" } },
        { coord: [lastDate, m.stop_loss] }]);
   return {
     tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
     legend: { data: ["K線", ...MA_DEFS.map((x) => "MA" + x.n)], textStyle: { color: "#ccc" } },
-    grid: { left: 55, right: 18, top: 30, bottom: 50 },
+    grid: { left: 55, right: 30, top: 30, bottom: 50 },
     xAxis: { type: "category", data: d.dates, axisLabel: { color: "#999" } },
     yAxis: { scale: true, axisLabel: { color: "#999" } },
     dataZoom: [{ type: "inside", start: 35 }, { type: "slider", start: 35, bottom: 0, height: 16 }],
