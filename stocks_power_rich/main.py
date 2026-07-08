@@ -8,7 +8,7 @@ import threading
 import time
 
 from fastapi import Body, FastAPI, File, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from datetime import datetime
@@ -89,9 +89,13 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
 
     # 全站 HTTP Basic Auth：帳密兩者皆設定才啟用（本機開發未設即不啟用、無感）。
     # 覆蓋所有請求含靜態頁；出站的 LINE 推播與進程內排程不經 HTTP，不受影響。
+    # 例外：/public/* 免帳密——供沒有帳密的 LINE 好友從圖文選單開啟（總覽/選股邏輯/免責聲明），
+    # 只含「本來就會 LINE 廣播出去」等級的公開市場資訊，見 public_overview() 註解。
     if cfg.basic_user and cfg.basic_pass:
         @app.middleware("http")
         async def _basic_auth(request, call_next):
+            if request.url.path.startswith("/public/"):  # 精確前綴，避免 /publicx 之類誤放行
+                return await call_next(request)
             if _check_basic(request.headers.get("Authorization", ""), cfg.basic_user, cfg.basic_pass):
                 return await call_next(request)
             return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="SPR"'})
@@ -1031,6 +1035,123 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         if result.get("enabled"):
             set_ai_cache(c, key, result)
         return result
+
+    # ===== 公開頁面（免帳密，供 LINE 好友查看）=====
+    # 只回傳「本來就會 LINE 廣播出去」的等級的公開市場資訊（大盤/類股/AI解讀），
+    # 絕不含個人資料（交易帳本、自選股、設定）。/public 前綴在 Basic Auth 中介層被放行，見上方註冊處。
+    @app.get("/public/api/overview")
+    def public_overview():
+        c = conn()
+        row = c.execute("SELECT * FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
+        m = dict(row) if row else {}
+        secs = [s for s in _sectors_for(c, m["date"])
+                if s.get("chg_pct") is not None] if m.get("date") else []
+        ups = sorted([s for s in secs if (s.get("chg_pct") or 0) > 0], key=lambda s: -s["chg_pct"])[:3]
+        downs = sorted([s for s in secs if (s.get("chg_pct") or 0) < 0], key=lambda s: s["chg_pct"])[:3]
+        ai = market_summary(refresh=0)
+        return {"date": m.get("date"), "taiex": m.get("taiex"), "taiex_chg": m.get("taiex_chg"),
+                "turnover": m.get("turnover"),
+                "sectors_up": [{"name": s["name"], "chg_pct": s["chg_pct"]} for s in ups],
+                "sectors_down": [{"name": s["name"], "chg_pct": s["chg_pct"]} for s in downs],
+                "ai_text": (ai.get("text") or "") if ai.get("enabled") else ""}
+
+    _PUBLIC_CSS = """
+    :root{--bg:#0f1419;--panel:#1a2029;--border:#2b3038;--up:#e04545;--down:#2ea043;--accent:#f0a500;--text:#e6e6e6;--muted:#8a919c}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;line-height:1.7}
+    .wrap{max-width:640px;margin:0 auto;padding:20px 16px 40px}
+    h1{font-size:19px;color:var(--accent);margin:0 0 4px} .sub{color:var(--muted);font-size:13px;margin-bottom:18px}
+    .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:14px}
+    .up{color:var(--up)} .down{color:var(--down)} .big{font-size:26px;font-weight:700}
+    .row{display:flex;justify-content:space-between;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--border)}
+    .row:last-child{border-bottom:none}
+    .muted{color:var(--muted);font-size:13px} .ai{white-space:pre-wrap;font-size:14px}
+    a{color:var(--accent)}
+    """
+
+    def _public_shell(title: str, body: str) -> str:
+        return (f"<!doctype html><html lang='zh-Hant'><head><meta charset='utf-8'>"
+                f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                f"<title>{title}｜股力智富</title><style>{_PUBLIC_CSS}</style></head>"
+                f"<body><div class='wrap'>{body}</div></body></html>")
+
+    # CSP 的 script-src 沒開 unsafe-inline（專案既有安全政策，見 _security_headers）：
+    # <script> 內文會被瀏覽器擋掉，抓資料的 JS 必須外接成獨立檔案、走 /public/ 前綴才能免帳密載入。
+    _PUBLIC_OVERVIEW_JS = """
+    const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    const fmt = (v,d=2) => (v==null?"—":Number(v).toLocaleString("en-US",{maximumFractionDigits:d}));
+    fetch("/public/api/overview").then(r=>r.json()).then(d=>{
+      document.getElementById("date").textContent = d.date ? "資料日期："+d.date : "尚無資料";
+      document.getElementById("taiex").textContent = fmt(d.taiex);
+      const chg = d.taiex_chg;
+      const chgEl = document.getElementById("chg");
+      if (chg != null) { chgEl.textContent = (chg>0?"▲":chg<0?"▼":"") + fmt(Math.abs(chg)); chgEl.className = chg>0?"up":chg<0?"down":""; }
+      document.getElementById("tv").textContent = d.turnover != null ? fmt(d.turnover,0)+"億" : "—";
+      const rows = [...(d.sectors_up||[]).map(s=>({...s,cls:"up",ic:"🔥"})), ...(d.sectors_down||[]).map(s=>({...s,cls:"down",ic:"❄"}))];
+      document.getElementById("secs").innerHTML = rows.length ? rows.map(s=>
+        `<div class="row"><span>${s.ic} ${esc(s.name)}</span><span class="${s.cls}">${s.chg_pct>0?"+":""}${fmt(s.chg_pct)}%</span></div>`).join("")
+        : '<div class="muted">尚無資料</div>';
+      if (d.ai_text) { document.getElementById("ai-card").style.display=""; document.getElementById("ai").textContent = d.ai_text; }
+    }).catch(()=>{ document.getElementById("date").textContent = "載入失敗，稍後再試"; });
+    """
+
+    @app.get("/public/overview.js")
+    def public_overview_js():
+        return Response(content=_PUBLIC_OVERVIEW_JS, media_type="application/javascript")
+
+    @app.get("/public/overview", response_class=HTMLResponse)
+    def public_overview_page():
+        """公開總覽（免帳密）：只顯示大盤/類股/AI解讀等級的公開市場資訊，供 LINE 好友查看。"""
+        body = """
+        <h1>📊 台股總覽</h1><div class="sub" id="date">載入中…</div>
+        <div class="card"><div class="row"><span>加權指數</span><span class="big" id="taiex">—</span></div>
+        <div class="row"><span>漲跌幅</span><span id="chg">—</span></div>
+        <div class="row"><span>成交金額</span><span id="tv">—</span></div></div>
+        <div class="card"><div class="muted" style="margin-bottom:8px">類股強弱</div><div id="secs"></div></div>
+        <div class="card" id="ai-card" style="display:none"><div class="muted" style="margin-bottom:8px">AI 解讀</div><div class="ai" id="ai"></div></div>
+        <script src="/public/overview.js"></script>"""
+        return _public_shell("台股總覽", body)
+
+    @app.get("/public/logic", response_class=HTMLResponse)
+    def public_logic_page():
+        """公開頁：亞當杯柄選股邏輯說明（純靜態文字，與杯柄選股頁下方說明同步維護）。"""
+        body = """
+        <h1>🏆 選股邏輯說明</h1><div class="sub">亞當杯柄型態，全市場上市＋上櫃每日掃描</div>
+        <div class="card">
+        <p>同時滿足四個條件才入選：</p>
+        <p>① <b>杯的左緣</b>：近 377 天（約 1.5 年）的大高點仍未被超越——曾經的強勢股。</p>
+        <p>② <b>杯身夠寬</b>：左緣比近 55 天高點（右緣）早 55 根 K 棒以上——排除雙頂、確保是「杯」。</p>
+        <p>③ <b>柄：回檔淺而守穩</b>：近 13 天沒再創 55 天新高（從右緣回檔中），且近 8 天低點高於近
+        21 天低點（沒破低、賣壓收斂）。</p>
+        <p>④ <b>強度濾網</b>：收盤位於近 55 天高低區間的上半部——弱勢整理不要。</p>
+        <p><span style="color:var(--accent)">●</span> <b>趨勢線</b>＝左緣→右緣（杯口斜率）；
+        <span style="color:#6cb6ff">●</span> <b>壓力線</b>＝右緣水平延伸，<b>突破壓力線＝進場訊號</b>。</p>
+        </div>
+        <div class="card">
+        <p><b>盤中突破警示</b>：09:00–13:35 每 5 分鐘掃描一次，現價需同時通過兩道濾網才推播——
+        突破幅度需超過「壓力線 + 0.3×ATR」（不是碰到就算，要有力道）；且需連續兩輪（約5分鐘）
+        都站穩門檻之上，避免開盤瞬間插針、微幅探頭的假訊號。</p>
+        </div>
+        <div class="card muted">
+        提醒：型態辨識為程式自動判定，盤中價有延遲；進場前請自行確認量價，並參考站內回測報告
+        了解此策略的歷史勝率與限制。詳見<a href="/public/disclaimer">免責聲明</a>。
+        </div>"""
+        return _public_shell("選股邏輯說明", body)
+
+    @app.get("/public/disclaimer", response_class=HTMLResponse)
+    def public_disclaimer_page():
+        """公開頁：免責聲明（純靜態文字）。"""
+        body = """
+        <h1>⚠️ 免責聲明</h1>
+        <div class="card">
+        <p>本站所有數據、型態訊號、AI 解讀與回測結果，<b>僅供參考，不構成任何投資建議</b>。</p>
+        <p>歷史數據與回測績效不代表未來表現；型態辨識與盤中警示為程式自動判定，可能有誤判、
+        延遲或資料來源異常，盤中報價尤其可能落後實際成交數秒至數十秒。</p>
+        <p>回測結果未計入手續費、證交稅、滑價等交易成本，實際報酬會低於顯示數字；
+        AI 解讀由語言模型自動生成，可能包含錯誤或過時資訊。</p>
+        <p>任何買賣決策及其後果，請自行判斷並自負風險，本站作者不負任何法律或財務責任。
+        如需投資建議，請洽專業金融顧問。</p>
+        </div>"""
+        return _public_shell("免責聲明", body)
 
     def _cup_push_info(c) -> dict | None:
         """組推播用杯柄資訊：今日符合數＋昨日訊號股今日『突破壓力』＋今日『新符合』。"""

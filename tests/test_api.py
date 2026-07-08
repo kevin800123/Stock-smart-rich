@@ -707,6 +707,35 @@ def test_basic_auth_gates_all_requests(tmp_path, monkeypatch):
     assert client.get("/api/dashboard", auth=("kevin", "s3cret")).status_code == 200
 
 
+def test_public_pages_bypass_basic_auth(tmp_path, monkeypatch):
+    """/public/* 供沒有帳密的 LINE 好友從圖文選單開啟；其餘路由（含個人資料端點）仍鎖住。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("SPR_BASIC_USER", "kevin")
+    monkeypatch.setenv("SPR_BASIC_PASS", "s3cret")
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import twse
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-07-08", "taiex": 45500.0, "taiex_chg": 20.0, "turnover": 3000.0})
+    monkeypatch.setattr(twse, "fetch_sector_indices", lambda date=None: [
+        {"name": "半導體", "close": 1.0, "chg_pct": 2.0}, {"name": "航運", "close": 1.0, "chg_pct": -1.5}])
+    app = create_app()
+    client = TestClient(app)
+    for path in ("/public/overview", "/public/overview.js", "/public/logic",
+                "/public/disclaimer", "/public/api/overview"):
+        r = client.get(path)
+        assert r.status_code == 200, path
+    r = client.get("/public/api/overview").json()
+    assert r["taiex"] == 45500.0 and r["sectors_up"][0]["name"] == "半導體"
+    assert r["sectors_down"][0]["name"] == "航運"
+    # 個人資料端點仍需帳密（不可因新增的 /public 放行條件被誤放行）
+    assert client.get("/api/trades").status_code == 401
+    assert client.get("/api/settings").status_code == 401
+    # 路徑相似但非公開前綴（防止字串誤判，如 /public-evil）不應被放行
+    assert client.get("/publicx/overview").status_code == 401
+
+
 def test_no_auth_when_unconfigured(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     monkeypatch.delenv("SPR_BASIC_USER", raising=False)
