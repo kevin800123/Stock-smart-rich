@@ -419,10 +419,14 @@ function cupChartOption(d, m) {
       ],
     },
     markPoint: {
-      symbol: "pin", symbolSize: 34, symbolOffset: [0, -2],
-      label: { color: "#1a1a1a", fontSize: 10, fontWeight: 700, formatter: (p) => p.data.value },
-      data: [{ value: "左緣", coord: [m.left_date, m.left_price], itemStyle: { color: "#f0a500" } },
-             { value: "右緣", coord: [m.right_date, m.right_price], itemStyle: { color: "#f0a500" } }],
+      // 圖釘原本跟趨勢線同橘色、融進線裡不明顯：改亮黃＋白色描邊讓圖釘從線上「跳出來」，
+      // 並用 symbolOffset 把圖釘往上提，避開與趨勢線／K棒交叉處的視覺重疊。
+      symbol: "pin", symbolSize: 40, symbolOffset: [0, -10],
+      itemStyle: { color: "#ffd23f", borderColor: "#fff", borderWidth: 1.5,
+                   shadowColor: "rgba(0,0,0,0.5)", shadowBlur: 4 },
+      label: { color: "#1a1a1a", fontSize: 12, fontWeight: 700, formatter: (p) => p.data.value },
+      data: [{ value: "左緣", coord: [m.left_date, m.left_price] },
+             { value: "右緣", coord: [m.right_date, m.right_price] }],
     },
   };
   if (m.stop_loss != null && m.stop_loss > 0)  // 停損線＝突破價−2×ATR14（部位管理，見下方說明）
