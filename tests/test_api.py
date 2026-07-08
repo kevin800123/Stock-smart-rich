@@ -748,6 +748,12 @@ def test_public_pages_bypass_basic_auth(tmp_path, monkeypatch):
     # 法人買賣超個股排行（使用者反應「三大法人買賣超的個股沒有放」）
     assert r["inst_rank"]["buy"][0]["code"] == "2330" and r["inst_rank"]["buy"][0]["net"] == 29635
     assert r["inst_rank"]["sell"][0]["code"] == "2317" and r["inst_rank"]["sell"][0]["net"] == -17934
+    # 切換鈕獨立端點（使用者反應「沒有金額可以選」）：who/unit 皆可切換，走同一支 inst_ranking()
+    r_trust = client.get("/public/api/inst-rank?who=trust").json()
+    assert r_trust["who"] == "trust"
+    monkeypatch.setattr(twse, "fetch_close_prices", lambda date=None: {"2330": 1000.0, "2317": 200.0})
+    r_val = client.get("/public/api/inst-rank?unit=value").json()
+    assert r_val["unit"] == "value" and r_val["buy"][0]["net"] == round(29635 * 1000.0 / 1e5, 2)
     # 個人資料端點仍需帳密（不可因新增的 /public 放行條件被誤放行）
     assert client.get("/api/trades").status_code == 401
     assert client.get("/api/settings").status_code == 401

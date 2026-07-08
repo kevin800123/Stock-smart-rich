@@ -1056,8 +1056,9 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         ai = market_summary(refresh=0)
         intl = [{"key": k, "label": lb, "value": m.get(k), "chg_pct": m.get(k + "_chg")}
                 for k, lb in _PUBLIC_INTL_FIELDS if m.get(k) is not None]
-        # 法人買賣超個股排行（外資／張）：借用既有 inst_ranking()，比照站內排行榜預設 top=20
-        rank = inst_ranking(who="foreign", top=20, unit="shares")
+        # 法人買賣超個股排行（外資／張，首次進頁預設值）：借用既有 inst_ranking()，
+        # top=15 對齊站內排行榜 loadInstRanking() 的預設；who/unit 切換走 /public/api/inst-rank
+        rank = inst_ranking(who="foreign", top=15, unit="shares")
         return {"date": m.get("date"),
                 "inst_rank": {"buy": rank["buy"], "sell": rank["sell"]},
                 "taiex": m.get("taiex"), "taiex_chg": m.get("taiex_chg"), "turnover": m.get("turnover"),
@@ -1077,6 +1078,12 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 "sectors_down": [{"name": s["name"], "chg_pct": s["chg_pct"]} for s in downs],
                 "ai_text": (ai.get("text") or "") if ai.get("enabled") else ""}
 
+    @app.get("/public/api/inst-rank")
+    def public_inst_rank(who: str = "foreign", unit: str = "shares"):
+        """法人買賣超個股排行的獨立輕量端點，供公開總覽頁的 外資/投信/三大法人、張/金額(億)
+        切換鈕使用（避免每次切換都重打整份 /public/api/overview）；直接複用站內同一支 inst_ranking()。"""
+        return inst_ranking(who=who, unit=unit, top=15)
+
     _PUBLIC_CSS = """
     :root{--bg:#0f1419;--panel:#1a2029;--border:#2b3038;--up:#e04545;--down:#2ea043;--accent:#f0a500;--text:#e6e6e6;--muted:#8a919c}
     *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;line-height:1.7}
@@ -1095,6 +1102,10 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     .rank-col h4{margin:2px 0 4px;font-size:12px;font-weight:400}
     .rank-row{display:flex;justify-content:space-between;font-size:13px;padding:3px 0}
     .rank-row .code{color:var(--muted);font-size:11px;margin-right:3px}
+    .tbtn{background:var(--panel);color:var(--text);border:1px solid var(--border);padding:5px 12px;
+    border-radius:6px;cursor:pointer;font-size:13px;margin:2px 4px 8px 0}
+    .tbtn.active{background:var(--accent);color:#1a1a1a;border-color:var(--accent);font-weight:700}
+    .tsep{color:var(--border);margin:0 4px}
     """
 
     def _public_shell(title: str, body: str) -> str:
@@ -1114,6 +1125,29 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     // 融資維持率是水位值（恆為正），不是漲跌幅，昨值不該強制加正負號（對齊 line_push.py 的 _fmt 而非 _signed）
     const ydLevel = (v,d=1,unit="") => v==null?"":`<span class="yd">(昨${fmt(v,d)}${unit})</span>`;
     const row = (label, valueHtml) => `<div class="row"><span>${label}</span><span>${valueHtml}</span></div>`;
+
+    // 法人買賣超個股排行：切換鈕（外資/投信/三大法人、張/金額(億)）狀態與重繪/重抓
+    let rankWho = "foreign", rankUnit = "shares";
+    function renderRank(rk, unit) {
+      const isVal = unit === "value";
+      const line = s => `<div class="rank-row"><span><span class="code">${esc(s.code)}</span>${esc(s.name)}</span>` +
+        `<span class="${cls(s.net)}">${signed(s.net, isVal?2:0)}${isVal?" 億":""}</span></div>`;
+      document.getElementById("rank").innerHTML =
+        `<div class="rank-col"><h4 class="up">買超 Top</h4>${(rk.buy||[]).map(line).join("")}</div>` +
+        `<div class="rank-col"><h4 class="down">賣超 Top</h4>${(rk.sell||[]).map(line).join("")}</div>`;
+    }
+    function loadRank() {
+      fetch(`/public/api/inst-rank?who=${rankWho}&unit=${rankUnit}`).then(r=>r.json())
+        .then(d=>renderRank(d, rankUnit)).catch(()=>{});
+    }
+    document.querySelectorAll("[data-who]").forEach(b => b.addEventListener("click", () => {
+      document.querySelectorAll("[data-who]").forEach(x=>x.classList.toggle("active", x===b));
+      rankWho = b.dataset.who; loadRank();
+    }));
+    document.querySelectorAll("[data-unit]").forEach(b => b.addEventListener("click", () => {
+      document.querySelectorAll("[data-unit]").forEach(x=>x.classList.toggle("active", x===b));
+      rankUnit = b.dataset.unit; loadRank();
+    }));
 
     fetch("/public/api/overview").then(r=>r.json()).then(d=>{
       document.getElementById("date").textContent = d.date ? "資料日期："+d.date : "尚無資料";
@@ -1135,14 +1169,12 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
           row(esc(x.label), fmt(x.value) + (x.chg_pct!=null ? ` <span class="${cls(x.chg_pct)}">${signed(x.chg_pct)}%</span>` : ""))).join("");
       }
 
-      // 法人買賣超個股排行（外資／張）：左右各一整欄，比照站內排行榜版面
+      // 法人買賣超個股排行：首次進頁用 overview 內附的資料先畫（省一次來回），
+      // 之後切換 外資/投信/三大法人、張/金額(億) 走 /public/api/inst-rank（見下方 loadRank）
       const rk = d.inst_rank || {};
       if ((rk.buy||[]).length || (rk.sell||[]).length) {
         document.getElementById("rank-card").style.display = "";
-        const line = s => `<div class="rank-row"><span><span class="code">${esc(s.code)}</span>${esc(s.name)}</span><span class="${cls(s.net)}">${signed(s.net,0)}</span></div>`;
-        document.getElementById("rank").innerHTML =
-          `<div class="rank-col"><h4 class="up">買超 Top</h4>${(rk.buy||[]).map(line).join("")}</div>` +
-          `<div class="rank-col"><h4 class="down">賣超 Top</h4>${(rk.sell||[]).map(line).join("")}</div>`;
+        renderRank(rk, "shares");
       }
 
       // 三大法人
@@ -1202,7 +1234,17 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         <div id="tx-row"></div></div>
         <div class="card" id="intl-card" style="display:none"><div class="card-title">國際行情</div><div id="intl"></div></div>
         <div class="card" id="inst-card" style="display:none"><div class="card-title">三大法人買賣超</div><div id="inst"></div></div>
-        <div class="card" id="rank-card" style="display:none"><div class="card-title">法人買賣超個股排行（外資／張）</div><div class="rank-grid" id="rank"></div></div>
+        <div class="card" id="rank-card" style="display:none">
+        <div class="card-title">法人買賣超個股排行</div>
+        <div>
+          <button class="tbtn active" data-who="foreign">外資</button>
+          <button class="tbtn" data-who="trust">投信</button>
+          <button class="tbtn" data-who="total">三大法人</button>
+          <span class="tsep">|</span>
+          <button class="tbtn active" data-unit="shares">張</button>
+          <button class="tbtn" data-unit="value">金額(億)</button>
+        </div>
+        <div class="rank-grid" id="rank"></div></div>
         <div class="card" id="fut-card" style="display:none"><div class="card-title">期貨籌碼</div><div id="fut"></div></div>
         <div class="card" id="margin-card" style="display:none"><div class="card-title">融資券</div><div id="margin"></div></div>
         <div class="card"><div class="card-title">類股強弱</div><div id="secs"></div></div>
