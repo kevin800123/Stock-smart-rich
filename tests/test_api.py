@@ -717,7 +717,13 @@ def test_public_pages_bypass_basic_auth(tmp_path, monkeypatch):
 
     c = get_connection(str(tmp_path / "t.sqlite"))
     init_db(c)
-    upsert_market_daily(c, {"date": "2026-07-08", "taiex": 45500.0, "taiex_chg": 20.0, "turnover": 3000.0})
+    upsert_market_daily(c, {"date": "2026-07-07", "taiex": 45000.0, "inst_foreign": -200.0,
+                            "margin_balance": 9000000.0, "margin_maintenance": 180.0})
+    upsert_market_daily(c, {"date": "2026-07-08", "taiex": 45500.0, "taiex_chg": 20.0, "turnover": 3000.0,
+                            "tx_price": 45600.0, "tx_chg": 30.0, "n225": 40000.0, "n225_chg": -1.2,
+                            "inst_foreign": 547.31, "inst_trust": 96.83, "tx_foreign_oi": -80042.0,
+                            "retail_ls_mtx": 0.1655, "margin_balance": 9531735.0, "margin_chg": -130236.0,
+                            "margin_maintenance": 186.1})
     monkeypatch.setattr(twse, "fetch_sector_indices", lambda date=None: [
         {"name": "半導體", "close": 1.0, "chg_pct": 2.0}, {"name": "航運", "close": 1.0, "chg_pct": -1.5}])
     app = create_app()
@@ -729,6 +735,14 @@ def test_public_pages_bypass_basic_auth(tmp_path, monkeypatch):
     r = client.get("/public/api/overview").json()
     assert r["taiex"] == 45500.0 and r["sectors_up"][0]["name"] == "半導體"
     assert r["sectors_down"][0]["name"] == "航運"
+    # 擴充內容（原本使用者反應「資料太少」）：國際/三大法人/期貨籌碼/融資券
+    # 皆等級同 LINE 廣播內容，附「昨」對照供公開頁面呈現
+    assert r["tx_price"] == 45600.0 and r["tx_chg"] == 30.0
+    assert r["intl"][0] == {"key": "n225", "label": "日經", "value": 40000.0, "chg_pct": -1.2}
+    assert r["inst"]["foreign"] == 547.31 and r["inst"]["foreign_prev"] == -200.0
+    assert r["fut"]["tx_foreign_oi"] == -80042.0 and r["fut"]["retail_ls_mtx"] == 0.1655
+    assert r["margin"]["balance"] == 9531735.0 and r["margin"]["chg"] == -130236.0
+    assert r["margin"]["maintenance"] == 186.1 and r["margin"]["maintenance_prev"] == 180.0
     # 個人資料端點仍需帳密（不可因新增的 /public 放行條件被誤放行）
     assert client.get("/api/trades").status_code == 401
     assert client.get("/api/settings").status_code == 401

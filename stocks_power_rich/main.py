@@ -1037,20 +1037,39 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         return result
 
     # ===== 公開頁面（免帳密，供 LINE 好友查看）=====
-    # 只回傳「本來就會 LINE 廣播出去」的等級的公開市場資訊（大盤/類股/AI解讀），
-    # 絕不含個人資料（交易帳本、自選股、設定）。/public 前綴在 Basic Auth 中介層被放行，見上方註冊處。
+    # 只回傳「本來就會 LINE 廣播出去」等級的公開市場資訊（大盤/國際/三大法人/期貨籌碼/
+    # 融資券/類股/AI解讀——這些都已經每天用 LINE 推給好友），絕不含個人資料
+    # （交易帳本、自選股、設定）。/public 前綴在 Basic Auth 中介層被放行，見上方註冊處。
+    _PUBLIC_INTL_FIELDS = (("n225", "日經"), ("kospi", "韓股"), ("gold", "黃金"),
+                          ("jpy", "美元兌日圓"), ("btc", "比特幣"), ("sox", "費半"), ("vix", "VIX"))
+
     @app.get("/public/api/overview")
     def public_overview():
         c = conn()
-        row = c.execute("SELECT * FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
-        m = dict(row) if row else {}
+        rows = c.execute("SELECT * FROM market_daily ORDER BY date DESC LIMIT 2").fetchall()
+        m = dict(rows[0]) if rows else {}
+        pv = dict(rows[1]) if len(rows) > 1 else {}
         secs = [s for s in _sectors_for(c, m["date"])
                 if s.get("chg_pct") is not None] if m.get("date") else []
         ups = sorted([s for s in secs if (s.get("chg_pct") or 0) > 0], key=lambda s: -s["chg_pct"])[:3]
         downs = sorted([s for s in secs if (s.get("chg_pct") or 0) < 0], key=lambda s: s["chg_pct"])[:3]
         ai = market_summary(refresh=0)
-        return {"date": m.get("date"), "taiex": m.get("taiex"), "taiex_chg": m.get("taiex_chg"),
-                "turnover": m.get("turnover"),
+        intl = [{"key": k, "label": lb, "value": m.get(k), "chg_pct": m.get(k + "_chg")}
+                for k, lb in _PUBLIC_INTL_FIELDS if m.get(k) is not None]
+        return {"date": m.get("date"),
+                "taiex": m.get("taiex"), "taiex_chg": m.get("taiex_chg"), "turnover": m.get("turnover"),
+                "tx_price": m.get("tx_price"), "tx_chg": m.get("tx_chg"),
+                "intl": intl,
+                "inst": {"foreign": m.get("inst_foreign"), "trust": m.get("inst_trust"),
+                        "dealer": m.get("inst_dealer"), "foreign_prev": pv.get("inst_foreign"),
+                        "trust_prev": pv.get("inst_trust"), "dealer_prev": pv.get("inst_dealer")},
+                "fut": {"tx_foreign_oi": m.get("tx_foreign_oi"), "tx_foreign_oi_prev": pv.get("tx_foreign_oi"),
+                       "retail_ls_mtx": m.get("retail_ls_mtx"), "retail_ls_mtx_prev": pv.get("retail_ls_mtx"),
+                       "retail_ls_tmf": m.get("retail_ls_tmf"), "retail_ls_tmf_prev": pv.get("retail_ls_tmf")},
+                "margin": {"balance": m.get("margin_balance"), "chg": m.get("margin_chg"),
+                          "value": m.get("margin_value"), "value_chg": m.get("margin_value_chg"),
+                          "short_balance": m.get("short_balance"), "short_chg": m.get("short_chg"),
+                          "maintenance": m.get("margin_maintenance"), "maintenance_prev": pv.get("margin_maintenance")},
                 "sectors_up": [{"name": s["name"], "chg_pct": s["chg_pct"]} for s in ups],
                 "sectors_down": [{"name": s["name"], "chg_pct": s["chg_pct"]} for s in downs],
                 "ai_text": (ai.get("text") or "") if ai.get("enabled") else ""}
@@ -1061,9 +1080,11 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     .wrap{max-width:640px;margin:0 auto;padding:20px 16px 40px}
     h1{font-size:19px;color:var(--accent);margin:0 0 4px} .sub{color:var(--muted);font-size:13px;margin-bottom:18px}
     .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:14px}
+    .card-title{color:var(--muted);font-size:13px;margin-bottom:8px}
     .up{color:var(--up)} .down{color:var(--down)} .big{font-size:26px;font-weight:700}
     .row{display:flex;justify-content:space-between;align-items:baseline;padding:5px 0;border-bottom:1px solid var(--border)}
     .row:last-child{border-bottom:none}
+    .yd{color:var(--muted);font-size:11px;margin-left:4px}
     .muted{color:var(--muted);font-size:13px} .ai{white-space:pre-wrap;font-size:14px}
     a{color:var(--accent)}
     """
@@ -1079,6 +1100,13 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     _PUBLIC_OVERVIEW_JS = """
     const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
     const fmt = (v,d=2) => (v==null?"—":Number(v).toLocaleString("en-US",{maximumFractionDigits:d}));
+    const signed = (v,d=1) => v==null?"—":(v>0?"+":"")+fmt(v,d);
+    const cls = v => v>0?"up":v<0?"down":"";
+    const yd = (v,d=1,unit="") => v==null?"":`<span class="yd">(昨${signed(v,d)}${unit})</span>`;
+    // 融資維持率是水位值（恆為正），不是漲跌幅，昨值不該強制加正負號（對齊 line_push.py 的 _fmt 而非 _signed）
+    const ydLevel = (v,d=1,unit="") => v==null?"":`<span class="yd">(昨${fmt(v,d)}${unit})</span>`;
+    const row = (label, valueHtml) => `<div class="row"><span>${label}</span><span>${valueHtml}</span></div>`;
+
     fetch("/public/api/overview").then(r=>r.json()).then(d=>{
       document.getElementById("date").textContent = d.date ? "資料日期："+d.date : "尚無資料";
       document.getElementById("taiex").textContent = fmt(d.taiex);
@@ -1086,6 +1114,53 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
       const chgEl = document.getElementById("chg");
       if (chg != null) { chgEl.textContent = (chg>0?"▲":chg<0?"▼":"") + fmt(Math.abs(chg)); chgEl.className = chg>0?"up":chg<0?"down":""; }
       document.getElementById("tv").textContent = d.turnover != null ? fmt(d.turnover,0)+"億" : "—";
+      if (d.tx_price != null) {
+        document.getElementById("tx-row").innerHTML = row("台指期",
+          fmt(d.tx_price) + (d.tx_chg!=null ? ` <span class="${cls(d.tx_chg)}">${signed(d.tx_chg)}</span>` : ""));
+      }
+
+      // 國際行情
+      const intlEl = document.getElementById("intl");
+      if ((d.intl||[]).length) {
+        document.getElementById("intl-card").style.display = "";
+        intlEl.innerHTML = d.intl.map(x =>
+          row(esc(x.label), fmt(x.value) + (x.chg_pct!=null ? ` <span class="${cls(x.chg_pct)}">${signed(x.chg_pct)}%</span>` : ""))).join("");
+      }
+
+      // 三大法人
+      const inst = d.inst || {};
+      if (inst.foreign != null || inst.trust != null || inst.dealer != null) {
+        document.getElementById("inst-card").style.display = "";
+        document.getElementById("inst").innerHTML = [
+          ["外資", inst.foreign, inst.foreign_prev], ["投信", inst.trust, inst.trust_prev],
+          ["自營", inst.dealer, inst.dealer_prev],
+        ].filter(([,v])=>v!=null).map(([label,v,pv]) =>
+          row(label, `<span class="${cls(v)}">${signed(v,1)}億</span>${yd(pv,1,"億")}`)).join("");
+      }
+
+      // 期貨籌碼
+      const fut = d.fut || {};
+      if (fut.tx_foreign_oi != null || fut.retail_ls_mtx != null) {
+        document.getElementById("fut-card").style.display = "";
+        const parts = [];
+        if (fut.tx_foreign_oi != null) parts.push(row("外資台指OI", fmt(fut.tx_foreign_oi,0)+"口"+yd(fut.tx_foreign_oi_prev,0)));
+        if (fut.retail_ls_mtx != null) parts.push(row("小台多空比", signed(fut.retail_ls_mtx*100,2)+"%"+yd(fut.retail_ls_mtx_prev!=null?fut.retail_ls_mtx_prev*100:null,2,"%")));
+        if (fut.retail_ls_tmf != null) parts.push(row("微台多空比", signed(fut.retail_ls_tmf*100,2)+"%"+yd(fut.retail_ls_tmf_prev!=null?fut.retail_ls_tmf_prev*100:null,2,"%")));
+        document.getElementById("fut").innerHTML = parts.join("");
+      }
+
+      // 融資券
+      const mg = d.margin || {};
+      if (mg.balance != null || mg.short_balance != null) {
+        document.getElementById("margin-card").style.display = "";
+        const parts = [];
+        if (mg.balance != null) parts.push(row("融資", fmt(mg.balance,0)+"張"+yd(mg.chg,0)));
+        if (mg.value != null) parts.push(row("融資金額", fmt(mg.value,1)+"億"+yd(mg.value_chg,1,"億")));
+        if (mg.short_balance != null) parts.push(row("融券", fmt(mg.short_balance,0)+"張"+yd(mg.short_chg,0)));
+        if (mg.maintenance != null) parts.push(row("融資維持率", fmt(mg.maintenance,1)+"%"+ydLevel(mg.maintenance_prev,1,"%")));
+        document.getElementById("margin").innerHTML = parts.join("");
+      }
+
       const rows = [...(d.sectors_up||[]).map(s=>({...s,cls:"up",ic:"🔥"})), ...(d.sectors_down||[]).map(s=>({...s,cls:"down",ic:"❄"}))];
       document.getElementById("secs").innerHTML = rows.length ? rows.map(s=>
         `<div class="row"><span>${s.ic} ${esc(s.name)}</span><span class="${s.cls}">${s.chg_pct>0?"+":""}${fmt(s.chg_pct)}%</span></div>`).join("")
@@ -1105,9 +1180,14 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         <h1>📊 台股總覽</h1><div class="sub" id="date">載入中…</div>
         <div class="card"><div class="row"><span>加權指數</span><span class="big" id="taiex">—</span></div>
         <div class="row"><span>漲跌幅</span><span id="chg">—</span></div>
-        <div class="row"><span>成交金額</span><span id="tv">—</span></div></div>
-        <div class="card"><div class="muted" style="margin-bottom:8px">類股強弱</div><div id="secs"></div></div>
-        <div class="card" id="ai-card" style="display:none"><div class="muted" style="margin-bottom:8px">AI 解讀</div><div class="ai" id="ai"></div></div>
+        <div class="row"><span>成交金額</span><span id="tv">—</span></div>
+        <div id="tx-row"></div></div>
+        <div class="card" id="intl-card" style="display:none"><div class="card-title">國際行情</div><div id="intl"></div></div>
+        <div class="card" id="inst-card" style="display:none"><div class="card-title">三大法人買賣超</div><div id="inst"></div></div>
+        <div class="card" id="fut-card" style="display:none"><div class="card-title">期貨籌碼</div><div id="fut"></div></div>
+        <div class="card" id="margin-card" style="display:none"><div class="card-title">融資券</div><div id="margin"></div></div>
+        <div class="card"><div class="card-title">類股強弱</div><div id="secs"></div></div>
+        <div class="card" id="ai-card" style="display:none"><div class="card-title">AI 解讀</div><div class="ai" id="ai"></div></div>
         <script src="/public/overview.js"></script>"""
         return _public_shell("台股總覽", body)
 
