@@ -917,7 +917,10 @@ def test_settings_nav_order_roundtrip(tmp_path, monkeypatch):
     assert client.get("/api/settings").json()["nav_order"] == ["overview", "cup"]
 
 
-def test_intraday_breakout_scan_alerts_and_dedupes(tmp_path, monkeypatch):
+def test_intraday_breakout_requires_two_round_confirmation_above_atr_threshold(tmp_path, monkeypatch):
+    """噪音太多的教訓（2026-07-08：09:00 開盤即報、0.3% 微幅探頭也報）→ 加兩道濾網：
+    A. 突破門檻＝壓力線+0.3×ATR（碰到壓力線不算，要有力道才算）；
+    B. 本輪剛穿越門檻只記候選、不報，下一輪（約5分鐘後）仍站穩才是真突破、才推播。"""
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok-x")
     from stocks_power_rich import line_push
@@ -928,25 +931,56 @@ def test_intraday_breakout_scan_alerts_and_dedupes(tmp_path, monkeypatch):
     init_db(c)
     bulk_upsert_ohlc(c, "2026-07-04", {"2330": {"open": 1, "high": 2, "low": 1, "close": 1.5}})
     set_ai_cache(c, "cupsig:2026-07-04", [
-        {"code": "8069", "name": "元太", "resistance": 212.0},
-        {"code": "2812", "name": "台中銀", "resistance": 19.8},
+        {"code": "8069", "name": "元太", "resistance": 212.0, "atr": 2.0},    # 門檻 212.6
+        {"code": "2812", "name": "台中銀", "resistance": 19.8, "atr": 1.0},  # 門檻 20.1（只碰壓力不算）
     ])
     monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {"8069": "元太"})
     monkeypatch.setattr(mis, "fetch_mis_quotes",
-                        lambda tokens: {"8069": 213.5, "2812": 19.5})  # 元太突破、台中銀未過
+                        lambda tokens: {"8069": 213.5, "2812": 19.85})
     sent = []
     monkeypatch.setattr(line_push, "broadcast_text", lambda tok, txt: sent.append(txt) or {"ok": True})
     app = create_app()
     client = TestClient(app)
-    r = client.post("/api/intraday/test?push=1").json()
-    assert [h["code"] for h in r["hits"]] == ["8069"] and r["checked"] == 2
-    assert len(sent) == 1 and "元太 213.50(壓212.00)" in sent[0]
-    # 同日第二輪：元太已警示過 → 只剩台中銀待監控、不再重複推播
+    r1 = client.post("/api/intraday/test?push=1").json()
+    assert r1["checked"] == 2 and r1["hits"] == [] and len(sent) == 0     # 第一輪只記候選，不報
     r2 = client.post("/api/intraday/test?push=1").json()
-    assert r2["checked"] == 1 and r2["hits"] == [] and len(sent) == 1
-    # 乾跑不推播
-    r3 = client.post("/api/intraday/test").json()
-    assert len(sent) == 1
+    assert [h["code"] for h in r2["hits"]] == ["8069"] and len(sent) == 1  # 元太連兩輪站穩門檻
+    assert "元太 213.50(壓212.00)" in sent[0] and "台中銀" not in sent[0]  # 台中銀只碰壓力未過ATR門檻
+    # 已警示過 → 不再重複推播
+    r3 = client.post("/api/intraday/test?push=1").json()
+    assert r3["hits"] == [] and len(sent) == 1
+
+
+def test_intraday_breakout_false_cross_resets_candidate(tmp_path, monkeypatch):
+    """單輪穿越門檻又跌回（插針/假突破）→ 不因「曾經穿越過」誤報，須重新連兩輪站穩才算數。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok-x")
+    from stocks_power_rich import line_push
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc, set_ai_cache
+    from stocks_power_rich.sources import mis, tpex
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    bulk_upsert_ohlc(c, "2026-07-04", {"2330": {"open": 1, "high": 2, "low": 1, "close": 1.5}})
+    set_ai_cache(c, "cupsig:2026-07-04", [{"code": "8069", "name": "元太", "resistance": 212.0, "atr": 2.0}])
+    monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {"8069": "元太"})
+    seq = [213.5, 212.3, 213.5, 213.6]  # 過門檻→跌破(候選清空)→重新過門檻(首見)→再過(這輪才確認)
+    state = {"n": 0}
+
+    def fake_quotes(tokens):
+        v = seq[state["n"]]; state["n"] += 1
+        return {"8069": v}
+
+    monkeypatch.setattr(mis, "fetch_mis_quotes", fake_quotes)
+    sent = []
+    monkeypatch.setattr(line_push, "broadcast_text", lambda tok, txt: sent.append(txt) or {"ok": True})
+    app = create_app()
+    client = TestClient(app)
+    assert client.post("/api/intraday/test?push=1").json()["hits"] == []  # 213.5 首見候選
+    assert client.post("/api/intraday/test?push=1").json()["hits"] == []  # 212.3 跌破門檻，候選清空
+    assert client.post("/api/intraday/test?push=1").json()["hits"] == []  # 213.5 重新首見候選
+    r4 = client.post("/api/intraday/test?push=1").json()
+    assert [h["code"] for h in r4["hits"]] == ["8069"] and len(sent) == 1  # 213.6 連兩輪站穩才確認
 
 
 def test_intraday_picks_only_toggle_filters_watchlist(tmp_path, monkeypatch):
@@ -974,16 +1008,20 @@ def test_intraday_picks_only_toggle_filters_watchlist(tmp_path, monkeypatch):
     monkeypatch.setattr(line_push, "broadcast_text", lambda tok, txt: sent.append(txt) or {"ok": True})
     app = create_app()
     client = TestClient(app)
-    # 預設（不開）：兩檔都盯、都突破；交集股標⭐且排前
+    # 預設（不開）：兩檔都盯、都突破；第一輪只記候選，第二輪站穩才一起確認、交集股標⭐且排前
+    assert client.post("/api/intraday/test?push=1").json()["hits"] == []
     r = client.post("/api/intraday/test?push=1").json()
     assert {h["code"] for h in r["hits"]} == {"8069", "2812"}
     assert "⭐台中銀" in sent[0] and sent[0].index("台中銀") < sent[0].index("元太")
-    # 開啟只盯交集（清除今日已警示記錄後重掃）→ 只剩 2812
+    # 開啟只盯交集（清除今日已警示/候選記錄後重掃）→ 只剩 2812，仍需連兩輪站穩
     client.post("/api/settings", json={"intraday_picks_only": True})
     from datetime import datetime
-    c.execute("DELETE FROM ai_cache WHERE cache_key=?",
-              (f"cupalerted:{datetime.now().strftime('%Y-%m-%d')}",))
+    today = datetime.now().strftime("%Y-%m-%d")
+    c.execute("DELETE FROM ai_cache WHERE cache_key IN (?, ?)",
+              (f"cupalerted:{today}", f"cuppending:{today}"))
     c.commit()
+    r1 = client.post("/api/intraday/test").json()
+    assert r1["checked"] == 1 and r1["hits"] == []
     r2 = client.post("/api/intraday/test").json()
     assert r2["checked"] == 1 and [h["code"] for h in r2["hits"]] == ["2812"]
 

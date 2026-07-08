@@ -319,10 +319,17 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             matches = patterns.screen_cup_handle(data)
             result = {"date": latest, "bars": len(ods), "count": len(matches), "stocks": matches}
             set_ai_cache(c, key, result)
-            # 每日訊號快照（LINE 推播比對「新符合/突破壓力」用）
-            set_ai_cache(c, f"cupsig:{latest}",
-                         [{"code": m["code"], "name": m["name"], "resistance": m["resistance"]}
-                          for m in matches])
+            # 每日訊號快照（LINE 推播比對「新符合/突破壓力」用；atr 供盤中哨兵算突破門檻，見 _intraday_scan）
+            sig_snapshot = []
+            for m in matches:
+                o = c.execute("SELECT high, low, close FROM stock_ohlc WHERE code=? "
+                              "ORDER BY date DESC LIMIT 15", (m["code"],)).fetchall()
+                rows = list(reversed(o))
+                a = patterns.atr([r["high"] for r in rows], [r["low"] for r in rows],
+                                 [r["close"] for r in rows])
+                sig_snapshot.append({"code": m["code"], "name": m["name"],
+                                     "resistance": m["resistance"], "atr": a})
+            set_ai_cache(c, f"cupsig:{latest}", sig_snapshot)
         # 疊加「籌碼/基本選股」標記（以最新 CSV 快照為準，即時計算不進快取，換檔即更新）
         picks = _picks_code_set(c)
         for m in result["stocks"]:
@@ -1065,7 +1072,14 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     _mis_state = {"date": None, "fails": 0, "warned": False}  # 哨兵離線偵測（進程內即可）
 
     def _intraday_scan(c, push: bool = True) -> dict:
-        """盤中突破掃描一輪：最新杯柄訊號股 × 盤中現價 > 壓力線 → LINE 警示（每檔每日一次）。"""
+        """盤中突破掃描一輪：最新杯柄訊號股 × 盤中現價「有效突破」→ LINE 警示（每檔每日一次）。
+
+        「有效突破」＝兩道濾網（噪音太多的教訓：0.3% 探頭、開盤第一輪就報）：
+        A. 突破門檻用 ATR 而非單純壓力線——價 > 壓力 + 0.3×ATR，波動大的股要突破得更有力才算數，
+           波動小的股門檻自動收緊；缺 ATR（資料不足）時退回單純壓力線。
+        B. 站穩兩輪才推播——本輪剛穿越門檻的先記為候選、不報；只有「上一輪已是候選、這一輪仍
+           在門檻之上」才視為站穩、真正警示。單輪穿越又跌回門檻下的假突破會在下一輪被踢出候選。
+        """
         ods = ohlc_dates(c)
         if not ods:
             return {"checked": 0, "hits": [], "note": "無 OHLC 歷史"}
@@ -1092,8 +1106,13 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 _mis_state["warned"] = True
             return {"checked": len(pending), "hits": [], "note": "查無報價"}
         _mis_state.update({"date": today, "fails": 0})
-        hits = [{**s, "price": prices[s["code"]], "pick": s["code"] in picks} for s in pending
-                if s["code"] in prices and prices[s["code"]] > s["resistance"]]
+        threshold = lambda s: s["resistance"] + 0.3 * s["atr"] if s.get("atr") else s["resistance"]
+        crossing = {s["code"]: {**s, "price": prices[s["code"]], "pick": s["code"] in picks}
+                    for s in pending if s["code"] in prices and prices[s["code"]] > threshold(s)}
+        candidates = set(get_ai_cache(c, f"cuppending:{today}") or [])
+        hits = [v for code, v in crossing.items() if code in candidates]
+        # 本輪站穩門檻的名單存為下一輪的候選基準；未站穩者（含首見）不入榜，下輪重新起算
+        set_ai_cache(c, f"cuppending:{today}", sorted(crossing.keys()))
         if hits and push:
             txt = line_push.compose_breakout_alert(hits, datetime.now().strftime("%H:%M"))
             line_push.broadcast_text(cfg.line_token, txt)
