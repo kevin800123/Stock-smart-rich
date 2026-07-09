@@ -190,8 +190,10 @@ button.file-label { font: inherit; }
 .pane-title { font-size: 15px; color: #cfd6df; margin-bottom: 6px; font-weight: 600; }
 
 /* ===== 表格 ===== */
-.table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
-.table-wrap.fill { flex: 1; min-height: 0; }
+/* flex-shrink:0：.view 是 flex column，頁面內容超高時未掛 .fill 的表格（交易帳本未平倉/已平倉）
+   會被按比例壓成幾 px 高、只露半行。.fill 要佔滿剩餘空間，覆寫回可收縮。 */
+.table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 8px; flex-shrink: 0; }
+.table-wrap.fill { flex: 1 1 0; min-height: 0; }
 .table-wrap.fill-half { max-height: 55vh; }
 table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th, td { text-align: left; padding: 8px 11px; border-bottom: 1px solid var(--border); white-space: nowrap; }
