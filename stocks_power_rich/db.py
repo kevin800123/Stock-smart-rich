@@ -105,6 +105,11 @@ def init_db(conn: sqlite3.Connection) -> None:
                  "id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT, name TEXT, shares INTEGER, "
                  "entry_date TEXT, entry_price REAL, exit_date TEXT, exit_price REAL, "
                  "fee_pct REAL, note TEXT, created_at TEXT)")
+    # 訊號追蹤帳本/前瞻測試（filtered_picks / cup_handle 每日命中快照及後續報酬）
+    conn.execute("CREATE TABLE IF NOT EXISTS signal_ledger ("
+                 "signal_date TEXT, code TEXT, name TEXT, source TEXT, "
+                 "entry_ref_price REAL, ret5 REAL, ret10 REAL, ret20 REAL, "
+                 "PRIMARY KEY(signal_date, code, source))")
     # 既有資料庫補上後來新增的欄位
     mkt_existing = {r[1] for r in conn.execute("PRAGMA table_info(market_daily)").fetchall()}
     for col in MARKET_COLS:

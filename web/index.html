@@ -26,6 +26,7 @@
       <a class="nav" data-view="osfut"><span class="ico">🌏</span><span class="lbl">海期監控</span></a>
       <a class="nav" data-view="cup"><span class="ico">🏆</span><span class="lbl">杯柄選股</span></a>
       <a class="nav" data-view="trades"><span class="ico">📒</span><span class="lbl">交易帳本</span></a>
+      <a class="nav" data-view="signals"><span class="ico">📈</span><span class="lbl">訊號追蹤</span></a>
       <a class="nav" data-view="weekly"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
       <a class="nav" data-view="settings"><span class="ico">⚙️</span><span class="lbl">設定</span></a>
     </nav>
@@ -245,6 +246,28 @@
           ・<b>賺賠比</b>＝平均賺÷平均賠：勝率低沒關係，賺賠比夠大照樣賺（小賠大賺的本質）。<br/>
           ・<b>勝過大盤</b>＝同持有期間你的淨報酬 vs 加權指數：長期跑輸大盤的話，直接買 0050 比較輕鬆。<br/>
           至少累積 20～30 筆已平倉交易，統計才有參考意義；前幾筆數字跳動很大是正常的。
+        </div>
+      </section>
+
+      <!-- ===== 訊號追蹤 ===== -->
+      <section id="view-signals" class="view">
+        <div class="toolbar">
+          <span class="pane-title" style="margin:0">前瞻測試與訊號追蹤</span>
+          <span class="muted small">每日自動快照當日選股與杯柄型態，統計後續 5 / 10 / 20 交易日的報酬與勝率，無存活者偏差。</span>
+        </div>
+
+        <div class="ai-head"><span>理論訊號績效（未計手續費）</span></div>
+        <div id="sig-perf" class="stats-grid" style="max-width:none; grid-template-columns: 1fr;">載入中…</div>
+
+        <div class="ai-head"><span>實際交易 vs 訊號全買</span></div>
+        <div id="sig-comparison" class="comparison-grid">載入中…</div>
+
+        <div class="wave-help">
+          <b>📊 前瞻測試（Forward Test）說明</b><br/>
+          ・本頁數據<b>無存活者偏差</b>：每日更新 job 執行時，會將當日符合篩選條件的個股即時快照存入 <code>signal_ledger</code> 帳本，日後自動回填第 5、10、20 個交易日的收盤價計算報酬率。<br/>
+          ・<b>勝率</b>＝報酬 &gt; 0 的樣本數 ÷ 總樣本數。<br/>
+          ・<b>平均報酬</b>＝所有樣本報酬率的算術平均值。<br/>
+          ・⚠️ <b>重要揭露</b>：本表統計之訊號績效為<b>含手續費稅前的理論報酬</b>。歷史績效不代表未來表現。
         </div>
       </section>
 

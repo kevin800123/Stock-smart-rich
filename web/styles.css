@@ -294,3 +294,25 @@ a.stock:hover { text-decoration: underline; }
   .tf, .ktf, .ctf, .rkf, .rku, .ai-btn, .file-label { padding: 8px 14px; font-size: 14px; }
   .set-row > label { width: auto; }
 }
+
+/* ===== 訊號追蹤 ===== */
+.comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 16px;
+  margin-top: 10px;
+}
+.comparison-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+}
+.comparison-title {
+  font-size: 15px;
+  color: var(--accent);
+  font-weight: 700;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 6px;
+}

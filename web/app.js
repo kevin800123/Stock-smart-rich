@@ -137,6 +137,7 @@ function showView(name) {
   if (name === "weekly") loadCsvSummary(false);  // 讀快取即回；匯入後才會重新生成
   if (name === "watch") loadWatchlist();
   if (name === "trades") loadTrades();
+  if (name === "signals") loadSignals();
   if (name === "settings") loadSettings();
 }
 
@@ -193,6 +194,77 @@ async function trTableClick(e) {
     const r = await fetch(`/api/trades/${dbtn.dataset.id}`, { method: "DELETE" }).then((x) => x.json());
     if (r.ok) renderTrades(r); else alert(r.error || "刪除失敗");
   }
+}
+
+// ========== 訊號追蹤與前瞻測試 ==========
+async function loadSignals() {
+  if (!$("sig-perf")) return;
+  try {
+    renderSignals(await getJSON("/api/signals/performance"));
+  } catch (e) {
+    $("sig-perf").innerHTML = `<span class="muted small">載入失敗: ${esc(e.message)}</span>`;
+  }
+}
+function renderSignals(d) {
+  const cls = (v) => (v > 0 ? "up" : v < 0 ? "down" : "");
+  const pct = (v) => v == null ? "—" : (v > 0 ? "+" : "") + fmt(v, 2) + "%";
+
+  const perf = d.performance || {};
+  const us = d.user_stats || {};
+
+  const sources = [
+    { key: "filtered_picks", name: "籌碼/基本選股" },
+    { key: "cup_handle", name: "杯柄選股" }
+  ];
+
+  let perfHtml = "";
+  sources.forEach(src => {
+    const s = perf[src.key] || {};
+    perfHtml += `
+      <div class="card-group" style="grid-column: 1 / -1; margin-top: 8px;">
+        <div class="group-title">${src.name}</div>
+        <div class="stats-grid" style="max-width:none">
+          <div class="stat">
+            <div class="stat-k">5日勝率 / 平均</div>
+            <div class="stat-v ${cls(s.ret5?.avg_ret)}">${s.ret5?.win_rate == null ? "—" : fmt(s.ret5.win_rate, 1) + "%"} / ${pct(s.ret5?.avg_ret)}</div>
+            <div class="stat-k" style="margin-top:4px">樣本數: ${s.ret5?.count || 0}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-k">10日勝率 / 平均</div>
+            <div class="stat-v ${cls(s.ret10?.avg_ret)}">${s.ret10?.win_rate == null ? "—" : fmt(s.ret10.win_rate, 1) + "%"} / ${pct(s.ret10?.avg_ret)}</div>
+            <div class="stat-k" style="margin-top:4px">樣本數: ${s.ret10?.count || 0}</div>
+          </div>
+          <div class="stat">
+            <div class="stat-k">20日勝率 / 平均</div>
+            <div class="stat-v ${cls(s.ret20?.avg_ret)}">${s.ret20?.win_rate == null ? "—" : fmt(s.ret20.win_rate, 1) + "%"} / ${pct(s.ret20?.avg_ret)}</div>
+            <div class="stat-k" style="margin-top:4px">樣本數: ${s.ret20?.count || 0}</div>
+          </div>
+        </div>
+      </div>
+    `;
+  });
+  $("sig-perf").innerHTML = perfHtml;
+
+  $("sig-comparison").innerHTML = `
+    <div class="comparison-card">
+      <div class="comparison-title">👤 我的實際交易（帳本已平倉）</div>
+      <div style="display:flex; flex-direction:column; gap:8px">
+        <div>已平倉筆數: <b>${us.closed_n || 0}</b></div>
+        <div>實際勝率: <b class="${(us.win_rate || 0) > 50 ? "up" : ""}">${us.win_rate == null ? "—" : fmt(us.win_rate, 1) + "%"}</b></div>
+        <div>平均勝過大盤 (Alpha): <b class="${cls(us.avg_alpha)}">${pct(us.avg_alpha)}</b></div>
+        <div>期望值 / 筆: <b class="${cls(us.expectancy)}">${pct(us.expectancy)}</b></div>
+      </div>
+    </div>
+    <div class="comparison-card">
+      <div class="comparison-title">🤖 訊號全買（理論 20日持有）</div>
+      <div style="display:flex; flex-direction:column; gap:8px">
+        <div>籌碼選股 20日勝率: <b class="${(perf.filtered_picks?.ret20?.win_rate || 0) > 50 ? "up" : ""}">${perf.filtered_picks?.ret20?.win_rate == null ? "—" : fmt(perf.filtered_picks.ret20.win_rate, 1) + "%"}</b></div>
+        <div>籌碼選股 20日平均: <b class="${cls(perf.filtered_picks?.ret20?.avg_ret)}">${pct(perf.filtered_picks?.ret20?.avg_ret)}</b></div>
+        <div>杯柄選股 20日勝率: <b class="${(perf.cup_handle?.ret20?.win_rate || 0) > 50 ? "up" : ""}">${perf.cup_handle?.ret20?.win_rate == null ? "—" : fmt(perf.cup_handle.ret20.win_rate, 1) + "%"}</b></div>
+        <div>杯柄選股 20日平均: <b class="${cls(perf.cup_handle?.ret20?.avg_ret)}">${pct(perf.cup_handle?.ret20?.avg_ret)}</b></div>
+      </div>
+    </div>
+  `;
 }
 
 async function loadSettings() {

@@ -217,6 +217,12 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             _os_futures(refresh=True)  # 刷新海期監控快取
         except Exception:  # noqa: BLE001
             pass
+        try:
+            from .ledger import record_daily_signals, update_ledger_returns
+            record_daily_signals(c)
+            update_ledger_returns(c)
+        except Exception:  # noqa: BLE001 — 訊號記錄失敗不影響主流程
+            pass
 
     def line_brief_job():
         """16:00 盤後速報：先確保當日數據已抓，再推速報（無融資券）。"""
@@ -320,7 +326,15 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
 
     @app.post("/api/update/run")
     def run_update():
-        return updater.run_update(conn(), cfg.intl_tickers)
+        c = conn()
+        res = updater.run_update(c, cfg.intl_tickers)
+        try:
+            from .ledger import record_daily_signals, update_ledger_returns
+            record_daily_signals(c)
+            update_ledger_returns(c)
+        except Exception:  # noqa: BLE001
+            pass
+        return res
 
     @app.get("/api/backfill")
     def backfill(days: int = 30):
@@ -772,6 +786,44 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     def trades_list():
         return _trades_payload(conn())
 
+    @app.get("/api/signals/performance")
+    def signals_performance():
+        c = conn()
+        perf = {}
+        for source in ("filtered_picks", "cup_handle"):
+            perf[source] = {}
+            for ret_col in ("ret5", "ret10", "ret20"):
+                rows = c.execute(
+                    f"SELECT {ret_col} FROM signal_ledger WHERE source=? AND {ret_col} IS NOT NULL",
+                    (source,)
+                ).fetchall()
+                vals = [r[0] for r in rows]
+                count = len(vals)
+                if count > 0:
+                    avg_ret = sum(vals) / count
+                    wins = sum(1 for v in vals if v > 0)
+                    win_rate = wins / count * 100
+                    perf[source][ret_col] = {
+                        "win_rate": round(win_rate, 1),
+                        "avg_ret": round(avg_ret, 2),
+                        "count": count
+                    }
+                else:
+                    perf[source][ret_col] = {
+                        "win_rate": None,
+                        "avg_ret": None,
+                        "count": 0
+                    }
+
+        user_data = _trades_payload(c)
+        user_stats = user_data.get("stats") or {}
+
+        return {
+            "ok": True,
+            "performance": perf,
+            "user_stats": user_stats
+        }
+
     @app.post("/api/trades")
     def trades_add(payload: dict = Body(...)):
         c = conn()
@@ -914,6 +966,12 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         c = conn()
         snap_date, count = csv_import.import_csv(c, tmp)
         _clear_csv_cache(c, snap_date)
+        try:
+            from .ledger import record_daily_signals, update_ledger_returns
+            record_daily_signals(c)
+            update_ledger_returns(c)
+        except Exception:  # noqa: BLE001
+            pass
         picks = analysis.filtered_picks(get_snapshot(c, snap_date))
         return {"snap_date": snap_date, "count": count, "picks": picks}
 
@@ -927,6 +985,12 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         c = conn()
         snap_date, count = csv_import.import_csv(c, path)
         _clear_csv_cache(c, snap_date)
+        try:
+            from .ledger import record_daily_signals, update_ledger_returns
+            record_daily_signals(c)
+            update_ledger_returns(c)
+        except Exception:  # noqa: BLE001
+            pass
         picks = analysis.filtered_picks(get_snapshot(c, snap_date))
         return {"snap_date": snap_date, "count": count, "file": os.path.basename(path),
                 "picks": picks}
@@ -948,6 +1012,12 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 imported.append({"file": os.path.basename(path), "snap_date": snap_date, "count": count})
             except Exception as e:  # noqa: BLE001 — 單檔失敗不影響其餘
                 imported.append({"file": os.path.basename(path), "error": str(e)})
+        try:
+            from .ledger import record_daily_signals, update_ledger_returns
+            record_daily_signals(c)
+            update_ledger_returns(c)
+        except Exception:  # noqa: BLE001
+            pass
         return {"imported": imported, "dates": get_snapshot_dates(c)}
 
     @app.get("/api/snapshots")
