@@ -207,7 +207,10 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         except Exception:  # noqa: BLE001 — 推播失敗不影響資料更新
             pass
         try:
-            backup_db(cfg.db_path)  # 每日備份輪替，防 Volume 故障/誤刪永久遺失
+            dest = backup_db(cfg.db_path)  # 每日備份輪替，防 Volume 故障/誤刪永久遺失
+            if dest:
+                from .offsite_backup import push_offsite
+                push_offsite(dest)
         except Exception:  # noqa: BLE001 — 備份失敗不影響資料更新
             pass
         try:
@@ -970,6 +973,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         return {
             "gemini_configured": bool(cfg.gemini_api_key),  # 僅狀態，絕不回傳金鑰值
             "line_configured": bool(cfg.line_token),        # 僅狀態，絕不回傳 token
+            "offsite_backup_configured": bool(cfg.backup_git_remote),
             "line_push_time": cfg.line_push_time,
             "schedule_time": effective_schedule(),
             "scheduler_running": bool(getattr(app.state, "scheduler", None)),

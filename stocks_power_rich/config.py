@@ -28,6 +28,8 @@ class Config:
     line_push_time: str = "16:00"   # 盤後速報推播時間（完整版跟隨 schedule_time）
     basic_user: str = ""            # HTTP Basic Auth 帳號（與密碼皆設定才啟用全站認證）
     basic_pass: str = ""            # HTTP Basic Auth 密碼
+    backup_git_remote: str = ""     # offsite git backup remote URL
+    backup_git_branch: str = "backup"  # offsite git backup branch
 
 
 def load_config() -> Config:
@@ -40,4 +42,6 @@ def load_config() -> Config:
         line_push_time=os.getenv("SPR_LINE_PUSH_TIME", "16:00"),
         basic_user=os.getenv("SPR_BASIC_USER", "").strip(),
         basic_pass=os.getenv("SPR_BASIC_PASS", "").strip(),
+        backup_git_remote=os.getenv("SPR_BACKUP_GIT_REMOTE", "").strip(),
+        backup_git_branch=os.getenv("SPR_BACKUP_GIT_BRANCH", "backup").strip(),
     )
