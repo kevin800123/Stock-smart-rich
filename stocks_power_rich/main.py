@@ -109,7 +109,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         resp.headers["X-Frame-Options"] = "DENY"
         resp.headers["Referrer-Policy"] = "no-referrer"
         resp.headers["Content-Security-Policy"] = (
-            "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; "
+            "default-src 'self'; script-src 'self'; "
             "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
             "font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
         )
@@ -135,6 +135,48 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     def effective_schedule():
         return get_setting(conn(), "schedule_time") or cfg.schedule_time
 
+    def _check_update_result_and_alert(c, result: dict) -> None:
+        from datetime import date as _dt_date
+        today_dt = datetime.now()
+        today_str = today_dt.strftime("%Y-%m-%d")
+        failed = result.get("failed") or []
+        res_date_str = result.get("date")
+
+        is_weekday = today_dt.weekday() < 5
+        lagging = False
+        lag_days = 0
+        if res_date_str and res_date_str != today_str and is_weekday:
+            try:
+                lag_days = (today_dt.date() - _dt_date.fromisoformat(res_date_str)).days
+                if lag_days > 0:
+                    lagging = True
+            except Exception:  # noqa: BLE001
+                pass
+
+        if failed or lagging:
+            failed_sources = []
+            for f in failed:
+                err_str = f.get("error") or ""
+                if len(err_str) > 30:
+                    err_str = err_str[:27] + "..."
+                failed_sources.append(f"{f.get('name')}（{err_str}）")
+
+            failed_sources_str = "、".join(failed_sources) if failed_sources else "無"
+            lag_msg = f"（落後 {lag_days} 個交易日）" if lagging else ""
+            msg = (
+                f"⚠️ 資料更新警告 {today_str}\n"
+                f"失敗來源：{failed_sources_str}\n"
+                f"資料日期：{res_date_str or '未知'}{lag_msg}"
+            )
+
+            failed_names = sorted(list({f.get("name") for f in failed if f.get("name")}))
+            alert_key = f"{res_date_str}|{','.join(failed_names)}"
+
+            last_alert = get_setting(c, "last_alert_key")
+            if last_alert != alert_key:
+                line_push.broadcast_text(cfg.line_token, msg)
+                set_setting(c, "last_alert_key", alert_key)
+
     def scheduled_job():
         c = conn()
         path = csv_import.find_latest_file(effective_data_dir())
@@ -144,7 +186,16 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 _clear_csv_cache(c, snap_date)  # 重匯同日檔時讓摘要/榜單重算
             except Exception:  # noqa: BLE001 — 排程容錯
                 pass
-        updater.run_update(c, cfg.intl_tickers)
+        res = None
+        try:
+            res = updater.run_update(c, cfg.intl_tickers)
+        except Exception:  # noqa: BLE001
+            pass
+        if res:
+            try:
+                _check_update_result_and_alert(c, res)
+            except Exception:  # noqa: BLE001
+                pass
         # 數據到齊後自動生成盤勢摘要與 CSV 籌碼分析；已生成（快取命中）就不重複扣費
         for gen in (lambda: market_summary(refresh=0), lambda: summary(refresh=0)):
             try:
@@ -167,7 +218,16 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     def line_brief_job():
         """16:00 盤後速報：先確保當日數據已抓，再推速報（無融資券）。"""
         c = conn()
-        updater.run_update(c, cfg.intl_tickers)
+        res = None
+        try:
+            res = updater.run_update(c, cfg.intl_tickers)
+        except Exception:  # noqa: BLE001
+            pass
+        if res:
+            try:
+                _check_update_result_and_alert(c, res)
+            except Exception:  # noqa: BLE001
+                pass
         try:
             _push_line(c, full=False)
         except Exception:  # noqa: BLE001
@@ -191,6 +251,68 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             "history": list(reversed(rows)),
             "today": today,
             "data_stale": data_is_stale(latest.get("date"), today, now.weekday()),
+        }
+
+    @app.get("/api/health")
+    def health():
+        from datetime import date
+        c = conn()
+
+        r_market = c.execute("SELECT MAX(date) FROM market_daily").fetchone()
+        latest_market = r_market[0] if r_market and r_market[0] else None
+
+        r_chip = c.execute("SELECT MAX(snap_date) FROM chip_snapshot").fetchone()
+        latest_chip = r_chip[0] if r_chip and r_chip[0] else None
+
+        r_ohlc = c.execute("SELECT MAX(date) FROM stock_ohlc").fetchone()
+        latest_ohlc = r_ohlc[0] if r_ohlc and r_ohlc[0] else None
+
+        r_custody = c.execute("SELECT MAX(week) FROM custody_dist").fetchone()
+        latest_custody = r_custody[0] if r_custody and r_custody[0] else None
+
+        today = date.today()
+
+        lag_m = None
+        if latest_market:
+            try:
+                lag_m = (today - date.fromisoformat(latest_market)).days
+            except Exception:  # noqa: BLE001
+                pass
+
+        lag_c = None
+        if latest_chip:
+            try:
+                lag_c = (today - date.fromisoformat(latest_chip)).days
+            except Exception:  # noqa: BLE001
+                pass
+
+        lag_s = None
+        if latest_ohlc:
+            try:
+                lag_s = (today - date.fromisoformat(latest_ohlc)).days
+            except Exception:  # noqa: BLE001
+                pass
+
+        lag_cu = None
+        if latest_custody:
+            try:
+                lag_cu = (today - date.fromisoformat(latest_custody)).days
+            except Exception:  # noqa: BLE001
+                pass
+
+        ok = (
+            latest_market is not None and lag_m is not None and lag_m <= 3 and
+            latest_chip is not None and lag_c is not None and lag_c <= 4 and
+            latest_ohlc is not None and lag_s is not None and lag_s <= 4 and
+            latest_custody is not None and lag_cu is not None and lag_cu <= 10
+        )
+
+        return {
+            "market_daily": {"latest": latest_market, "lag_days": lag_m},
+            "chip_snapshot": {"latest": latest_chip},
+            "stock_ohlc": {"latest": latest_ohlc},
+            "custody_dist": {"latest_week": latest_custody},
+            "ok": ok
         }
 
     @app.post("/api/update/run")
