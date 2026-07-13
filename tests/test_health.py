@@ -92,6 +92,8 @@ def test_alert_deduplication_logic(tmp_path, monkeypatch):
         class DummyScheduler:
             def add_job(self, func, *args, **kwargs):
                 captured_jobs[kwargs.get("id", "dummy")] = func
+            def shutdown(self, wait=False):
+                pass
         return DummyScheduler()
 
     import stocks_power_rich.scheduler

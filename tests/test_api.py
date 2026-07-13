@@ -808,7 +808,8 @@ def test_security_headers_present(tmp_path, monkeypatch):
     assert h["X-Content-Type-Options"] == "nosniff"
     assert h["X-Frame-Options"] == "DENY"
     assert "default-src 'self'" in h["Content-Security-Policy"]
-    assert "https://cdn.jsdelivr.net" in h["Content-Security-Policy"]   # ECharts CDN 放行
+    assert "script-src 'self'" in h["Content-Security-Policy"]
+    assert "https://cdn.jsdelivr.net" not in h["Content-Security-Policy"]
 
 
 def test_db_backup_endpoint(tmp_path, monkeypatch):

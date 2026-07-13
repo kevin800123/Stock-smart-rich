@@ -1,0 +1,206 @@
+from fastapi import APIRouter, Body
+from datetime import datetime
+from .deps import conn
+from .helpers import (
+    _latest_date,
+    _get_watchlist,
+    _ohlc_names,
+    _picks_code_set,
+    _valuation_for,
+    get_ai_cache,
+    set_ai_cache,
+    cup_handle_screen_logic
+)
+from ..db import (
+    get_ohlc_history,
+    add_watch,
+    remove_watch,
+    get_snapshot_dates,
+    get_custody_trend,
+    upsert_custody,
+    get_tx_history,
+    upsert_tx_history,
+    ohlc_dates,
+    get_all_ohlc
+)
+from ..sources import kline, tdcc, twse, tpex, taifex
+from .. import patterns, backtest
+
+router = APIRouter(prefix="/api")
+
+def _insti_for(c, ds: str, market: str) -> dict:
+    key = f"{'t86' if market == 'twse' else 'tpex'}:{ds}"
+    t = get_ai_cache(c, key)
+    if t is None:
+        try:
+            d = datetime.fromisoformat(ds).date()
+            t = twse.fetch_t86(d) if market == "twse" else tpex.fetch_tpex_insti(d)
+        except Exception:  # noqa: BLE001
+            t = {}
+        if t:
+            set_ai_cache(c, key, t)
+    return t or {}
+
+@router.get("/stock/{code}/ohlc")
+def stock_ohlc(code: str, bars: int = 400):
+    pure = code.split(".")[0]
+    rows = get_ohlc_history(conn(), pure)[-max(60, min(bars, 500)):]
+    return {"code": pure, "dates": [r["date"] for r in rows],
+            "candles": [[r["open"], r["close"], r["low"], r["high"]] for r in rows]}
+
+@router.get("/stock/{code}/kline")
+def stock_kline(code: str, interval: str = "1d", period: str | None = None):
+    if period is None:
+        period = {"1d": "1y", "1wk": "2y", "1mo": "5y"}.get(interval, "1y")
+    return kline.fetch_kline(code, period=period, interval=interval)
+
+@router.get("/index/kline")
+def index_kline(symbol: str = "taiex", interval: str = "1d"):
+    if symbol == "tx":
+        c = conn()
+        hist = get_tx_history(c)
+        if len(hist) < 20:
+            try:
+                rows = taifex.fetch_tx_history()
+                if rows:
+                    upsert_tx_history(c, rows)
+                    hist = get_tx_history(c)
+            except Exception:  # noqa: BLE001
+                pass
+        if len(hist) >= 20:
+            out = kline.ohlc_candles(hist, interval)
+            out["symbol"] = "tx"
+            return out
+        try:
+            proxy = kline.fetch_index_kline("taiex", interval)
+            proxy["symbol"] = "tx"
+            proxy["proxy"] = True
+            return proxy
+        except Exception:  # noqa: BLE001
+            return {"candles": [], "dates": [], "volumes": [], "symbol": "tx"}
+
+    try:
+        out = kline.fetch_index_kline(symbol, interval)
+        if len(out.get("candles") or []) > 5:
+            return out
+    except Exception:  # noqa: BLE001
+        pass
+    if symbol == "taiex":
+        try:
+            c = conn()
+            key = f"idxohlc:{datetime.now().strftime('%Y%m%d')}"
+            rows = get_ai_cache(c, key)
+            if rows is None:
+                rows = twse.fetch_index_ohlc_history(12)
+                if rows:
+                    set_ai_cache(c, key, rows)
+            if rows:
+                res = kline.ohlc_candles(rows, interval)
+                res["symbol"] = "taiex"
+                res["source"] = "twse"
+                return res
+        except Exception:  # noqa: BLE001
+            pass
+    return {"candles": [], "dates": [], "volumes": [], "symbol": symbol}
+
+@router.get("/stock/{code}/custody")
+def stock_custody(code: str):
+    c = conn()
+    pure = code.split(".")[0]
+    cur = get_ai_cache(c, "tdcc:current")
+    stale = True
+    if cur and cur.get("week_date"):
+        try:
+            stale = (datetime.now().date() - datetime.fromisoformat(cur["week_date"]).date()).days >= 7
+        except Exception:  # noqa: BLE001
+            stale = False
+    if stale:
+        try:
+            fresh = tdcc.fetch_custody_distribution()
+            if fresh.get("data"):
+                set_ai_cache(c, "tdcc:current", fresh)
+                cur = fresh
+        except Exception:  # noqa: BLE001
+            pass
+    rec = (cur or {}).get("data", {}).get(pure)
+    if rec and (cur or {}).get("week_date"):
+        upsert_custody(c, cur["week_date"], pure, rec)
+    return {"code": pure, "week": (cur or {}).get("week_date"),
+            "current": rec, "trend": get_custody_trend(c, pure)}
+
+@router.get("/stock/{code}/chips")
+def stock_chips(code: str, days: int = 10):
+    c = conn()
+    pure = code.split(".")[0]
+    days = max(2, min(days, 20))
+    rows = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT ?", (days,)).fetchall()
+    dlist = [r[0] for r in reversed(rows)]
+    market = "twse"
+    for ds in reversed(dlist):
+        t = _insti_for(c, ds, "twse")
+        if t:
+            market = "twse" if pure in t else "tpex"
+            break
+    series = {"foreign": [], "trust": [], "dealer": [], "total": []}
+    for ds in dlist:
+        rec = _insti_for(c, ds, market).get(pure)
+        for k in series:
+            series[k].append(rec.get(k) if rec else None)
+    return {"code": pure, "market": market, "dates": dlist, **series}
+
+@router.get("/stock/{code}/profile")
+def stock_profile(code: str):
+    c = conn()
+    dates = get_snapshot_dates(c)
+    chip = None
+    if dates:
+        row = c.execute(
+            "SELECT * FROM chip_snapshot WHERE snap_date=? AND code=?", (dates[-1], code)
+        ).fetchone()
+        chip = dict(row) if row else None
+    return {"code": code, "snap_date": dates[-1] if dates else None,
+            "chip": chip, "valuation": _valuation_for(c, code)}
+
+@router.get("/watchlist")
+def get_watchlist():
+    return _get_watchlist(conn())
+
+@router.post("/watchlist")
+def add_watchlist(payload: dict = Body(...)):
+    code = str(payload.get("code") or "").strip().upper()
+    if code and "." not in code:
+        code += ".TW"
+    if code:
+        add_watch(conn(), code, str(payload.get("name", "")).strip())
+    return _get_watchlist(conn())
+
+@router.delete("/watchlist/{code}")
+def del_watchlist(code: str):
+    remove_watch(conn(), code)
+    return _get_watchlist(conn())
+
+@router.get("/patterns/cup-handle")
+def cup_handle_screen():
+    return cup_handle_screen_logic(conn())
+
+@router.get("/patterns/cup-handle/backtest")
+def cup_backtest():
+    c = conn()
+    ods = ohlc_dates(c)
+    need = patterns.LOOKBACK + 30
+    if len(ods) < need:
+        return {"note": f"目前歷史 {len(ods)} 天，回測至少需 {need} 天（訊號要能走出未來報酬）。"
+                        f"請先回補更多：/api/ohlc/backfill?days=800（可重跑續補）",
+                "bars": len(ods)}
+    key = f"cupbt:{ods[-1]}:{len(ods)}"
+    cached = get_ai_cache(c, key)
+    if cached is not None:
+        return cached
+    data = get_all_ohlc(c, min_bars=patterns.LOOKBACK + 1)
+    names = _ohlc_names(c)
+    for code, s in data.items():
+        s["name"] = names.get(code) or code
+    result = backtest.backtest_cup(data)
+    result.update({"date": ods[-1], "bars": len(ods)})
+    set_ai_cache(c, key, result)
+    return result
