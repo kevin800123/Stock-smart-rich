@@ -22,7 +22,10 @@ def _df_to_candles(df, interval: str = "1d") -> dict:
     candles = [[float(r.Open), float(r.Close), float(r.Low), float(r.High)] for r in df.itertuples()]
     volumes = [float(getattr(r, "Volume", 0) or 0) for r in df.itertuples()]
     closes = [c[1] for c in candles]
-    waves = elliott.elliott_waves(closes) if len(closes) >= 6 else []
+    waves = {}
+    if len(closes) >= 6:
+        for pct_int in range(2, 16):
+            waves[str(pct_int)] = elliott.elliott_waves(closes, pct_int / 100.0)
     return {"dates": dates, "candles": candles, "volumes": volumes, "waves": waves}
 
 
@@ -53,14 +56,14 @@ def fetch_kline(code: str, period: str = "1y", interval: str = "1d") -> dict:
         if alt_df is not None and not alt_df.empty:
             code, df = alt, alt_df
     if df is None or df.empty:
-        return {"code": code, "dates": [], "candles": [], "volumes": [], "waves": []}
+        return {"code": code, "dates": [], "candles": [], "volumes": [], "waves": {}}
     return {"code": code, **_df_to_candles(df, interval)}
 
 
 def fetch_index_kline(symbol: str, interval: str = "1d") -> dict:
     """大盤指數 K 線（目前支援 taiex=^TWII）。"""
     ticker = INDEX_TICKERS.get(symbol)
-    empty = {"symbol": symbol, "dates": [], "candles": [], "volumes": [], "waves": []}
+    empty = {"symbol": symbol, "dates": [], "candles": [], "volumes": [], "waves": {}}
     if not ticker:
         return empty
     period = INTERVAL_PERIOD.get(interval, "6mo")
@@ -78,7 +81,7 @@ def ohlc_candles(rows: list, interval: str = "1d") -> dict:
              "c": r["close"], "v": r.get("volume") or 0}
             for r in rows if r.get("close") is not None]
     if not recs:
-        return {"dates": [], "candles": [], "volumes": [], "waves": []}
+        return {"dates": [], "candles": [], "volumes": [], "waves": {}}
 
     df = pd.DataFrame(recs)
     df["date"] = pd.to_datetime(df["date"])
@@ -91,5 +94,8 @@ def ohlc_candles(rows: list, interval: str = "1d") -> dict:
     candles = [[float(r.o), float(r.c), float(r.l), float(r.h)] for r in df.itertuples()]
     volumes = [float(r.v) for r in df.itertuples()]
     closes = [c[1] for c in candles]
-    waves = elliott.elliott_waves(closes) if len(closes) >= 6 else []
+    waves = {}
+    if len(closes) >= 6:
+        for pct_int in range(2, 16):
+            waves[str(pct_int)] = elliott.elliott_waves(closes, pct_int / 100.0)
     return {"dates": dates, "candles": candles, "volumes": volumes, "waves": waves}

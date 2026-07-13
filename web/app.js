@@ -42,53 +42,13 @@ function ma(values, n) {
   return out;
 }
 
-// 艾略特波浪（與後端 elliott.py 同邏輯）
-function zigzag(vals, pct) {
-  const n = vals.length; if (!n) return [];
-  const piv = []; let pi = 0, pv = vals[0], trend = 0;
-  for (let i = 1; i < n; i++) {
-    const v = vals[i];
-    if (trend === 0) { if (pv && Math.abs(v - pv) / Math.abs(pv) >= pct) { trend = v > pv ? 1 : -1; piv.push(pi); pi = i; pv = v; } }
-    else if (trend === 1) { if (v > pv) { pi = i; pv = v; } else if (pv && (pv - v) / Math.abs(pv) >= pct) { piv.push(pi); trend = -1; pi = i; pv = v; } }
-    else { if (v < pv) { pi = i; pv = v; } else if (pv && (v - pv) / Math.abs(pv) >= pct) { piv.push(pi); trend = 1; pi = i; pv = v; } }
-  }
-  piv.push(pi); return piv;
-}
-function impulseLabels(closes, seg) {
-  const p = seg.map((i) => closes[i]); const up = p[1] > p[0];
-  let shape, r2, r3t, r4;
-  if (up) { shape = p[1] > p[0] && p[2] < p[1] && p[3] > p[2] && p[4] < p[3] && p[5] > p[4]; r2 = p[2] > p[0]; r3t = p[3] > p[1]; r4 = p[4] > p[1]; }
-  else { shape = p[1] < p[0] && p[2] > p[1] && p[3] < p[2] && p[4] > p[3] && p[5] < p[4]; r2 = p[2] < p[0]; r3t = p[3] < p[1]; r4 = p[4] < p[1]; }
-  const w1 = Math.abs(p[1] - p[0]), w3 = Math.abs(p[3] - p[2]), w5 = Math.abs(p[5] - p[4]);
-  if (!(shape && r2 && r3t && r4 && !(w3 < w1 && w3 < w5))) return [];
-  return [0, 1, 2, 3, 4].map((k) => ({ index: seg[k + 1], label: String(k + 1) }));
-}
-function abcLabels(closes, seg, up) {
-  const p = seg.map((i) => closes[i]);
-  const ok = up ? (p[1] < p[0] && p[2] > p[1] && p[3] < p[2]) : (p[1] > p[0] && p[2] < p[1] && p[3] > p[2]);
-  if (!ok) return [];
-  return [["A", 1], ["B", 2], ["C", 3]].map(([l, i]) => ({ index: seg[i], label: l }));
-}
-function elliottWaves(closes, pct) {
-  const piv = zigzag(closes, pct);
-  if (piv.length >= 9) {
-    const imp = impulseLabels(closes, piv.slice(-9, -3));
-    if (imp.length) {
-      const up = closes[piv[piv.length - 8]] > closes[piv[piv.length - 9]];
-      const abc = abcLabels(closes, piv.slice(-4), up);
-      if (abc.length) return imp.concat(abc);
-    }
-  }
-  if (piv.length >= 6) return impulseLabels(closes, piv.slice(-6));
-  return [];
-}
-
 function candlestickOption(data, startPct, showW, pct) {
   const closes = data.candles.map((c) => c[1]);
   const maSeries = MA_DEFS.map((m) => ({ name: "MA" + m.n, type: "line", data: ma(closes, m.n), smooth: true, showSymbol: false, lineStyle: { width: 1, color: m.color }, itemStyle: { color: m.color } }));
   const candle = { name: "K線", type: "candlestick", data: data.candles, itemStyle: { color: "#e04545", color0: "#2ea043", borderColor: "#e04545", borderColor0: "#2ea043" } };
   if (showW) {
-    const waves = elliottWaves(closes, pct);
+    const pctKey = Math.round(pct * 100).toString();
+    const waves = (data.waves && data.waves[pctKey]) || [];
     if (waves.length) candle.markPoint = {
       symbol: "circle", symbolSize: 20,
       label: { color: "#1a1a1a", fontWeight: 700, fontSize: 12, formatter: (p) => p.data.value },

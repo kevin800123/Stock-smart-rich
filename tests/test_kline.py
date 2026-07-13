@@ -70,3 +70,22 @@ def test_ohlc_candles_weekly_resample():
     out = kline.ohlc_candles(rows, interval="1wk")
     assert len(out["candles"]) == 1
     assert out["candles"][0] == [100.0, 125.0, 90.0, 130.0]
+
+
+def test_kline_waves_precomputed(monkeypatch):
+    def fake_history(self, period="1y", interval="1d"):
+        idx = pd.to_datetime([f"2026-06-{10+i}" for i in range(12)])
+        # Create an upward and downward zigzag pattern to trigger wave labeling
+        closes = [100, 110, 105, 120, 115, 130, 125, 140, 130, 150, 140, 160]
+        return pd.DataFrame(
+            {"Open": closes, "High": closes, "Low": closes, "Close": closes, "Volume": [100]*12},
+            index=idx,
+        )
+
+    monkeypatch.setattr(kline.yf.Ticker, "history", fake_history)
+    out = kline.fetch_kline("2330.TW", period="1mo")
+    assert isinstance(out["waves"], dict)
+    # Check that keys from "2" to "15" are present
+    for i in range(2, 16):
+        assert str(i) in out["waves"]
+        assert isinstance(out["waves"][str(i)], list)
