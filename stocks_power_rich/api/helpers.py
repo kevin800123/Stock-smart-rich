@@ -24,6 +24,7 @@ from ..db import (
 from .. import line_push
 from ..sources import twse, tpex, mis
 from .. import analysis, patterns, backtest
+from .deps import conn
 
 WEB_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "web"))
 REPO_DIR = os.path.dirname(WEB_DIR)

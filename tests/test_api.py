@@ -1097,3 +1097,26 @@ def test_ohlc_backfill_reset_query_param(tmp_path, monkeypatch):
                         lambda date=None: {"2330": {"open": 1.0, "high": 2.0, "low": 1.0, "close": 1.5}})
     r3 = client.get("/api/ohlc/backfill?days=60&max_fetch=5&reset=1").json()
     assert r3["added"] > 0 and r3["twse_exhausted"] is False   # reset 後解除卡住
+
+
+def test_os_futures_endpoint_merges_local_index(tmp_path, monkeypatch):
+    # 迴歸：重構後 helpers._os_futures 曾漏匯入 deps.conn → /api/os-futures 500。
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import intl
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-06-26", "taiex": 100.0, "taiex_chg": 2.0,
+                            "tx_price": 101.0, "tx_chg": 3.0})
+    monkeypatch.setattr(intl, "fetch_futures_monitor", lambda tries=3: [
+        {"category": "指數期貨", "items": [{"name": "小道瓊", "value": 40000.0, "chg": 10.0, "chg_pct": 0.03}]},
+    ])
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/os-futures?refresh=1")
+    assert r.status_code == 200
+    idx = next(g for g in r.json()["categories"] if g["category"] == "指數期貨")
+    names = [it["name"] for it in idx["items"]]
+    assert names[:2] == ["加權指數", "台指期"]      # 本地指數併到最前
+    assert "小道瓊" in names
