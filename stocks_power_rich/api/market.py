@@ -170,6 +170,34 @@ def sector_stocks(sector: str, date: str | None = None):
     stocks.sort(key=lambda s: (s["mcap"] is None, -(s["mcap"] or 0)))
     return {"sector": sector, "date": date, "count": len(stocks), "stocks": stocks}
 
+@router.get("/heatmap")
+def heatmap(date: str | None = None):
+    """全上市個股熱力圖資料：依產業分組，每檔含市值(面積)與當日漲跌幅(顏色)。
+    分組與組內個股皆依市值由大到小；無市值或無漲跌幅者剔除。"""
+    c = conn()
+    date = date or _latest_date(c)
+    if not date:
+        return {"date": None, "groups": []}
+    imap, quotes = _industry_map(c), _quotes_for(c, date)
+    groups: dict = {}
+    for code, info in imap.items():
+        sector = info.get("sector")
+        q = quotes.get(code)
+        if not sector or not q or q.get("chg_pct") is None:
+            continue
+        shares, close = info.get("shares"), q.get("close")
+        mcap = round(shares * close / 1e8, 1) if (shares and close) else None
+        if not mcap:
+            continue
+        groups.setdefault(sector, []).append(
+            {"code": code, "name": q.get("name") or code, "mcap": mcap, "chg_pct": q.get("chg_pct")})
+    out = []
+    for sector, stocks in groups.items():
+        stocks.sort(key=lambda s: -s["mcap"])
+        out.append({"sector": sector, "mcap": round(sum(s["mcap"] for s in stocks), 1), "stocks": stocks})
+    out.sort(key=lambda g: -g["mcap"])
+    return {"date": date, "groups": out}
+
 @router.get("/sectors/rotation")
 def sectors_rotation():
     c = conn()

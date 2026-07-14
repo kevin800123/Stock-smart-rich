@@ -1227,3 +1227,34 @@ def test_signals_snapshot_records_once_and_reports_source_dates(tmp_path, monkey
     r2 = client.post("/api/signals/snapshot").json()  # 同日再按一次不應重複寫入
     assert r2["added"] == 0
     assert r2["total"] == 1
+
+
+def test_heatmap_groups_stocks_by_sector_sorted_by_mcap(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import twse
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-06-26", "taiex": 100.0})
+    monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {
+        "2330": {"sector": "半導體", "name": "台積電", "shares": 25_930_000_000},
+        "2454": {"sector": "半導體", "name": "聯發科", "shares": 1_600_000_000},
+        "6789": {"sector": "半導體", "name": "采鈺", "shares": None},      # 無股數→無市值→排除
+        "2603": {"sector": "航運", "name": "長榮", "shares": 2_100_000_000}})
+    monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {
+        "2330": {"name": "台積電", "close": 2505.0, "chg_pct": 3.94},
+        "2454": {"name": "聯發科", "close": 1000.0, "chg_pct": -1.0},
+        "6789": {"name": "采鈺", "close": 300.0, "chg_pct": 4.29},
+        "2603": {"name": "長榮", "close": 200.0, "chg_pct": 5.0}})
+    app = create_app()
+    client = TestClient(app)
+    d = client.get("/api/heatmap").json()
+    assert d["date"] == "2026-06-26"
+    groups = d["groups"]
+    # 半導體總市值 > 航運 → 排最前
+    assert [g["sector"] for g in groups] == ["半導體", "航運"]
+    semi = groups[0]["stocks"]
+    assert [s["code"] for s in semi] == ["2330", "2454"]   # 市值大→小，無市值者(采鈺)剔除
+    assert semi[0]["mcap"] == round(25_930_000_000 * 2505.0 / 1e8, 1)
+    assert semi[0]["chg_pct"] == 3.94 and semi[0]["name"] == "台積電"

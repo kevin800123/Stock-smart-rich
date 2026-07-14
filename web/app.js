@@ -724,104 +724,85 @@ async function loadSectors() {
   if (!el) return;
   const note = $("sectors-note");
   try {
-    const d = await getJSON("/api/sectors");
-    if (!d.sectors || !d.sectors.length) {
-      renderSectorPills(el, note, null);
-      el.innerHTML = '<div class="muted small">尚無類股資料</div>'; if (note) note.textContent = ""; return;
+    const d = await getJSON("/api/heatmap");
+    const groups = (d.groups || []).filter((g) => g.stocks && g.stocks.length);
+    if (!groups.length) {
+      el.classList.add("sectors");
+      el.innerHTML = '<div class="muted small">尚無個股資料</div>'; if (note) note.textContent = ""; return;
     }
-    const useMcap = d.sectors.some((s) => s.mcap != null);
-    if (note) {
-      const up = d.sectors.filter((s) => s.chg_pct > 0).length;
-      const down = d.sectors.filter((s) => s.chg_pct < 0).length;
-      note.textContent = `（${d.date}　紅漲 ${up}・綠跌 ${down}，面積＝${useMcap ? "市值" : "成交值"}、顏色＝漲跌幅）`;
-    }
-    // 面積優先用市值（成分股股數×收盤加總）；抓不到市值時退回成交值
-    const sizeOf = (s) => (useMcap ? s.mcap : s.turnover);
-    const raw = d.sectors.filter((s) => sizeOf(s) && s.chg_pct != null);
-    if (!raw.length) { renderSectorPills(el, note, d.sectors); return; } // 無面積數據→退回條列
-    // 給最小面積下限，讓佔比很低的類股也看得到、點得到
-    const maxV = Math.max(...raw.map(sizeOf));
-    const floor = maxV * 0.014;
-    const nodes = raw.map((s) => ({
-      name: s.name, value: Math.max(sizeOf(s), floor), chg: s.chg_pct,
-      mcap: s.mcap, turnover: s.turnover,
-      itemStyle: { color: sectorColor(s.chg_pct) },
-    }));
-    // 切成圖表容器
+    const allStocks = groups.flatMap((g) => g.stocks);
+    const up = allStocks.filter((s) => s.chg_pct > 0).length;
+    const down = allStocks.filter((s) => s.chg_pct < 0).length;
+    if (note) note.textContent = `（${d.date}　紅漲 ${up}・綠跌 ${down}，面積＝市值、顏色＝漲跌幅，點格看 K 線）`;
+    // 兩層 treemap：產業為群組（顯示產業名 + 平均漲跌），個股為色塊
+    // 面積用市值平方根：台積電市值佔全市場逾四成，直接用市值會獨大到吃掉整張圖，
+    // 平方根壓縮動態範圍後仍保留「大小＝市值高低」的順序，畫面才讀得清（tooltip 仍給真實市值）
+    const area = (mc) => Math.sqrt(mc);
+    const data = groups.map((g) => {
+      const w = g.stocks.reduce((a, s) => a + s.mcap, 0) || 1;
+      const avg = g.stocks.reduce((a, s) => a + (s.chg_pct || 0) * s.mcap, 0) / w;  // 市值加權平均漲跌
+      return {
+        name: g.sector, value: g.stocks.reduce((a, s) => a + area(s.mcap), 0), avg, mcap: g.mcap,
+        children: g.stocks.map((s) => ({
+          name: s.name, value: area(s.mcap), mcap: s.mcap, chg: s.chg_pct, code: s.code, sector: g.sector,
+          itemStyle: { color: sectorColor(s.chg_pct) },
+        })),
+      };
+    });
     el.classList.remove("sectors");
-    el.style.height = "380px";
+    el.style.height = "560px";
     if (!sectorChart || sectorChart.getDom() !== el) sectorChart = echarts.init(el);
     sectorChart.setOption({
       tooltip: {
         formatter: (p) => {
-          if (p.data.chg == null) return "上市類股";
+          if (p.data.code == null) {  // 產業群組
+            const sign = p.data.avg >= 0 ? "+" : "";
+            return `${esc(p.name)}<br/>市值加權漲跌 <b>${sign}${fmt(p.data.avg, 2)}%</b><br/>總市值 ${fmt(p.data.mcap, 0)} 億`;
+          }
           const sign = p.data.chg >= 0 ? "+" : "";
-          const mc = p.data.mcap == null ? "" : `<br/>市值 ${fmt(p.data.mcap, 0)} 億`;
-          const tv = p.data.turnover == null ? "" : `<br/>成交值 ${fmt(p.data.turnover / 1e8, 1)} 億`;
-          return `${esc(p.name)}<br/>漲跌 <b>${sign}${fmt(p.data.chg, 2)}%</b>${mc}${tv}<br/><span style="color:#8a94a3">點擊看成分股</span>`;
+          return `${esc(p.data.code)} ${esc(p.name)}<br/>漲跌 <b>${sign}${fmt(p.data.chg, 2)}%</b>`
+            + `<br/>市值 ${fmt(p.data.mcap, 0)} 億　${esc(p.data.sector)}<br/><span style="color:#8a94a3">點擊看 K 線</span>`;
         },
       },
       series: [{
         type: "treemap", roam: false, nodeClick: false, animationDuration: 300,
         breadcrumb: { show: false },
         left: 1, right: 1, top: 1, bottom: 1,
-        itemStyle: { borderColor: "#0f1419", borderWidth: 2, gapWidth: 2 },
+        visibleMin: 8,            // 面積過小的個股併入群組留白，避免碎到看不清
+        childrenVisibleMin: 60,
+        // 父節點（產業）頂部標籤帶：須設在 series 層級才會套用到非葉節點
+        upperLabel: {
+          show: true, height: 20, color: "#e8ecf1", fontSize: 12, fontWeight: 700,
+          formatter: (p) => `${esc(p.name)}　${p.data.avg >= 0 ? "+" : ""}${fmt(p.data.avg, 1)}%`,
+        },
+        levels: [
+          {  // 產業群組：深色邊框，父層 itemStyle 是標籤帶底色
+            itemStyle: { borderColor: "#0b0e13", borderWidth: 3, gapWidth: 3, color: "#171c24" },
+          },
+          {  // 個股色塊
+            itemStyle: { borderColor: "#0f1419", borderWidth: 1, gapWidth: 1 },
+          },
+        ],
         label: {
           show: true, overflow: "truncate",
           formatter: (p) => {
             const sign = p.data.chg >= 0 ? "+" : "";
-            return `{n|${esc(p.name)}}\n{v|${sign}${fmt(p.data.chg, 2)}%}`;
+            return `{n|${esc(p.name)}}\n{v|${sign}${fmt(p.data.chg, 1)}%}`;
           },
           rich: {
-            n: { fontSize: 13, fontWeight: 700, color: "#fff", lineHeight: 17 },
-            v: { fontSize: 12, color: "#fff", lineHeight: 15 },
+            n: { fontSize: 12, fontWeight: 700, color: "#fff", lineHeight: 15 },
+            v: { fontSize: 11, color: "#f0f0f0", lineHeight: 13 },
           },
         },
-        data: nodes,
+        data,
       }],
     }, true);
-    const validNames = new Set(nodes.map((n) => n.name));
     sectorChart.off("click");
-    sectorChart.on("click", (p) => { if (p && validNames.has(p.name)) loadSectorStocks(p.name, d.date); });
+    sectorChart.on("click", (p) => {
+      if (p && p.data && p.data.code) { showView("stock"); $("stock-input").value = p.data.code; loadStock(p.data.code, p.data.name); }
+    });
     sectorChart.resize();
-  } catch (e) { el.innerHTML = '<div class="muted small">類股載入失敗</div>'; }
-}
-
-// 點類股 → 載入該族群成分股當日漲跌
-async function loadSectorStocks(sector, date) {
-  const box = $("sector-stocks");
-  if (!box) return;
-  box.innerHTML = `<div class="ss-head"><b>${esc(sector)}</b> 成分股　<span class="muted small">載入中…</span></div>`;
-  try {
-    const d = await getJSON(`/api/sectors/${encodeURIComponent(sector)}/stocks?date=${date || ""}`);
-    if (!d.stocks || !d.stocks.length) { box.innerHTML = `<div class="ss-head"><b>${esc(sector)}</b> 成分股　<span class="muted small">尚無資料</span></div>`; return; }
-    const cap = 60;
-    const shown = d.stocks.slice(0, cap);
-    const more = d.count > cap ? `（依市值排序，顯示前 ${cap} 檔，共 ${d.count} 檔）` : `（依市值排序，共 ${d.count} 檔）`;
-    const cells = shown.map((s) => {
-      const cls = chgClass(s.chg_pct);
-      const sign = s.chg_pct > 0 ? "+" : "";
-      const tip = s.mcap == null ? "" : ` title="市值約 ${fmt(s.mcap, 0)} 億"`;
-      return `<div class="ss-cell ${cls}"${tip}><span class="ss-name">${esc(s.code)} ${esc(s.name || "")}</span><span class="ss-chg">${s.chg_pct == null ? "—" : sign + fmt(s.chg_pct, 2) + "%"}</span></div>`;
-    }).join("");
-    box.innerHTML = `<div class="ss-head"><b>${esc(sector)}</b> 成分股 <span class="muted small">${more}</span> <span class="ss-close" title="收合">✕</span></div><div class="ss-grid">${cells}</div>`;
-    const close = box.querySelector(".ss-close");
-    if (close) close.addEventListener("click", () => { box.innerHTML = ""; });
-  } catch (e) { box.innerHTML = `<div class="ss-head"><b>${esc(sector)}</b> 成分股　<span class="muted small">載入失敗</span></div>`; }
-}
-
-// 退回原本的條列色塊（後端無成交值時的降級顯示）
-function renderSectorPills(el, note, sectors) {
-  if (sectorChart) { sectorChart.dispose(); sectorChart = null; }
-  const ssbox = $("sector-stocks"); if (ssbox) ssbox.innerHTML = "";
-  el.style.height = ""; el.classList.add("sectors");
-  if (!sectors) { el.innerHTML = ""; return; }
-  el.innerHTML = sectors.map((s) => {
-    const cls = chgClass(s.chg_pct);
-    const arrow = s.chg_pct > 0 ? "▲" : s.chg_pct < 0 ? "▼" : "";
-    const pct = s.chg_pct == null ? "—" : arrow + fmt(Math.abs(s.chg_pct), 2) + "%";
-    return `<div class="sector ${cls}"><span class="sec-name">${esc(s.name)}</span><span class="sec-chg">${pct}</span></div>`;
-  }).join("");
+  } catch (e) { el.classList.add("sectors"); el.innerHTML = '<div class="muted small">熱力圖載入失敗</div>'; }
 }
 
 // ========== 期權情緒・大額交易人 ==========
