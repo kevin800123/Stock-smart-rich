@@ -1120,3 +1120,26 @@ def test_os_futures_endpoint_merges_local_index(tmp_path, monkeypatch):
     names = [it["name"] for it in idx["items"]]
     assert names[:2] == ["加權指數", "台指期"]      # 本地指數併到最前
     assert "小道瓊" in names
+
+
+def test_tx_volume_sessions_endpoint_returns_day_night_series(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_tx_history
+    from stocks_power_rich.sources import taifex
+
+    monkeypatch.setattr(taifex, "fetch_tx_history", lambda *a, **k: [])  # 已有足量歷史，不應觸發下載
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    rows = [{"date": f"2026-05-{d:02d}", "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 100,
+             "night_volume": 30} for d in range(1, 25)]  # 24 個交易日 ≥ 20 門檻
+    rows[-1]["night_volume"] = None  # 最新一日尚無夜盤資料
+    rows[-1]["volume"] = 120
+    upsert_tx_history(c, rows)
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/tx/volume-sessions?days=3").json()  # days 有下限 5（比照 stock_ohlc 慣例）
+    assert r["dates"] == ["2026-05-20", "2026-05-21", "2026-05-22", "2026-05-23", "2026-05-24"]
+    assert r["day_volume"][-1] == 120.0
+    assert r["night_volume"][-2:] == [30.0, None]
+    assert r["ratio"][-2:] == [0.3, None]

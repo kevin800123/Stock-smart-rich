@@ -103,6 +103,30 @@ def index_kline(symbol: str = "taiex", interval: str = "1d"):
             pass
     return {"candles": [], "dates": [], "volumes": [], "symbol": symbol}
 
+@router.get("/tx/volume-sessions")
+def tx_volume_sessions(days: int = 60):
+    """台指期日盤/夜盤量能每日比較。夜盤（15:00～次日05:00）成交依期交所規則計入次一營業日，
+    故同一列 date 的 night_volume 是「前一晚的夜盤」——與當日日盤天然同列，供對照隔日開盤前情緒。"""
+    c = conn()
+    hist = get_tx_history(c)
+    if len(hist) < 20:
+        try:
+            rows = taifex.fetch_tx_history()
+            if rows:
+                upsert_tx_history(c, rows)
+                hist = get_tx_history(c)
+        except Exception:  # noqa: BLE001
+            pass
+    rows = hist[-max(5, min(days, 400)):]
+    ratio = [round(r["night_volume"] / r["volume"], 3)
+             if r.get("night_volume") and r.get("volume") else None for r in rows]
+    return {
+        "dates": [r["date"] for r in rows],
+        "day_volume": [r.get("volume") for r in rows],
+        "night_volume": [r.get("night_volume") for r in rows],
+        "ratio": ratio,
+    }
+
 @router.get("/stock/{code}/custody")
 def stock_custody(code: str):
     c = conn()

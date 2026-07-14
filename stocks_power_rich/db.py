@@ -88,7 +88,8 @@ def init_db(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE TABLE IF NOT EXISTS tx_history ("
-        "date TEXT PRIMARY KEY, open REAL, high REAL, low REAL, close REAL, volume REAL)"
+        "date TEXT PRIMARY KEY, open REAL, high REAL, low REAL, close REAL, volume REAL, "
+        "night_volume REAL)"
     )
     # 依股號查最新快照（watchlist/個股頁）用；PK 是 (snap_date, code)，無此索引會全表掃描
     conn.execute("CREATE INDEX IF NOT EXISTS idx_chip_code ON chip_snapshot(code)")
@@ -121,6 +122,9 @@ def init_db(conn: sqlite3.Connection) -> None:
         if col not in chip_existing and col not in ("snap_date", "code"):
             coltype = "TEXT" if col in ("name", "industry", "sub_industry", "raw_json") else "REAL"
             conn.execute(f"ALTER TABLE chip_snapshot ADD COLUMN {col} {coltype}")
+    tx_existing = {r[1] for r in conn.execute("PRAGMA table_info(tx_history)").fetchall()}
+    if "night_volume" not in tx_existing:
+        conn.execute("ALTER TABLE tx_history ADD COLUMN night_volume REAL")
     # 一次性資料修正：jpy 語意由「日圓兌台幣(~0.2)」改為「美元兌日圓(~150)」，清掉舊語意殘值
     conn.execute("UPDATE market_daily SET jpy=NULL, jpy_chg=NULL WHERE jpy IS NOT NULL AND jpy < 10")
     conn.commit()
@@ -187,10 +191,13 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
 def upsert_tx_history(conn: sqlite3.Connection, rows: list[dict]) -> None:
     for r in rows:
         conn.execute(
-            "INSERT INTO tx_history (date, open, high, low, close, volume) VALUES (?,?,?,?,?,?) "
+            "INSERT INTO tx_history (date, open, high, low, close, volume, night_volume) "
+            "VALUES (?,?,?,?,?,?,?) "
             "ON CONFLICT(date) DO UPDATE SET open=excluded.open, high=excluded.high, "
-            "low=excluded.low, close=excluded.close, volume=excluded.volume",
-            (r["date"], r.get("open"), r.get("high"), r.get("low"), r.get("close"), r.get("volume")),
+            "low=excluded.low, close=excluded.close, volume=excluded.volume, "
+            "night_volume=excluded.night_volume",
+            (r["date"], r.get("open"), r.get("high"), r.get("low"), r.get("close"),
+             r.get("volume"), r.get("night_volume")),
         )
     conn.commit()
 

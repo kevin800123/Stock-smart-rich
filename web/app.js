@@ -22,6 +22,7 @@ let stockCode = "", stockInterval = "1d", stockWaves = false;
 let wavePct = 0.05;
 let lastIndexData = null, lastStockData = null;
 let chipChart = null, chipMetric = "inst", lastHistory = [];
+let txVolChart = null;
 let stockChipsChart = null, stockCustodyChart = null;
 let sectorChart = null;
 let cupChart = null, cupMatches = [], cupLoaded = false;
@@ -89,7 +90,7 @@ function candlestickOption(data, startPct, showW, pct) {
 function showView(name) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + name));
   document.querySelectorAll(".nav").forEach((n) => n.classList.toggle("active", n.dataset.view === name));
-  if (name === "overview") { idxChart && idxChart.resize(); chipChart && chipChart.resize(); sectorChart && sectorChart.resize(); }
+  if (name === "overview") { idxChart && idxChart.resize(); chipChart && chipChart.resize(); sectorChart && sectorChart.resize(); txVolChart && txVolChart.resize(); }
   if (name === "stock") { stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize(); }
   if (name === "rotation") { loadRotation(); loadCross(); }
   if (name === "osfut") loadOsFutures(false);  // 首次切換載入（讀快取即回）
@@ -858,6 +859,41 @@ async function loadIndexChart() {
     lastIndexData = d;
     idxChart.setOption(candlestickOption(d, d.candles.length > 120 ? 70 : 0, overviewWaves, wavePct), true);
   } catch (e) { idxChart.hideLoading(); $("idx-note").textContent = "載入失敗：" + e.message; }
+  const panel = $("tx-vol-panel");
+  if (panel) {
+    if (idxSymbol === "tx") { panel.classList.remove("hidden"); loadTxVolumeChart(); }
+    else panel.classList.add("hidden");
+  }
+}
+
+function txVolumeOption(d) {
+  const dates = d.dates.map((x) => x.slice(5));
+  return {
+    tooltip: { trigger: "axis" },
+    legend: { textStyle: { color: "#ccc" }, top: 0 },
+    grid: { left: 56, right: 56, top: 30, bottom: 26 },
+    xAxis: { type: "category", data: dates, axisLabel: { color: "#999" } },
+    yAxis: [
+      { type: "value", name: "口", axisLabel: { color: "#999" } },
+      { type: "value", name: "夜/日比", position: "right", axisLabel: { color: "#999" }, splitLine: { show: false } },
+    ],
+    series: [
+      { name: "日盤量", type: "bar", data: d.day_volume, itemStyle: { color: "#6cb6ff" } },
+      { name: "夜盤量", type: "bar", data: d.night_volume, itemStyle: { color: "#e0a23c" } },
+      { name: "夜/日比", type: "line", yAxisIndex: 1, data: d.ratio, symbolSize: 4,
+        lineStyle: { color: "#e04545" }, itemStyle: { color: "#e04545" } },
+    ],
+  };
+}
+async function loadTxVolumeChart() {
+  const el = $("tx-vol-chart");
+  if (!el) return;
+  if (!txVolChart) txVolChart = echarts.init(el);
+  try {
+    const d = await getJSON("/api/tx/volume-sessions?days=60");
+    if (!d.dates || !d.dates.length) { txVolChart.clear(); return; }
+    txVolChart.setOption(txVolumeOption(d), true);
+  } catch (e) { txVolChart.clear(); }
 }
 
 async function loadMarketSummary(refresh) {
@@ -1191,7 +1227,7 @@ document.querySelectorAll(".rku").forEach((b) => b.addEventListener("click", () 
   document.querySelectorAll(".rku").forEach((x) => x.classList.toggle("active", x === b));
   rankUnit = b.dataset.unit; loadInstRanking();
 }));
-window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); chipChart && chipChart.resize(); stockChipsChart && stockChipsChart.resize(); sectorChart && sectorChart.resize(); cupChart && cupChart.resize(); });
+window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); chipChart && chipChart.resize(); stockChipsChart && stockChipsChart.resize(); sectorChart && sectorChart.resize(); cupChart && cupChart.resize(); txVolChart && txVolChart.resize(); });
 
 // ========== 初始載入 ==========
 (async () => {

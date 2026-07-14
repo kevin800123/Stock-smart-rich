@@ -53,9 +53,11 @@ def test_parse_tx_history_picks_near_month_day_session():
 
     out = parse_tx_history_csv(TX_HIST_CSV)
     assert [r["date"] for r in out] == ["2026-05-19", "2026-05-20"]
-    # 2026-05-19 取成交量最大者(202605, 86112)；盤後列排除
-    assert out[0] == {"date": "2026-05-19", "open": 40890.0, "high": 40931.0, "low": 40188.0, "close": 40248.0, "volume": 86112.0}
+    # 2026-05-19 日盤取成交量最大者(202605, 86112)；同月份的盤後(夜盤)列成交量 65991 併入 night_volume
+    assert out[0] == {"date": "2026-05-19", "open": 40890.0, "high": 40931.0, "low": 40188.0,
+                      "close": 40248.0, "volume": 86112.0, "night_volume": 65991.0}
     assert out[1]["close"] == 40100.0
+    assert out[1]["night_volume"] is None  # 2026-05-20 無對應盤後列
 
 
 FUT_CONTRACTS_CSV = (

@@ -330,7 +330,12 @@ def fetch_chips_for_date(d: date | None = None) -> dict:
 # ---- 台指期歷史日K（期交所官方下載） ----
 
 def parse_tx_history_csv(text: str, contract: str = "TX") -> list:
-    """解析期交所歷史每日行情 CSV → 每日近月（一般盤、成交量最大者）OHLC。"""
+    """解析期交所歷史每日行情 CSV → 每日近月（一般盤、成交量最大者）OHLC + 對應月份的夜盤(盤後)成交量。
+
+    夜盤（15:00～次日05:00）成交依期交所規則計入「次一營業日」，故同一列日期 D 的
+    night_volume 實為 D 前一晚的夜盤量——這正是「昨夜夜盤 vs 今日日盤」的天然同列比較，
+    前端呈現時需標註清楚避免誤讀成「當日收盤後的夜盤」。
+    """
     rows = list(csv.reader(io.StringIO(text)))
     if not rows:
         return []
@@ -341,22 +346,38 @@ def parse_tx_history_csv(text: str, contract: str = "TX") -> list:
         i = idx.get(name)
         return r[i].strip() if i is not None and i < len(r) else ""
 
-    best: dict = {}  # date -> (volume, row dict)
+    best: dict = {}       # date -> (volume, row dict, month)
+    night_vol: dict = {}  # (date, month) -> volume
     for r in rows[1:]:
-        if not r or g(r, "契約") != contract or g(r, "交易時段") != "一般":
+        if not r or g(r, "契約") != contract:
+            continue
+        session = g(r, "交易時段")
+        month = g(r, "到期月份(週別)")
+        d = g(r, "交易日期").replace("/", "-")
+        if session == "盤後":
+            try:
+                night_vol[(d, month)] = float(g(r, "成交量").replace(",", ""))
+            except ValueError:
+                pass
+            continue
+        if session != "一般":
             continue
         o, h, l, c = g(r, "開盤價"), g(r, "最高價"), g(r, "最低價"), g(r, "收盤價")
         if any(v in ("", "-") for v in (o, h, l, c)):
             continue
         try:
             vol = float(g(r, "成交量").replace(",", ""))
-            d = g(r, "交易日期").replace("/", "-")
             item = {"date": d, "open": float(o), "high": float(h), "low": float(l), "close": float(c), "volume": vol}
         except ValueError:
             continue
-        if item["date"] not in best or vol > best[item["date"]][0]:
-            best[item["date"]] = (vol, item)
-    return [best[d][1] for d in sorted(best)]
+        if d not in best or vol > best[d][0]:
+            best[d] = (vol, item, month)
+    out = []
+    for d in sorted(best):
+        vol, item, month = best[d]
+        item["night_volume"] = night_vol.get((d, month))
+        out.append(item)
+    return out
 
 
 def fetch_tx_history(days: int = 365, contract: str = "TX", chunk: int = 28) -> list:
