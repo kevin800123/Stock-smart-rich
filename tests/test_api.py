@@ -1203,3 +1203,27 @@ def test_trader_ss_sections_checklist_and_signals(tmp_path, monkeypatch):
     assert [h["code"] for h in red3_rows] == ["2330"]
     assert red3_rows[0]["name"] == "台積電"
     assert "非投資建議" in d["disclaimer"]
+
+
+def test_signals_snapshot_records_once_and_reports_source_dates(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, insert_chip_snapshot
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    insert_chip_snapshot(c, "2026-07-14", [
+        {"code": "1111", "name": "候選", "w55": 1, "big_holder_ratio": 0.5,
+         "rev_yoy": 10, "est_profit": 2, "lan_value": 80, "close": 100},
+    ])
+    app = create_app()
+    client = TestClient(app)
+
+    r1 = client.post("/api/signals/snapshot").json()
+    assert r1["ok"] is True
+    assert r1["added"] == 1
+    assert r1["total"] == 1
+    assert r1["chip_snapshot_date"] == "2026-07-14"
+
+    r2 = client.post("/api/signals/snapshot").json()  # 同日再按一次不應重複寫入
+    assert r2["added"] == 0
+    assert r2["total"] == 1

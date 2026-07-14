@@ -240,6 +240,28 @@ async function loadSignals() {
     $("sig-perf").innerHTML = `<span class="muted small">載入失敗: ${esc(e.message)}</span>`;
   }
 }
+async function snapshotSignalsNow() {
+  const btn = $("btn-sig-snapshot"), status = $("sig-snapshot-status");
+  btn.disabled = true; status.textContent = "處理中…";
+  try {
+    const r = await (await fetch("/api/signals/snapshot", { method: "POST" })).json();
+    if (r.added > 0) {
+      status.textContent = `✅ 新增 ${r.added} 筆訊號（累計 ${r.total} 筆），5/10/20 日報酬需等交易日累積後才會顯示`;
+    } else if (r.total > 0) {
+      status.textContent = `今日已快照過（累計 ${r.total} 筆，無新增）`;
+    } else {
+      const src = r.chip_snapshot_date || r.stock_ohlc_date
+        ? `（選股 CSV 最新日期 ${r.chip_snapshot_date || "無"}、OHLC 最新日期 ${r.stock_ohlc_date || "無"}）`
+        : "（尚無選股 CSV 或 OHLC 資料可供比對）";
+      status.textContent = `今日無符合條件的訊號 ${src}`;
+    }
+    await loadSignals();
+  } catch (e) {
+    status.textContent = "失敗：" + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
 function renderSignals(d) {
   const cls = (v) => (v > 0 ? "up" : v < 0 ? "down" : "");
   const pct = (v) => v == null ? "—" : (v > 0 ? "+" : "") + fmt(v, 2) + "%";
@@ -1226,6 +1248,7 @@ $("btn-export").addEventListener("click", () => {
 });
 $("btn-save-settings").addEventListener("click", saveSettings);
 $("btn-osfut-refresh").addEventListener("click", () => loadOsFutures(true));
+$("btn-sig-snapshot").addEventListener("click", snapshotSignalsNow);
 $("btn-cup-refresh").addEventListener("click", loadCupHandle);
 $("btn-cup-picks").addEventListener("click", (e) => {
   cupPicksOnly = !cupPicksOnly;

@@ -56,6 +56,25 @@ def trades_delete(id: int):
         return {"ok": False, "error": f"找不到交易 #{id}"}
     return _trades_payload(c)
 
+@router.post("/signals/snapshot")
+def signals_snapshot():
+    """立即補跑一次「今日訊號快照＋到期回填」，不重抓行情（輕量，供尚未到 21:00 排程時手動補跑）。"""
+    from ..ledger import record_daily_signals, update_ledger_returns
+    c = conn()
+    before = c.execute("SELECT COUNT(*) FROM signal_ledger").fetchone()[0]
+    r_chip = c.execute("SELECT MAX(snap_date) FROM chip_snapshot").fetchone()
+    r_ohlc = c.execute("SELECT MAX(date) FROM stock_ohlc").fetchone()
+    record_daily_signals(c)
+    update_ledger_returns(c)
+    after = c.execute("SELECT COUNT(*) FROM signal_ledger").fetchone()[0]
+    return {
+        "ok": True,
+        "added": after - before,
+        "total": after,
+        "chip_snapshot_date": r_chip[0] if r_chip else None,
+        "stock_ohlc_date": r_ohlc[0] if r_ohlc else None,
+    }
+
 @router.get("/signals/performance")
 def signals_performance():
     c = conn()
