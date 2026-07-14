@@ -63,6 +63,36 @@ def fetch_otc_names() -> dict:
         return {}
 
 
+# 上櫃產業代碼→類股名：與上市 t187ap03_L 幾乎共用同一套碼（實測比對），僅多兩碼專屬上櫃。
+from .twse import _INDUSTRY_CODE as _TSE_INDUSTRY_CODE  # noqa: E402
+_OTC_INDUSTRY_CODE = {**_TSE_INDUSTRY_CODE, "32": "文化創意", "33": "農業科技"}
+
+
+def parse_otc_industry(records: list) -> dict:
+    """上櫃公司基本資料 t187ap03_O → {代號: {sector, name, shares}}（熱力圖用）。
+
+    shares＝已發行股數(IssueShares)，×收盤價≒市值。產業代碼未知者略過。
+    """
+    out: dict[str, dict] = {}
+    for r in records or []:
+        code = str(r.get("SecuritiesCompanyCode", "")).strip()
+        sec = _OTC_INDUSTRY_CODE.get(str(r.get("SecuritiesIndustryCode", "")).strip())
+        if code and sec:
+            out[code] = {"sector": sec, "name": str(r.get("CompanyAbbreviation", "")).strip(),
+                         "shares": _f(r.get("IssueShares"))}
+    return out
+
+
+def fetch_otc_industry() -> dict:
+    """上櫃公司 {代號: {sector, name, shares}}。近乎靜態，呼叫端宜快取。查無回空。"""
+    try:
+        j = httpx.get(OTC_COMPANY_URL, timeout=25,
+                      headers={"User-Agent": "Mozilla/5.0"}).json()
+        return parse_otc_industry(j)
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def parse_otc_quotes(payload: dict) -> dict:
     """dailyQuotes 上櫃盤後行情 → {代號: {name, close, chg_pct}}。
 

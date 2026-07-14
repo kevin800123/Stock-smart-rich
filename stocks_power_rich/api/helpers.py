@@ -105,6 +105,31 @@ def _otc_names(c) -> dict:
     return m or {}
 
 
+def _otc_industry(c) -> dict:
+    """上櫃 {code: {sector, name, shares}}，月快取（熱力圖上櫃分頁用）。"""
+    key = f"otc_ind:{datetime.now().strftime('%Y-%m')}"
+    m = get_ai_cache(c, key)
+    if not m:
+        m = tpex.fetch_otc_industry()
+        if m:
+            set_ai_cache(c, key, m)
+    return m or {}
+
+
+def _otc_quotes_for(c, date: str) -> dict:
+    """上櫃 {code: {name, close, chg_pct}}，逐日快取（對齊 _quotes_for 上市版）。"""
+    qkey = f"otc_quotes:{date}"
+    quotes = get_ai_cache(c, qkey)
+    if quotes is None:
+        try:
+            quotes = tpex.fetch_otc_quotes(datetime.fromisoformat(date).date())
+        except Exception:  # noqa: BLE001
+            quotes = {}
+        if quotes:
+            set_ai_cache(c, qkey, quotes)
+    return quotes or {}
+
+
 def _quotes_for(c, date: str) -> dict:
     qkey = f"stock_quotes:{date}"
     quotes = get_ai_cache(c, qkey)

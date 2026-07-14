@@ -1247,10 +1247,15 @@ def test_heatmap_groups_stocks_by_sector_sorted_by_mcap(tmp_path, monkeypatch):
         "2454": {"name": "聯發科", "close": 1000.0, "chg_pct": -1.0},
         "6789": {"name": "采鈺", "close": 300.0, "chg_pct": 4.29},
         "2603": {"name": "長榮", "close": 200.0, "chg_pct": 5.0}})
+    monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {
+        "2330": {"name": "台積電", "close": 2505.0, "chg_pct": 3.94},
+        "2454": {"name": "聯發科", "close": 1000.0, "chg_pct": -1.0},
+        "6789": {"name": "采鈺", "close": 300.0, "chg_pct": 4.29},
+        "2603": {"name": "長榮", "close": 200.0, "chg_pct": 5.0}})
     app = create_app()
     client = TestClient(app)
-    d = client.get("/api/heatmap").json()
-    assert d["date"] == "2026-06-26"
+    d = client.get("/api/heatmap").json()   # 預設 market=tse
+    assert d["date"] == "2026-06-26" and d["market"] == "tse"
     groups = d["groups"]
     # 半導體總市值 > 航運 → 排最前
     assert [g["sector"] for g in groups] == ["半導體", "航運"]
@@ -1258,3 +1263,36 @@ def test_heatmap_groups_stocks_by_sector_sorted_by_mcap(tmp_path, monkeypatch):
     assert [s["code"] for s in semi] == ["2330", "2454"]   # 市值大→小，無市值者(采鈺)剔除
     assert semi[0]["mcap"] == round(25_930_000_000 * 2505.0 / 1e8, 1)
     assert semi[0]["chg_pct"] == 3.94 and semi[0]["name"] == "台積電"
+
+
+def test_heatmap_otc_and_all_markets(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import twse, tpex
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-06-26", "taiex": 100.0})
+    monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {
+        "2330": {"sector": "半導體", "name": "台積電", "shares": 25_930_000_000}})
+    monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {
+        "2330": {"name": "台積電", "close": 2505.0, "chg_pct": 3.94}})
+    monkeypatch.setattr(tpex, "fetch_otc_industry", lambda: {
+        "8299": {"sector": "半導體", "name": "群聯", "shares": 199_000_000},
+        "5347": {"sector": "半導體", "name": "世界", "shares": 6_000_000_000}})
+    monkeypatch.setattr(tpex, "fetch_otc_quotes", lambda date=None: {
+        "8299": {"name": "群聯", "close": 600.0, "chg_pct": 2.0},
+        "5347": {"name": "世界", "close": 100.0, "chg_pct": -1.5}})
+    app = create_app()
+    client = TestClient(app)
+
+    otc = client.get("/api/heatmap?market=otc").json()
+    assert otc["market"] == "otc"
+    assert {s["code"] for g in otc["groups"] for s in g["stocks"]} == {"8299", "5347"}
+    assert "2330" not in {s["code"] for g in otc["groups"] for s in g["stocks"]}
+
+    allm = client.get("/api/heatmap?market=all").json()
+    codes = {s["code"] for g in allm["groups"] for s in g["stocks"]}
+    assert codes == {"2330", "8299", "5347"}   # 上市+上櫃同「半導體」合併一組
+    semi = next(g for g in allm["groups"] if g["sector"] == "半導體")["stocks"]
+    assert [s["code"] for s in semi] == ["2330", "5347", "8299"]  # 依市值大→小跨市場排序

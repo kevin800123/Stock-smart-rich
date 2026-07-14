@@ -159,6 +159,8 @@ body {
 .tf:hover, .ktf:hover { border-color: var(--accent); }
 .tf.active, .ktf.active { background: var(--accent); color: #1a1a1a; border-color: var(--accent); font-weight: 700; }
 .trader-tabs { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.hm-tabs { display: inline-flex; gap: 4px; margin: 0 8px; vertical-align: middle; }
+.hm-tab { padding: 2px 11px; font-size: 12px; }
 .ctf, .rkf, .rku { background: var(--card); color: var(--text); border: 1px solid var(--border); padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
 .ctf:hover, .rkf:hover, .rku:hover { border-color: var(--accent); }
 .ctf.active, .rkf.active, .rku.active { background: var(--accent); color: #1a1a1a; border-color: var(--accent); font-weight: 700; }

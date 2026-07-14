@@ -7,6 +7,8 @@ from .helpers import (
     _sectors_for,
     _industry_map,
     _quotes_for,
+    _otc_industry,
+    _otc_quotes_for,
     _attach_size,
     get_ai_cache,
     set_ai_cache,
@@ -170,16 +172,10 @@ def sector_stocks(sector: str, date: str | None = None):
     stocks.sort(key=lambda s: (s["mcap"] is None, -(s["mcap"] or 0)))
     return {"sector": sector, "date": date, "count": len(stocks), "stocks": stocks}
 
-@router.get("/heatmap")
-def heatmap(date: str | None = None):
-    """全上市個股熱力圖資料：依產業分組，每檔含市值(面積)與當日漲跌幅(顏色)。
-    分組與組內個股皆依市值由大到小；無市值或無漲跌幅者剔除。"""
-    c = conn()
-    date = date or _latest_date(c)
-    if not date:
-        return {"date": None, "groups": []}
-    imap, quotes = _industry_map(c), _quotes_for(c, date)
-    groups: dict = {}
+def _heatmap_rows(imap: dict, quotes: dict) -> list:
+    """(產業對照, 報價) → 個股熱力圖資料列 [{code,name,sector,mcap,chg_pct}]；
+    無產業/漲跌/市值者剔除。"""
+    out = []
     for code, info in imap.items():
         sector = info.get("sector")
         q = quotes.get(code)
@@ -189,14 +185,33 @@ def heatmap(date: str | None = None):
         mcap = round(shares * close / 1e8, 1) if (shares and close) else None
         if not mcap:
             continue
-        groups.setdefault(sector, []).append(
-            {"code": code, "name": q.get("name") or code, "mcap": mcap, "chg_pct": q.get("chg_pct")})
+        out.append({"code": code, "name": q.get("name") or code, "sector": sector,
+                    "mcap": mcap, "chg_pct": q.get("chg_pct")})
+    return out
+
+
+@router.get("/heatmap")
+def heatmap(date: str | None = None, market: str = "tse"):
+    """個股熱力圖資料：依產業分組，每檔含市值(面積)與當日漲跌幅(顏色)。
+    market: tse(上市) / otc(上櫃) / all(全部)。分組與組內個股皆依市值由大到小。"""
+    c = conn()
+    date = date or _latest_date(c)
+    if not date:
+        return {"date": None, "market": market, "groups": []}
+    rows = []
+    if market in ("tse", "all"):
+        rows += _heatmap_rows(_industry_map(c), _quotes_for(c, date))
+    if market in ("otc", "all"):
+        rows += _heatmap_rows(_otc_industry(c), _otc_quotes_for(c, date))
+    groups: dict = {}
+    for s in rows:
+        groups.setdefault(s["sector"], []).append(s)
     out = []
     for sector, stocks in groups.items():
         stocks.sort(key=lambda s: -s["mcap"])
         out.append({"sector": sector, "mcap": round(sum(s["mcap"] for s in stocks), 1), "stocks": stocks})
     out.sort(key=lambda g: -g["mcap"])
-    return {"date": date, "groups": out}
+    return {"date": date, "market": market, "groups": out}
 
 @router.get("/sectors/rotation")
 def sectors_rotation():

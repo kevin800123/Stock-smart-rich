@@ -24,7 +24,7 @@ let lastIndexData = null, lastStockData = null;
 let chipChart = null, chipMetric = "inst", lastHistory = [];
 let txVolChart = null;
 let stockChipsChart = null, stockCustodyChart = null;
-let sectorChart = null;
+let sectorChart = null, heatmapMarket = "tse";
 let cupChart = null, cupMatches = [], cupLoaded = false;
 let rankWho = "foreign", rankUnit = "shares";
 const MA_DEFS = [
@@ -232,10 +232,27 @@ function renderTraderSection(s) {
 }
 
 // ========== 訊號追蹤與前瞻測試 ==========
+let sigAutoSeeded = false;
 async function loadSignals() {
   if (!$("sig-perf")) return;
   try {
-    renderSignals(await getJSON("/api/signals/performance"));
+    let d = await getJSON("/api/signals/performance");
+    // 帳本從未種入任何訊號 → 自動補跑一次快照（省去手動按鈕；每次載入至多自動種一次）
+    if (d.total_records === 0 && !sigAutoSeeded) {
+      sigAutoSeeded = true;
+      const status = $("sig-snapshot-status");
+      if (status) status.textContent = "首次載入，自動產生今日訊號快照…";
+      try {
+        const r = await (await fetch("/api/signals/snapshot", { method: "POST" })).json();
+        if (status) {
+          status.textContent = r.added > 0
+            ? `✅ 已自動種入 ${r.added} 筆訊號，5/10/20 日報酬需等交易日累積後才會顯示`
+            : `尚無可種入的訊號（選股 CSV 最新 ${r.chip_snapshot_date || "無"}、OHLC 最新 ${r.stock_ohlc_date || "無"}）`;
+        }
+        d = await getJSON("/api/signals/performance");
+      } catch (e) { /* 自動種入失敗不影響顯示 */ }
+    }
+    renderSignals(d);
   } catch (e) {
     $("sig-perf").innerHTML = `<span class="muted small">載入失敗: ${esc(e.message)}</span>`;
   }
@@ -724,11 +741,12 @@ async function loadSectors() {
   if (!el) return;
   const note = $("sectors-note");
   try {
-    const d = await getJSON("/api/heatmap");
+    const d = await getJSON(`/api/heatmap?market=${heatmapMarket}`);
     const groups = (d.groups || []).filter((g) => g.stocks && g.stocks.length);
     if (!groups.length) {
       el.classList.add("sectors");
-      el.innerHTML = '<div class="muted small">尚無個股資料</div>'; if (note) note.textContent = ""; return;
+      const hint = heatmapMarket === "otc" ? "尚無上櫃資料（櫃買報價待回補）" : "尚無個股資料";
+      el.innerHTML = `<div class="muted small">${hint}</div>`; if (note) note.textContent = ""; return;
     }
     const allStocks = groups.flatMap((g) => g.stocks);
     const up = allStocks.filter((s) => s.chg_pct > 0).length;
@@ -1230,6 +1248,12 @@ $("btn-export").addEventListener("click", () => {
 $("btn-save-settings").addEventListener("click", saveSettings);
 $("btn-osfut-refresh").addEventListener("click", () => loadOsFutures(true));
 $("btn-sig-snapshot").addEventListener("click", snapshotSignalsNow);
+document.querySelectorAll(".hm-tab").forEach((b) => b.addEventListener("click", () => {
+  if (b.dataset.market === heatmapMarket) return;
+  heatmapMarket = b.dataset.market;
+  document.querySelectorAll(".hm-tab").forEach((x) => x.classList.toggle("active", x === b));
+  loadSectors();
+}));
 $("btn-cup-refresh").addEventListener("click", loadCupHandle);
 $("btn-cup-picks").addEventListener("click", (e) => {
   cupPicksOnly = !cupPicksOnly;

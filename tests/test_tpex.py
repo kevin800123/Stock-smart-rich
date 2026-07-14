@@ -47,3 +47,19 @@ def test_parse_tpex_insti_positional_in_lots():
     assert out["8383"]["foreign"] == 1119   # 1,118,809 股 / 1000
     assert out["8383"]["trust"] == 0
     assert out["8383"]["total"] == 1119
+
+
+def test_parse_otc_industry_maps_code_name_shares():
+    from stocks_power_rich.sources.tpex import parse_otc_industry
+    recs = [
+        {"SecuritiesCompanyCode": "1240", "CompanyAbbreviation": "茂生農經",
+         "SecuritiesIndustryCode": "33", "IssueShares": "44232373"},   # 33=農業科技(上櫃專屬碼)
+        {"SecuritiesCompanyCode": "8299", "CompanyAbbreviation": "群聯",
+         "SecuritiesIndustryCode": "24", "IssueShares": "199000000"},  # 24=半導體(與上市共用)
+        {"SecuritiesCompanyCode": "9999", "CompanyAbbreviation": "未知碼",
+         "SecuritiesIndustryCode": "99", "IssueShares": "1000"},       # 未知碼→剔除
+    ]
+    out = parse_otc_industry(recs)
+    assert out["1240"] == {"sector": "農業科技", "name": "茂生農經", "shares": 44232373.0}
+    assert out["8299"]["sector"] == "半導體"
+    assert "9999" not in out

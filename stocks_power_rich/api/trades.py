@@ -106,9 +106,11 @@ def signals_performance():
 
     user_data = _trades_payload(c)
     user_stats = user_data.get("stats") or {}
+    total_records = c.execute("SELECT COUNT(*) FROM signal_ledger").fetchone()[0]
 
     return {
         "ok": True,
         "performance": perf,
-        "user_stats": user_stats
+        "user_stats": user_stats,
+        "total_records": total_records,  # 帳本已快照筆數（0＝尚未種入任何訊號）
     }
