@@ -99,7 +99,7 @@ function showView(name) {
   if (name === "watch") loadWatchlist();
   if (name === "trades") loadTrades();
   if (name === "signals") loadSignals();
-  if (name === "sstrader") loadSsTrader();
+  if (name === "traders") loadTraders();
   if (name === "settings") loadSettings();
 }
 
@@ -158,48 +158,77 @@ async function trTableClick(e) {
   }
 }
 
-// ========== SS 操盤手檢核 ==========
-async function loadSsTrader() {
-  if (!$("ss-checklist")) return;
+// ========== 操盤手（多操盤手，通用區塊渲染） ==========
+let traderList = [], currentTrader = null;
+async function loadTraders() {
+  if (!$("trader-tabs")) return;
   try {
-    renderSsTrader(await getJSON("/api/ss-trader"));
+    const d = await getJSON("/api/traders");
+    traderList = d.traders || [];
+    $("trader-tabs").innerHTML = traderList.map((t) =>
+      `<button class="tf trader-tab" data-tid="${esc(t.id)}">${esc(t.emoji || "")} ${esc(t.name)}</button>`).join("");
+    $("trader-tabs").querySelectorAll(".trader-tab").forEach((b) =>
+      b.addEventListener("click", () => selectTrader(b.dataset.tid)));
+    const first = (traderList.find((t) => t.id === currentTrader) || traderList[0] || {}).id;
+    if (first) selectTrader(first);
+    else $("trader-sections").innerHTML = '<div class="muted small">尚無操盤手</div>';
   } catch (e) {
-    $("ss-checklist").innerHTML = `<span class="muted small">載入失敗: ${esc(e.message)}</span>`;
+    $("trader-sections").innerHTML = `<span class="muted small">載入失敗: ${esc(e.message)}</span>`;
   }
 }
-function renderSsTrader(d) {
-  $("ss-date").textContent = d.date ? `資料日期 ${d.date}` : "";
-  const MARK = { bull: ["▲ 偏多", "var(--up)"], bear: ["▼ 偏空", "var(--down)"],
-                 warn: ["⚠ 留意", "#e0a23c"], neutral: ["● 中性", "#8a94a3"], na: ["— 無資料", "#666"] };
-  $("ss-checklist").innerHTML = `<table><thead><tr><th>檢核項</th><th>判定</th><th>數值</th><th>說明</th></tr></thead><tbody>` +
-    (d.checklist || []).map((it) => {
-      const [label, color] = MARK[it.status] || MARK.na;
+async function selectTrader(tid) {
+  currentTrader = tid;
+  $("trader-tabs").querySelectorAll(".trader-tab").forEach((b) =>
+    b.classList.toggle("active", b.dataset.tid === tid));
+  $("trader-sections").innerHTML = '<div class="muted small">載入中…</div>';
+  try {
+    renderTrader(await getJSON(`/api/traders/${encodeURIComponent(tid)}`));
+  } catch (e) {
+    $("trader-sections").innerHTML = `<span class="muted small">載入失敗: ${esc(e.message)}</span>`;
+  }
+}
+function renderTrader(d) {
+  $("trader-date").textContent = d.date ? `資料日期 ${d.date}` : "";
+  $("trader-tagline").textContent = d.tagline || "";
+  $("trader-sections").innerHTML = (d.sections || []).map(renderTraderSection).join("");
+  $("trader-disclaimer").innerHTML = d.disclaimer ? `⚠️ ${esc(d.disclaimer)}` : "";
+}
+const TRADER_MARK = { bull: ["▲ 偏多", "var(--up)"], bear: ["▼ 偏空", "var(--down)"],
+  warn: ["⚠ 留意", "#e0a23c"], neutral: ["● 中性", "#8a94a3"], na: ["— 無資料", "#666"] };
+function traderCell(row, col) {
+  const v = row[col.key];
+  if (col.kind === "stock") return stockLink(row.code, row.name);
+  if (col.kind === "lan") return lanCell(v);
+  if (col.kind === "num") return fmt(v);
+  if (col.kind === "num1") return fmt(v, 1);
+  if (col.kind === "num2") return fmt(v, 2);
+  return esc(v == null ? "—" : String(v));
+}
+function renderTraderSection(s) {
+  const head = s.title
+    ? `<div class="ai-head"><span>${esc(s.title)}</span>${s.note ? `<span class="muted small">${esc(s.note)}</span>` : ""}</div>`
+    : "";
+  if (s.type === "checklist") {
+    const body = (s.items || []).map((it) => {
+      const [label, color] = TRADER_MARK[it.status] || TRADER_MARK.na;
       return `<tr><td>${esc(it.name)}</td><td style="color:${color};white-space:nowrap"><b>${label}</b></td>` +
              `<td>${esc(it.value == null ? "—" : String(it.value))}</td><td class="muted">${esc(it.note || "")}</td></tr>`;
-    }).join("") + "</tbody></table>";
-
-  const r = d.routine || {};
-  const li = (arr) => (arr || []).map((s) => `・${esc(s)}`).join("<br/>");
-  $("ss-routine").innerHTML =
-    `<b>盤前</b><br/>${li(r.pre)}<br/><b>盤中</b><br/>${li(r.intra)}<br/><b>盤後</b><br/>${li(r.post)}` +
-    `<br/><b>心法</b><br/>${li(r.mind)}`;
-
-  $("ss-qoq-note").textContent = d.qoq_note || "";
-  const picks = d.qoq_picks || [];
-  $("ss-qoq").innerHTML = !picks.length ? '<div class="muted small">今日無符合（或尚未匯入選股 CSV）</div>' :
-    `<table><thead><tr><th>個股</th><th>收盤</th><th>月增%</th><th>年增%</th><th>累增</th><th>大戶增比</th><th>蘭值</th></tr></thead><tbody>` +
-    picks.map((p) => `<tr><td>${stockLink(p.code, p.name)}</td><td>${fmt(p.close)}</td><td>${fmt(p.month_inc, 1)}</td>` +
-      `<td>${fmt(p.rev_yoy, 1)}</td><td>${fmt(p.accum_inc, 1)}</td><td>${fmt(p.big_holder_ratio, 2)}</td><td>${lanCell(p.lan_value)}</td></tr>`).join("") +
-    "</tbody></table>";
-
-  $("ss-red3-date").textContent = d.red3_date ? `（訊號日 ${d.red3_date}）` : "";
-  const hits = d.red3 || [];
-  $("ss-red3").innerHTML = !hits.length ? '<div class="muted small">今日無「一紅吃三黑」訊號</div>' :
-    `<table><thead><tr><th>個股</th><th>收盤</th></tr></thead><tbody>` +
-    hits.map((h) => `<tr><td>${stockLink(h.code, h.name)}</td><td>${fmt(h.close)}</td></tr>`).join("") +
-    "</tbody></table>";
-
-  $("ss-disclaimer").innerHTML = `⚠️ ${esc(d.disclaimer || "")}`;
+    }).join("");
+    return head + `<div class="table-wrap"><table><thead><tr><th>檢核項</th><th>判定</th><th>數值</th><th>說明</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  }
+  if (s.type === "table") {
+    if (!s.rows || !s.rows.length) return head + `<div class="muted small">${esc(s.empty || "無資料")}</div>`;
+    const th = (s.columns || []).map((c) => `<th>${esc(c.label)}</th>`).join("");
+    const tr = s.rows.map((r) => `<tr>${(s.columns || []).map((c) => `<td>${traderCell(r, c)}</td>`).join("")}</tr>`).join("");
+    return head + `<div class="table-wrap"><table><thead><tr>${th}</tr></thead><tbody>${tr}</tbody></table></div>`;
+  }
+  if (s.type === "routine") {
+    const groups = (s.groups || []).map((g) =>
+      `<b>${esc(g.label)}</b><br/>${(g.items || []).map((i) => `・${esc(i)}`).join("<br/>")}`).join("<br/>");
+    return head + `<div class="wave-help" style="display:block">${groups}</div>`;
+  }
+  if (s.type === "note") return head + `<div class="wave-help" style="display:block">${esc(s.text || "")}</div>`;
+  return "";
 }
 
 // ========== 訊號追蹤與前瞻測試 ==========

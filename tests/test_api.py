@@ -1145,7 +1145,23 @@ def test_tx_volume_sessions_endpoint_returns_day_night_series(tmp_path, monkeypa
     assert r["ratio"][-2:] == [0.3, None]
 
 
-def test_ss_trader_endpoint_checklist_and_signals(tmp_path, monkeypatch):
+def test_traders_list_endpoint():
+    app = create_app()
+    client = TestClient(app)
+    d = client.get("/api/traders").json()
+    ids = [t["id"] for t in d["traders"]]
+    assert "ss" in ids
+    ss = next(t for t in d["traders"] if t["id"] == "ss")
+    assert ss["name"] and ss["emoji"]  # 選單所需欄位齊全
+
+
+def test_traders_unknown_id_404():
+    app = create_app()
+    client = TestClient(app)
+    assert client.get("/api/traders/nobody").status_code == 404
+
+
+def test_trader_ss_sections_checklist_and_signals(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import (get_connection, init_db, upsert_market_daily,
                                       insert_chip_snapshot, bulk_upsert_ohlc)
@@ -1171,14 +1187,19 @@ def test_ss_trader_endpoint_checklist_and_signals(tmp_path, monkeypatch):
                                          "low": min(o, cl) - 1, "close": cl}})
     app = create_app()
     client = TestClient(app)
-    r = client.get("/api/ss-trader")
+    r = client.get("/api/traders/ss")
     assert r.status_code == 200
     d = r.json()
-    by = {i["key"]: i for i in d["checklist"]}
+    assert d["id"] == "ss" and d["name"]        # META 併入回應
+    secs = {s["type"]: s for s in d["sections"]}
+    by = {i["key"]: i for i in secs["checklist"]["items"]}
     assert by["margin_maint"]["status"] == "bull"   # 133% 抄底區
     assert by["vix"]["status"] == "bull"            # 極度恐慌反指標
     assert by["fund_flow"]["status"] == "na"        # 無海期快取
-    assert [p["code"] for p in d["qoq_picks"]] == ["1111"]
-    assert [h["code"] for h in d["red3"]] == ["2330"]
-    assert d["red3"][0]["name"] == "台積電"
+    tables = [s for s in d["sections"] if s["type"] == "table"]
+    qoq_rows = tables[0]["rows"]
+    assert [p["code"] for p in qoq_rows] == ["1111"]
+    red3_rows = tables[1]["rows"]
+    assert [h["code"] for h in red3_rows] == ["2330"]
+    assert red3_rows[0]["name"] == "台積電"
     assert "非投資建議" in d["disclaimer"]
