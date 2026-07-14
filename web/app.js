@@ -99,6 +99,7 @@ function showView(name) {
   if (name === "watch") loadWatchlist();
   if (name === "trades") loadTrades();
   if (name === "signals") loadSignals();
+  if (name === "sstrader") loadSsTrader();
   if (name === "settings") loadSettings();
 }
 
@@ -155,6 +156,50 @@ async function trTableClick(e) {
     const r = await fetch(`/api/trades/${dbtn.dataset.id}`, { method: "DELETE" }).then((x) => x.json());
     if (r.ok) renderTrades(r); else alert(r.error || "刪除失敗");
   }
+}
+
+// ========== SS 操盤手檢核 ==========
+async function loadSsTrader() {
+  if (!$("ss-checklist")) return;
+  try {
+    renderSsTrader(await getJSON("/api/ss-trader"));
+  } catch (e) {
+    $("ss-checklist").innerHTML = `<span class="muted small">載入失敗: ${esc(e.message)}</span>`;
+  }
+}
+function renderSsTrader(d) {
+  $("ss-date").textContent = d.date ? `資料日期 ${d.date}` : "";
+  const MARK = { bull: ["▲ 偏多", "var(--up)"], bear: ["▼ 偏空", "var(--down)"],
+                 warn: ["⚠ 留意", "#e0a23c"], neutral: ["● 中性", "#8a94a3"], na: ["— 無資料", "#666"] };
+  $("ss-checklist").innerHTML = `<table><thead><tr><th>檢核項</th><th>判定</th><th>數值</th><th>說明</th></tr></thead><tbody>` +
+    (d.checklist || []).map((it) => {
+      const [label, color] = MARK[it.status] || MARK.na;
+      return `<tr><td>${esc(it.name)}</td><td style="color:${color};white-space:nowrap"><b>${label}</b></td>` +
+             `<td>${esc(it.value == null ? "—" : String(it.value))}</td><td class="muted">${esc(it.note || "")}</td></tr>`;
+    }).join("") + "</tbody></table>";
+
+  const r = d.routine || {};
+  const li = (arr) => (arr || []).map((s) => `・${esc(s)}`).join("<br/>");
+  $("ss-routine").innerHTML =
+    `<b>盤前</b><br/>${li(r.pre)}<br/><b>盤中</b><br/>${li(r.intra)}<br/><b>盤後</b><br/>${li(r.post)}` +
+    `<br/><b>心法</b><br/>${li(r.mind)}`;
+
+  $("ss-qoq-note").textContent = d.qoq_note || "";
+  const picks = d.qoq_picks || [];
+  $("ss-qoq").innerHTML = !picks.length ? '<div class="muted small">今日無符合（或尚未匯入選股 CSV）</div>' :
+    `<table><thead><tr><th>個股</th><th>收盤</th><th>月增%</th><th>年增%</th><th>累增</th><th>大戶增比</th><th>蘭值</th></tr></thead><tbody>` +
+    picks.map((p) => `<tr><td>${stockLink(p.code, p.name)}</td><td>${fmt(p.close)}</td><td>${fmt(p.month_inc, 1)}</td>` +
+      `<td>${fmt(p.rev_yoy, 1)}</td><td>${fmt(p.accum_inc, 1)}</td><td>${fmt(p.big_holder_ratio, 2)}</td><td>${lanCell(p.lan_value)}</td></tr>`).join("") +
+    "</tbody></table>";
+
+  $("ss-red3-date").textContent = d.red3_date ? `（訊號日 ${d.red3_date}）` : "";
+  const hits = d.red3 || [];
+  $("ss-red3").innerHTML = !hits.length ? '<div class="muted small">今日無「一紅吃三黑」訊號</div>' :
+    `<table><thead><tr><th>個股</th><th>收盤</th></tr></thead><tbody>` +
+    hits.map((h) => `<tr><td>${stockLink(h.code, h.name)}</td><td>${fmt(h.close)}</td></tr>`).join("") +
+    "</tbody></table>";
+
+  $("ss-disclaimer").innerHTML = `⚠️ ${esc(d.disclaimer || "")}`;
 }
 
 // ========== 訊號追蹤與前瞻測試 ==========

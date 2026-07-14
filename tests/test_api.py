@@ -1143,3 +1143,42 @@ def test_tx_volume_sessions_endpoint_returns_day_night_series(tmp_path, monkeypa
     assert r["day_volume"][-1] == 120.0
     assert r["night_volume"][-2:] == [30.0, None]
     assert r["ratio"][-2:] == [0.3, None]
+
+
+def test_ss_trader_endpoint_checklist_and_signals(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import (get_connection, init_db, upsert_market_daily,
+                                      insert_chip_snapshot, bulk_upsert_ohlc)
+    from stocks_power_rich.sources import twse, tpex
+
+    monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1}})
+    monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {})
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-07-01", "taiex": 20000.0, "turnover": 4000.0,
+                            "margin_maintenance": 133.0, "vix": 32.0})
+    insert_chip_snapshot(c, "2026-07-01", [
+        {"code": "1111", "name": "候選", "month_inc": 5, "rev_yoy": 10, "accum_inc": 3,
+         "big_holder_ratio": 0.5, "lan_value": 80, "close": 100},
+        {"code": "2222", "name": "淘汰", "month_inc": -1, "rev_yoy": 10, "accum_inc": 3,
+         "big_holder_ratio": 0.5, "lan_value": 90, "close": 50},
+    ])
+    # 2330 四日K：三黑後一紅吞實體 → 一紅吃三黑
+    for d, o, cl in [("2026-06-28", 100, 97), ("2026-06-29", 98, 95),
+                     ("2026-06-30", 96, 92), ("2026-07-01", 91, 101)]:
+        bulk_upsert_ohlc(c, d, {"2330": {"open": o, "high": max(o, cl) + 1,
+                                         "low": min(o, cl) - 1, "close": cl}})
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/ss-trader")
+    assert r.status_code == 200
+    d = r.json()
+    by = {i["key"]: i for i in d["checklist"]}
+    assert by["margin_maint"]["status"] == "bull"   # 133% 抄底區
+    assert by["vix"]["status"] == "bull"            # 極度恐慌反指標
+    assert by["fund_flow"]["status"] == "na"        # 無海期快取
+    assert [p["code"] for p in d["qoq_picks"]] == ["1111"]
+    assert [h["code"] for h in d["red3"]] == ["2330"]
+    assert d["red3"][0]["name"] == "台積電"
+    assert "非投資建議" in d["disclaimer"]

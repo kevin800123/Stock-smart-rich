@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from datetime import datetime
+from datetime import datetime, date
 from .deps import conn
 from .helpers import (
     _latest_date,
@@ -8,12 +8,14 @@ from .helpers import (
     _industry_map,
     _quotes_for,
     _attach_size,
+    _ohlc_names,
     get_ai_cache,
     set_ai_cache,
     _os_futures
 )
+from ..db import get_snapshot_dates, get_snapshot
 from ..sources import twse, taifex
-from .. import analysis, gemini
+from .. import analysis, gemini, ss_trader
 from ..config import load_config
 
 router = APIRouter(prefix="/api")
@@ -21,6 +23,46 @@ router = APIRouter(prefix="/api")
 @router.get("/os-futures")
 def os_futures(refresh: int = 0):
     return _os_futures(refresh=bool(refresh))
+
+
+@router.get("/ss-trader")
+def ss_trader_daily():
+    """SS 操盤手每日檢核：可量化規則對照（方法論見 .claude/skills/ss-trader）。非投資建議。"""
+    c = conn()
+    rows = [dict(r) for r in c.execute(
+        "SELECT * FROM market_daily ORDER BY date DESC LIMIT 60").fetchall()][::-1]
+    tx = c.execute("SELECT volume, night_volume FROM tx_history ORDER BY date DESC LIMIT 1").fetchone()
+    night_ratio = (tx["night_volume"] / tx["volume"]) if tx and tx["night_volume"] and tx["volume"] else None
+    checklist = ss_trader.market_checklist(
+        rows, osfut=get_ai_cache(c, "osfut:current"), night_ratio=night_ratio,
+        settlement_week=ss_trader.is_settlement_week(date.today()))
+    snap_dates = get_snapshot_dates(c)
+    picks = ss_trader.qoq_rising_picks(get_snapshot(c, snap_dates[-1]))[:15] if snap_dates else []
+    # 一紅吃三黑（近4個交易日全市場掃描）
+    last4 = [r[0] for r in c.execute(
+        "SELECT DISTINCT date FROM stock_ohlc ORDER BY date DESC LIMIT 4").fetchall()][::-1]
+    red3 = []
+    if len(last4) == 4:
+        series = {}
+        ph = ",".join("?" * 4)
+        for code, o, cl in c.execute(
+                f"SELECT code, open, close FROM stock_ohlc WHERE date IN ({ph}) ORDER BY code, date", last4):
+            series.setdefault(code, []).append((o, cl))
+        names = _ohlc_names(c)
+        for code, bars in series.items():
+            if len(bars) == 4 and ss_trader.red_engulfs_three_black(
+                    [b[0] for b in bars], [b[1] for b in bars]):
+                red3.append({"code": code, "name": names.get(code, code), "close": bars[-1][1]})
+    return {
+        "date": rows[-1]["date"] if rows else None,
+        "checklist": checklist,
+        "qoq_picks": picks,
+        "qoq_note": "「季季高」近似：月增>0 ∧ 年增>0 ∧ 累增>0 ∧ 大戶增比>0（CSV 無季營收，以此近似），依蘭值排序",
+        "red3": red3[:30],
+        "red3_date": last4[-1] if len(last4) == 4 else None,
+        "routine": ss_trader.ROUTINE,
+        "disclaimer": "以上為 Ss 經驗法則的量化近似對照，僅供研究參考，非投資建議；買賣決策請自行判斷並自負風險。",
+    }
 
 @router.get("/dashboard")
 def dashboard():

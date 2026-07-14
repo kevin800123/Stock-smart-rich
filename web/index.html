@@ -27,6 +27,7 @@
       <a class="nav" data-view="cup"><span class="ico">🏆</span><span class="lbl">杯柄選股</span></a>
       <a class="nav" data-view="trades"><span class="ico">📒</span><span class="lbl">交易帳本</span></a>
       <a class="nav" data-view="signals"><span class="ico">📈</span><span class="lbl">訊號追蹤</span></a>
+      <a class="nav" data-view="sstrader"><span class="ico">🧭</span><span class="lbl">操盤手</span></a>
       <a class="nav" data-view="weekly"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
       <a class="nav" data-view="settings"><span class="ico">⚙️</span><span class="lbl">設定</span></a>
     </nav>
@@ -279,6 +280,29 @@
           ・<b>平均報酬</b>＝所有樣本報酬率的算術平均值。<br/>
           ・⚠️ <b>重要揭露</b>：本表統計之訊號績效為<b>含手續費稅前的理論報酬</b>。歷史績效不代表未來表現。
         </div>
+      </section>
+
+      <!-- ===== 操盤手（SS 方法論檢核） ===== -->
+      <section id="view-sstrader" class="view">
+        <div class="toolbar">
+          <span class="pane-title" style="margin:0">🧭 SS 操盤手每日檢核</span>
+          <span id="ss-date" class="muted small"></span>
+          <span class="muted small">「任何線形都是主力畫出來的，籌碼（量、主力分點）最可靠」</span>
+        </div>
+
+        <div class="ai-head"><span>大盤檢核表（可量化規則對照）</span></div>
+        <div id="ss-checklist" class="table-wrap">載入中…</div>
+
+        <div class="ai-head"><span>每日例行檢查</span></div>
+        <div id="ss-routine" class="wave-help" style="display:block"></div>
+
+        <div class="ai-head"><span>選股訊號：季季高（近似）×大戶增</span><span id="ss-qoq-note" class="muted small"></span></div>
+        <div id="ss-qoq" class="table-wrap"></div>
+
+        <div class="ai-head"><span>K線訊號：一紅吃三黑（轉強可試單）</span><span id="ss-red3-date" class="muted small"></span></div>
+        <div id="ss-red3" class="table-wrap"></div>
+
+        <div class="wave-help" id="ss-disclaimer" style="display:block"></div>
       </section>
 
       <!-- ===== 海期監控 ===== -->

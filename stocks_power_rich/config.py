@@ -12,6 +12,7 @@ INTL_TICKERS = {
     "kospi": "^KS11",   # 韓股 KOSPI
     "gold": "GC=F",     # 黃金期貨
     "jpy": "JPY=X",     # 美元兌日圓（USD/JPY，1 美元兌約 15x 日圓）
+    "twd": "TWD=X",     # 美元兌台幣（USD/TWD；台幣升值＝此值下跌。SS操盤手檢核核心指標）
     "btc": "BTC-USD",   # 比特幣
     "vix": "^VIX",      # VIX 恐慌指數（CBOE）
 }
