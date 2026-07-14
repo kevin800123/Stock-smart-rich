@@ -402,6 +402,16 @@ function balanceCard(label, srcRow, curDate, balKey, chgKey) {
   const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
   return card(lbl, fmt(srcRow[balKey], 0), srcRow[chgKey], pctOf(srcRow[balKey], srcRow[chgKey]));
 }
+// 融資維持率卡：無逐日漲跌欄位（只存當值），與融資/融券同時機公布，退舊資料規則相同
+function marginMaintCard(srcRow, curDate) {
+  const label = "融資維持率";
+  if (!srcRow || srcRow.margin_maintenance === null || srcRow.margin_maintenance === undefined) {
+    return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+  }
+  const stale = srcRow.date && srcRow.date !== curDate;
+  const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
+  return `<div class="card"><div class="card-label">${lbl}</div><div class="card-val">${fmt(srcRow.margin_maintenance, 1)}%</div></div>`;
+}
 function renderCards(m, prev = {}, hist = []) {
   if (!m || !m.date) { $("cards-tw").innerHTML = '<div class="muted">尚無大盤資料。</div>'; $("cards-fut").innerHTML = ""; $("cards-intl").innerHTML = ""; $("data-date").textContent = ""; return; }
   $("data-date").textContent = "資料日期：" + m.date;
@@ -420,6 +430,7 @@ function renderCards(m, prev = {}, hist = []) {
     flowCard("三大法人合計", sum3(m), sum3(prev), " 億"),
     balanceCard("融資餘額(張)", marginRow, m.date, "margin_balance", "margin_chg"),
     balanceCard("融券餘額(張)", marginRow, m.date, "short_balance", "short_chg"),
+    marginMaintCard(marginRow, m.date),
   ].join("");
   $("cards-fut").innerHTML = [
     card("台指期", fmt(m.tx_price), m.tx_chg, pctOf(m.tx_price, m.tx_chg)),
