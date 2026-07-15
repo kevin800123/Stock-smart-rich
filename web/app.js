@@ -24,7 +24,7 @@ let lastIndexData = null, lastStockData = null;
 let chipChart = null, chipMetric = "inst", lastHistory = [];
 let txVolChart = null;
 let stockChipsChart = null, stockCustodyChart = null;
-let sectorChart = null, heatmapMarket = "tse";
+let sectorChart = null, heatmapMarket = "tse", lastHeatmapData = null;
 let cupChart = null, cupMatches = [], cupLoaded = false;
 let rankWho = "foreign", rankUnit = "shares";
 const MA_DEFS = [
@@ -736,6 +736,35 @@ async function loadMovers() {
   } catch (e) { el.innerHTML = ""; }
 }
 
+// 依 treemap 排版後每格的真實寬高，把字級調到剛好放得下（比照 estock：大格大字、小格小字）。
+// 排版後才知道格子確切尺寸（面積相同、寬高比可能差很多），故此步在 setOption 之後執行。
+function fitHeatmapFonts(data) {
+  if (!sectorChart) return;
+  const root = sectorChart.getModel().getSeriesByIndex(0).getData().tree.root;
+  const labelByCode = {};
+  root.eachNode((n) => {
+    if (n.children && n.children.length) return;  // 只處理個股(葉)節點
+    let code, chg;
+    try { code = n.getModel().get("code"); chg = n.getModel().get("chg"); } catch (e) { return; }
+    if (!code) return;
+    const lay = n.getLayout();
+    if (!lay) return;
+    const w = lay.width, h = lay.height;
+    const pctLen = ((chg >= 0 ? "+" : "") + fmt(chg, 1) + "%").length;
+    // 名稱每字約 1em 寬、漲跌%數字每字約 0.6em 寬；寬度取兩行需求較大者，高度需容兩行
+    const charW = Math.max((n.name || "").length, pctLen * 0.6, 2);
+    // 扣 4px 內距、向下取整——round 會在臨界時多 1px 造成名稱被截
+    const fs = Math.floor(Math.min(38, (w - 4) / charW, (h - 4) / 2.35));
+    labelByCode[code] = (fs >= 7 && w >= 15 && h >= 22)
+      ? { show: true, fontSize: fs, lineHeight: Math.round(fs * 1.1) }
+      : { show: false };
+  });
+  const data2 = data.map((g) => ({
+    ...g, children: g.children.map((c) => ({ ...c, label: labelByCode[c.code] || { show: false } })),
+  }));
+  sectorChart.setOption({ series: [{ data: data2 }] });  // 值不變→排版一致，僅套用調好的字級
+}
+
 async function loadSectors() {
   const el = $("sectors");
   if (!el) return;
@@ -756,6 +785,8 @@ async function loadSectors() {
     // 面積用市值平方根：台積電市值佔全市場逾四成，直接用市值會獨大到吃掉整張圖，
     // 平方根壓縮動態範圍後仍保留「大小＝市值高低」的順序，畫面才讀得清（tooltip 仍給真實市值）
     const area = (mc) => Math.sqrt(mc);
+    el.classList.remove("sectors");
+    el.style.height = "560px";
     const data = groups.map((g) => {
       const w = g.stocks.reduce((a, s) => a + s.mcap, 0) || 1;
       const avg = g.stocks.reduce((a, s) => a + (s.chg_pct || 0) * s.mcap, 0) / w;  // 市值加權平均漲跌
@@ -767,8 +798,6 @@ async function loadSectors() {
         })),
       };
     });
-    el.classList.remove("sectors");
-    el.style.height = "560px";
     if (!sectorChart || sectorChart.getDom() !== el) sectorChart = echarts.init(el);
     sectorChart.setOption({
       tooltip: {
@@ -786,6 +815,7 @@ async function loadSectors() {
         type: "treemap", roam: false, nodeClick: false, animationDuration: 300,
         breadcrumb: { show: false },
         left: 1, right: 1, top: 1, bottom: 1,
+        squareRatio: 1,           // 盡量讓格子接近正方形（而非瘦長條），名稱才放得下
         visibleMin: 8,            // 面積過小的個股併入群組留白，避免碎到看不清
         childrenVisibleMin: 60,
         // 父節點（產業）頂部標籤帶：須設在 series 層級才會套用到非葉節點
@@ -801,15 +831,13 @@ async function loadSectors() {
             itemStyle: { borderColor: "#0f1419", borderWidth: 1, gapWidth: 1 },
           },
         ],
+        // 字級由各節點自帶（label.fontSize，隨面積縮放）；此處只定共用樣式與文字
         label: {
-          show: true, overflow: "truncate",
+          show: true, overflow: "truncate", color: "#fff", fontWeight: 700,
           formatter: (p) => {
+            if (p.data.code == null) return "";  // 產業群組用 upperLabel，不在中間標字
             const sign = p.data.chg >= 0 ? "+" : "";
-            return `{n|${esc(p.name)}}\n{v|${sign}${fmt(p.data.chg, 1)}%}`;
-          },
-          rich: {
-            n: { fontSize: 12, fontWeight: 700, color: "#fff", lineHeight: 15 },
-            v: { fontSize: 11, color: "#f0f0f0", lineHeight: 13 },
+            return `${esc(p.name)}\n${sign}${fmt(p.data.chg, 1)}%`;
           },
         },
         data,
@@ -820,6 +848,10 @@ async function loadSectors() {
       if (p && p.data && p.data.code) { showView("stock"); $("stock-input").value = p.data.code; loadStock(p.data.code, p.data.name); }
     });
     sectorChart.resize();
+    // 第二遍：依實際格子尺寸把字級調到剛好放得下。ECharts 排版在 setOption/resize 後同步就緒，
+    // 直接同步呼叫（勿用 rAF——背景分頁不觸發，會停在未調字級的狀態）
+    lastHeatmapData = data;
+    fitHeatmapFonts(data);
   } catch (e) { el.classList.add("sectors"); el.innerHTML = '<div class="muted small">熱力圖載入失敗</div>'; }
 }
 
@@ -1347,7 +1379,7 @@ document.querySelectorAll(".rku").forEach((b) => b.addEventListener("click", () 
   document.querySelectorAll(".rku").forEach((x) => x.classList.toggle("active", x === b));
   rankUnit = b.dataset.unit; loadInstRanking();
 }));
-window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); chipChart && chipChart.resize(); stockChipsChart && stockChipsChart.resize(); sectorChart && sectorChart.resize(); cupChart && cupChart.resize(); txVolChart && txVolChart.resize(); });
+window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); chipChart && chipChart.resize(); stockChipsChart && stockChipsChart.resize(); if (sectorChart) { sectorChart.resize(); if (lastHeatmapData) fitHeatmapFonts(lastHeatmapData); } cupChart && cupChart.resize(); txVolChart && txVolChart.resize(); });
 
 // ========== 初始載入 ==========
 (async () => {
