@@ -749,15 +749,21 @@ function fitHeatmapFonts(data) {
     if (!code) return;
     const lay = n.getLayout();
     if (!lay) return;
-    const w = lay.width, h = lay.height;
-    const pctLen = ((chg >= 0 ? "+" : "") + fmt(chg, 1) + "%").length;
-    // 名稱每字約 1em 寬、漲跌%數字每字約 0.6em 寬；寬度取兩行需求較大者，高度需容兩行
-    const charW = Math.max((n.name || "").length, pctLen * 0.6, 2);
-    // ECharts 給標籤的裁切寬度≈格寬固定內縮約 10px（非比例，故小格影響更大），
-    // 用 (w-12) 當可用寬度、(h-10) 容兩行，向下取整——否則臨界格名稱會被截成「中信…」
-    const fs = Math.floor(Math.min(38, (w - 12) / charW, (h - 10) / 2.3));
-    labelByCode[code] = (fs >= 7 && w >= 20 && h >= 26)
-      ? { show: true, fontSize: fs, lineHeight: Math.round(fs * 1.08) }
+    const w = lay.width, h = lay.height, name = n.name || "";
+    const pctStr = (chg >= 0 ? "+" : "") + fmt(chg, 1) + "%";
+    const nameChars = Math.max(name.length, 2);
+    // ECharts 給標籤的裁切寬度≈格寬固定內縮約 10px（非比例，故小格影響更大），故用 (w-12)。
+    // 先試兩行（名稱＋漲跌）；放不下就退成「只顯示名稱一行」而非整個空白（比照 estock）
+    const w2 = Math.max(nameChars, pctStr.length * 0.6);
+    const fs2 = Math.floor(Math.min(36, (w - 12) / w2, (h - 10) / 2.3));
+    if (fs2 >= 8 && w >= 20 && h >= 26) {
+      labelByCode[code] = { show: true, fontSize: fs2, lineHeight: Math.round(fs2 * 1.08),
+                            formatter: name + "\n" + pctStr };
+      return;
+    }
+    const fs1 = Math.floor(Math.min(22, (w - 12) / nameChars, (h - 4) / 1.15));
+    labelByCode[code] = (fs1 >= 6 && w >= 18 && h >= 12)
+      ? { show: true, fontSize: fs1, lineHeight: Math.round(fs1 * 1.05), formatter: name }
       : { show: false };
   });
   const data2 = data.map((g) => ({
@@ -790,7 +796,7 @@ async function loadSectors() {
     // 平方根壓縮動態範圍後仍保留「大小＝市值高低」的順序，畫面才讀得清（tooltip 仍給真實市值）
     const area = (mc) => Math.sqrt(mc);
     el.classList.remove("sectors");
-    el.style.height = "560px";
+    el.style.height = "640px";   // 稍高，讓被擠到下方的小型類股格子也放得下名稱
     const data = shownGroups.map((g) => {
       const w = g.stocks.reduce((a, s) => a + s.mcap, 0) || 1;
       const avg = g.stocks.reduce((a, s) => a + (s.chg_pct || 0) * s.mcap, 0) / w;  // 市值加權平均漲跌
