@@ -753,10 +753,11 @@ function fitHeatmapFonts(data) {
     const pctLen = ((chg >= 0 ? "+" : "") + fmt(chg, 1) + "%").length;
     // 名稱每字約 1em 寬、漲跌%數字每字約 0.6em 寬；寬度取兩行需求較大者，高度需容兩行
     const charW = Math.max((n.name || "").length, pctLen * 0.6, 2);
-    // 扣 4px 內距、向下取整——round 會在臨界時多 1px 造成名稱被截
-    const fs = Math.floor(Math.min(38, (w - 4) / charW, (h - 4) / 2.35));
-    labelByCode[code] = (fs >= 7 && w >= 15 && h >= 22)
-      ? { show: true, fontSize: fs, lineHeight: Math.round(fs * 1.1) }
+    // ECharts 給標籤的裁切寬度≈格寬固定內縮約 10px（非比例，故小格影響更大），
+    // 用 (w-12) 當可用寬度、(h-10) 容兩行，向下取整——否則臨界格名稱會被截成「中信…」
+    const fs = Math.floor(Math.min(38, (w - 12) / charW, (h - 10) / 2.3));
+    labelByCode[code] = (fs >= 7 && w >= 20 && h >= 26)
+      ? { show: true, fontSize: fs, lineHeight: Math.round(fs * 1.08) }
       : { show: false };
   });
   const data2 = data.map((g) => ({
@@ -777,21 +778,25 @@ async function loadSectors() {
       const hint = heatmapMarket === "otc" ? "尚無上櫃資料（櫃買報價待回補）" : "尚無個股資料";
       el.innerHTML = `<div class="muted small">${hint}</div>`; if (note) note.textContent = ""; return;
     }
-    const allStocks = groups.flatMap((g) => g.stocks);
-    const up = allStocks.filter((s) => s.chg_pct > 0).length;
-    const down = allStocks.filter((s) => s.chg_pct < 0).length;
-    if (note) note.textContent = `（${d.date}　紅漲 ${up}・綠跌 ${down}，面積＝市值、顏色＝漲跌幅，點格看 K 線）`;
+    // 每個產業只留市值前 N 大（後端已依市值排序）——比照 estock，避免小型股塞滿造成雜亂
+    const TOP_PER_SECTOR = 10;
+    const shownGroups = groups.map((g) => ({ ...g, stocks: g.stocks.slice(0, TOP_PER_SECTOR) }));
+    const shownStocks = shownGroups.flatMap((g) => g.stocks);
+    const up = shownStocks.filter((s) => s.chg_pct > 0).length;
+    const down = shownStocks.filter((s) => s.chg_pct < 0).length;
+    if (note) note.textContent = `（${d.date}　各產業市值前 ${TOP_PER_SECTOR} 大　面積＝市值、顏色＝漲跌幅，點格看 K 線）`;
     // 兩層 treemap：產業為群組（顯示產業名 + 平均漲跌），個股為色塊
     // 面積用市值平方根：台積電市值佔全市場逾四成，直接用市值會獨大到吃掉整張圖，
     // 平方根壓縮動態範圍後仍保留「大小＝市值高低」的順序，畫面才讀得清（tooltip 仍給真實市值）
     const area = (mc) => Math.sqrt(mc);
     el.classList.remove("sectors");
     el.style.height = "560px";
-    const data = groups.map((g) => {
+    const data = shownGroups.map((g) => {
       const w = g.stocks.reduce((a, s) => a + s.mcap, 0) || 1;
       const avg = g.stocks.reduce((a, s) => a + (s.chg_pct || 0) * s.mcap, 0) / w;  // 市值加權平均漲跌
       return {
-        name: g.sector, value: g.stocks.reduce((a, s) => a + area(s.mcap), 0), avg, mcap: g.mcap,
+        name: g.sector, value: g.stocks.reduce((a, s) => a + area(s.mcap), 0), avg,
+        mcap: g.stocks.reduce((a, s) => a + s.mcap, 0),
         children: g.stocks.map((s) => ({
           name: s.name, value: area(s.mcap), mcap: s.mcap, chg: s.chg_pct, code: s.code, sector: g.sector,
           itemStyle: { color: sectorColor(s.chg_pct) },
