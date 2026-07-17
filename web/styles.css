@@ -1,22 +1,78 @@
+/* 數字／拉丁專用字型：靠 unicode-range 只接管數字與拉丁字母，中文自動落回系統字型。
+   目的是「把中文字級與數字字級解耦」——中文方塊字筆畫密、需要更大級數才讀得清，
+   但數字在小級數已經很清楚，一起放大會讓密度崩掉。size-adjust 讓數字在中文放大後
+   仍與中文光學等高、不跟著膨脹。等寬本身即 tabular，數字位數天然對齊。 */
+@font-face {
+  font-family: "Num";
+  src: url("/vendor/fonts/plex-mono-400.woff2") format("woff2");
+  font-weight: 400; font-display: swap; size-adjust: 90%;
+  unicode-range: U+0030-0039, U+0041-005A, U+0061-007A, U+0025, U+002B, U+002C, U+002D, U+002E, U+002F, U+003A;
+}
+@font-face {
+  font-family: "Num";
+  src: url("/vendor/fonts/plex-mono-600.woff2") format("woff2");
+  font-weight: 500 600; font-display: swap; size-adjust: 90%;
+  unicode-range: U+0030-0039, U+0041-005A, U+0061-007A, U+0025, U+002B, U+002C, U+002D, U+002E, U+002F, U+003A;
+}
+@font-face {
+  font-family: "Num";
+  src: url("/vendor/fonts/plex-mono-700.woff2") format("woff2");
+  font-weight: 700 900; font-display: swap; size-adjust: 90%;
+  unicode-range: U+0030-0039, U+0041-005A, U+0061-007A, U+0025, U+002B, U+002C, U+002D, U+002E, U+002F, U+003A;
+}
+
 :root {
+  /* 表面階梯：本站不用陰影，深度全靠這條階梯＋1px 邊框表現 */
+  --sunken: #12181f;
   --bg: #0f1419;
   --panel: #1a2029;
   --card: #232b36;
   --border: #2e3845;
   --text: #e6e6e6;
   --muted: #8a94a3;
-  --up: #e04545;
-  --down: #2ea043;
+  --label: #cfd6df;
+  /* 市場方向：紅漲綠跌（台股慣例，與西方相反）。這組紅綠只代表市場方向，
+     系統狀態訊息一律不得使用，否則「成功」會讀成「跌」。 */
+  --up: #e8404a;
+  --down: #1f9e6e;
+  --up-dim: #3a1717;
+  --down-dim: #14301f;
+  --flat: #4a5262;
+  /* 琥珀只有一個工作：目前選取／你在這裡 */
   --accent: #f0a500;
+  --info: #6cb6ff;
+  /* 字級：中文基準比一般拉丁介面高一階（方塊字筆畫密，需要更大級數）。
+     xs=次要註記 sm=標籤 base=內文/表格 md=個股名稱 lg=統計值 xl=卡片值 hero=大盤 */
+  --fs-xs: 12px;
+  --fs-sm: 14px;
+  --fs-base: 15px;
+  --fs-md: 16px;
+  --fs-lg: 20px;
+  --fs-xl: 26px;
+  --fs-hero: 40px;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --r: 4px;
+  --r-pill: 999px;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
 body {
   margin: 0;
-  font-family: "Segoe UI", "Microsoft JhengHei", system-ui, sans-serif;
+  font-family: "Num", "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", system-ui, sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--fs-base);
   background: var(--bg);
   color: var(--text);
 }
+/* 個股名稱是全站掃視最頻繁的字串，給它自己的一級 */
+.stock-name { font-size: var(--fs-md); font-weight: 600; }
+/* 數字欄：右對齊讓位數對齊（取代散落各處的 inline text-align:right） */
+.num { text-align: right; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ===== 版面骨架：頂列 + 左側欄 + 內容區，整頁不捲動 ===== */
 .app { display: grid; grid-template-columns: 190px 1fr; grid-template-rows: auto 1fr; height: 100vh; }
@@ -25,23 +81,23 @@ body {
   display: flex; justify-content: space-between; align-items: center;
   padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--border);
 }
-.topbar h1 { font-size: 20px; margin: 0; letter-spacing: 1px; }
-.topbar h1 .zh { font-size: 13px; color: var(--accent); margin-left: 8px; }
+.topbar h1 { font-size: var(--fs-lg); margin: 0; letter-spacing: 1px; }
+.topbar h1 .zh { font-size: var(--fs-sm); color: var(--label); margin-left: 8px; }
 .actions { display: flex; align-items: center; gap: 14px; }
-.muted { color: var(--muted); font-size: 14px; }
-.small { font-size: 13px; }
-.data-date { color: var(--accent); font-size: 14px; font-weight: 700; }
-.help-link { color: #6cb6ff; font-size: 13px; text-decoration: none; cursor: pointer; }
+.muted { color: var(--muted); font-size: var(--fs-sm); }
+.small { font-size: var(--fs-sm); }
+.data-date { color: var(--text); font-size: var(--fs-base); font-weight: 600; }
+.help-link { color: var(--info); font-size: var(--fs-sm); text-decoration: none; cursor: pointer; }
 .help-link:hover { text-decoration: underline; }
-.wave-help { background: #12181f; border: 1px solid var(--border); border-radius: 8px; padding: 11px 14px; font-size: 13.5px; line-height: 1.85; margin-bottom: 8px; }
+.wave-help { background: var(--sunken); border: 1px solid var(--border); border-radius: var(--r); padding: 12px 14px; font-size: var(--fs-base); line-height: 1.8; margin-bottom: 8px; }
 .wave-help b { color: var(--text); }
 .dot { font-size: 12px; margin: 0 2px 0 8px; }
 .dot.orange { color: #f0a500; }
 .dot.blue { color: #6cb6ff; }
 
 .sidebar { background: var(--panel); border-right: 1px solid var(--border); padding: 12px 8px; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
-.nav { display: flex; align-items: center; gap: 9px; padding: 11px 14px; border-radius: 8px; color: var(--text); text-decoration: none; cursor: pointer; font-size: 15px; }
-.nav .ico { font-size: 16px; }
+.nav { display: flex; align-items: center; gap: 9px; padding: 11px 14px; border-radius: var(--r); color: var(--text); text-decoration: none; cursor: pointer; font-size: var(--fs-base); }
+.nav .ico { font-size: var(--fs-md); }
 .nav:hover { background: var(--card); }
 .nav.active { background: var(--accent); color: #1a1a1a; font-weight: 700; }
 
@@ -51,22 +107,24 @@ body {
 .view { display: none; flex: 1; min-height: 0; overflow: auto; padding: 16px 20px; flex-direction: column; gap: 12px; }
 .view.active { display: flex; }
 
-.status-bar { padding: 7px 20px; font-size: 13px; flex: 0 0 auto; }
-.status-bar.ok { background: #15301c; color: #7ee2a0; }
+/* 系統狀態訊息刻意避開紅綠軸：在紅漲綠跌的介面裡，綠色「成功」會被讀成「跌」。
+   改用中性／琥珀／藍，讓紅綠只代表市場方向。 */
+.status-bar { padding: 7px 20px; font-size: var(--fs-sm); flex: 0 0 auto; }
+.status-bar.ok { background: #1c2733; color: var(--info); }
 .status-bar.warn { background: #34270f; color: #f0c474; }
-.status-bar.err { background: #3a1717; color: #e08585; }
+.status-bar.err { background: #33241a; color: #f0a878; }
 .stale-note { padding: 8px 20px; font-size: 13.5px; line-height: 1.5; background: #34270f; color: #f0c474; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
 .hidden { display: none !important; }
 
 /* ===== 指標卡 ===== */
-.card-group { }
-.group-title { font-size: 15px; color: var(--accent); font-weight: 700; margin-bottom: 6px; border-left: 3px solid var(--accent); padding-left: 8px; }
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 9px; }
-.card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 13px; }
-.card-label { font-size: 13px; color: var(--muted); }
-.card-label .asof { color: var(--accent); font-weight: 400; font-size: 11px; }
-.card-val { font-size: 22px; font-weight: 700; margin-top: 4px; }
-.card-chg { font-size: 14px; margin-top: 3px; }
+/* 區塊標題：改用字重與豎線層級，不再吃琥珀色（琥珀留給「目前選取」） */
+.group-title { font-size: var(--fs-md); color: var(--label); font-weight: 600; margin-bottom: var(--sp-2); border-left: 3px solid var(--border); padding-left: 8px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: var(--sp-2); }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r); padding: 10px 13px; }
+.card-label { font-size: var(--fs-sm); color: var(--muted); }
+.card-label .asof { color: var(--muted); font-weight: 400; font-size: var(--fs-xs); }
+.card-val { font-size: var(--fs-xl); font-weight: 700; margin-top: var(--sp-1); line-height: 1.15; }
+.card-chg { font-size: var(--fs-sm); margin-top: 3px; }
 .up { color: var(--up); }
 .down { color: var(--down); }
 .flat { color: var(--muted); }
@@ -88,10 +146,10 @@ body {
 /* ===== 杯柄選股 ===== */
 .cup-list { display: flex; flex-wrap: wrap; gap: 6px; flex: 0 0 auto; margin-bottom: 6px; }
 .cup-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--card); border: 1px solid var(--border);
-  border-radius: 16px; padding: 5px 12px; font-size: 13px; color: var(--text); text-decoration: none; white-space: nowrap; cursor: pointer; }
+  border-radius: var(--r-pill); padding: 6px 13px; font-size: var(--fs-md); font-weight: 600; color: var(--text); text-decoration: none; white-space: nowrap; cursor: pointer; }
 .cup-chip:hover { border-color: var(--accent); }
 .cup-chip.active { background: var(--accent); color: #1a1a1a; font-weight: 700; border-color: var(--accent); }
-.cup-chip .cup-r { font-size: 11px; opacity: .8; }
+.cup-chip .cup-r { font-size: var(--fs-xs); opacity: .8; }
 .cup-chip.active .cup-r { opacity: 1; }
 .cup-chip.pick { border-color: var(--down); }               /* 同時符合籌碼/基本：綠框標記 */
 .cup-chip.pick::before { content: "●"; color: var(--down); font-size: 9px; margin-right: -2px; }
@@ -100,7 +158,7 @@ body {
 /* ===== 權值股貢獻（色階卡片，供海期監控共用） ===== */
 .mv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(122px, 1fr)); gap: 6px; }
 .mv-card { border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px; color: #fff; overflow: hidden; }
-.mv-name { font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mv-name { font-size: var(--fs-md); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mv-contrib { font-size: 18px; font-weight: 800; margin-top: 2px; line-height: 1.1; }
 .mv-contrib .mv-unit { font-size: 11px; font-weight: 400; margin-left: 2px; }
 .mv-sub { font-size: 11.5px; opacity: .92; margin-top: 2px; white-space: nowrap; }
@@ -112,8 +170,8 @@ body {
 
 /* ===== 當日漲跌族群 ===== */
 .sectors { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; }
-.sector { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--muted); border-radius: 6px; padding: 6px 9px; display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
-.sector .sec-name { color: #cfd6df; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sector { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--muted); border-radius: var(--r); padding: 7px 9px; display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: var(--fs-base); }
+.sector .sec-name { color: var(--label); font-size: var(--fs-md); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sector .sec-chg { font-weight: 700; white-space: nowrap; }
 .sector.up { border-left-color: var(--up); }
 .sector.up .sec-chg { color: var(--up); }
@@ -126,8 +184,8 @@ body {
 .ss-head .ss-close { margin-left: auto; cursor: pointer; color: var(--muted); padding: 0 6px; }
 .ss-head .ss-close:hover { color: #fff; }
 .ss-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 6px; }
-.ss-cell { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--muted); border-radius: 6px; padding: 5px 8px; display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 12.5px; }
-.ss-cell .ss-name { color: #cfd6df; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-cell { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--muted); border-radius: var(--r); padding: 6px 8px; display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: var(--fs-base); }
+.ss-cell .ss-name { color: var(--label); font-size: var(--fs-md); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ss-cell .ss-chg { font-weight: 700; white-space: nowrap; }
 .ss-cell.up { border-left-color: var(--up); } .ss-cell.up .ss-chg { color: var(--up); }
 .ss-cell.down { border-left-color: var(--down); } .ss-cell.down .ss-chg { color: var(--down); }
@@ -155,13 +213,13 @@ body {
 .chart-side label:hover { color: var(--accent); }
 .chart-main { flex: 1; min-width: 0; }
 .chart-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
-.tf, .ktf { background: var(--card); color: var(--text); border: 1px solid var(--border); padding: 5px 13px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.tf, .ktf { background: var(--card); color: var(--text); border: 1px solid var(--border); padding: 6px 13px; border-radius: var(--r); cursor: pointer; font-size: var(--fs-sm); }
 .tf:hover, .ktf:hover { border-color: var(--accent); }
 .tf.active, .ktf.active { background: var(--accent); color: #1a1a1a; border-color: var(--accent); font-weight: 700; }
 .trader-tabs { display: inline-flex; gap: 6px; flex-wrap: wrap; }
 .hm-tabs { display: inline-flex; gap: 4px; margin: 0 8px; vertical-align: middle; }
 .hm-tab { padding: 2px 11px; font-size: 12px; }
-.ctf, .rkf, .rku { background: var(--card); color: var(--text); border: 1px solid var(--border); padding: 5px 12px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+.ctf, .rkf, .rku { background: var(--card); color: var(--text); border: 1px solid var(--border); padding: 6px 13px; border-radius: var(--r); cursor: pointer; font-size: var(--fs-sm); }
 .ctf:hover, .rkf:hover, .rku:hover { border-color: var(--accent); }
 .ctf.active, .rkf.active, .rku.active { background: var(--accent); color: #1a1a1a; border-color: var(--accent); font-weight: 700; }
 .wave-toggle { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 5px; cursor: pointer; margin-left: 6px; }
@@ -179,7 +237,7 @@ body {
 
 /* ===== 工具列 ===== */
 .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; flex: 0 0 auto; }
-.file-label { background: var(--card); border: 1px solid var(--border); padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 14px; color: var(--text); }
+.file-label { background: var(--card); border: 1px solid var(--border); padding: 8px 16px; border-radius: var(--r); cursor: pointer; font-size: var(--fs-base); color: var(--text); }
 .file-label:hover { border-color: var(--accent); }
 button.file-label { font: inherit; }
 .date-pick { font-size: 14px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
@@ -190,22 +248,22 @@ button.file-label { font: inherit; }
 .picks-split { display: flex; gap: 16px; flex: 1; min-height: 0; }
 .picks-side { flex: 0 0 280px; display: flex; flex-direction: column; min-height: 0; }
 .picks-main { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-.pane-title { font-size: 15px; color: #cfd6df; margin-bottom: 6px; font-weight: 600; }
+.pane-title { font-size: var(--fs-md); color: var(--label); margin-bottom: 6px; font-weight: 600; }
 
 /* ===== 表格 ===== */
 /* flex-shrink:0：.view 是 flex column，頁面內容超高時未掛 .fill 的表格（交易帳本未平倉/已平倉）
    會被按比例壓成幾 px 高、只露半行。.fill 要佔滿剩餘空間，覆寫回可收縮。 */
-.table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 8px; flex-shrink: 0; }
+.table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: var(--r); flex-shrink: 0; }
 .table-wrap.fill { flex: 1 1 0; min-height: 0; }
 .table-wrap.fill-half { max-height: 55vh; }
-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th, td { text-align: left; padding: 8px 11px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+table { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
+th, td { text-align: left; padding: 9px 11px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 th { position: sticky; top: 0; background: var(--card); color: var(--muted); font-weight: 600; z-index: 1; }
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover { color: var(--accent); }
 tr:hover td { background: #20262f; }
 tr.clickrow { cursor: pointer; }
-a.stock { color: #6cb6ff; text-decoration: none; }
+a.stock { color: var(--info); text-decoration: none; font-size: var(--fs-md); font-weight: 600; }
 a.stock:hover { text-decoration: underline; }
 #sub-filter b { color: var(--accent); }
 
@@ -242,8 +300,8 @@ a.stock:hover { text-decoration: underline; }
 .no-row button:hover:not(:disabled) { border-color: var(--accent); }
 .no-row button:disabled { opacity: .35; cursor: default; }
 .stat { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
-.stat-k { font-size: 12px; color: var(--muted); }
-.stat-v { font-size: 18px; font-weight: 700; margin-top: 3px; }
+.stat-k { font-size: var(--fs-sm); color: var(--muted); }
+.stat-v { font-size: var(--fs-lg); font-weight: 700; margin-top: 3px; }
 
 /* 平板：側欄收成圖示、並排改直排 */
 @media (max-width: 860px) {

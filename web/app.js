@@ -24,13 +24,31 @@ let lastIndexData = null, lastStockData = null;
 let chipChart = null, chipMetric = "inst", lastHistory = [];
 let txVolChart = null;
 let stockChipsChart = null, stockCustodyChart = null;
-let sectorChart = null, heatmapMarket = "tse", lastHeatmapData = null;
+// heatmapTop 預設 5：實測 1267px 寬下，5 檔比 6 檔「顯示更多可讀標籤」(110 vs 108) 且字更大、
+// 留白更少——格數少 → 格子大 → 過得了 11px 中文可讀下限的格子反而變多。
+let sectorChart = null, heatmapMarket = "tse", heatmapTop = 5, lastHeatmapData = null;
 let cupChart = null, cupMatches = [], cupLoaded = false;
 let rankWho = "foreign", rankUnit = "shares";
 const MA_DEFS = [
   { n: 5, color: "#5b8ff9" }, { n: 20, color: "#5ad8a6" },
   { n: 60, color: "#f6bd16" }, { n: 120, color: "#e8684a" },
 ];
+
+// ECharts 只吃色字串，無法用 var(--x)，所以圖表色一律由此處從 CSS token 讀出——
+// 讓 :root 成為單一真相來源，改 token 時圖表不會悄悄失同步。
+const CSS_VAR = (name, fallback) =>
+  getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+const C = {
+  up: CSS_VAR("--up", "#e8404a"),
+  down: CSS_VAR("--down", "#1f9e6e"),
+  accent: CSS_VAR("--accent", "#f0a500"),
+  info: CSS_VAR("--info", "#6cb6ff"),
+  text: CSS_VAR("--text", "#e6e6e6"),
+  muted: CSS_VAR("--muted", "#8a94a3"),
+  label: CSS_VAR("--label", "#cfd6df"),
+  border: CSS_VAR("--border", "#2e3845"),
+  bg: CSS_VAR("--bg", "#0f1419"),
+};
 
 function ma(values, n) {
   const out = [];
@@ -46,14 +64,14 @@ function ma(values, n) {
 function candlestickOption(data, startPct, showW, pct) {
   const closes = data.candles.map((c) => c[1]);
   const maSeries = MA_DEFS.map((m) => ({ name: "MA" + m.n, type: "line", data: ma(closes, m.n), smooth: true, showSymbol: false, lineStyle: { width: 1, color: m.color }, itemStyle: { color: m.color } }));
-  const candle = { name: "K線", type: "candlestick", data: data.candles, itemStyle: { color: "#e04545", color0: "#2ea043", borderColor: "#e04545", borderColor0: "#2ea043" } };
+  const candle = { name: "K線", type: "candlestick", data: data.candles, itemStyle: { color: C.up, color0: C.down, borderColor: C.up, borderColor0: C.down } };
   if (showW) {
     const pctKey = Math.round(pct * 100).toString();
     const waves = (data.waves && data.waves[pctKey]) || [];
     if (waves.length) candle.markPoint = {
       symbol: "circle", symbolSize: 20,
       label: { color: "#1a1a1a", fontWeight: 700, fontSize: 12, formatter: (p) => p.data.value },
-      data: waves.map((w) => ({ value: w.label, coord: [data.dates[w.index], data.candles[w.index][3]], itemStyle: { color: /[ABC]/.test(w.label) ? "#6cb6ff" : "#f0a500" } })),
+      data: waves.map((w) => ({ value: w.label, coord: [data.dates[w.index], data.candles[w.index][3]], itemStyle: { color: /[ABC]/.test(w.label) ? C.info : C.accent } })),
     };
   }
   return {
@@ -529,7 +547,7 @@ function _hex(a, b, t) {
 function sectorColor(chg) {
   if (chg == null) return "#2b3038";
   const t = 0.35 + 0.65 * Math.min(Math.abs(chg) / 3, 1); // 小漲跌也看得出方向
-  return _hex("#2b3038", chg >= 0 ? "#e04545" : "#2ea043", t);
+  return _hex("#2b3038", chg >= 0 ? C.up : C.down, t);
 }
 
 // 台股漲跌家數：紅漲綠跌的市場氣氛長條 + 漲停/跌停家數
@@ -566,7 +584,7 @@ function cupChartOption(d, m) {
   const lastDate = d.dates[d.dates.length - 1];
   const candle = {
     name: "K線", type: "candlestick", data: d.candles,
-    itemStyle: { color: "#e04545", color0: "#2ea043", borderColor: "#e04545", borderColor0: "#2ea043" },
+    itemStyle: { color: C.up, color0: C.down, borderColor: C.up, borderColor0: C.down },
     markLine: {
       symbol: ["none", "none"],
       // 標籤放線段中段（非末端）：末端貼右緣會被 grid 裁切破版；中段有留白、也不會
@@ -575,10 +593,10 @@ function cupChartOption(d, m) {
                backgroundColor: "rgba(0,0,0,0.55)", padding: [2, 4], borderRadius: 3 },
       data: [
         // 趨勢線不標字（左右緣已有 pin），避免與右緣 pin 疊字
-        [{ coord: [m.left_date, m.left_price], lineStyle: { color: "#f0a500", width: 2 }, label: { show: false } },
+        [{ coord: [m.left_date, m.left_price], lineStyle: { color: C.accent, width: 2 }, label: { show: false } },
          { coord: [m.right_date, m.right_price] }],
         [{ name: `壓力 ${fmt(m.resistance, 2)}`, coord: [m.right_date, m.resistance],
-          lineStyle: { color: "#6cb6ff", width: 2, type: "dashed" } },
+          lineStyle: { color: C.info, width: 2, type: "dashed" } },
          { coord: [lastDate, m.resistance] }],
       ],
     },
@@ -596,7 +614,7 @@ function cupChartOption(d, m) {
   if (m.stop_loss != null && m.stop_loss > 0)  // 停損線＝突破價−2×ATR14（部位管理，見下方說明）
     candle.markLine.data.push(
       [{ name: `停損 ${fmt(m.stop_loss, 2)}`, coord: [m.right_date, m.stop_loss],
-        lineStyle: { color: "#e04545", width: 2, type: "dashed" } },
+        lineStyle: { color: C.up, width: 2, type: "dashed" } },
        { coord: [lastDate, m.stop_loss] }]);
   return {
     tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
@@ -738,14 +756,45 @@ async function loadMovers() {
   } catch (e) { el.innerHTML = ""; }
 }
 
-// 依 treemap 排版後每格的真實寬高，把字級調到剛好放得下（比照 estock：大格大字、小格小字）。
+const HM_MIN_FS = 11;    // 中文可讀下限：低於此級數的方塊字是墨團，寧可留白也不硬塞
+const HM_MAX_FS = 36;
+const HM_INSET = 12;     // ECharts 標籤裁切寬度 ≈ 格寬固定內縮約 10px（非比例）
+// 熱力圖標籤字型：量測(canvas)與繪製(ECharts)必須用同一組，否則量得下卻被截。
+const HM_FONT = '"Num", "Microsoft JhengHei", "PingFang TC", sans-serif';
+
+// 量測文字在 HM_FONT 下的實際寬度（每 1px 字級佔幾 px 寬）。用 canvas 實測取代字數估算——
+// 中文全形、數字半形、「+」「%」各不相同，估算必然失準（曾把台積電漲跌截成「+1....」）。
+let _hmCtx = null;
+function textWidthPerPx(text) {
+  if (!_hmCtx) _hmCtx = document.createElement("canvas").getContext("2d");
+  _hmCtx.font = `700 100px ${HM_FONT}`;
+  return _hmCtx.measureText(text).width / 100;
+}
+
+// 依 treemap 排版後每格的真實寬高，把字級調到剛好放得下（大格大字、小格小字）。
 // 排版後才知道格子確切尺寸（面積相同、寬高比可能差很多），故此步在 setOption 之後執行。
 function fitHeatmapFonts(data) {
   if (!sectorChart) return;
   const root = sectorChart.getModel().getSeriesByIndex(0).getData().tree.root;
   const labelByCode = {};
+  const bandBySector = {};
   root.eachNode((n) => {
-    if (n.children && n.children.length) return;  // 只處理個股(葉)節點
+    // 產業標籤帶：窄的產業放不下「名稱　漲跌%」，退成只放名稱，再不行才縮字級
+    if (n.children && n.children.length) {
+      const lay = n.getLayout();
+      if (!lay || !n.name) return;
+      const avg = n.getModel().get("avg");
+      const full = `${n.name}　${avg >= 0 ? "+" : ""}${fmt(avg, 1)}%`;
+      const availW = lay.width - HM_INSET;
+      const fitFull = availW / textWidthPerPx(full);
+      const fitName = availW / textWidthPerPx(n.name);
+      bandBySector[n.name] = fitFull >= 14
+        ? { show: true, height: 22, fontSize: 14, formatter: full }
+        : (fitName >= 12
+            ? { show: true, height: 22, fontSize: Math.min(14, Math.floor(fitName)), formatter: n.name }
+            : { show: true, height: 18, fontSize: 12, formatter: n.name });
+      return;
+    }
     let code, chg;
     try { code = n.getModel().get("code"); chg = n.getModel().get("chg"); } catch (e) { return; }
     if (!code) return;
@@ -753,23 +802,25 @@ function fitHeatmapFonts(data) {
     if (!lay) return;
     const w = lay.width, h = lay.height, name = n.name || "";
     const pctStr = (chg >= 0 ? "+" : "") + fmt(chg, 1) + "%";
-    const nameChars = Math.max(name.length, 2);
-    // ECharts 給標籤的裁切寬度≈格寬固定內縮約 10px（非比例，故小格影響更大），故用 (w-12)。
-    // 先試兩行（名稱＋漲跌）；放不下就退成「只顯示名稱一行」而非整個空白（比照 estock）
-    const w2 = Math.max(nameChars, pctStr.length * 0.6);
-    const fs2 = Math.floor(Math.min(36, (w - 12) / w2, (h - 10) / 2.3));
-    if (fs2 >= 8 && w >= 20 && h >= 26) {
+    const availW = w - HM_INSET;
+    const fit = (t) => availW / textWidthPerPx(t);   // 這串文字剛好放得下的字級
+    // 先試兩行（名稱＋漲跌）：寬度要兩行都放得下，高度要容兩行
+    const fs2 = Math.floor(Math.min(HM_MAX_FS, fit(name), fit(pctStr), (h - 8) / 2.3));
+    if (fs2 >= HM_MIN_FS) {
       labelByCode[code] = { show: true, fontSize: fs2, lineHeight: Math.round(fs2 * 1.08),
                             formatter: name + "\n" + pctStr };
       return;
     }
-    const fs1 = Math.floor(Math.min(22, (w - 12) / nameChars, (h - 4) / 1.15));
-    labelByCode[code] = (fs1 >= 6 && w >= 18 && h >= 12)
+    // 放不下兩行 → 只顯示名稱一行（比整格空白好）；連名稱都放不下才隱藏
+    const fs1 = Math.floor(Math.min(HM_MAX_FS, fit(name), (h - 4) / 1.2));
+    labelByCode[code] = fs1 >= HM_MIN_FS
       ? { show: true, fontSize: fs1, lineHeight: Math.round(fs1 * 1.05), formatter: name }
       : { show: false };
   });
   const data2 = data.map((g) => ({
-    ...g, children: g.children.map((c) => ({ ...c, label: labelByCode[c.code] || { show: false } })),
+    ...g,
+    upperLabel: bandBySector[g.name],
+    children: g.children.map((c) => ({ ...c, label: labelByCode[c.code] || { show: false } })),
   }));
   sectorChart.setOption({ series: [{ data: data2 }] });  // 值不變→排版一致，僅套用調好的字級
 }
@@ -786,8 +837,9 @@ async function loadSectors() {
       const hint = heatmapMarket === "otc" ? "尚無上櫃資料（櫃買報價待回補）" : "尚無個股資料";
       el.innerHTML = `<div class="muted small">${hint}</div>`; if (note) note.textContent = ""; return;
     }
-    // 每個產業只留市值前 N 大（後端已依市值排序）——比照 estock，避免小型股塞滿造成雜亂
-    const TOP_PER_SECTOR = 10;
+    // 每個產業只留市值前 N 大（後端已依市值排序）。格數越少＝格子越大＝名稱字級越大，
+    // 這是熱力圖可讀性最有效的槓桿；要密度可用「每類股檔數」切換。
+    const TOP_PER_SECTOR = heatmapTop;
     const shownGroups = groups.map((g) => ({ ...g, stocks: g.stocks.slice(0, TOP_PER_SECTOR) }));
     const shownStocks = shownGroups.flatMap((g) => g.stocks);
     const up = shownStocks.filter((s) => s.chg_pct > 0).length;
@@ -798,7 +850,7 @@ async function loadSectors() {
     // 平方根壓縮動態範圍後仍保留「大小＝市值高低」的順序，畫面才讀得清（tooltip 仍給真實市值）
     const area = (mc) => Math.sqrt(mc);
     el.classList.remove("sectors");
-    el.style.height = "640px";   // 稍高，讓被擠到下方的小型類股格子也放得下名稱
+    el.style.height = "720px";   // 夠高，讓被擠到下方的小型類股格子也放得下名稱
     const data = shownGroups.map((g) => {
       const w = g.stocks.reduce((a, s) => a + s.mcap, 0) || 1;
       const avg = g.stocks.reduce((a, s) => a + (s.chg_pct || 0) * s.mcap, 0) / w;  // 市值加權平均漲跌
@@ -833,7 +885,7 @@ async function loadSectors() {
         childrenVisibleMin: 60,
         // 父節點（產業）頂部標籤帶：須設在 series 層級才會套用到非葉節點
         upperLabel: {
-          show: true, height: 20, color: "#e8ecf1", fontSize: 12, fontWeight: 700,
+          show: true, height: 22, color: C.label, fontSize: 14, fontWeight: 700, fontFamily: HM_FONT,
           formatter: (p) => `${esc(p.name)}　${p.data.avg >= 0 ? "+" : ""}${fmt(p.data.avg, 1)}%`,
         },
         levels: [
@@ -844,9 +896,11 @@ async function loadSectors() {
             itemStyle: { borderColor: "#0f1419", borderWidth: 1, gapWidth: 1 },
           },
         ],
-        // 字級由各節點自帶（label.fontSize，隨面積縮放）；此處只定共用樣式與文字
+        // 字級由各節點自帶（label.fontSize，隨面積縮放）；此處只定共用樣式與文字。
+        // fontFamily 必須明示：ECharts 預設用 sans-serif，會與 fitHeatmapFonts 的量測字型不一致，
+        // 導致「量得下、畫出來卻被截」（曾把台達電漲跌截成「+0....」）。
         label: {
-          show: true, overflow: "truncate", color: "#fff", fontWeight: 700,
+          show: true, overflow: "truncate", color: "#fff", fontWeight: 700, fontFamily: HM_FONT,
           formatter: (p) => {
             if (p.data.code == null) return "";  // 產業群組用 upperLabel，不在中間標字
             const sign = p.data.chg >= 0 ? "+" : "";
@@ -996,8 +1050,8 @@ function chipTrendOption(hist, metric) {
       { type: "value", name: "融資(張)", axisLabel: { color: "#999" } },
       { type: "value", name: "融券(張)", position: "right", axisLabel: { color: "#999" }, splitLine: { show: false } }],
     series: [
-      { ...LP, name: "融資餘額", data: hist.map((r) => r.margin_balance), lineStyle: { color: "#e04545" }, itemStyle: { color: "#e04545" } },
-      { ...LP, name: "融券餘額", yAxisIndex: 1, data: hist.map((r) => r.short_balance), lineStyle: { color: "#2ea043" }, itemStyle: { color: "#2ea043" } }] };
+      { ...LP, name: "融資餘額", data: hist.map((r) => r.margin_balance), lineStyle: { color: C.up }, itemStyle: { color: C.up } },
+      { ...LP, name: "融券餘額", yAxisIndex: 1, data: hist.map((r) => r.short_balance), lineStyle: { color: C.down }, itemStyle: { color: C.down } }] };
 }
 function loadChipTrend() {
   if (!$("chipchart")) return;
@@ -1039,7 +1093,7 @@ function txVolumeOption(d) {
       { name: "日盤量", type: "bar", data: d.day_volume, itemStyle: { color: "#6cb6ff" } },
       { name: "夜盤量", type: "bar", data: d.night_volume, itemStyle: { color: "#e0a23c" } },
       { name: "夜/日比", type: "line", yAxisIndex: 1, data: d.ratio, symbolSize: 4,
-        lineStyle: { color: "#e04545" }, itemStyle: { color: "#e04545" } },
+        lineStyle: { color: C.up }, itemStyle: { color: C.up } },
     ],
   };
 }
@@ -1297,6 +1351,13 @@ document.querySelectorAll(".hm-tab").forEach((b) => b.addEventListener("click", 
   if (b.dataset.market === heatmapMarket) return;
   heatmapMarket = b.dataset.market;
   document.querySelectorAll(".hm-tab").forEach((x) => x.classList.toggle("active", x === b));
+  loadSectors();
+}));
+document.querySelectorAll(".hm-top").forEach((b) => b.addEventListener("click", () => {
+  const t = Number(b.dataset.top);
+  if (t === heatmapTop) return;
+  heatmapTop = t;
+  document.querySelectorAll(".hm-top").forEach((x) => x.classList.toggle("active", x === b));
   loadSectors();
 }));
 $("btn-cup-refresh").addEventListener("click", loadCupHandle);
