@@ -1,20 +1,21 @@
 from stocks_power_rich import patterns
 
 
-def _make_cup_handle():
-    """造一組符合杯柄的 400 根 OHLC：左緣(老高100)→杯→右緣(近高90)→柄(回檔守穩)。"""
+def _make_cup_handle(close=89.0, handle_dip=84.0, cup_dip_idx=200):
+    """造一組符合亞當杯柄（含品質濾網）的 400 根 OHLC：
+    左緣(老高100@50) → 杯(底75@cup_dip_idx，杯深25%) → 右緣(近高90@360)
+    → 柄(回檔 handle_dip 守住杯身中點 (75+90)/2=82.5) → 收盤 close 貼近壓力90。
+    預設 %R(55)=(89-84)/(90-84)=83.3、距壓力 1.1%。"""
     n = 400
-    highs = [10.0] * n
-    lows = [8.0] * n
-    closes = [9.0] * n
-    highs[50] = 100.0                       # 左緣：377 窗最高、很老（bars-ago=349）
-    highs[360] = 90.0                       # 右緣：55 窗最高（bars-ago=39）
-    for i in range(345, 400):
-        lows[i] = 70.0                       # 杯/柄區低點約 70
-    lows[380] = 60.0                         # 21 窗內、8 窗外的較深低點
-    for i in range(387, 400):
-        highs[i] = 85.0                      # 柄：近 13 天高 < 90
-    closes[-1] = 80.0                        # PercentR(55)=(80-60)/(90-60)=66.7% > 50
+    highs = [88.0] * n
+    lows = [85.0] * n
+    closes = [86.0] * n
+    highs[50] = 100.0            # 左緣：377 窗最高（349 根前）
+    highs[360] = 90.0            # 右緣：55 窗最高（39 根前）
+    lows[cup_dip_idx] = 75.0     # 杯底（深 25%）
+    lows[385] = handle_dip       # 柄低點：21 窗內、8 窗外（LOWEST(8)>LOWEST(21) 成立）
+    highs[-1] = max(88.0, close)
+    closes[-1] = close
     return highs, lows, closes
 
 
@@ -25,7 +26,9 @@ def test_cup_handle_detects_and_anchors():
     assert sig["left_idx"] == 50 and sig["left_price"] == 100.0    # 趨勢線左緣
     assert sig["right_idx"] == 360 and sig["right_price"] == 90.0  # 趨勢線右緣
     assert sig["resistance"] == 90.0
-    assert sig["percent_r"] == 66.7
+    assert sig["percent_r"] == 83.3
+    assert sig["cup_depth_pct"] == 25.0                            # (100-75)/100
+    assert sig["dist_pct"] == 1.1                                  # (90-89)/90
 
 
 def test_cup_handle_rejects_flat_and_short():
@@ -38,6 +41,42 @@ def test_cup_handle_rejects_when_handle_not_pulled_back():
     highs, lows, closes = _make_cup_handle()
     highs[399] = 95.0   # 今日創 55 窗新高，HIGHEST(H,13) 不再 < HIGHEST(H,55)
     assert patterns.cup_handle(highs, lows, closes) is None
+
+
+def test_cup_handle_rejects_shallow_cup():
+    """杯深 <12%（橫盤假杯）→ 拒絕；13% 則通過（證明是杯深條件在起作用）。"""
+    def variant(floor):
+        highs, lows, closes = _make_cup_handle()
+        for i in range(50, 361):
+            lows[i] = floor              # 整個杯區墊高 → 杯深 = (100-floor)/100
+        for i in range(361, 400):
+            lows[i] = 89.8               # 柄守住中點 (floor+90)/2
+        lows[385] = 89.6                 # LOWEST(8)=89.8 > LOWEST(21)=89.6
+        closes[-1] = 89.8; highs[-1] = 89.8   # %R 高、距壓力 0.2%
+        return highs, lows, closes
+    assert patterns.cup_handle(*variant(89.0)) is None       # 深 11% → 拒
+    assert patterns.cup_handle(*variant(87.0)) is not None   # 深 13% → 過
+
+
+def test_cup_handle_rejects_deep_handle():
+    """柄低點跌破杯身中點 82.5 → 拒絕；83（守住）→ 通過。"""
+    assert patterns.cup_handle(*_make_cup_handle(handle_dip=80.0)) is None
+    assert patterns.cup_handle(*_make_cup_handle(handle_dip=83.0)) is not None
+
+
+def test_cup_handle_rejects_far_from_resistance():
+    """收盤距壓力 >10% → 拒絕（杯底移入 55 窗、min_r=0，把 %R 條件隔離掉）。"""
+    highs, lows, closes = _make_cup_handle(close=79.0, cup_dip_idx=350)   # 距壓力 12.2%
+    assert patterns.cup_handle(highs, lows, closes, min_r=0) is None
+    highs, lows, closes = _make_cup_handle(close=82.0, cup_dip_idx=350)   # 距壓力 8.9%
+    assert patterns.cup_handle(highs, lows, closes, min_r=0) is not None
+
+
+def test_cup_handle_min_r_threshold():
+    """%R 門檻參數化：預設 70 拒絕 %R=33 的個股，降到 30 則通過。"""
+    highs, lows, closes = _make_cup_handle(close=86.0)   # %R=(86-84)/6=33.3
+    assert patterns.cup_handle(highs, lows, closes) is None
+    assert patterns.cup_handle(highs, lows, closes, min_r=30) is not None
 
 
 def test_atr_true_range_includes_gaps():

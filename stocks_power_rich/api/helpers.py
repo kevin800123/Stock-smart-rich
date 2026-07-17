@@ -279,33 +279,37 @@ def _note_push_fail(c, full: bool, err) -> None:
                 f"{'完整版' if full else '速報'} {str(err)[:80]}")
 
 
-def cup_handle_screen_logic(c):
+def cup_handle_screen_logic(c, min_r: float = patterns.MIN_R_DEFAULT):
     from ..db import ohlc_dates, get_all_ohlc
     ods = ohlc_dates(c)
     if not ods:
         return {"date": None, "count": 0, "stocks": [],
                 "note": "尚未回補個股歷史，請先執行 /api/ohlc/backfill"}
     latest = ods[-1]
-    key = f"cuphandle:{latest}:{len(ods)}"
+    key = f"cuphandle:{latest}:{len(ods)}:{min_r:g}"
     result = get_ai_cache(c, key)
     if result is None:
         data = get_all_ohlc(c, min_bars=patterns.LOOKBACK)
         names = _ohlc_names(c)
         for code, s in data.items():
             s["name"] = names.get(code) or code
-        matches = patterns.screen_cup_handle(data)
-        result = {"date": latest, "bars": len(ods), "count": len(matches), "stocks": matches}
+        matches = patterns.screen_cup_handle(data, min_r=min_r)
+        result = {"date": latest, "bars": len(ods), "count": len(matches),
+                  "min_r": min_r, "stocks": matches}
         set_ai_cache(c, key, result)
-        sig_snapshot = []
-        for m in matches:
-            o = c.execute("SELECT high, low, close FROM stock_ohlc WHERE code=? "
-                          "ORDER BY date DESC LIMIT 15", (m["code"],)).fetchall()
-            rows = list(reversed(o))
-            a = patterns.atr([r["high"] for r in rows], [r["low"] for r in rows],
-                             [r["close"] for r in rows])
-            sig_snapshot.append({"code": m["code"], "name": m["name"],
-                                 "resistance": m["resistance"], "atr": a})
-        set_ai_cache(c, f"cupsig:{latest}", sig_snapshot)
+        # 盤中哨兵/前瞻測試的訊號快照只在「預設嚴格度」時寫入——
+        # 避免使用者在 UI 暫調寬鬆值污染警示與績效統計的訊號集
+        if min_r == patterns.MIN_R_DEFAULT:
+            sig_snapshot = []
+            for m in matches:
+                o = c.execute("SELECT high, low, close FROM stock_ohlc WHERE code=? "
+                              "ORDER BY date DESC LIMIT 15", (m["code"],)).fetchall()
+                rows = list(reversed(o))
+                a = patterns.atr([r["high"] for r in rows], [r["low"] for r in rows],
+                                 [r["close"] for r in rows])
+                sig_snapshot.append({"code": m["code"], "name": m["name"],
+                                     "resistance": m["resistance"], "atr": a})
+            set_ai_cache(c, f"cupsig:{latest}", sig_snapshot)
     picks = _picks_code_set(c)
     for m in result["stocks"]:
         m["in_picks"] = m["code"] in picks

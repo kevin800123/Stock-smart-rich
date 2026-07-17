@@ -204,8 +204,8 @@ def del_watchlist(code: str):
     return _get_watchlist(conn())
 
 @router.get("/patterns/cup-handle")
-def cup_handle_screen():
-    return cup_handle_screen_logic(conn())
+def cup_handle_screen(min_r: float = patterns.MIN_R_DEFAULT):
+    return cup_handle_screen_logic(conn(), min_r=max(50.0, min(90.0, min_r)))
 
 @router.get("/patterns/cup-handle/backtest")
 def cup_backtest():

@@ -1296,3 +1296,29 @@ def test_heatmap_otc_and_all_markets(tmp_path, monkeypatch):
     assert codes == {"2330", "8299", "5347"}   # 上市+上櫃同「半導體」合併一組
     semi = next(g for g in allm["groups"] if g["sector"] == "半導體")["stocks"]
     assert [s["code"] for s in semi] == ["2330", "5347", "8299"]  # 依市值大→小跨市場排序
+
+
+def test_cup_handle_min_r_param_and_clamp(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import date, timedelta
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc
+    from stocks_power_rich.sources import twse, tpex
+    from tests.test_patterns import _make_cup_handle
+
+    monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1}})
+    monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {})
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    highs, lows, closes = _make_cup_handle()   # %R = 83.3
+    base = date(2025, 1, 1)
+    for i, (h, l, cl) in enumerate(zip(highs, lows, closes)):
+        bulk_upsert_ohlc(c, (base + timedelta(days=i)).isoformat(),
+                         {"2330": {"open": cl, "high": h, "low": l, "close": cl}})
+    app = create_app()
+    client = TestClient(app)
+    assert client.get("/api/patterns/cup-handle").json()["count"] == 1            # 預設 70：83.3 過
+    assert client.get("/api/patterns/cup-handle?min_r=90").json()["count"] == 0   # 90：83.3 被擋
+    r = client.get("/api/patterns/cup-handle?min_r=10").json()                    # clamp 到 50
+    assert r["count"] == 1 and r["min_r"] == 50.0
+    m = client.get("/api/patterns/cup-handle").json()["stocks"][0]
+    assert m["cup_depth_pct"] == 25.0 and m["dist_pct"] == 1.1                    # 新展示欄位

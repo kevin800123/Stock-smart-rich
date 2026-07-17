@@ -619,12 +619,12 @@ async function drawCupChart(m) {
     cupChart.setOption(cupChartOption(d, m), true);
   } catch (e) { cupChart.hideLoading(); }
 }
-let cupData = null, cupPicksOnly = false;
+let cupData = null, cupPicksOnly = false, cupMinR = 70;
 async function loadCupHandle() {
   const list = $("cup-list"); if (!list) return;
   list.innerHTML = '<span class="muted small">篩選中…</span>';
   try {
-    cupData = await getJSON("/api/patterns/cup-handle");
+    cupData = await getJSON(`/api/patterns/cup-handle?min_r=${cupMinR}`);
     cupLoaded = true;
     renderCupChips();
   } catch (e) { list.innerHTML = '<span class="muted small">載入失敗</span>'; }
@@ -635,12 +635,14 @@ function renderCupChips() {
   if (d.note) { list.innerHTML = `<span class="muted small">${esc(d.note)}</span>`; if (note) note.textContent = ""; return; }
   const all = d.stocks || [];
   cupMatches = cupPicksOnly ? all.filter((m) => m.in_picks) : all;
-  if (note) note.textContent = `（${d.date}　符合 ${d.count} 檔`
+  if (note) note.textContent = `（${d.date}　%R≥${d.min_r ?? cupMinR}　符合 ${d.count} 檔`
     + (d.has_picks ? `／同時符合籌碼基本 ${d.picks_count} 檔` : "") + `／掃描 ${d.bars} 根）`;
   if (cupPicksOnly && !d.has_picks) { list.innerHTML = '<span class="muted small">尚未載入當日 CSV，無「籌碼/基本選股」可交集（請先到該分頁上傳）</span>'; if (cupChart) cupChart.clear(); renderCupRisk(null); return; }
   if (!cupMatches.length) { list.innerHTML = `<span class="muted small">${cupPicksOnly ? "無同時符合兩者的個股" : "今日無符合杯柄型態的個股"}</span>`; if (cupChart) cupChart.clear(); renderCupRisk(null); return; }
-  list.innerHTML = cupMatches.map((m, i) =>
-    `<a href="#" class="cup-chip${i === 0 ? " active" : ""}${m.in_picks ? " pick" : ""}" data-i="${i}">${esc(m.code)} ${esc(m.name || "")}<span class="cup-r">%R ${fmt(m.percent_r, 0)}</span></a>`).join("");
+  list.innerHTML = cupMatches.map((m, i) => {
+    const tip = `杯深 ${fmt(m.cup_depth_pct, 1)}%・距壓力 ${fmt(m.dist_pct, 1)}%`;
+    return `<a href="#" class="cup-chip${i === 0 ? " active" : ""}${m.in_picks ? " pick" : ""}" data-i="${i}" title="${tip}">${esc(m.code)} ${esc(m.name || "")}<span class="cup-r">%R ${fmt(m.percent_r, 0)}</span></a>`;
+  }).join("");
   drawCupChart(cupMatches[0]);
   renderCupRisk(cupMatches[0]);
 }
@@ -1298,6 +1300,13 @@ document.querySelectorAll(".hm-tab").forEach((b) => b.addEventListener("click", 
   loadSectors();
 }));
 $("btn-cup-refresh").addEventListener("click", loadCupHandle);
+document.querySelectorAll(".cup-r-tab").forEach((b) => b.addEventListener("click", () => {
+  const r = Number(b.dataset.r);
+  if (r === cupMinR) return;
+  cupMinR = r;
+  document.querySelectorAll(".cup-r-tab").forEach((x) => x.classList.toggle("active", x === b));
+  loadCupHandle();
+}));
 $("btn-cup-picks").addEventListener("click", (e) => {
   cupPicksOnly = !cupPicksOnly;
   e.target.classList.toggle("active", cupPicksOnly);
