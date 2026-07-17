@@ -476,6 +476,20 @@ function marginMaintCard(hist, srcRow, curDate) {
   const chg = priorRow ? srcRow.margin_maintenance - priorRow.margin_maintenance : null;
   return card(lbl, fmt(srcRow.margin_maintenance, 1) + "%", chg, pctOf(srcRow.margin_maintenance, chg));
 }
+// 市場內部儀表：指數（方向）＋三大法人（資金）。中間的漲跌家數由 loadBreadth 填 #breadth，
+// 三者並列才看得出「指數持平但下跌家數遠多於上漲」這種內部背離。
+function renderMarketStrip(m, total3) {
+  const idx = $("ms-index"), inst = $("ms-inst");
+  if (!idx || !inst) return;
+  const pct = pctOf(m.taiex, m.taiex_chg);
+  idx.innerHTML = `<span class="ms-label">加權指數</span>`
+    + `<span class="ms-val ${chgClass(m.taiex_chg)}">${fmt(m.taiex)}</span>`
+    + `<span class="ms-chg ${chgClass(m.taiex_chg)}">${chgText(m.taiex_chg)}${pctTag(pct)}</span>`;
+  // 只放「合計」：外資/投信/自營的明細與較昨變化在下方卡片，不在此重複
+  inst.innerHTML = `<div class="ms-i total"><div class="ms-i-k">三大法人合計</div>`
+    + `<div class="ms-i-v ${chgClass(total3)}">${total3 == null ? "—" : fmt(total3) + " 億"}</div></div>`;
+}
+
 function renderCards(m, prev = {}, hist = []) {
   if (!m || !m.date) { $("cards-tw").innerHTML = '<div class="muted">尚無大盤資料。</div>'; $("cards-fut").innerHTML = ""; $("cards-intl").innerHTML = ""; $("data-date").textContent = ""; return; }
   $("data-date").textContent = "資料日期：" + m.date;
@@ -486,12 +500,11 @@ function renderCards(m, prev = {}, hist = []) {
   const lst = dod(m.retail_ls_tmf, prev.retail_ls_tmf);
   // 融資/融券：當日有就用當日，否則退到最近一筆有資料的交易日（晚間才公布的容錯）
   const marginRow = [...hist].reverse().find((r) => r && r.margin_balance != null) || m;
+  renderMarketStrip(m, sum3(m));   // 加權指數與三大法人合計移到頂端儀表，下方卡片不再重複
   $("cards-tw").innerHTML = [
-    card("加權指數", fmt(m.taiex), m.taiex_chg, pctOf(m.taiex, m.taiex_chg)),
     flowCard("外資買賣超", m.inst_foreign, prev.inst_foreign, " 億"),
     flowCard("投信買賣超", m.inst_trust, prev.inst_trust, " 億"),
     flowCard("自營買賣超", m.inst_dealer, prev.inst_dealer, " 億"),
-    flowCard("三大法人合計", sum3(m), sum3(prev), " 億"),
     balanceCard("融資餘額(張)", marginRow, m.date, "margin_balance", "margin_chg"),
     balanceCard("融券餘額(張)", marginRow, m.date, "short_balance", "short_chg"),
     marginMaintCard(hist, marginRow, m.date),

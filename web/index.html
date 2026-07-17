@@ -38,8 +38,15 @@
 
       <!-- ===== 總覽 ===== -->
       <section id="view-overview" class="view active">
-        <div class="card-group"><div class="group-title">台股大盤</div><div id="cards-tw" class="cards"></div></div>
-        <div class="card-group"><div class="group-title">漲跌家數 <span id="breadth-note" class="muted small"></span></div><div id="breadth"></div></div>
+        <!-- 市場內部：指數方向與內部廣度並列，一眼看出「指數漲但家數跌」這類背離 -->
+        <div class="market-strip">
+          <div class="ms-main">
+            <div id="ms-index" class="ms-index"></div>
+            <div id="breadth"></div>
+          </div>
+          <div id="ms-inst" class="ms-inst"></div>
+        </div>
+        <div class="card-group"><div class="group-title">台股大盤 <span id="breadth-note" class="muted small"></span></div><div id="cards-tw" class="cards"></div></div>
         <div class="card-group"><div class="group-title">權值股貢獻大盤點數 <span id="movers-note" class="muted small"></span></div><div id="movers" class="mv-grid"></div></div>
         <div class="card-group"><div class="group-title">期貨籌碼</div><div id="cards-fut" class="cards"></div></div>
         <div class="card-group"><div class="group-title">期權情緒・大額交易人 <span id="opt-note" class="muted small"></span></div><div id="cards-opt" class="cards"></div></div>

@@ -117,6 +117,25 @@ body {
 .hidden { display: none !important; }
 
 /* ===== 指標卡 ===== */
+/* ===== 市場內部儀表：把「指數方向」與「內部廣度」「法人資金」放進同一個讀數。
+   分開放在不同區塊時，剛好藏住「指數持平但下跌家數遠多於上漲」這種背離判讀。 ===== */
+.market-strip {
+  background: var(--panel); border: 1px solid var(--border); border-radius: var(--r);
+  padding: var(--sp-3) var(--sp-4); display: flex; align-items: center;
+  gap: var(--sp-5); flex-wrap: wrap; flex: 0 0 auto;
+}
+.ms-main { flex: 1 1 400px; min-width: 0; }
+.ms-index { display: flex; align-items: baseline; gap: var(--sp-3); flex-wrap: wrap; }
+.ms-index .ms-label { font-size: var(--fs-sm); color: var(--muted); }
+.ms-index .ms-val { font-size: var(--fs-hero); font-weight: 700; line-height: 1.1; }
+.ms-index .ms-chg { font-size: var(--fs-md); font-weight: 600; }
+.ms-main .breadth-nums { margin-top: var(--sp-2); }
+.ms-inst { display: flex; align-items: baseline; gap: var(--sp-4); flex-wrap: wrap; }
+.ms-inst .ms-i { display: flex; flex-direction: column; gap: 2px; }
+.ms-inst .ms-i-k { font-size: var(--fs-sm); color: var(--muted); }
+.ms-inst .ms-i-v { font-size: var(--fs-lg); font-weight: 700; white-space: nowrap; }
+.ms-inst .ms-i.total .ms-i-v { font-size: var(--fs-xl); }
+
 /* 區塊標題：改用字重與豎線層級，不再吃琥珀色（琥珀留給「目前選取」） */
 .group-title { font-size: var(--fs-md); color: var(--label); font-weight: 600; margin-bottom: var(--sp-2); border-left: 3px solid var(--border); padding-left: 8px; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: var(--sp-2); }
