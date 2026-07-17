@@ -811,6 +811,7 @@ async function loadSectors() {
         // 導致「量得下、畫出來卻被截」（曾把台達電漲跌截成「+0....」）。
         label: {
           show: true, overflow: "truncate", color: "#fff", fontWeight: 700, fontFamily: HM_FONT,
+          textShadowColor: "rgba(0,0,0,0.55)", textShadowBlur: 3, textShadowOffsetY: 1,  // 白字浮起、更清楚
           formatter: (p) => {
             if (p.data.code == null) return "";  // 產業群組用 upperLabel，不在中間標字
             const sign = p.data.chg >= 0 ? "+" : "";
