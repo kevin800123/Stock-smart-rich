@@ -1,3 +1,5 @@
+import os
+
 from fastapi import APIRouter, Response
 from fastapi.responses import HTMLResponse
 from datetime import datetime
@@ -7,10 +9,19 @@ from .helpers import (
     _sectors_for,
     get_ai_cache,
     set_ai_cache,
-    _latest_date
+    _latest_date,
+    WEB_DIR
 )
-from .market import market_summary_logic
-from .stock import _insti_for
+from .market import (
+    market_summary_logic,
+    dashboard as _dashboard,
+    breadth as _breadth,
+    index_movers as _index_movers,
+    heatmap as _heatmap,
+    options_sentiment as _options_sentiment,
+    inst_ranking as _inst_ranking,
+)
+from .stock import _insti_for, index_kline as _index_kline, tx_volume_sessions as _tx_volume_sessions
 from ..db import get_snapshot_dates, get_snapshot
 from ..sources import twse
 from .. import analysis, gemini, exporter
@@ -114,6 +125,48 @@ def public_overview():
             "sectors_up": [{"name": s["name"], "chg_pct": s["chg_pct"]} for s in ups],
             "sectors_down": [{"name": s["name"], "chg_pct": s["chg_pct"]} for s in downs],
             "ai_text": (ai.get("text") or "") if ai.get("enabled") else ""}
+
+# ===== 公開總覽所需的唯讀端點 =====
+# 一律直接呼叫站內既有 handler（純函式），不複製任何邏輯——公開頁與站內共用同一份渲染碼，
+# 資料來源也必須是同一份，否則兩邊又會漂移。全部只註冊 GET，公開面不得有任何寫入端點。
+
+@router.get("/public/api/dashboard")
+def p_dashboard():
+    return _dashboard()
+
+@router.get("/public/api/breadth")
+def p_breadth(date: str | None = None):
+    return _breadth(date=date)
+
+@router.get("/public/api/index-movers")
+def p_index_movers(date: str | None = None, top: int = 20):
+    return _index_movers(date=date, top=top)
+
+@router.get("/public/api/heatmap")
+def p_heatmap(date: str | None = None, market: str = "tse"):
+    return _heatmap(date=date, market=market)
+
+@router.get("/public/api/options-sentiment")
+def p_options_sentiment():
+    return _options_sentiment()
+
+@router.get("/public/api/inst-ranking")
+def p_inst_ranking(who: str = "foreign", date: str | None = None, top: int = 20, unit: str = "shares"):
+    return _inst_ranking(who=who, date=date, top=top, unit=unit)
+
+@router.get("/public/api/index/kline")
+def p_index_kline(symbol: str = "taiex", interval: str = "1d"):
+    return _index_kline(symbol=symbol, interval=interval)
+
+@router.get("/public/api/tx/volume-sessions")
+def p_tx_volume_sessions(days: int = 60):
+    return _tx_volume_sessions(days=days)
+
+@router.get("/public/api/market/summary")
+def p_market_summary():
+    """刻意不接受 refresh 參數：refresh=1 會觸發 Gemini 呼叫，
+    公開端點若可帶此參數，等於任何匿名訪客都能替你燒 API 費用。只讀當日快取。"""
+    return market_summary_logic(conn(), refresh=0)
 
 @router.get("/public/api/inst-rank")
 def public_inst_rank(who: str = "foreign", unit: str = "shares"):
@@ -228,129 +281,27 @@ def public_disclaimer_page():
     </div>"""
     return _public_shell("免責聲明", body)
 
-_PUBLIC_OVERVIEW_JS = """
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const fmt = (v,d=2) => (v==null?"—":Number(v).toLocaleString("en-US",{maximumFractionDigits:d}));
-const signed = (v,d=1) => v==null?"—":(v>0?"+":"")+fmt(v,d);
-const cls = v => v>0?"up":v<0?"down":"";
-const yd = (v,d=1,unit="") => v==null?"":`<span class="yd">(昨${signed(v,d)}${unit})</span>`;
-const ydLevel = (v,d=1,unit="") => v==null?"":`<span class="yd">(昨${fmt(v,d)}${unit})</span>`;
-const row = (label, valueHtml) => `<div class="row"><span>${label}</span><span>${valueHtml}</span></div>`;
-
-let rankWho = "foreign", rankUnit = "shares";
-function renderRank(rk, unit) {
-  const isVal = unit === "value";
-  const line = s => `<div class="rank-row"><span><span class="code">${esc(s.code)}</span>${esc(s.name)}</span>` +
-    `<span class="${cls(s.net)}">${signed(s.net, isVal?2:0)}${isVal?" 億":""}</span></div>`;
-  document.getElementById("rank").innerHTML =
-    `<div class="rank-col"><h4 class="up">買超 Top</h4>${(rk.buy||[]).map(line).join("")}</div>` +
-    `<div class="rank-col"><h4 class="down">賣超 Top</h4>${(rk.sell||[]).map(line).join("")}</div>`;
-}
-function loadRank() {
-  fetch(`/public/api/inst-rank?who=${rankWho}&unit=${rankUnit}`).then(r=>r.json())
-    .then(d=>renderRank(d, rankUnit)).catch(()=>{});
-}
-document.querySelectorAll("[data-who]").forEach(b => b.addEventListener("click", () => {
-  document.querySelectorAll("[data-who]").forEach(x=>x.classList.toggle("active", x===b));
-  rankWho = b.dataset.who; loadRank();
-}));
-document.querySelectorAll("[data-unit]").forEach(b => b.addEventListener("click", () => {
-  document.querySelectorAll("[data-unit]").forEach(x=>x.classList.toggle("active", x===b));
-  rankUnit = b.dataset.unit; loadRank();
-}));
-
-fetch("/public/api/overview").then(r=>r.json()).then(d=>{
-  document.getElementById("date").textContent = d.date ? "資料日期："+d.date : "尚無資料";
-  document.getElementById("taiex").textContent = fmt(d.taiex);
-  const chg = d.taiex_chg;
-  const chgEl = document.getElementById("chg");
-  if (chg != null) { chgEl.textContent = (chg>0?"▲":chg<0?"▼":"") + fmt(Math.abs(chg)); chgEl.className = chg>0?"up":chg<0?"down":""; }
-  document.getElementById("tv").textContent = d.turnover != null ? fmt(d.turnover,0)+"億" : "—";
-  if (d.tx_price != null) {
-    document.getElementById("tx-row").innerHTML = row("台指期",
-      fmt(d.tx_price) + (d.tx_chg!=null ? ` <span class="${cls(d.tx_chg)}">${signed(d.tx_chg)}</span>` : ""));
-  }
-
-  const intlEl = document.getElementById("intl");
-  if ((d.intl||[]).length) {
-    document.getElementById("intl-card").style.display = "";
-    intlEl.innerHTML = d.intl.map(x =>
-      row(esc(x.label), fmt(x.value) + (x.chg_pct!=null ? ` <span class="${cls(x.chg_pct)}">${signed(x.chg_pct)}%</span>` : ""))).join("");
-  }
-
-  const rk = d.inst_rank || {};
-  if ((rk.buy||[]).length || (rk.sell||[]).length) {
-    document.getElementById("rank-card").style.display = "";
-    renderRank(rk, "shares");
-  }
-
-  const inst = d.inst || {};
-  if (inst.foreign != null || inst.trust != null || inst.dealer != null) {
-    document.getElementById("inst-card").style.display = "";
-    document.getElementById("inst").innerHTML = [
-      ["外資", inst.foreign, inst.foreign_prev], ["投信", inst.trust, inst.trust_prev],
-      ["自營", inst.dealer, inst.dealer_prev],
-    ].filter(([,v])=>v!=null).map(([label,v,pv]) =>
-      row(label, `<span class="${cls(v)}">${signed(v,1)}億</span>${yd(pv,1,"億")}`)).join("");
-  }
-
-  const fut = d.fut || {};
-  if (fut.tx_foreign_oi != null || fut.retail_ls_mtx != null) {
-    document.getElementById("fut-card").style.display = "";
-    const parts = [];
-    if (fut.tx_foreign_oi != null) parts.push(row("外資台指OI", fmt(fut.tx_foreign_oi,0)+"口"+yd(fut.tx_foreign_oi_prev,0)));
-    if (fut.retail_ls_mtx != null) parts.push(row("小台多空比", signed(fut.retail_ls_mtx*100,2)+"%"+yd(fut.retail_ls_mtx_prev!=null?fut.retail_ls_mtx_prev*100:null,2,"%")));
-    if (fut.retail_ls_tmf != null) parts.push(row("微台多空比", signed(fut.retail_ls_tmf*100,2)+"%"+yd(fut.retail_ls_tmf_prev!=null?fut.retail_ls_tmf_prev*100:null,2,"%")));
-    document.getElementById("fut").innerHTML = parts.join("");
-  }
-
-  const mg = d.margin || {};
-  if (mg.balance != null || mg.short_balance != null) {
-    document.getElementById("margin-card").style.display = "";
-    const parts = [];
-    if (mg.balance != null) parts.push(row("融資", fmt(mg.balance,0)+"張"+yd(mg.chg,0)));
-    if (mg.value != null) parts.push(row("融資金額", fmt(mg.value,1)+"億"+yd(mg.value_chg,1,"億")));
-    if (mg.short_balance != null) parts.push(row("融券", fmt(mg.short_balance,0)+"張"+yd(mg.short_chg,0)));
-    if (mg.maintenance != null) parts.push(row("融資維持率", fmt(mg.maintenance,1)+"%"+ydLevel(mg.maintenance_prev,1,"%")));
-    document.getElementById("margin").innerHTML = parts.join("");
-  }
-
-  const rows = [...(d.sectors_up||[]).map(s=>({...s,cls:"up",ic:"🔥"})), ...(d.sectors_down||[]).map(s=>({...s,cls:"down",ic:"❄"}))];
-  document.getElementById("secs").innerHTML = rows.length ? rows.map(s=>
-    `<div class="row"><span>${s.ic} ${esc(s.name)}</span><span class="${s.cls}">${s.chg_pct>0?"+":""}${fmt(s.chg_pct)}%</span></div>`).join("")
-    : '<div class="muted">尚無資料</div>';
-  if (d.ai_text) { document.getElementById("ai-card").style.display=""; document.getElementById("ai").textContent = d.ai_text; }
-}).catch(()=>{ document.getElementById("date").textContent = "載入失敗，稍後再試"; });
-"""
 
 @router.get("/public/overview.js")
 def public_overview_js():
-    return Response(content=_PUBLIC_OVERVIEW_JS, media_type="application/javascript")
+    """舊版獨立公開頁的渲染腳本已停用（公開頁改為共用站內前端 app.js）。
+    保留路由回傳空腳本，避免舊書籤/快取的頁面 404。"""
+    return Response(content="// 已改為共用站內前端，見 /public/overview\n",
+                    media_type="application/javascript")
 
 @router.get("/public/overview", response_class=HTMLResponse)
 def public_overview_page():
-    body = """
-    <h1>📊 台股總覽</h1><div class="sub" id="date">載入中…</div>
-    <div class="card"><div class="row"><span>加權指數</span><span class="big" id="taiex">—</span></div>
-    <div class="row"><span>漲跌幅</span><span id="chg">—</span></div>
-    <div class="row"><span>成交金額</span><span id="tv">—</span></div>
-    <div id="tx-row"></div></div>
-    <div class="card" id="intl-card" style="display:none"><div class="card-title">國際行情</div><div id="intl"></div></div>
-    <div class="card" id="inst-card" style="display:none"><div class="card-title">三大法人買賣超</div><div id="inst"></div></div>
-    <div class="card" id="rank-card" style="display:none">
-    <div class="card-title">法人買賣超個股排行</div>
-    <div>
-      <button class="tbtn active" data-who="foreign">外資</button>
-      <button class="tbtn" data-who="trust">投信</button>
-      <button class="tbtn" data-who="total">三大法人</button>
-      <span class="tsep">|</span>
-      <button class="tbtn active" data-unit="shares">張</button>
-      <button class="tbtn" data-unit="value">金額(億)</button>
-    </div>
-    <div class="rank-grid" id="rank"></div></div>
-    <div class="card" id="fut-card" style="display:none"><div class="card-title">期貨籌碼</div><div id="fut"></div></div>
-    <div class="card" id="margin-card" style="display:none"><div class="card-title">融資券</div><div id="margin"></div></div>
-    <div class="card"><div class="card-title">類股強弱</div><div id="secs"></div></div>
-    <div class="card" id="ai-card" style="display:none"><div class="card-title">AI 解讀</div><div class="ai" id="ai"></div></div>
-    <script src="/public/overview.js"></script>"""
-    return _public_shell("台股總覽", body)
+    """公開總覽：直接服務站內同一份 index.html，注入 data-public 旗標。
+
+    如此 public 與站內共用同一套 HTML/CSS/JS 與設計系統，改一次兩邊同步——
+    不再像舊版那樣維護第二套渲染邏輯（那正是 CLAUDE.md 記取的雙實作漂移教訓）。
+    app.js 讀到旗標後：API 走 /public/api、隱藏非總覽導覽、且不觸發任何寫入操作。
+    """
+    with open(os.path.join(WEB_DIR, "index.html"), encoding="utf-8") as f:
+        html = f.read()
+    # index.html 用相對路徑引資產（站內在 / 底下正常）；本頁在 /public/overview，
+    # 相對路徑會被解析成 /public/styles.css → 404。改絕對路徑（不用 <base href="/">：
+    # 那會讓滿頁的 href="#" 錨點指向 "/"，點個股連結就跳離本頁）。
+    html = (html.replace('href="styles.css"', 'href="/styles.css"')
+                .replace('src="app.js"', 'src="/app.js"'))
+    return HTMLResponse(html.replace("<body>", '<body data-public="1">', 1))

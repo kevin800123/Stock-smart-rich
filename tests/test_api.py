@@ -761,6 +761,63 @@ def test_public_pages_bypass_basic_auth(tmp_path, monkeypatch):
     assert client.get("/publicx/overview").status_code == 401
 
 
+def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
+    """公開總覽改為共用站內前端：需放行前端靜態資產與總覽所需的唯讀 API，
+    但寫入端點、個人資料與站內入口一律維持鎖住。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("SPR_BASIC_USER", "kevin")
+    monkeypatch.setenv("SPR_BASIC_PASS", "s3cret")
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-07-08", "taiex": 45500.0, "taiex_chg": 20.0})
+    app = create_app()
+    client = TestClient(app)
+
+    # 公開頁服務的是站內 index.html，並帶 data-public 旗標讓 app.js 切公開模式
+    html = client.get("/public/overview")
+    assert html.status_code == 200
+    assert 'data-public="1"' in html.text
+    # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
+    # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
+    assert 'src="/app.js"' in html.text and 'href="/styles.css"' in html.text
+    assert 'src="app.js"' not in html.text and 'href="styles.css"' not in html.text
+
+    # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
+    for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",
+                 "/vendor/fonts/plex-mono-400.woff2"):
+        assert client.get(path).status_code == 200, path
+
+    # 總覽所需的唯讀 API 免帳密
+    for path in ("/public/api/dashboard", "/public/api/breadth", "/public/api/heatmap",
+                 "/public/api/index-movers", "/public/api/options-sentiment",
+                 "/public/api/inst-ranking", "/public/api/tx/volume-sessions",
+                 "/public/api/market/summary"):
+        assert client.get(path).status_code == 200, path
+
+    # 公開面不得有任何寫入端點
+    non_get = [r.path for r in app.routes
+               if getattr(r, "path", "").startswith("/public") and r.methods - {"GET", "HEAD"}]
+    assert non_get == []
+
+    # market/summary 不接受 refresh：若可帶此參數，匿名訪客就能觸發 Gemini 呼叫燒錢。
+    # 直接鎖簽章——帶了 refresh 也只會被 FastAPI 忽略，從介面上就不存在這個開關。
+    import inspect
+    from stocks_power_rich.api.public import p_market_summary
+    assert "refresh" not in inspect.signature(p_market_summary).parameters
+
+    # 寫入/個人端點與站內入口維持鎖住
+    assert client.post("/api/update/run").status_code == 401     # 會寫 DB、打外部 API
+    assert client.post("/api/db/backup").status_code == 401
+    assert client.get("/api/watchlist").status_code == 401
+    assert client.get("/api/settings").status_code == 401
+    assert client.get("/").status_code == 401                    # 站內入口不公開
+    assert client.get("/index.html").status_code == 401
+    # 前綴誤判防呆：/vendor/ 放行不得外溢到 /vendorx
+    assert client.get("/vendorx/x.js").status_code == 401
+
+
 def test_no_auth_when_unconfigured(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     monkeypatch.delenv("SPR_BASIC_USER", raising=False)

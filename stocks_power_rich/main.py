@@ -40,6 +40,10 @@ from .api.csv import router as csv_router
 from .api.public import router as public_router
 from .api.admin import router as admin_router
 
+# 免帳密的前端靜態資產（精確比對）：/public/overview 與站內共用同一套前端，需能載入這些檔。
+# 僅限程式碼與樣式，不含 index.html（站內入口維持鎖住）。
+_PUBLIC_FILES = {"/styles.css", "/app.js"}
+
 
 def create_app(enable_scheduler: bool = False) -> FastAPI:
     cfg = load_config()
@@ -49,12 +53,16 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     if cfg.basic_user and cfg.basic_pass:
         @app.middleware("http")
         async def _basic_auth(request, call_next):
-            # 免帳密白名單：/public 前綴、/public/api/* 等、以及邏輯/免責聲明頁面
-            if (
-                request.url.path.startswith("/public/") or 
-                request.url.path == "/public/logic" or 
-                request.url.path == "/public/disclaimer"
-            ):
+            # 免帳密白名單：
+            #   /public/*      —— 公開頁與其唯讀 API（LINE 圖文選單開啟，無帳密）
+            #   前端靜態資產   —— /public/overview 直接沿用站內同一套前端，故需放行；
+            #                     內含的只是程式碼與字型，無任何機密（金鑰皆在伺服器端），
+            #                     且所有 /api/* 仍受保護，資料不會外洩。
+            # 注意：/ 與 /index.html 維持鎖住；前綴一律帶結尾斜線，避免 /publicx、/vendorx 誤放行。
+            path = request.url.path
+            if (path.startswith("/public/")
+                    or path in _PUBLIC_FILES
+                    or path.startswith("/vendor/")):
                 return await call_next(request)
             if _check_basic(request.headers.get("Authorization", ""), cfg.basic_user, cfg.basic_pass):
                 return await call_next(request)

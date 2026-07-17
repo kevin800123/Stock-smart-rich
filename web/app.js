@@ -9,8 +9,13 @@ const fmt = (v, d = 2) => (v === null || v === undefined || v === "" ? "—" : N
 const chgClass = (v) => (v > 0 ? "up" : v < 0 ? "down" : "flat");
 const chgText = (v) => (v === null || v === undefined ? "" : (v > 0 ? "▲" : v < 0 ? "▼" : "") + fmt(Math.abs(v)));
 
+// 公開模式（/public/overview 注入 data-public）：與站內共用同一份前端，只換資料來源與可見範圍。
+// API 前綴集中在 apiUrl() 轉換，各呼叫點照舊寫 "/api/..."，一處改完全部生效。
+const PUBLIC = document.body.dataset.public === "1";
+const apiUrl = (p) => (PUBLIC ? p.replace(/^\/api\//, "/public/api/") : p);
+
 async function getJSON(url) {
-  const r = await fetch(url);
+  const r = await fetch(apiUrl(url));
   if (!r.ok) throw new Error(url + " " + r.status);
   return r.json();
 }
@@ -1477,7 +1482,11 @@ window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockCh
 
 // ========== 初始載入 ==========
 (async () => {
-  try { applyNavOrder((await getJSON("/api/settings")).nav_order); } catch (e) { /* 用預設順序 */ }
+  // 公開模式：只跑總覽所需的唯讀載入。設定/跨週非總覽；autoUpdate 會 POST /api/update/run
+  // （寫 DB、打外部 API），匿名訪客絕不可觸發。
+  if (!PUBLIC) {
+    try { applyNavOrder((await getJSON("/api/settings")).nav_order); } catch (e) { /* 用預設順序 */ }
+  }
   const d = await loadDashboard();
   loadIndexChart();
   loadBreadth();
@@ -1486,6 +1495,7 @@ window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockCh
   loadMarketSummary(false);  // 讀快取即回；排程更新完會自動預先生成，開頁不另扣費
   loadInstRanking();
   loadOptionsSentiment();
+  if (PUBLIC) return;
   loadDates();
   loadWeekly();
   // 自動更新：無資料、或資料非當日（平日尚未更新到最新交易日）時，自動抓一次

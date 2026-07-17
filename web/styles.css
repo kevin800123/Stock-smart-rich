@@ -103,6 +103,11 @@ body {
 
 .content { min-width: 0; min-height: 0; overflow: hidden; position: relative; display: flex; flex-direction: column; }
 
+/* 公開模式（/public/overview）：只開放總覽。用隱藏而非移除 DOM——app.js 在模組層對
+   各視圖元素綁事件，移除節點會讓綁定拋 TypeError 而整頁掛掉。 */
+body[data-public] .nav:not([data-view="overview"]) { display: none; }
+body[data-public] .status-bar { display: none; }
+
 /* ===== 視圖：只有 active 顯示，內部自行捲動 ===== */
 .view { display: none; flex: 1; min-height: 0; overflow: auto; padding: 16px 20px; flex-direction: column; gap: 12px; }
 .view.active { display: flex; }
