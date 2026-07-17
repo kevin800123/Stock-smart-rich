@@ -786,7 +786,7 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",
-                 "/vendor/fonts/plex-mono-400.woff2"):
+                 "/vendor/fonts/huninn.woff2"):
         assert client.get(path).status_code == 200, path
 
     # 總覽所需的唯讀 API 免帳密

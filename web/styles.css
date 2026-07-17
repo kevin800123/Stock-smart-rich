@@ -1,24 +1,33 @@
-/* 數字／拉丁專用字型：靠 unicode-range 只接管數字與拉丁字母，中文自動落回系統字型。
-   目的是「把中文字級與數字字級解耦」——中文方塊字筆畫密、需要更大級數才讀得清，
-   但數字在小級數已經很清楚，一起放大會讓密度崩掉。size-adjust 讓數字在中文放大後
-   仍與中文光學等高、不跟著膨脹。等寬本身即 tabular，數字位數天然對齊。 */
+/* 全站字型走日式圓潤（丸ゴシック）：中文＝自架 jf open 粉圓（SIL OFL，漢字衍生自
+   日本圓體 Kosugi Maru，涵蓋繁中股名）；數字/拉丁＝M PLUS Rounded 1c（同圓體血統）。
+   目的：把冷硬的系統黑體換成溫暖一致的圓體，降低介面壓力感。
+
+   "Num" 用 unicode-range 只接管數字與拉丁字母，中文落回粉圓——這樣數字/拉丁能單獨用
+   size-adjust 與粉圓中文光學等高（兩套字度量不同）。M PLUS Rounded 1c 為比例圓體、
+   非等寬，故表格數字欄不再嚴格對齊（已與使用者取捨：柔和優先）。 */
 @font-face {
   font-family: "Num";
-  src: url("/vendor/fonts/plex-mono-400.woff2") format("woff2");
-  font-weight: 400; font-display: swap; size-adjust: 90%;
+  src: url("/vendor/fonts/mplus-rounded-400.woff2") format("woff2");
+  font-weight: 400; font-display: swap; size-adjust: 92%;
   unicode-range: U+0030-0039, U+0041-005A, U+0061-007A, U+0025, U+002B, U+002C, U+002D, U+002E, U+002F, U+003A;
 }
 @font-face {
   font-family: "Num";
-  src: url("/vendor/fonts/plex-mono-600.woff2") format("woff2");
-  font-weight: 500 600; font-display: swap; size-adjust: 90%;
+  src: url("/vendor/fonts/mplus-rounded-500.woff2") format("woff2");
+  font-weight: 500 600; font-display: swap; size-adjust: 92%;
   unicode-range: U+0030-0039, U+0041-005A, U+0061-007A, U+0025, U+002B, U+002C, U+002D, U+002E, U+002F, U+003A;
 }
 @font-face {
   font-family: "Num";
-  src: url("/vendor/fonts/plex-mono-700.woff2") format("woff2");
-  font-weight: 700 900; font-display: swap; size-adjust: 90%;
+  src: url("/vendor/fonts/mplus-rounded-700.woff2") format("woff2");
+  font-weight: 700 900; font-display: swap; size-adjust: 92%;
   unicode-range: U+0030-0039, U+0041-005A, U+0061-007A, U+0025, U+002B, U+002C, U+002D, U+002E, U+002F, U+003A;
+}
+/* 中文圓體（單一字重，粗體由瀏覽器合成）。~2MB，font-display:swap 先顯示系統字再換。 */
+@font-face {
+  font-family: "Huninn";
+  src: url("/vendor/fonts/huninn.woff2") format("woff2");
+  font-weight: 400 900; font-display: swap;
 }
 
 :root {
@@ -62,7 +71,7 @@
 html, body { height: 100%; }
 body {
   margin: 0;
-  font-family: "Num", "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", system-ui, sans-serif;
+  font-family: "Num", "Huninn", "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
   font-size: var(--fs-base);
   background: var(--bg);
