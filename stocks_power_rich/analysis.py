@@ -174,6 +174,23 @@ def picks_by_sector(picks: list[dict], sector_chg: dict) -> list[dict]:
     return out
 
 
+def pick_weekly_pair(dates: list[str]) -> tuple[str, str | None]:
+    """跨週比較的日期配對：本期＝最新快照；上期＝最新一筆「ISO 週早於本期」的快照
+    （即上週或更早的最後一份 CSV）。集保週資料一週一更，日對日比較的集保Δ沒有意義。
+    全部同週（尚無上週資料）退回前一筆至少能比；單筆回 (d, None)。dates 需遞增排序。"""
+    from datetime import date as _date
+    if not dates:
+        return ("", None)
+    this = dates[-1]
+    if len(dates) < 2:
+        return (this, None)
+    this_week = _date.fromisoformat(this).isocalendar()[:2]
+    for d in reversed(dates[:-1]):
+        if _date.fromisoformat(d).isocalendar()[:2] < this_week:
+            return (this, d)
+    return (this, dates[-2])
+
+
 def weekly_comparison(this_rows: list[dict], last_rows: list[dict]) -> dict:
     """比較本週最新 vs 上週最新快照，標記每檔 新進榜/加速/持平/退榜 與集保大戶持股 Δ。"""
     last = {r["code"]: r for r in last_rows}

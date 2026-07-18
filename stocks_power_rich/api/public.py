@@ -37,11 +37,13 @@ def summary_logic(c, refresh: int = 0):
     key = f"csv:{dates[-1]}"
     cached = get_ai_cache(c, key)
     if cached and not refresh:
+        cached.setdefault("snap_date", dates[-1])   # 舊快取無此欄，讀取時回填（鍵即該日期）
         return cached
     picks = analysis.filtered_picks(get_snapshot(c, dates[-1]))
     result = gemini.summarize_csv(
         picks, {}, analysis.subindustry_counts(picks), cfg.gemini_api_key
     )
+    result["snap_date"] = dates[-1]   # 前端「AI 籌碼分析師」旁顯示資料日期
     if result.get("enabled"):
         set_ai_cache(c, key, result)
     return result
@@ -79,12 +81,15 @@ def weekly():
     dates = get_snapshot_dates(c)
     if len(dates) < 2:
         return {"stocks": [], "industry": [], "note": "需至少兩週快照才能比較"}
-    this_rows = get_snapshot(c, dates[-1])
-    last_rows = get_snapshot(c, dates[-2])
+    # 週對週：上期取「上週的最後一份快照」而非前一個交易日——集保週資料一週一更，
+    # 日對日比較的集保Δ沒有意義（曾顯示 07-16 vs 07-17 這種假跨週）
+    this_date, last_date = analysis.pick_weekly_pair(dates)
+    this_rows = get_snapshot(c, this_date)
+    last_rows = get_snapshot(c, last_date)
     result = analysis.weekly_comparison(this_rows, last_rows)
     result["industry"] = analysis.industry_aggregate(this_rows)
-    result["this_date"] = dates[-1]
-    result["last_date"] = dates[-2]
+    result["this_date"] = this_date
+    result["last_date"] = last_date
     return result
 
 @router.get("/api/analysis/summary")

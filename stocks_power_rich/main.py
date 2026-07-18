@@ -16,7 +16,7 @@ from .db import (
     get_snapshot,
     backup_db,
 )
-from . import csv_import, updater
+from . import csv_import, line_push, updater
 from .api.deps import conn
 from .api.helpers import (
     _check_basic,
@@ -171,6 +171,25 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         except Exception:  # noqa: BLE001
             pass
 
+    def weekly_line_job():
+        """週六 17:00 籌碼週報：跨週變化（週對週）＋ AI 籌碼分析師 → LINE 廣播。"""
+        try:
+            from datetime import date, timedelta
+            from .api.public import weekly, summary_logic
+            from .db import get_snapshot_dates
+            c = conn()
+            dates = get_snapshot_dates(c)
+            # staleness guard：最新快照距今 >7 天代表本週沒匯 CSV，別重複推舊內容
+            if not dates or (date.today() - date.fromisoformat(dates[-1])) > timedelta(days=7):
+                return
+            comparison = weekly()
+            ai = summary_logic(c, refresh=0)   # 讀既有快取，不觸發重新扣費
+            txt = line_push.compose_weekly_brief(
+                comparison, ai_text=(ai.get("text") or "") if ai.get("enabled") else "")
+            line_push.broadcast_text(cfg.line_token, txt)
+        except Exception:  # noqa: BLE001 — 推播失敗不影響其他排程
+            pass
+
     if enable_scheduler:
         from .scheduler import build_trigger_kwargs, start_scheduler
 
@@ -182,6 +201,9 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             app.state.scheduler.add_job(
                 intraday_watch_job, "cron", day_of_week="mon-fri",
                 hour="9-13", minute="*/5", id="intraday_watch", replace_existing=True)
+            app.state.scheduler.add_job(
+                weekly_line_job, "cron", day_of_week="sat", hour=17, minute=0,
+                id="weekly_line", replace_existing=True)
 
     if os.path.isdir(WEB_DIR):
         app.mount("/", _NoCacheStatic(directory=WEB_DIR, html=True), name="web")

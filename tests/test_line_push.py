@@ -108,3 +108,34 @@ def test_compose_breakout_alert():
     # 無交集股 → 不出現圖例
     plain = line_push.compose_breakout_alert([hits[0]], "10:35")
     assert "⭐" not in plain
+
+
+def test_compose_weekly_brief_sections_and_order():
+    comparison = {
+        "this_date": "2026-07-17", "last_date": "2026-07-10",
+        "stocks": [
+            {"code": "1316.TW", "name": "上曜", "status": "加速", "big_holder_ratio": 3.95},
+            {"code": "2313.TW", "name": "華通", "status": "加速", "big_holder_ratio": 1.96},
+            {"code": "1709.TW", "name": "和益", "status": "加速", "big_holder_ratio": 2.77},
+            {"code": "9999.TW", "name": "新股", "status": "新進榜", "big_holder_ratio": 0.5},
+            {"code": "8888.TW", "name": "走了", "status": "退榜", "big_holder_ratio": None},
+            {"code": "7777.TW", "name": "平平", "status": "持平", "big_holder_ratio": 0.1},
+        ],
+    }
+    txt = line_push.compose_weekly_brief(comparison, ai_text="• 本週大戶進駐半導體")
+    assert "籌碼週報" in txt and "2026-07-10 → 2026-07-17" in txt
+    # 加速榜依大戶增比 desc：上曜(3.95) > 和益(2.77) > 華通(1.96)
+    i_sy, i_hy, i_ht = txt.index("上曜"), txt.index("和益"), txt.index("華通")
+    assert i_sy < i_hy < i_ht
+    assert "3.95" in txt
+    assert "新進榜" in txt and "新股" in txt
+    assert "退榜 1 檔" in txt
+    assert "本週大戶進駐半導體" in txt
+    assert "平平" not in txt   # 持平不進週報
+
+
+def test_compose_weekly_brief_degrades_when_empty():
+    txt = line_push.compose_weekly_brief({"this_date": "2026-07-17", "last_date": None, "stocks": []},
+                                         ai_text="")
+    assert "籌碼週報" in txt
+    assert "本週無" in txt or "尚無" in txt

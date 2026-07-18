@@ -40,7 +40,12 @@ def test_create_app_with_line_token_registers_all_jobs(tmp_path, monkeypatch):
     app = create_app(enable_scheduler=True)
     try:
         ids = {j.id for j in app.state.scheduler.get_jobs()}
-        assert ids == {"daily_update", "line_brief", "intraday_watch"}
+        assert ids == {"daily_update", "line_brief", "intraday_watch", "weekly_line"}
+        # 籌碼週報固定週六 17:00（Asia/Taipei，scheduler 時區已設）
+        wk = app.state.scheduler.get_job("weekly_line")
+        fields = {f.name: str(f) for f in wk.trigger.fields}
+        assert fields["day_of_week"] == "sat"
+        assert fields["hour"] == "17" and fields["minute"] == "0"
     finally:
         app.state.scheduler.shutdown(wait=False)
 

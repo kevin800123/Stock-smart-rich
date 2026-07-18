@@ -170,6 +170,40 @@ def compose_daily_brief(row: dict, sectors: list, watch: list,
     return (title + "\n" + SEP + "\n" + body)[:MAX_LEN]
 
 
+def compose_weekly_brief(comparison: dict, ai_text: str = "") -> str:
+    """週六籌碼週報：跨週變化（加速/新進榜/退榜）＋ AI 籌碼分析師。
+
+    comparison＝weekly 端點回傳（{this_date, last_date, stocks:[{code,name,status,big_holder_ratio}]}）。
+    持平不進週報（雜訊）；加速依大戶增比由高到低。超長由 broadcast 的 MAX_LEN 截斷。"""
+    this_d, last_d = comparison.get("this_date"), comparison.get("last_date")
+    period = f"{last_d} → {this_d}" if (this_d and last_d) else (this_d or "")
+    lines = [f"📅 籌碼週報 {period}".rstrip()]
+    stocks = comparison.get("stocks") or []
+    acc = sorted([s for s in stocks if s.get("status") == "加速"],
+                 key=lambda s: -(s.get("big_holder_ratio") or 0))
+    new = [s for s in stocks if s.get("status") == "新進榜"]
+    out_n = sum(1 for s in stocks if s.get("status") == "退榜")
+    if not (acc or new or out_n):
+        lines.append("本週無跨週變化資料（尚無上週快照或未匯入 CSV）")
+    if acc:
+        lines.append(SEP)
+        lines.append("🚀 大戶加速")
+        for s in acc[:8]:
+            lines.append(f"{s.get('name') or s.get('code')} 大戶增比 {_fmt(s.get('big_holder_ratio'))}")
+    if new:
+        lines.append(SEP)
+        lines.append("🆕 新進榜")
+        for s in new[:5]:
+            lines.append(f"{s.get('name') or s.get('code')}")
+    if out_n:
+        lines.append(f"📤 退榜 {out_n} 檔")
+    if ai_text:
+        lines.append(SEP)
+        lines.append("🤖 AI 籌碼分析師")
+        lines.append(ai_text)
+    return "\n".join(lines)[:MAX_LEN]
+
+
 def compose_breakout_alert(hits: list[dict], hhmm: str) -> str:
     """盤中突破警示訊息。hits＝[{code,name,price,resistance,pick}]，同輪多檔合併成一則。
 

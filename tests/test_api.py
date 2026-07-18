@@ -1379,3 +1379,35 @@ def test_cup_handle_min_r_param_and_clamp(tmp_path, monkeypatch):
     assert r["count"] == 1 and r["min_r"] == 50.0
     m = client.get("/api/patterns/cup-handle").json()["stocks"][0]
     assert m["cup_depth_pct"] == 25.0 and m["dist_pct"] == 1.1                    # 新展示欄位
+
+
+def test_weekly_endpoint_pairs_across_iso_weeks(tmp_path, monkeypatch):
+    """跨週比較必須取「上週最後一份快照」，不是前一個交易日（集保週資料一週一更）。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, insert_chip_snapshot
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    row = {"code": "2330.TW", "name": "台積電", "big_holder_ratio": 1.0, "custody": 70.0}
+    for d in ("2026-07-08", "2026-07-10", "2026-07-16", "2026-07-17"):  # W28×2 + W29×2
+        insert_chip_snapshot(c, d, [dict(row)])
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/analysis/weekly").json()
+    assert r["this_date"] == "2026-07-17"
+    assert r["last_date"] == "2026-07-10"   # 上週最後一份，而非 07-16
+
+
+def test_summary_includes_snap_date(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, insert_chip_snapshot
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    insert_chip_snapshot(c, "2026-07-17", [{"code": "2330.TW", "name": "台積電",
+                                            "w55": 1, "big_holder_ratio": 0.5,
+                                            "rev_yoy": 10, "est_profit": 1, "lan_value": 80}])
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/analysis/summary").json()
+    assert r["snap_date"] == "2026-07-17"   # AI 籌碼分析師要能標示資料日期

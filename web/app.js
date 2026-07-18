@@ -1026,8 +1026,13 @@ async function loadMarketSummary(refresh) {
 }
 async function loadCsvSummary(refresh) {
   const box = $("csv-summary"); box.textContent = "AI 生成中…";
-  try { const s = await getJSON("/api/analysis/summary" + (refresh ? "?refresh=1" : "")); box.textContent = s.text || ""; box.classList.toggle("disabled", !s.enabled); }
-  catch (e) { box.textContent = "AI 分析失敗：" + e.message; }
+  try {
+    const s = await getJSON("/api/analysis/summary" + (refresh ? "?refresh=1" : ""));
+    box.textContent = s.text || "";
+    box.classList.toggle("disabled", !s.enabled);
+    const dt = $("csv-summary-date");
+    if (dt) dt.textContent = s.snap_date ? `資料日期 ${s.snap_date}` : "";  // 舊快取無此欄則留空
+  } catch (e) { box.textContent = "AI 分析失敗：" + e.message; }
 }
 
 // ========== 自動更新（無按鍵；開頁時若資料非當日即自動抓一次） ==========
