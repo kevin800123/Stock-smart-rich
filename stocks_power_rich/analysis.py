@@ -77,19 +77,30 @@ def industry_to_sector(industry: str | None) -> str | None:
     return _SECTOR_ALIAS.get(name, name)
 
 
-def margin_maintenance(lots_by_code: dict, closes: dict, margin_value_yi) -> float | None:
-    """大盤整體融資維持率(%)≒ Σ(個股融資餘額張×1000×收盤) ÷ 融資金額 ×100。
+def margin_maintenance(lots_by_code: dict, closes: dict, margin_value_yi,
+                       short_lots_by_code: dict | None = None, short_margin_pct: float = 0.9) -> float | None:
+    """大盤整戶擔保維持率(%) ≒ (融資市值＋融券擔保品市值＋融券保證金) ÷ (融資金額＋融券市值) ×100。
 
-    lots_by_code＝{代號: 融資餘額(張)}、closes＝{代號: 收盤}、margin_value_yi＝融資金額(億)。
-    只加總兩邊都有的代號；缺報價的融資部位不在分子（比實際略低，屬保守估）。
+    官方完整定義：整戶維持率＝(融資買進證券市值＋融券賣出所得價金＋融券保證金) ÷ (融資金額＋融券股票現值)。
+    lots_by_code/short_lots_by_code＝{代號: 融資/融券餘額(張)}、closes＝{代號: 收盤}、
+    margin_value_yi＝官方融資金額(億，TWSE 直接公布)。TWSE 不公布個股「融券賣出原始價金」，
+    故以「融券張數×1000×現價」近似（原始賣出價與現價有差時會有偏差）；融券保證金成數固定近似 90%
+    （多數個股適用，警示股實際可能到 120%，此處未逐股區分）。只加總兩邊都有報價的代號，
+    缺報價的部位不計入分子（比實際略低，屬保守估）。short_lots_by_code 缺省時完全退化為純融資版本。
     """
     if not margin_value_yi or margin_value_yi <= 0:
         return None
-    value = sum(lots * 1000 * closes[code]
-                for code, lots in lots_by_code.items() if code in closes and lots)
-    if value <= 0:
+    margin_val = sum(lots * 1000 * closes[code]
+                     for code, lots in lots_by_code.items() if code in closes and lots)
+    short_val = sum(lots * 1000 * closes[code]
+                    for code, lots in (short_lots_by_code or {}).items() if code in closes and lots)
+    if margin_val <= 0 and short_val <= 0:
         return None
-    return round(value / (margin_value_yi * 1e8) * 100, 1)
+    numerator = margin_val + (1 + short_margin_pct) * short_val
+    denominator = margin_value_yi * 1e8 + short_val
+    if denominator <= 0:
+        return None
+    return round(numerator / denominator * 100, 1)
 
 
 DEFAULT_TRADE_FEE = 0.585  # 來回費用%＝買賣手續費 0.1425%×2 ＋ 賣出證交稅 0.3%

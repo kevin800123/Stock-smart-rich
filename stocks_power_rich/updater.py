@@ -311,14 +311,14 @@ def run_update(conn, intl_tickers: dict) -> dict:
         except Exception as e:  # noqa: BLE001 — 容錯：單一來源失敗不影響其餘
             failed.append({"source": name.split("_")[0], "name": name, "error": str(e)})
 
-    # 大盤融資維持率（需融資金額＋個股融資明細＋全市場收盤；約 21:00 融資公布後才算得出）
+    # 大盤整戶擔保維持率（需融資金額＋個股融資融券明細＋全市場收盤；約 21:00 融資公布後才算得出）
     try:
         if D and row.get("margin_value"):
-            lots = twse.fetch_margin_detail(D)
+            detail = twse.fetch_margin_detail(D)
             quotes = twse.fetch_stock_quotes(D)
+            closes = {c: q["close"] for c, q in quotes.items() if q.get("close")}
             mm = analysis.margin_maintenance(
-                lots, {c: q["close"] for c, q in quotes.items() if q.get("close")},
-                row["margin_value"])
+                detail.get("margin", {}), closes, row["margin_value"], detail.get("short"))
             if mm:
                 row["margin_maintenance"] = mm
                 success.append("margin_maintenance")

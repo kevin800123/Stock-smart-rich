@@ -188,11 +188,12 @@ def parse_margin_rwd(payload: dict) -> dict:
 
 
 def parse_margin_detail(payload: dict) -> dict:
-    """MI_MARGN（selectType=ALL）個股融資融券彙總 → {代號: 融資今日餘額(張)}。
+    """MI_MARGN（selectType=ALL）個股融資融券彙總 → {"margin": {代號: 融資今日餘額(張)}, "short": {代號: 融券今日餘額(張)}}。
 
-    欄位名重複（融資/融券兩組同名），故用固定位置：0 代號、6 融資今日餘額。
+    欄位名重複（融資/融券兩組同名），故用固定位置：0 代號、6 融資今日餘額、12 融券今日餘額。
     """
-    out: dict[str, int] = {}
+    margin: dict[str, int] = {}
+    short: dict[str, int] = {}
     for tb in payload.get("tables") or []:
         fields = tb.get("fields") or []
         if "代號" not in fields:
@@ -203,8 +204,12 @@ def parse_margin_detail(payload: dict) -> dict:
             code = str(row[0]).strip()
             bal = _f(row[6])
             if code and bal is not None:
-                out[code] = int(bal)
-    return out
+                margin[code] = int(bal)
+            if code and len(row) >= 13:
+                sbal = _f(row[12])
+                if sbal is not None:
+                    short[code] = int(sbal)
+    return {"margin": margin, "short": short}
 
 
 def fetch_margin_detail(date: datetime.date | None = None) -> dict:

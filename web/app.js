@@ -323,11 +323,12 @@ function dod(cur, prev) {
   return { chg, pct };
 }
 // label, value, chg(可空), pct(可空), unit
-function card(label, value, chg, pct, unit = "") {
+function card(label, value, chg, pct, unit = "", title = "") {
   let sub = "";
   if (chg !== undefined && chg !== null) sub = `<div class="card-chg ${chgClass(chg)}">${chgText(chg)}${pctTag(pct)}</div>`;
   else if (pct !== undefined && pct !== null) sub = `<div class="card-chg ${chgClass(pct)}">${pct > 0 ? "▲" : pct < 0 ? "▼" : ""}${fmt(Math.abs(pct), 2)}%</div>`;
-  return `<div class="card"><div class="card-label">${label}</div><div class="card-val">${value}${unit}</div>${sub}</div>`;
+  const attr = title ? ` title="${esc(title)}"` : "";
+  return `<div class="card"${attr}><div class="card-label">${label}</div><div class="card-val">${value}${unit}</div>${sub}</div>`;
 }
 // 未平倉口數卡：依淨多/淨空上色（紅多綠空），附「較昨日」增減口數與百分比
 function oiCard(label, v, prev) {
@@ -358,10 +359,11 @@ function balanceCard(label, srcRow, curDate, balKey, chgKey) {
 // 融資維持率卡：DB 未存官方逐日漲跌（不像融資/融券有 margin_chg/short_chg 現成值），
 // 故從 hist 找 srcRow 當日之前最近一筆有值的交易日自行算較昨——比較基準是 srcRow 自己的日期，
 // 而非「今天」，避免資料延遲時把「vs 6 天前」誤標成「較昨」
+const MARGIN_MAINT_TIP = "整戶擔保維持率＝(融資市值＋融券擔保品＋融券保證金)÷(融資金額＋融券市值)，一般約130~190%，低於130%會被追繳";
 function marginMaintCard(hist, srcRow, curDate) {
   const label = "融資維持率";
   if (!srcRow || srcRow.margin_maintenance === null || srcRow.margin_maintenance === undefined) {
-    return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+    return `<div class="card" title="${esc(MARGIN_MAINT_TIP)}"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   }
   const stale = srcRow.date && srcRow.date !== curDate;
   const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
@@ -370,7 +372,7 @@ function marginMaintCard(hist, srcRow, curDate) {
     ? [...hist.slice(0, idx)].reverse().find((r) => r && r.margin_maintenance != null)
     : null;
   const chg = priorRow ? srcRow.margin_maintenance - priorRow.margin_maintenance : null;
-  return card(lbl, fmt(srcRow.margin_maintenance, 1) + "%", chg, pctOf(srcRow.margin_maintenance, chg));
+  return card(lbl, fmt(srcRow.margin_maintenance, 1) + "%", chg, pctOf(srcRow.margin_maintenance, chg), "", MARGIN_MAINT_TIP);
 }
 // 市場內部儀表：指數（方向）＋三大法人（資金）。中間的漲跌家數由 loadBreadth 填 #breadth，
 // 三者並列才看得出「指數持平但下跌家數遠多於上漲」這種內部背離。

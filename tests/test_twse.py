@@ -144,8 +144,10 @@ def test_parse_margin_detail_positional():
          ]},
     ]}
     out = twse.parse_margin_detail(payload)
-    assert out["2330"] == 9050        # 位置 6＝融資今日餘額
-    assert out["00405A"] == 1020      # ETF 也計入（融資金額總計含 ETF）
+    assert out["margin"]["2330"] == 9050        # 位置 6＝融資今日餘額
+    assert out["margin"]["00405A"] == 1020      # ETF 也計入（融資金額總計含 ETF）
+    assert out["short"]["2330"] == 10           # 位置 12＝融券今日餘額
+    assert out["short"]["00405A"] == 0
 
 
 def test_parse_sector_indices_filters_strips_and_signs():

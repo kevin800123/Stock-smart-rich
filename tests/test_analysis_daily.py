@@ -24,3 +24,18 @@ def test_margin_maintenance_ratio():
     assert margin_maintenance(lots, closes, 6.0) == 159.3
     assert margin_maintenance(lots, closes, 0) is None      # 無融資金額
     assert margin_maintenance({}, closes, 6.0) is None      # 無部位
+
+
+def test_margin_maintenance_full_formula_includes_short():
+    from stocks_power_rich.analysis import margin_maintenance
+
+    # 整戶擔保維持率＝(融資市值＋融券擔保品市值＋融券保證金) ÷ (融資金額＋融券市值) ×100
+    # 融資市值＝9.56億（同上）；融券部位 2,000張×1000×100元＝2億（融券擔保品市值近似值）
+    # 融券保證金＝90%×2億＝1.8億 → 分子＝9.56+2+1.8＝13.36億；分母＝6+2＝8億 → 167.0%
+    lots = {"2330": 9050, "0050": 1020}
+    closes = {"2330": 100.0, "0050": 50.0}
+    short_lots = {"2330": 2000, "9999": 300}   # 9999 無報價 → 不計（保守，同融資規則）
+    assert margin_maintenance(lots, closes, 6.0, short_lots) == 167.0
+    # 無融券明細時完全退化為原融資版本（既有行為不變）
+    assert margin_maintenance(lots, closes, 6.0, None) == 159.3
+    assert margin_maintenance(lots, closes, 6.0, {}) == 159.3
