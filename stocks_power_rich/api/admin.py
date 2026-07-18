@@ -38,6 +38,29 @@ def backfill(days: int = 30):
     n = updater.backfill_history(conn(), max(5, min(days, 60)))
     return {"backfilled_days": n}
 
+@router.get("/chips/backfill")
+def chips_backfill(days: int = 90, max_fetch: int = 15):
+    """大範圍回補台指期籌碼歷史（外資未平倉/散戶多空比等）。
+
+    每日更新的 _backfill_chips 只回看 10 天、每次 3 筆，功能上線前的歷史永遠補不到——
+    此端點用同一支回補函式放大視窗與上限，重複呼叫直到 remaining 不再下降
+    （連假日期交所無資料者留 NULL，屬預期）。每個日期約 4 個 TAIFEX CSV 請求，勿設過大 max_fetch。
+    """
+    if not _backfill_lock.acquire(blocking=False):
+        return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
+    try:
+        from datetime import date, timedelta
+        c = conn()
+        days = max(5, min(days, 120))
+        filled = updater._backfill_chips(c, days=days, cap=max(1, min(max_fetch, 30)))
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        remaining = c.execute(
+            "SELECT COUNT(*) FROM market_daily WHERE date >= ? "
+            "AND (retail_ls_mtx IS NULL OR tx_foreign_oi IS NULL)", (cutoff,)).fetchone()[0]
+        return {"filled": filled, "remaining": remaining}
+    finally:
+        _backfill_lock.release()
+
 @router.get("/ohlc/backfill")
 def ohlc_backfill(days: int = 377, max_fetch: int = 60, reset: int = 0):
     if not _backfill_lock.acquire(blocking=False):

@@ -57,6 +57,10 @@ const C = {
 // 圖表系列固定色（三大法人等跨圖共用的角色色，非市場方向色）：
 // 外資琥珀刻意與 --accent 區隔（accent 專屬「目前選取」），投信沿用 info 藍。
 const SER = { foreign: "#e0a23c", trust: C.info, dealer: "#a07cff" };
+// 圖表字型：熱力圖的量測(canvas)與繪製(ECharts)必須用同一組，否則量得下卻被截；
+// K線等其他圖表也套同一組讓全站字型一致。須與 styles.css 的 body 堆疊同步（數字→Num、中文→粉圓）。
+const HM_FONT = '"Num", "Huninn", "Microsoft JhengHei", "PingFang TC", sans-serif';
+const PIN_YELLOW = "#ffd23f";   // 杯柄圖釘醒目黃（獨立於 token，僅此一用）
 
 function ma(values, n) {
   const out = [];
@@ -73,6 +77,21 @@ function candlestickOption(data, startPct, showW, pct) {
   const closes = data.candles.map((c) => c[1]);
   const maSeries = MA_DEFS.map((m) => ({ name: "MA" + m.n, type: "line", data: ma(closes, m.n), smooth: true, showSymbol: false, lineStyle: { width: 1, color: m.color }, itemStyle: { color: m.color } }));
   const candle = { name: "K線", type: "candlestick", data: data.candles, itemStyle: { color: C.up, color0: C.down, borderColor: C.up, borderColor0: C.down } };
+  // 現價線：最後收盤的水平虛線（顏色跟最後一根方向），掃一眼就知道現價相對歷史的位置
+  const last = data.candles[data.candles.length - 1];
+  if (last) {
+    const lastCol = last[1] >= last[0] ? C.up : C.down;   // candles = [open, close, low, high]
+    candle.markLine = {
+      symbol: "none", silent: true, animation: false,
+      lineStyle: { type: "dashed", color: lastCol, width: 1, opacity: 0.75 },
+      label: { show: true, position: "insideEndTop", color: lastCol, fontSize: 11, fontWeight: 700, formatter: () => fmt(last[1], 2) },
+      data: [{ yAxis: last[1] }],
+    };
+  }
+  // 量能柱依當根 K 棒方向著紅/綠（半透明，不搶主圖）；tooltip 讀 value 不受影響
+  const volumes = data.candles.map((c, i) => ({
+    value: data.volumes[i], itemStyle: { color: c[1] >= c[0] ? C.up : C.down },
+  }));
   if (showW) {
     const pctKey = Math.round(pct * 100).toString();
     const waves = (data.waves && data.waves[pctKey]) || [];
@@ -103,12 +122,13 @@ function candlestickOption(data, startPct, showW, pct) {
         return html;
       },
     },
-    legend: { data: ["K線", ...MA_DEFS.map((m) => "MA" + m.n)], textStyle: { color: "#ccc" } },
+    textStyle: { fontFamily: HM_FONT },
+    legend: { top: 0, data: ["K線", ...MA_DEFS.map((m) => "MA" + m.n)], textStyle: { color: C.label } },
     grid: [{ left: 60, right: 20, top: 30, height: "60%" }, { left: 60, right: 20, top: "76%", height: "15%" }],
-    xAxis: [{ type: "category", data: data.dates, axisLabel: { color: "#999" } }, { type: "category", data: data.dates, gridIndex: 1, axisLabel: { show: false } }],
-    yAxis: [{ scale: true, axisLabel: { color: "#999" } }, { gridIndex: 1, axisLabel: { show: false }, splitLine: { show: false } }],
+    xAxis: [{ type: "category", data: data.dates, axisLabel: { color: C.muted } }, { type: "category", data: data.dates, gridIndex: 1, axisLabel: { show: false } }],
+    yAxis: [{ scale: true, axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.border } } }, { gridIndex: 1, axisLabel: { show: false }, splitLine: { show: false } }],
     dataZoom: [{ type: "inside", xAxisIndex: [0, 1], start: startPct }, { type: "slider", xAxisIndex: [0, 1], start: startPct, bottom: 0, height: 16 }],
-    series: [candle, ...maSeries, { name: "量", type: "bar", xAxisIndex: 1, yAxisIndex: 1, data: data.volumes }],
+    series: [candle, ...maSeries, { name: "量", type: "bar", xAxisIndex: 1, yAxisIndex: 1, itemStyle: { opacity: 0.55 }, data: volumes }],
   };
 }
 
@@ -520,7 +540,7 @@ function cupChartOption(d, m) {
       // 圖釘原本跟趨勢線同橘色、融進線裡不明顯：改亮黃＋白色描邊讓圖釘從線上「跳出來」，
       // 並用 symbolOffset 把圖釘往上提，避開與趨勢線／K棒交叉處的視覺重疊。
       symbol: "pin", symbolSize: 40, symbolOffset: [0, -10],
-      itemStyle: { color: "#ffd23f", borderColor: "#fff", borderWidth: 1.5,
+      itemStyle: { color: PIN_YELLOW, borderColor: "#fff", borderWidth: 1.5,
                    shadowColor: "rgba(0,0,0,0.5)", shadowBlur: 4 },
       label: { color: "#1a1a1a", fontSize: 12, fontWeight: 700, formatter: (p) => p.data.value },
       data: [{ value: "左緣", coord: [m.left_date, m.left_price] },
@@ -533,11 +553,12 @@ function cupChartOption(d, m) {
         lineStyle: { color: C.up, width: 2, type: "dashed" } },
        { coord: [lastDate, m.stop_loss] }]);
   return {
+    textStyle: { fontFamily: HM_FONT },
     tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
-    legend: { data: ["K線", ...MA_DEFS.map((x) => "MA" + x.n)], textStyle: { color: "#ccc" } },
+    legend: { top: 0, data: ["K線", ...MA_DEFS.map((x) => "MA" + x.n)], textStyle: { color: C.label } },
     grid: { left: 55, right: 30, top: 30, bottom: 50 },
-    xAxis: { type: "category", data: d.dates, axisLabel: { color: "#999" } },
-    yAxis: { scale: true, axisLabel: { color: "#999" } },
+    xAxis: { type: "category", data: d.dates, axisLabel: { color: C.muted } },
+    yAxis: { scale: true, axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.border } } },
     dataZoom: [{ type: "inside", start: 35 }, { type: "slider", start: 35, bottom: 0, height: 16 }],
     series: [candle, ...maSeries],
   };
@@ -675,9 +696,6 @@ async function loadMovers() {
 const HM_MIN_FS = 11;    // 中文可讀下限：低於此級數的方塊字是墨團，寧可留白也不硬塞
 const HM_MAX_FS = 36;
 const HM_INSET = 12;     // ECharts 標籤裁切寬度 ≈ 格寬固定內縮約 10px（非比例）
-// 熱力圖標籤字型：量測(canvas)與繪製(ECharts)必須用同一組，否則量得下卻被截。
-// 須與 styles.css 的 body 堆疊同步（數字→Num、中文→粉圓）。
-const HM_FONT = '"Num", "Huninn", "Microsoft JhengHei", "PingFang TC", sans-serif';
 
 // 量測文字在 HM_FONT 下的實際寬度（每 1px 字級佔幾 px 寬）。用 canvas 實測取代字數估算——
 // 中文全形、數字半形、「+」「%」各不相同，估算必然失準（曾把台積電漲跌截成「+1....」）。
@@ -1180,11 +1198,12 @@ async function loadStockChips(code) {
     if (note) note.textContent = `（${mk}・最新合計 ${last > 0 ? "+" : ""}${fmt(last, 0)} 張）`;
     const bar = (name, arr, color) => ({ name, type: "bar", stack: "三大法人", data: arr, itemStyle: { color } });
     stockChipsChart.setOption({
+      textStyle: { fontFamily: HM_FONT },
       tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
-      legend: { textStyle: { color: "#ccc" }, top: 0 },
+      legend: { textStyle: { color: C.label }, top: 0 },
       grid: { left: 58, right: 16, top: 26, bottom: 24 },
-      xAxis: { type: "category", data: d.dates.map((x) => x.slice(5)), axisLabel: { color: "#999" } },
-      yAxis: { type: "value", name: "張", axisLabel: { color: "#999" }, splitLine: { lineStyle: { color: "#262d38" } } },
+      xAxis: { type: "category", data: d.dates.map((x) => x.slice(5)), axisLabel: { color: C.muted } },
+      yAxis: { type: "value", name: "張", axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.border } } },
       series: [bar("外資", d.foreign, SER.foreign), bar("投信", d.trust, SER.trust), bar("自營", d.dealer, SER.dealer)],
     }, true);
   } catch (e) { stockChipsChart.hideLoading(); if (note) note.textContent = "（載入失敗）"; }
@@ -1206,10 +1225,11 @@ async function loadStockCustody(code) {
     const wk = d.trend.map((t) => (t.week ? t.week.slice(5) : ""));
     const line = (name, key, color) => ({ name, type: "line", smooth: 0.2, showSymbol: true, symbolSize: 5, data: d.trend.map((t) => t[key]), lineStyle: { color }, itemStyle: { color } });
     stockCustodyChart.setOption({
-      tooltip: { trigger: "axis" }, legend: { textStyle: { color: "#ccc" }, top: 0 },
+      textStyle: { fontFamily: HM_FONT },
+      tooltip: { trigger: "axis" }, legend: { textStyle: { color: C.label }, top: 0 },
       grid: { left: 48, right: 16, top: 26, bottom: 24 },
-      xAxis: { type: "category", data: wk, boundaryGap: false, axisLabel: { color: "#999" } },
-      yAxis: { type: "value", name: "%", axisLabel: { color: "#999" }, splitLine: { lineStyle: { color: "#262d38" } } },
+      xAxis: { type: "category", data: wk, boundaryGap: false, axisLabel: { color: C.muted } },
+      yAxis: { type: "value", name: "%", axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.border } } },
       series: [line("千張大戶%", "big1000_pct", SER.foreign), line("400張↑大戶%", "big400_pct", SER.trust)],
     }, true);
   } catch (e) { stockCustodyChart.hideLoading(); if (note) note.textContent = "（載入失敗）"; }

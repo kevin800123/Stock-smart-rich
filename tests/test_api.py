@@ -950,6 +950,34 @@ def test_ohlc_backfill_stores_trading_days(tmp_path, monkeypatch):
     assert len(o["candles"]) == 5 and o["candles"][0][1] == 44.8
 
 
+def test_chips_backfill_fills_history_and_reports_remaining(tmp_path, monkeypatch):
+    """/api/chips/backfill：大範圍回補台指期籌碼歷史（外資未平倉/散戶多空比等），
+    籌碼趨勢圖 06-20 前空白的補洞入口。max_fetch 限每次筆數、remaining 供重複呼叫直到補完。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import date, timedelta
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich import updater
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    days = [(date.today() - timedelta(days=n)).isoformat() for n in (2, 3, 4)]
+    for ds in days:
+        upsert_market_daily(c, {"date": ds, "taiex": 100.0})   # 期貨籌碼全 NULL
+    monkeypatch.setattr(updater.taifex, "fetch_chips_for_date",
+                        lambda d=None: {"retail_ls_mtx": 0.3, "retail_ls_tmf": 0.4,
+                                        "tx_foreign_oi": -1000, "retail_oi_mtx": 500})
+    app = create_app()
+    client = TestClient(app)
+    r1 = client.get("/api/chips/backfill?days=90&max_fetch=2").json()
+    assert len(r1["filled"]) == 2 and r1["remaining"] == 1     # cap 生效，還剩 1 筆
+    r2 = client.get("/api/chips/backfill?days=90&max_fetch=15").json()
+    assert len(r2["filled"]) == 1 and r2["remaining"] == 0     # 補完
+    row = c.execute("SELECT retail_ls_mtx, tx_foreign_oi, taiex FROM market_daily WHERE date=?",
+                    (days[-1],)).fetchone()
+    assert row[0] == 0.3 and row[1] == -1000
+    assert row[2] == 100.0                                     # 既有 TWSE 欄位不被覆寫
+
+
 def test_cup_handle_screen_endpoint(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from datetime import date, timedelta
