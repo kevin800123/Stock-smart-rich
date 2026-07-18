@@ -950,6 +950,38 @@ def test_ohlc_backfill_stores_trading_days(tmp_path, monkeypatch):
     assert len(o["candles"]) == 5 and o["candles"][0][1] == 44.8
 
 
+def test_stock_kline_falls_back_to_official_ohlc_when_yfinance_empty(tmp_path, monkeypatch):
+    """個股 K 線：yfinance 在雲端資料中心 IP 常被限流回空 → 後備改用 stock_ohlc
+    （杯柄回補的官方 TWSE/TPEx OHLC），日K直接用、週K以 resampler 聚合；1h 無官方源維持回空。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    import pandas as pd
+    from datetime import date, timedelta
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc
+    from stocks_power_rich.sources import kline
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    d0 = date(2026, 6, 1)   # 週一起連續 10 個平日 → 跨兩週
+    ds = []
+    d = d0
+    while len(ds) < 10:
+        if d.weekday() < 5:
+            ds.append(d.isoformat())
+        d += timedelta(days=1)
+    for i, day in enumerate(ds):
+        bulk_upsert_ohlc(c, day, {"6894": {"open": 100.0 + i, "high": 102.0 + i,
+                                           "low": 99.0 + i, "close": 101.0 + i}})
+    monkeypatch.setattr(kline, "_history", lambda *a, **k: pd.DataFrame())  # 模擬 yfinance 全滅
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/stock/6894.TW/kline?interval=1d").json()
+    assert len(r["candles"]) == 10 and r["candles"][0][1] == 101.0   # [open, close, low, high]
+    assert "waves" in r and r["dates"][0] == ds[0]
+    wk = client.get("/api/stock/6894.TW/kline?interval=1wk").json()
+    assert 1 < len(wk["candles"]) < 10                                # 週K確實聚合
+    assert client.get("/api/stock/6894.TW/kline?interval=1h").json()["candles"] == []
+
+
 def test_chips_backfill_fills_history_and_reports_remaining(tmp_path, monkeypatch):
     """/api/chips/backfill：大範圍回補台指期籌碼歷史（外資未平倉/散戶多空比等），
     籌碼趨勢圖 06-20 前空白的補洞入口。max_fetch 限每次筆數、remaining 供重複呼叫直到補完。"""

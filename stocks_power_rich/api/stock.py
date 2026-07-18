@@ -52,7 +52,14 @@ def stock_ohlc(code: str, bars: int = 400):
 def stock_kline(code: str, interval: str = "1d", period: str | None = None):
     if period is None:
         period = {"1d": "1y", "1wk": "2y", "1mo": "5y"}.get(interval, "1y")
-    return kline.fetch_kline(code, period=period, interval=interval)
+    out = kline.fetch_kline(code, period=period, interval=interval)
+    # 雲端資料中心 IP 常被 yfinance 限流回空 → 後備用 stock_ohlc（杯柄回補的官方
+    # TWSE/TPEx OHLC，雲端抓得到）：日K直接組、週/月K聚合；1h 無官方日內源，維持回空。
+    if not out.get("candles") and interval != "1h":
+        rows = get_ohlc_history(conn(), code.split(".")[0])
+        if rows:
+            out = {"code": code, "source": "stock_ohlc", **kline.ohlc_candles(rows, interval)}
+    return out
 
 @router.get("/index/kline")
 def index_kline(symbol: str = "taiex", interval: str = "1d"):
