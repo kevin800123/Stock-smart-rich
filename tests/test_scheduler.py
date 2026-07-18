@@ -35,17 +35,18 @@ def test_create_app_with_line_token_registers_all_jobs(tmp_path, monkeypatch):
     這是雲端生產設定（Zeabur 皆設此變數）；曾因 job 函式定義順序問題整個 app 起不來。"""
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "dummy-token")
+    monkeypatch.setenv("SPR_WEEKLY_PUSH_TIME", "18:30")   # 週報時間可由 config 調整（固定週六）
     from stocks_power_rich.main import create_app
 
     app = create_app(enable_scheduler=True)
     try:
         ids = {j.id for j in app.state.scheduler.get_jobs()}
         assert ids == {"daily_update", "line_brief", "intraday_watch", "weekly_line"}
-        # 籌碼週報固定週六 17:00（Asia/Taipei，scheduler 時區已設）
+        # 籌碼週報固定週六，時間讀 cfg.weekly_push_time（Asia/Taipei，scheduler 時區已設）
         wk = app.state.scheduler.get_job("weekly_line")
         fields = {f.name: str(f) for f in wk.trigger.fields}
         assert fields["day_of_week"] == "sat"
-        assert fields["hour"] == "17" and fields["minute"] == "0"
+        assert fields["hour"] == "18" and fields["minute"] == "30"
     finally:
         app.state.scheduler.shutdown(wait=False)
 

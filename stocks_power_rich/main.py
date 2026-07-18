@@ -202,8 +202,8 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
                 intraday_watch_job, "cron", day_of_week="mon-fri",
                 hour="9-13", minute="*/5", id="intraday_watch", replace_existing=True)
             app.state.scheduler.add_job(
-                weekly_line_job, "cron", day_of_week="sat", hour=17, minute=0,
-                id="weekly_line", replace_existing=True)
+                weekly_line_job, "cron", **build_trigger_kwargs(cfg.weekly_push_time),
+                day_of_week="sat", id="weekly_line", replace_existing=True)
 
     if os.path.isdir(WEB_DIR):
         app.mount("/", _NoCacheStatic(directory=WEB_DIR, html=True), name="web")

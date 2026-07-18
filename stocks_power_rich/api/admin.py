@@ -72,6 +72,7 @@ def get_settings(request: Request):
         "line_configured": bool(cfg.line_token),
         "offsite_backup_configured": bool(cfg.backup_git_remote),
         "line_push_time": cfg.line_push_time,
+        "weekly_push_time": cfg.weekly_push_time,
         "schedule_time": effective_schedule(c),
         "scheduler_running": bool(getattr(request.app.state, "scheduler", None)),
         "data_dir": effective_data_dir(c),
