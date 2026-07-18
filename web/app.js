@@ -54,6 +54,9 @@ const C = {
   border: CSS_VAR("--border", "#2e3845"),
   bg: CSS_VAR("--bg", "#0f1419"),
 };
+// 圖表系列固定色（三大法人等跨圖共用的角色色，非市場方向色）：
+// 外資琥珀刻意與 --accent 區隔（accent 專屬「目前選取」），投信沿用 info 藍。
+const SER = { foreign: "#e0a23c", trust: C.info, dealer: "#a07cff" };
 
 function ma(values, n) {
   const out = [];
@@ -265,7 +268,9 @@ async function loadSettings() {
     g.textContent = s.gemini_configured ? "已設定 ✓" : "未設定";
     g.className = "set-badge " + (s.gemini_configured ? "ok" : "no");
     const ln = $("set-line");
-    ln.textContent = s.line_configured ? `已設定 ✓（速報 ${s.line_push_time}・完整版 ${s.schedule_time}）` : "未設定";
+    ln.textContent = s.line_configured
+      ? `已設定 ✓（速報 ${s.line_push_time}・完整版 ${s.schedule_time}・週報 週六 ${s.weekly_push_time}）`
+      : "未設定";
     ln.className = "set-badge " + (s.line_configured ? "ok" : "no");
     $("set-picks-only").checked = !!s.intraday_picks_only;
     $("set-loss-tol").value = s.loss_tolerance || "";
@@ -880,7 +885,7 @@ async function loadWatchlist() {
       const ch = s.chip || {};
       return `<tr><td>${stockLink(s.code, s.name)}</td><td>${onb}</td><td style="text-align:right">${s.times}</td><td>${s.entry_date || "—"}</td><td style="text-align:right">${ret}</td>` +
         num(ch.close) + num(ch.lan_value, 1) + num(ch.lpe, 1) + num(ch.est_profit) + num(ch.rev_yoy, 1) + num(ch.holder_drop_ratio) + num(ch.big_holder_ratio) +
-        `<td><a href="#" class="watch-del" data-code="${s.code}" style="color:#e08585">移除</a></td></tr>`;
+        `<td><a href="#" class="watch-del err-text" data-code="${s.code}">移除</a></td></tr>`;
     }).join("");
     const rh = (t) => `<th style="text-align:right">${t}</th>`;
     el.innerHTML = `<table><tr><th>股票</th><th>今日選股榜</th>${rh("在榜次數")}<th>進榜日</th>${rh("自進榜報酬")}${rh("收盤")}${rh("蘭值")}${rh("本益比")}${rh("推估EPS")}${rh("營收年增%")}${rh("人數降比")}${rh("大戶增比")}<th></th></tr>${rows}</table>`;
@@ -945,17 +950,17 @@ function chipTrendOption(hist, metric) {
   if (metric === "inst") {
     const bar = (name, key, color) => ({ name, type: "bar", data: hist.map((r) => r[key]), itemStyle: { color } });
     return { ...base, yAxis: [{ type: "value", name: "億", axisLabel: { color: "#999" } }, axisTaiex],
-      series: [bar("外資", "inst_foreign", "#e0a23c"), bar("投信", "inst_trust", "#6cb6ff"), bar("自營", "inst_dealer", "#a07cff"), taiexLine] };
+      series: [bar("外資", "inst_foreign", SER.foreign), bar("投信", "inst_trust", SER.trust), bar("自營", "inst_dealer", SER.dealer), taiexLine] };
   }
   if (metric === "foreign_oi") {
     return { ...base, yAxis: [{ type: "value", name: "口", axisLabel: { color: "#999" } }, axisTaiex],
-      series: [{ ...LP, name: "外資台指淨未平倉", data: hist.map((r) => r.tx_foreign_oi), areaStyle: { opacity: 0.08 }, lineStyle: { color: "#e0a23c" }, itemStyle: { color: "#e0a23c" }, markLine: zeroMark }, taiexLine] };
+      series: [{ ...LP, name: "外資台指淨未平倉", data: hist.map((r) => r.tx_foreign_oi), areaStyle: { opacity: 0.08 }, lineStyle: { color: SER.foreign }, itemStyle: { color: SER.foreign }, markLine: zeroMark }, taiexLine] };
   }
   if (metric === "retail_ls") {
     return { ...base, yAxis: [{ type: "value", name: "多空比", axisLabel: { color: "#999" } }, axisTaiex],
       series: [
-        { ...LP, name: "小台散戶多空比", data: hist.map((r) => r.retail_ls_mtx), lineStyle: { color: "#e0a23c" }, itemStyle: { color: "#e0a23c" }, markLine: zeroMark },
-        { ...LP, name: "微台散戶多空比", data: hist.map((r) => r.retail_ls_tmf), lineStyle: { color: "#6cb6ff" }, itemStyle: { color: "#6cb6ff" } },
+        { ...LP, name: "小台散戶多空比", data: hist.map((r) => r.retail_ls_mtx), lineStyle: { color: SER.foreign }, itemStyle: { color: SER.foreign }, markLine: zeroMark },
+        { ...LP, name: "微台散戶多空比", data: hist.map((r) => r.retail_ls_tmf), lineStyle: { color: SER.trust }, itemStyle: { color: SER.trust } },
         taiexLine] };
   }
   // margin：融資（左軸）+ 融券（右軸，量級差很多）
@@ -1003,8 +1008,8 @@ function txVolumeOption(d) {
       { type: "value", name: "夜/日比", position: "right", axisLabel: { color: "#999" }, splitLine: { show: false } },
     ],
     series: [
-      { name: "日盤量", type: "bar", data: d.day_volume, itemStyle: { color: "#6cb6ff" } },
-      { name: "夜盤量", type: "bar", data: d.night_volume, itemStyle: { color: "#e0a23c" } },
+      { name: "日盤量", type: "bar", data: d.day_volume, itemStyle: { color: SER.trust } },
+      { name: "夜盤量", type: "bar", data: d.night_volume, itemStyle: { color: SER.foreign } },
       { name: "夜/日比", type: "line", yAxisIndex: 1, data: d.ratio, symbolSize: 4,
         lineStyle: { color: C.up }, itemStyle: { color: C.up } },
     ],
@@ -1180,7 +1185,7 @@ async function loadStockChips(code) {
       grid: { left: 58, right: 16, top: 26, bottom: 24 },
       xAxis: { type: "category", data: d.dates.map((x) => x.slice(5)), axisLabel: { color: "#999" } },
       yAxis: { type: "value", name: "張", axisLabel: { color: "#999" }, splitLine: { lineStyle: { color: "#262d38" } } },
-      series: [bar("外資", d.foreign, "#e0a23c"), bar("投信", d.trust, "#6cb6ff"), bar("自營", d.dealer, "#a07cff")],
+      series: [bar("外資", d.foreign, SER.foreign), bar("投信", d.trust, SER.trust), bar("自營", d.dealer, SER.dealer)],
     }, true);
   } catch (e) { stockChipsChart.hideLoading(); if (note) note.textContent = "（載入失敗）"; }
 }
@@ -1205,7 +1210,7 @@ async function loadStockCustody(code) {
       grid: { left: 48, right: 16, top: 26, bottom: 24 },
       xAxis: { type: "category", data: wk, boundaryGap: false, axisLabel: { color: "#999" } },
       yAxis: { type: "value", name: "%", axisLabel: { color: "#999" }, splitLine: { lineStyle: { color: "#262d38" } } },
-      series: [line("千張大戶%", "big1000_pct", "#e0a23c"), line("400張↑大戶%", "big400_pct", "#6cb6ff")],
+      series: [line("千張大戶%", "big1000_pct", SER.foreign), line("400張↑大戶%", "big400_pct", SER.trust)],
     }, true);
   } catch (e) { stockCustodyChart.hideLoading(); if (note) note.textContent = "（載入失敗）"; }
 }
@@ -1235,8 +1240,8 @@ async function loadStock(code, name) {
 // ========== 上傳 / 匯入 ==========
 async function applyImportResult(res) {
   const info = $("upload-info");
-  if (res.error && !res.count) { info.innerHTML = `<span style="color:#e08585">⚠ ${esc(res.error)}</span>`; return; }
-  if (!res.count) { info.innerHTML = `<span style="color:#e08585">⚠ 讀到 0 檔（${res.snap_date}）。請確認是籌碼匯出檔。</span>`; return; }
+  if (res.error && !res.count) { info.innerHTML = `<span class="err-text">⚠ ${esc(res.error)}</span>`; return; }
+  if (!res.count) { info.innerHTML = `<span class="err-text">⚠ 讀到 0 檔（${res.snap_date}）。請確認是籌碼匯出檔。</span>`; return; }
   info.textContent = `已匯入 ${res.file ? res.file + "：" : ""}${res.snap_date}，共 ${res.count} 檔`;
   await loadDates(); await loadWeekly();
   loadCsvSummary(false); // 匯入清了該日快取 → 這次載入會自動重新生成
