@@ -146,6 +146,12 @@
           <div class="picks-main">
             <div class="pane-title">籌碼/基本選股　<span id="sub-filter" class="muted"></span></div>
             <div class="muted small">W55翻多 ＋ 大戶增比&gt;0 ＋ 營收年增&gt;0 ＋ 推估EPS&gt;0，依蘭值排序（點欄位排序、點細產業聯動）</div>
+            <div class="picks-filter">
+              <span class="muted small">再篩選</span>
+              <label class="picks-filter-item">蘭質 ≥ <input type="number" id="f-lan-score" class="mini-input" step="1" min="0" placeholder="不限" /></label>
+              <label class="picks-filter-item">本益比 ≥ <input type="number" id="f-lpe" class="mini-input" step="1" min="0" placeholder="不限" /></label>
+              <a href="#" id="clear-picks-filter" class="help-link">清除</a>
+            </div>
             <div id="daily" class="table-wrap fill"></div>
           </div>
         </div>

@@ -1125,25 +1125,48 @@ const SUBIND_COLS = [
   { key: "count", label: "檔數", numeric: true, dp: 0 },
 ];
 
-let currentPicks = [], subFilter = null;
-function renderSubFilterChip() {
+let currentPicks = [], subFilter = null, lanMin = null, lpeMin = null;
+// 蘭質/本益比門檻（前端即時篩選，收斂檔數）：null＝該欄不設限；缺值一律不通過
+function passesValueFilter(p) {
+  if (lanMin != null && !(p.lan_score != null && p.lan_score >= lanMin)) return false;
+  if (lpeMin != null && !(p.lpe != null && p.lpe >= lpeMin)) return false;
+  return true;
+}
+// 細產業統計改由前端從「已套蘭質/本益比篩選」的清單重算，讓聯動數字與表格一致（不含 subFilter，
+// 才能顯示所有細產業供切換）；無篩選時等同 server 送的 d.subindustry
+function computeSubindustry(picks) {
+  const m = new Map();
+  picks.forEach((p) => { if (p.sub_industry) m.set(p.sub_industry, (m.get(p.sub_industry) || 0) + 1); });
+  return [...m].map(([sub_industry, count]) => ({ sub_industry, count }));
+}
+function renderSubFilterChip(valueFiltered) {
   const el = $("sub-filter");
   if (subFilter) {
-    el.innerHTML = `篩選：<b>${esc(subFilter)}</b>（${currentPicks.filter((p) => p.sub_industry === subFilter).length} 檔） <a href="#" id="clear-sub">✕ 全部</a>`;
+    el.innerHTML = `篩選：<b>${esc(subFilter)}</b>（${valueFiltered.filter((p) => p.sub_industry === subFilter).length} 檔） <a href="#" id="clear-sub">✕ 全部</a>`;
     const clr = $("clear-sub"); if (clr) clr.addEventListener("click", (e) => { e.preventDefault(); subFilter = null; renderDailyView(); });
-  } else { el.innerHTML = `共 ${currentPicks.length} 檔`; }
+  } else { el.innerHTML = `共 ${valueFiltered.length} 檔`; }
 }
 function renderDaily(picks) { if (!sortState.daily) sortState.daily = { key: "lan_value", asc: false }; renderSortable("daily", PICK_COLS, picks, "無符合條件的個股"); }
-function renderDailyView() { renderSubFilterChip(); renderDaily(subFilter ? currentPicks.filter((p) => p.sub_industry === subFilter) : currentPicks); }
+function renderDailyView() {
+  const valueFiltered = currentPicks.filter(passesValueFilter);
+  renderSubFilterChip(valueFiltered);
+  renderIndustry(computeSubindustry(valueFiltered));
+  renderDaily(subFilter ? valueFiltered.filter((p) => p.sub_industry === subFilter) : valueFiltered);
+}
 function renderIndustry(subind) {
   if (!sortState.industry) sortState.industry = { key: "count", asc: false };
   renderSortable("industry", SUBIND_COLS, subind, "無資料", (r) => { subFilter = r.sub_industry; renderDailyView(); });
 }
+function resetPickFilters() {
+  lanMin = lpeMin = null;
+  const fsc = $("f-lan-score"), fpe = $("f-lpe");
+  if (fsc) fsc.value = ""; if (fpe) fpe.value = "";
+}
 async function loadDaily(date) {
   try {
     const d = await getJSON("/api/analysis/daily" + (date ? `?date=${encodeURIComponent(date)}` : ""));
-    currentPicks = d.picks || []; subFilter = null;
-    renderIndustry(d.subindustry || []); renderDailyView();
+    currentPicks = d.picks || []; subFilter = null; resetPickFilters();
+    renderDailyView();
     if (d.snap_date) $("date-select").value = d.snap_date;
   } catch (e) { /* 忽略 */ }
 }
@@ -1283,6 +1306,10 @@ document.querySelectorAll(".nav").forEach((n) => n.addEventListener("click", () 
 $("csv").addEventListener("change", (e) => { if (e.target.files[0]) uploadCsv(e.target.files[0]); });
 $("btn-latest").addEventListener("click", importLatest);
 $("date-select").addEventListener("change", (e) => loadDaily(e.target.value));
+const _numOrNull = (v) => { const s = String(v).trim(); if (!s) return null; const n = parseFloat(s); return isFinite(n) ? n : null; };
+$("f-lan-score").addEventListener("input", (e) => { lanMin = _numOrNull(e.target.value); renderDailyView(); });
+$("f-lpe").addEventListener("input", (e) => { lpeMin = _numOrNull(e.target.value); renderDailyView(); });
+$("clear-picks-filter").addEventListener("click", (e) => { e.preventDefault(); resetPickFilters(); renderDailyView(); });
 $("btn-export").addEventListener("click", () => {
   const url = `/api/analysis/export?date=${encodeURIComponent($("date-select").value || "")}` + (subFilter ? `&sub=${encodeURIComponent(subFilter)}` : "");
   window.location.href = url;

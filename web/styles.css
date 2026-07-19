@@ -294,6 +294,10 @@ button.file-label { font: inherit; }
 .picks-side { flex: 0 0 280px; display: flex; flex-direction: column; min-height: 0; }
 .picks-main { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .pane-title { font-size: var(--fs-md); color: var(--label); margin-bottom: 6px; font-weight: 600; }
+/* 籌碼選股再篩選列：蘭質/本益比門檻（前端即時收斂檔數） */
+.picks-filter { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-2); }
+.picks-filter-item { font-size: var(--fs-sm); color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.mini-input { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: var(--r); padding: 6px 8px; font-size: var(--fs-sm); width: 64px; }
 
 /* ===== 表格 ===== */
 /* flex-shrink:0：.view 是 flex column，頁面內容超高時未掛 .fill 的表格（交易帳本未平倉/已平倉）
