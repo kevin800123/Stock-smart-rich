@@ -1252,7 +1252,10 @@ async function loadStockCustody(code) {
       tooltip: { trigger: "axis" }, legend: { textStyle: { color: C.label }, top: 0 },
       grid: { left: 48, right: 16, top: 26, bottom: 24 },
       xAxis: { type: "category", data: wk, boundaryGap: false, axisLabel: { color: C.muted } },
-      yAxis: { type: "value", name: "%", axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.border } } },
+      // 大戶比常年落在 80~90%，若軸從 0 起會壓成貼頂扁線看不出週變化 → scale 放大到資料區間＋留白
+      yAxis: { type: "value", name: "%", scale: true,
+               min: (v) => Math.floor(v.min - 0.5), max: (v) => Math.ceil(v.max + 0.5),
+               axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.border } } },
       series: [line("千張大戶%", "big1000_pct", SER.foreign), line("400張↑大戶%", "big400_pct", SER.trust)],
     }, true);
   } catch (e) { stockCustodyChart.hideLoading(); if (note) note.textContent = "（載入失敗）"; }

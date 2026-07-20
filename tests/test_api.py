@@ -583,7 +583,9 @@ def test_tx_kline_falls_back_to_proxy_when_no_history(tmp_path, monkeypatch):
 
     def fake_history(self, period="1y", interval="1d"):
         idx = pd.to_datetime(["2026-06-12", "2026-06-13"])
-        return pd.DataFrame({"Open": [1, 2], "High": [3, 4], "Low": [0, 1], "Close": [2, 3], "Volume": [1, 1]}, index=idx)
+        # OHLC 須為合法正值（0/半值列會被 _sanitize_series 丟棄）
+        return pd.DataFrame({"Open": [23000, 23050], "High": [23100, 23120], "Low": [22950, 23000],
+                             "Close": [23050, 23080], "Volume": [1, 1]}, index=idx)
 
     monkeypatch.setattr(kline.yf.Ticker, "history", fake_history)
     app = create_app()

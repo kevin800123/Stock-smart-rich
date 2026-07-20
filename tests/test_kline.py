@@ -61,6 +61,20 @@ def test_ohlc_candles_daily():
     assert out["volumes"] == [100.0, 200.0]
 
 
+def test_ohlc_candles_drops_bad_rows():
+    # 壞值列（yfinance/官方源偶發 0 或半值）：台股單日最多 ±10%，日對日跳動 >35% 必為錯誤 → 丟棄
+    rows = [
+        {"date": "2026-02-09", "open": 1800, "high": 1820, "low": 1790, "close": 1810, "volume": 100},
+        {"date": "2026-02-10", "open": 950, "high": 960, "low": 940, "close": 950, "volume": 100},   # 半值壞列
+        {"date": "2026-02-11", "open": 1815, "high": 1840, "low": 1810, "close": 1830, "volume": 100},
+        {"date": "2026-02-12", "open": 1830, "high": 1850, "low": 0, "close": 1840, "volume": 100},   # low<=0 壞列
+        {"date": "2026-02-13", "open": 1840, "high": 1860, "low": 1830, "close": 1850, "volume": 100},
+    ]
+    out = kline.ohlc_candles(rows, interval="1d")
+    assert out["dates"] == ["2026-02-09", "2026-02-11", "2026-02-13"]   # 兩壞列被丟
+    assert all(c[1] > 1000 for c in out["candles"])                    # 沒有半值殘留
+
+
 def test_ohlc_candles_weekly_resample():
     # 同一週兩天 → 週線聚合成一根（open第一天、close最後天、high最大、low最小）
     rows = [
