@@ -1201,9 +1201,24 @@ function renderProfile(p) {
     ["籌碼面", [["大戶增比", fmt(c.big_holder_ratio)], ["人數降比", fmt(c.holder_drop_ratio)], ["集保大戶", fmt(c.custody)], ["投信3日", fmt(c.trust_3d)], ["外資3日", fmt(c.foreign_3d)]]],
     ["技術面", [["W55", Number(c.w55) >= 1 ? "翻多 ✓" : "—"]]],
     ["基本/財務", [["營收年增%", fmt(c.rev_yoy, 1)], ["推估EPS(下季)", fmt(c.est_profit)], ["蘭質(財評/15)", fmt(c.lan_score)], ["本益比(LPE)", fmt(c.lpe)], ["蘭值", lanCell(c.lan_value)], ["市值(億)", fmt(c.market_cap, 0)], ["股本(億)", fmt(c.capital)]]],
-    ["TWSE估值", [["本益比(TWSE)", fmt(v.pe)], ["殖利率%", fmt(v.yield)], ["淨值比", fmt(v.pb)]]],
   ];
-  el.innerHTML = groups.map(([t, items]) => `<div class="pf-group"><span class="pf-title">${t}</span>${items.map(([k, val]) => `<span class="pf-item"><b>${k}</b> ${val}</span>`).join("")}</div>`).join("");
+  const html = groups.map(([t, items]) => `<div class="pf-group"><span class="pf-title">${t}</span>${items.map(([k, val]) => `<span class="pf-item"><b>${k}</b> ${val}</span>`).join("")}</div>`).join("");
+  // TWSE估值只涵蓋上市股，上櫃股三欄永遠是「—」——全空時收起整組，換一行說明而非留破折號佔位
+  const hasTwse = [v.pe, v.yield, v.pb].some((x) => x != null);
+  const twseHtml = hasTwse
+    ? `<div class="pf-group"><span class="pf-title">TWSE估值</span><span class="pf-item"><b>本益比(TWSE)</b> ${fmt(v.pe)}</span><span class="pf-item"><b>殖利率%</b> ${fmt(v.yield)}</span><span class="pf-item"><b>淨值比</b> ${fmt(v.pb)}</span></div>`
+    : `<span class="muted small">TWSE估值僅上市股提供</span>`;
+  el.innerHTML = html + twseHtml;
+}
+// 首尾整段無資料的日期修掉（法人冷門股常見）：只留「有資料」的區段，避免版面被空白軸吃掉，
+// 讓「沒資料」和「有資料但沒買賣超（0/null 混雜於中段）」不會長得一樣空
+function trimEdges(dates, series) {
+  const has = (i) => series.some((arr) => arr[i] != null);
+  let s = 0, e = dates.length - 1;
+  while (s <= e && !has(s)) s++;
+  while (e >= s && !has(e)) e--;
+  const idx = dates.slice(s, e + 1).map((_, k) => k + s);
+  return { dates: idx.map((i) => dates[i]), series: series.map((arr) => idx.map((i) => arr[i])), total: dates.length, kept: idx.length };
 }
 async function loadStockChips(code) {
   const wrap = $("stock-chips-wrap");
@@ -1218,16 +1233,18 @@ async function loadStockChips(code) {
     if (!d.total || !d.total.some((v) => v != null)) { stockChipsChart.clear(); if (note) note.textContent = "（查無此股三大法人資料）"; return; }
     const last = [...d.total].reverse().find((v) => v != null);
     const mk = d.market === "tpex" ? "上櫃" : "上市";
-    if (note) note.textContent = `（${mk}・最新合計 ${last > 0 ? "+" : ""}${fmt(last, 0)} 張）`;
+    const { dates, series, total, kept } = trimEdges(d.dates, [d.foreign, d.trust, d.dealer]);
+    const span = kept < total ? `　共 ${kept}/${total} 日有資料` : "";
+    if (note) note.textContent = `（${mk}・最新合計 ${last > 0 ? "+" : ""}${fmt(last, 0)} 張${span}）`;
     const bar = (name, arr, color) => ({ name, type: "bar", stack: "三大法人", data: arr, itemStyle: { color } });
     stockChipsChart.setOption({
       textStyle: { fontFamily: HM_FONT },
       tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
       legend: { textStyle: { color: C.label }, top: 0 },
       grid: { left: 58, right: 16, top: 26, bottom: 24 },
-      xAxis: { type: "category", data: d.dates.map((x) => x.slice(5)), axisLabel: { color: C.muted } },
+      xAxis: { type: "category", data: dates.map((x) => x.slice(5)), axisLabel: { color: C.muted } },
       yAxis: { type: "value", name: "張", axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.border } } },
-      series: [bar("外資", d.foreign, SER.foreign), bar("投信", d.trust, SER.trust), bar("自營", d.dealer, SER.dealer)],
+      series: [bar("外資", series[0], SER.foreign), bar("投信", series[1], SER.trust), bar("自營", series[2], SER.dealer)],
     }, true);
   } catch (e) { stockChipsChart.hideLoading(); if (note) note.textContent = "（載入失敗）"; }
 }
@@ -1246,11 +1263,17 @@ async function loadStockCustody(code) {
     const cur = d.current;
     if (note) note.textContent = cur ? `（${d.week}　千張大戶 ${fmt(cur.big1000_pct, 2)}%・400張↑ ${fmt(cur.big400_pct, 2)}%・千張大戶 ${fmt(cur.big_holders, 0)} 人；趨勢逐週累積）` : "";
     const wk = d.trend.map((t) => (t.week ? t.week.slice(5) : ""));
-    const line = (name, key, color) => ({ name, type: "line", smooth: 0.2, showSymbol: true, symbolSize: 5, data: d.trend.map((t) => t[key]), lineStyle: { color }, itemStyle: { color } });
+    // 逐點圓圈在 51 週的密度下蓋過線形，改收掉；改在線尾標最新值（各自線色），
+    // 一眼看現在水位不必回頭讀上面 note 那行小字
+    const line = (name, key, color) => ({
+      name, type: "line", smooth: 0.2, showSymbol: false, data: d.trend.map((t) => t[key]),
+      lineStyle: { color }, itemStyle: { color },
+      endLabel: { show: true, formatter: (p) => fmt(p.value, 1) + "%", color, fontWeight: 700, distance: 6 },
+    });
     stockCustodyChart.setOption({
       textStyle: { fontFamily: HM_FONT },
       tooltip: { trigger: "axis" }, legend: { textStyle: { color: C.label }, top: 0 },
-      grid: { left: 48, right: 16, top: 26, bottom: 24 },
+      grid: { left: 48, right: 44, top: 26, bottom: 24 },
       xAxis: { type: "category", data: wk, boundaryGap: false, axisLabel: { color: C.muted } },
       // 大戶比常年落在 80~90%，若軸從 0 起會壓成貼頂扁線看不出週變化 → scale 放大到資料區間＋留白
       yAxis: { type: "value", name: "%", scale: true,
