@@ -982,6 +982,56 @@ def test_stock_kline_falls_back_to_official_ohlc_when_yfinance_empty(tmp_path, m
     assert client.get("/api/stock/6894.TW/kline?interval=1h").json()["candles"] == []
 
 
+def test_custody_backfill_pulls_history_into_custody_dist(tmp_path, monkeypatch):
+    """/api/stock/{code}/custody/backfill：從 TDCC 智能網回補該股歷史週次到 custody_dist，
+    讓集保大戶趨勢能顯示 6 月前（opendata 只給當週、拿不回歷史）。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.sources import tdcc
+    from stocks_power_rich.db import get_connection, init_db, get_custody_trend
+
+    get_connection(str(tmp_path / "t.sqlite"))  # ensure file
+    monkeypatch.setattr(tdcc, "fetch_custody_weeks", lambda: ["20260320", "20260327"])
+    monkeypatch.setattr(tdcc, "fetch_custody_history",
+                        lambda code, weeks=None, max_weeks=60: {
+                            "2026-03-20": {"big1000_pct": 80.0, "big400_pct": 83.0, "big_holders": 1400},
+                            "2026-03-27": {"big1000_pct": 81.0, "big400_pct": 84.0, "big_holders": 1410}})
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/stock/2330/custody/backfill?weeks=52").json()
+    assert r["stored"] == 2 and set(r["filled"]) == {"2026-03-20", "2026-03-27"}
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    trend = get_custody_trend(c, "2330")
+    assert [t["week"] for t in trend] == ["2026-03-20", "2026-03-27"]   # 依 week 排序
+    assert trend[0]["big1000_pct"] == 80.0 and trend[1]["big_holders"] == 1410
+
+
+def test_inst_backfill_warms_t86_tpex_cache_and_reports_remaining(tmp_path, monkeypatch):
+    """/api/inst/backfill：預熱個股三大法人（T86/TPEx 整日快取，跨股共用）到 ai_cache，
+    讓個股三大法人買賣超圖能顯示 6 月前歷史而不必冷載即時抓。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import date, timedelta
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily, get_ai_cache
+    from stocks_power_rich.sources import twse, tpex
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    days = [(date.today() - timedelta(days=n)).isoformat() for n in (2, 3, 4)]
+    for ds in days:
+        upsert_market_daily(c, {"date": ds, "taiex": 100.0})
+    monkeypatch.setattr(twse, "fetch_t86",
+                        lambda d=None: {"2330": {"name": "台積電", "foreign": 1, "trust": 2, "dealer": 3, "total": 6}})
+    monkeypatch.setattr(tpex, "fetch_tpex_insti",
+                        lambda d=None: {"8069": {"name": "元太", "foreign": 1, "trust": 0, "dealer": 0, "total": 1}})
+    app = create_app()
+    client = TestClient(app)
+    r1 = client.get("/api/inst/backfill?days=90&max_fetch=2").json()
+    assert len(r1["filled"]) == 2 and r1["remaining"] == 1     # cap 生效，還剩 1 天
+    r2 = client.get("/api/inst/backfill?days=90&max_fetch=15").json()
+    assert len(r2["filled"]) == 1 and r2["remaining"] == 0     # 補完
+    assert get_ai_cache(c, f"t86:{days[-1]}")["2330"]["total"] == 6      # 上市快取寫入
+    assert get_ai_cache(c, f"tpex:{days[-1]}")["8069"]["total"] == 1     # 上櫃也預熱
+
+
 def test_chips_backfill_fills_history_and_reports_remaining(tmp_path, monkeypatch):
     """/api/chips/backfill：大範圍回補台指期籌碼歷史（外資未平倉/散戶多空比等），
     籌碼趨勢圖 06-20 前空白的補洞入口。max_fetch 限每次筆數、remaining 供重複呼叫直到補完。"""

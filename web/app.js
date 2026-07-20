@@ -1213,7 +1213,7 @@ async function loadStockChips(code) {
   stockChipsChart.showLoading();
   const note = $("stock-chips-note");
   try {
-    const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/chips?days=10`);
+    const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/chips?days=60`);
     stockChipsChart.hideLoading();
     if (!d.total || !d.total.some((v) => v != null)) { stockChipsChart.clear(); if (note) note.textContent = "（查無此股三大法人資料）"; return; }
     const last = [...d.total].reverse().find((v) => v != null);
@@ -1411,6 +1411,22 @@ document.querySelectorAll(".ktf").forEach((btn) => btn.addEventListener("click",
   btn.classList.add("active"); stockInterval = btn.dataset.iv; if (stockCode) loadStock(stockCode);
 }));
 $("stock-wave-chk").addEventListener("change", (e) => { stockWaves = e.target.checked; if (stockChart && lastStockData) stockChart.setOption(candlestickOption(lastStockData, lastStockData.candles.length > 120 ? 60 : 0, stockWaves, wavePct), true); });
+// 集保「補歷史」：從 TDCC 智能網逐週回補該股歷史（opendata 只給當週）；單次回補整段、可能較久
+$("custody-backfill").addEventListener("click", async (e) => {
+  e.preventDefault();
+  if (!stockCode) return;
+  const link = $("custody-backfill");
+  link.style.pointerEvents = "none"; link.textContent = "補齊中…";
+  try {
+    for (let guard = 0; guard < 20; guard++) {
+      const r = await (await fetch(`/api/stock/${encodeURIComponent(stockCode)}/custody/backfill?weeks=52`)).json();
+      if (r.busy) { await new Promise((s) => setTimeout(s, 1500)); continue; }
+      break;
+    }
+    await loadStockCustody(stockCode);
+  } catch (err) { /* 顯示於下方 note */ }
+  finally { link.style.pointerEvents = ""; link.textContent = "補歷史"; }
+});
 
 // 點股號 → 跳到個股查詢頁
 document.addEventListener("click", (e) => {

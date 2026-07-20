@@ -143,6 +143,22 @@ def _quotes_for(c, date: str) -> dict:
     return quotes or {}
 
 
+def _insti_for(c, ds: str, market: str) -> dict:
+    """單日全市場三大法人買賣超（張），整日一次抓、快取於 ai_cache（跨股共用）。
+    market＝twse→T86(上市)、tpex→櫃買。個股三大法人圖與 inst 預熱回補都走這裡。"""
+    key = f"{'t86' if market == 'twse' else 'tpex'}:{ds}"
+    t = get_ai_cache(c, key)
+    if t is None:
+        try:
+            d = datetime.fromisoformat(ds).date()
+            t = twse.fetch_t86(d) if market == "twse" else tpex.fetch_tpex_insti(d)
+        except Exception:  # noqa: BLE001
+            t = {}
+        if t:
+            set_ai_cache(c, key, t)
+    return t or {}
+
+
 def _sectors_for(c, ds: str) -> list:
     cached = get_ai_cache(c, f"sectors:{ds}")
     if cached is not None:

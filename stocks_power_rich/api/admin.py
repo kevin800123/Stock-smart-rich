@@ -10,9 +10,10 @@ from .helpers import (
     _dir_within,
     _push_line,
     _intraday_scan,
+    _insti_for,
     REPO_DIR
 )
-from ..db import get_setting, set_setting, get_snapshot_dates, get_tx_history, backup_db
+from ..db import get_setting, set_setting, get_snapshot_dates, get_tx_history, get_ai_cache, backup_db
 from ..config import load_config
 from .. import updater
 
@@ -57,6 +58,32 @@ def chips_backfill(days: int = 90, max_fetch: int = 15):
         remaining = c.execute(
             "SELECT COUNT(*) FROM market_daily WHERE date >= ? "
             "AND (retail_ls_mtx IS NULL OR tx_foreign_oi IS NULL)", (cutoff,)).fetchone()[0]
+        return {"filled": filled, "remaining": remaining}
+    finally:
+        _backfill_lock.release()
+
+@router.get("/inst/backfill")
+def inst_backfill(days: int = 60, max_fetch: int = 15):
+    """預熱個股三大法人（T86/TPEx）整日快取，讓個股三大法人買賣超圖能秒載 6 月前歷史。
+
+    資料逐日整日一次抓、快取跨股共用；此端點對 market_daily 最近 N 個交易日預熱兩市場，
+    重複呼叫直到 remaining=0（連假日交易所無資料者留空、屬預期）。
+    """
+    if not _backfill_lock.acquire(blocking=False):
+        return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
+    try:
+        c = conn()
+        days = max(5, min(days, 120))
+        dlist = [r[0] for r in c.execute(
+            "SELECT date FROM market_daily ORDER BY date DESC LIMIT ?", (days,)).fetchall()]
+        pending = [ds for ds in dlist if get_ai_cache(c, f"t86:{ds}") is None]
+        filled = []
+        for ds in pending[:max(1, min(max_fetch, 30))]:
+            twse_ok = bool(_insti_for(c, ds, "twse"))
+            _insti_for(c, ds, "tpex")   # 上櫃也預熱，任何股都秒載
+            if twse_ok:
+                filled.append(ds)
+        remaining = sum(1 for ds in dlist if get_ai_cache(c, f"t86:{ds}") is None)
         return {"filled": filled, "remaining": remaining}
     finally:
         _backfill_lock.release()

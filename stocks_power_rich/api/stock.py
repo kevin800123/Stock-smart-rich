@@ -1,3 +1,4 @@
+import threading
 from fastapi import APIRouter, Body
 from datetime import datetime
 from .deps import conn
@@ -7,6 +8,7 @@ from .helpers import (
     _ohlc_names,
     _picks_code_set,
     _valuation_for,
+    _insti_for,
     get_ai_cache,
     set_ai_cache,
     cup_handle_screen_logic
@@ -27,19 +29,7 @@ from ..sources import kline, tdcc, twse, tpex, taifex
 from .. import patterns, backtest
 
 router = APIRouter(prefix="/api")
-
-def _insti_for(c, ds: str, market: str) -> dict:
-    key = f"{'t86' if market == 'twse' else 'tpex'}:{ds}"
-    t = get_ai_cache(c, key)
-    if t is None:
-        try:
-            d = datetime.fromisoformat(ds).date()
-            t = twse.fetch_t86(d) if market == "twse" else tpex.fetch_tpex_insti(d)
-        except Exception:  # noqa: BLE001
-            t = {}
-        if t:
-            set_ai_cache(c, key, t)
-    return t or {}
+_custody_lock = threading.Lock()
 
 @router.get("/stock/{code}/ohlc")
 def stock_ohlc(code: str, bars: int = 400):
@@ -159,11 +149,33 @@ def stock_custody(code: str):
     return {"code": pure, "week": (cur or {}).get("week_date"),
             "current": rec, "trend": get_custody_trend(c, pure)}
 
+
+@router.get("/stock/{code}/custody/backfill")
+def stock_custody_backfill(code: str, weeks: int = 52):
+    """回補該股集保大戶歷史週次（TDCC 智能網股權分散表，opendata 只給當週）。
+    只補尚未存在的週次；重複呼叫直到 filled 為空。"""
+    if not _custody_lock.acquire(blocking=False):
+        return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
+    try:
+        c = conn()
+        pure = code.split(".")[0]
+        weeks = max(4, min(weeks, 60))
+        have = {t["week"] for t in get_custody_trend(c, pure)}
+        avail = tdcc.fetch_custody_weeks()   # YYYYMMDD 新到舊
+        want = [w for w in avail if f"{w[:4]}-{w[4:6]}-{w[6:8]}" not in have][:weeks]
+        hist = tdcc.fetch_custody_history(pure, weeks=want, max_weeks=weeks) if want else {}
+        for wk_iso, rec in hist.items():
+            upsert_custody(c, wk_iso, pure, rec)
+        return {"code": pure, "filled": sorted(hist.keys()),
+                "stored": len(hist), "already": len(have)}
+    finally:
+        _custody_lock.release()
+
 @router.get("/stock/{code}/chips")
 def stock_chips(code: str, days: int = 10):
     c = conn()
     pure = code.split(".")[0]
-    days = max(2, min(days, 20))
+    days = max(2, min(days, 60))
     rows = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT ?", (days,)).fetchall()
     dlist = [r[0] for r in reversed(rows)]
     market = "twse"
