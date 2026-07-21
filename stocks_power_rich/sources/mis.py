@@ -36,6 +36,49 @@ def parse_mis_quotes(payload: dict) -> dict:
     return out
 
 
+def parse_mis_rank(payload: dict) -> dict:
+    """getStockInfo → {代號: {price, chg, chg_pct, time, name}}（高價股排行用的完整欄位）。
+
+    現價沿用 _price（z，無成交退買一）；漲跌以昨收 y 計；t=成交時間取 HH:MM。無價的檔略過。
+    """
+    out: dict[str, dict] = {}
+    for m in payload.get("msgArray") or []:
+        code = str(m.get("c") or "").strip()
+        p = _price(m)
+        if not code or p is None:
+            continue
+        rec = {"price": p, "chg": None, "chg_pct": None,
+               "time": None, "name": str(m.get("n") or "").strip()}
+        try:
+            y = float(str(m.get("y") or ""))
+            rec["chg"] = round(p - y, 2)
+            rec["chg_pct"] = round((p - y) / y * 100, 2) if y else None
+        except ValueError:
+            pass
+        t = str(m.get("t") or "")
+        if ":" in t:
+            rec["time"] = t[:5]
+        out[code] = rec
+    return out
+
+
+def fetch_mis_rank(tokens: list[str]) -> dict:
+    """批次查排行報價（完整欄位版）。tokens 同 fetch_mis_quotes，自動分塊；查無/失敗回空。"""
+    out: dict[str, dict] = {}
+    for i in range(0, len(tokens), CHUNK):
+        chunk = tokens[i:i + CHUNK]
+        try:
+            j = httpx.get(MIS_URL,
+                          params={"ex_ch": "|".join(chunk), "json": "1", "delay": "0",
+                                  "_": str(int(datetime.datetime.now().timestamp() * 1000))},
+                          timeout=15, headers={"User-Agent": "Mozilla/5.0"}).json()
+            if j.get("rtcode") == "0000":
+                out.update(parse_mis_rank(j))
+        except Exception:  # noqa: BLE001 — 單塊失敗略過
+            pass
+    return out
+
+
 def fetch_mis_quotes(tokens: list[str]) -> dict:
     """批次查盤中現價。tokens＝['tse_2330.tw','otc_8069.tw',...]，自動分塊。查無/失敗回空。"""
     out: dict[str, float] = {}

@@ -9,20 +9,79 @@ from .helpers import (
     _quotes_for,
     _otc_industry,
     _otc_quotes_for,
+    _otc_names,
     _attach_size,
     get_ai_cache,
     set_ai_cache,
-    _os_futures
+    _os_futures,
+    _os_futures_live
 )
-from ..sources import twse, taifex
+from ..sources import twse, taifex, mis
 from .. import analysis, gemini, traders
 from ..config import load_config
 
 router = APIRouter(prefix="/api")
 
 @router.get("/os-futures")
-def os_futures(refresh: int = 0):
+def os_futures(refresh: int = 0, live: int = 0):
+    if live:
+        return _os_futures_live()
     return _os_futures(refresh=bool(refresh))
+
+
+def _rank_ttl() -> int:
+    """盤中 8 秒（前端 10 秒輪詢下 MIS 實際頻率安全）；非盤中 300 秒（只剩靜態收盤值）。"""
+    now = datetime.now()
+    in_session = now.weekday() < 5 and (9, 0) <= (now.hour, now.minute) <= (13, 35)
+    return 8 if in_session else 300
+
+
+@router.get("/rank/price")
+def rank_price(market: str = "all", n: int = 30):
+    """台股高價股即時排行（合併/上市/上櫃）。昨收(stock_ohlc)預選成員→MIS 即時價覆蓋；
+    MIS 缺檔退回昨收（time 為空＝收盤價）。高價股名單變動極慢，昨收預選足夠準確。"""
+    market = market if market in ("all", "twse", "otc") else "all"
+    n = max(5, min(n, 50))
+    c = conn()
+    key = f"rankprice:{market}:{n}"
+    cached = get_ai_cache(c, key)
+    if cached is not None:
+        try:
+            age = (datetime.now() - datetime.fromisoformat(cached["fetched_at"])).total_seconds()
+            if age < _rank_ttl():
+                return cached
+        except (KeyError, ValueError, TypeError):
+            pass
+    # 昨收預選：每檔最新收盤（SQLite bare-column 取 MAX(date) 該列的 close）
+    rows = c.execute("SELECT code, close, MAX(date) FROM stock_ohlc GROUP BY code").fetchall()
+    otc = _otc_names(c)
+    by_mkt = {"twse": [], "otc": []}
+    for code, close, _d in rows:
+        if close:
+            by_mkt["otc" if code in otc else "twse"].append((code, float(close)))
+    if market == "all":
+        pool = sorted(by_mkt["twse"], key=lambda x: -x[1])[:n] + \
+               sorted(by_mkt["otc"], key=lambda x: -x[1])[:n]
+    else:
+        pool = sorted(by_mkt[market], key=lambda x: -x[1])[:n]
+    tokens = [f"{'otc' if code in otc else 'tse'}_{code}.tw" for code, _ in pool]
+    quotes = mis.fetch_mis_rank(tokens) if tokens else {}
+    items = []
+    for code, close in pool:
+        q = quotes.get(code)
+        items.append({
+            "code": code, "market": "otc" if code in otc else "twse",
+            "name": (q or {}).get("name") or otc.get(code) or code,
+            "price": (q or {}).get("price") or close,
+            "chg": (q or {}).get("chg"), "chg_pct": (q or {}).get("chg_pct"),
+            "time": (q or {}).get("time"),
+        })
+    items.sort(key=lambda i: -(i["price"] or 0))
+    result = {"market": market, "items": items[:n],
+              "fetched_at": datetime.now().isoformat()}
+    if items:
+        set_ai_cache(c, key, result)
+    return result
 
 
 @router.get("/traders")

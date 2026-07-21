@@ -984,6 +984,69 @@ def test_stock_kline_falls_back_to_official_ohlc_when_yfinance_empty(tmp_path, m
     assert client.get("/api/stock/6894.TW/kline?interval=1h").json()["candles"] == []
 
 
+def test_rank_price_endpoint_markets_and_live_quotes(tmp_path, monkeypatch):
+    """/api/rank/price：昨收預選高價股（分上市/上櫃/合併）→ MIS 即時價覆蓋；MIS 缺檔退回昨收。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc, set_ai_cache
+    from stocks_power_rich.sources import mis
+    from datetime import datetime
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    bulk_upsert_ohlc(c, "2026-07-17", {
+        "2330": {"open": 2400, "high": 2450, "low": 2380, "close": 2400.0},   # 上市
+        "3008": {"open": 1750, "high": 1800, "low": 1740, "close": 1780.0},   # 上市
+        "6415": {"open": 3000, "high": 3100, "low": 2950, "close": 3050.0},   # 上櫃（最高價）
+        "8069": {"open": 200, "high": 210, "low": 198, "close": 205.0},       # 上櫃
+    })
+    set_ai_cache(c, f"otc_names:{datetime.now().strftime('%Y-%m')}",
+                 {"6415": "矽力-KY", "8069": "元太"})   # 上櫃名單（分類依據）
+    monkeypatch.setattr(mis, "fetch_mis_rank", lambda tokens: {
+        "2330": {"price": 2455.0, "chg": 55.0, "chg_pct": 2.29, "time": "10:30", "name": "台積電"},
+        "6415": {"price": 3080.0, "chg": 30.0, "chg_pct": 0.98, "time": "10:30", "name": "矽力*-KY"},
+        # 3008/8069 MIS 缺 → 退回昨收
+    })
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/rank/price?market=all&n=10").json()
+    codes = [i["code"] for i in r["items"]]
+    assert codes == ["6415", "2330", "3008", "8069"]           # 依現價 desc（MIS 覆蓋後）
+    assert r["items"][0]["market"] == "otc" and r["items"][1]["market"] == "twse"
+    assert r["items"][0]["price"] == 3080.0 and r["items"][0]["time"] == "10:30"
+    assert r["items"][2]["price"] == 1780.0 and r["items"][2]["time"] is None   # 降級：昨收、無時間
+    tw = client.get("/api/rank/price?market=twse&n=10").json()
+    assert [i["code"] for i in tw["items"]] == ["2330", "3008"]
+    otc = client.get("/api/rank/price?market=otc&n=10").json()
+    assert [i["code"] for i in otc["items"]] == ["6415", "8069"]
+
+
+def test_os_futures_live_mode_overlays_and_caches(tmp_path, monkeypatch):
+    """/api/os-futures?live=1：盤中報價覆蓋日線值、缺檔沿用日線；90 秒 TTL 快取防狂刷。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.sources import intl
+
+    daily = [{"category": "指數期貨", "items": [
+        {"name": "小道瓊", "value": 44400.0, "chg": -100.0, "chg_pct": -0.22},
+        {"name": "日經", "value": 64000.0, "chg": 100.0, "chg_pct": 0.16}]}]
+    calls = {"n": 0}
+    def fake_live():
+        calls["n"] += 1
+        return [{"category": "指數期貨", "items": [
+            {"name": "小道瓊", "value": 44512.5, "chg": 112.5, "chg_pct": 0.25, "time": "10:10"}]}]
+    monkeypatch.setattr(intl, "fetch_futures_monitor", lambda: daily)
+    monkeypatch.setattr(intl, "fetch_futures_live", fake_live)
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/os-futures?live=1").json()
+    idx = next(g for g in r["categories"] if g["category"] == "指數期貨")
+    dow = next(i for i in idx["items"] if i["name"] == "小道瓊")
+    nikkei = next(i for i in idx["items"] if i["name"] == "日經")
+    assert dow["value"] == 44512.5 and dow["time"] == "10:10"    # live 覆蓋
+    assert nikkei["value"] == 64000.0 and "time" not in nikkei   # 缺檔沿用日線
+    client.get("/api/os-futures?live=1")
+    assert calls["n"] == 1                                       # TTL 內第二次吃快取
+
+
 def test_custody_backfill_pulls_history_into_custody_dist(tmp_path, monkeypatch):
     """/api/stock/{code}/custody/backfill：從 TDCC 智能網回補該股歷史週次到 custody_dist，
     讓集保大戶趨勢能顯示 6 月前（opendata 只給當週、拿不回歷史）。"""

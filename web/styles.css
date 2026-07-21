@@ -212,6 +212,7 @@ body[data-public] .status-bar { display: none; }
 .of-name { font-size: var(--fs-data); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .of-price { font-size: var(--fs-sm); font-weight: 700; white-space: nowrap; }
 .of-bot { font-size: var(--fs-data); margin-top: 5px; font-weight: 600; }
+.of-time { font-size: var(--fs-xs); opacity: .8; font-weight: 400; margin-left: 6px; }
 
 /* ===== 當日漲跌族群 ===== */
 .sectors { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px; }

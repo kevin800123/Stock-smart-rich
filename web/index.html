@@ -303,13 +303,21 @@
         <div class="wave-help" id="trader-disclaimer" style="display:block"></div>
       </section>
 
-      <!-- ===== 海期監控 ===== -->
+      <!-- ===== 海期監控（＋台股高價股即時排行） ===== -->
       <section id="view-osfut" class="view">
         <div class="toolbar">
+          <span class="pane-title" style="margin:0">台股高價股</span>
+          <span class="hm-tabs">
+            <button class="ctf rkp-tab active" data-market="all">合併</button><button class="ctf rkp-tab" data-market="twse">上市</button><button class="ctf rkp-tab" data-market="otc">上櫃</button>
+          </span>
+          <span id="rankprice-note" class="muted small"></span>
+        </div>
+        <div id="rankprice" class="table-wrap fill-half"></div>
+        <div class="toolbar" style="margin-top:8px">
           <span class="pane-title" style="margin:0">海期監控</span>
           <button id="btn-osfut-refresh" class="file-label">🔄 更新報價</button>
           <span id="osfut-time" class="muted small"></span>
-          <span class="muted small">國際期貨/美股，延遲報價（隨排程與手動更新）</span>
+          <span class="muted small">停留本頁自動更新：台股每 10 秒（證交所即時）、海期每 2 分鐘（期貨延遲約 10 分）</span>
         </div>
         <div id="osfut"></div>
       </section>

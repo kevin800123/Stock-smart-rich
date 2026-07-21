@@ -139,7 +139,9 @@ function showView(name) {
   if (name === "overview") { idxChart && idxChart.resize(); chipChart && chipChart.resize(); sectorChart && sectorChart.resize(); txVolChart && txVolChart.resize(); }
   if (name === "stock") { stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize(); }
   if (name === "rotation") { loadRotation(); loadCross(); }
-  if (name === "osfut") loadOsFutures(false);  // 首次切換載入（讀快取即回）
+  // 監控頁：進入才啟動輪詢（台股每 10 秒、海期每 12 tick＝120 秒），切走即停——控制請求量
+  if (name === "osfut") { loadOsFutures("live"); loadRankPrice(); startOsfutPolling(); }
+  else stopOsfutPolling();
   if (name === "cup") { if (!cupLoaded) loadCupHandle(); else cupChart && cupChart.resize(); }
   if (name === "weekly") loadCsvSummary(false);  // 讀快取即回；匯入後才會重新生成
   if (name === "watch") loadWatchlist();
@@ -649,11 +651,13 @@ async function loadCupBacktest() {
 
 // 海期監控：五大分類色階卡片（名稱/價格上排、漲跌%/點數下排）
 function osDecimals(v) { const a = Math.abs(v); return a >= 1000 ? 0 : a >= 10 ? 2 : 4; }
-async function loadOsFutures(refresh) {
+async function loadOsFutures(mode) {
   const el = $("osfut"); if (!el) return;
-  if (refresh || !el.innerHTML) el.innerHTML = '<div class="muted small">載入報價中…（首次抓取約 5–10 秒）</div>';
+  if (!el.innerHTML) el.innerHTML = '<div class="muted small">載入報價中…（首次抓取約 5–10 秒）</div>';
   try {
-    const d = await getJSON("/api/os-futures" + (refresh ? "?refresh=1" : ""));
+    // "live"＝盤中 meta 報價（後端 90 秒 TTL）；true＝強制重抓日線（排程用，前端已不用）
+    const q = mode === "live" ? "?live=1" : mode ? "?refresh=1" : "";
+    const d = await getJSON("/api/os-futures" + q);
     const t = $("osfut-time");
     if (t && d.updated_at) t.textContent = "更新：" + d.updated_at.slice(0, 16).replace("T", " ");
     if (!d.categories || !d.categories.every) { el.innerHTML = '<div class="muted small">暫無報價，稍後按更新重試</div>'; return; }
@@ -662,15 +666,53 @@ async function loadOsFutures(refresh) {
         const dp = osDecimals(it.value);
         const ps = it.chg_pct == null ? "" : (it.chg_pct >= 0 ? "+" : "") + fmt(it.chg_pct, 2) + "%";
         const cs = it.chg == null ? "" : (it.chg >= 0 ? "+" : "") + fmt(it.chg, dp);
+        const tm = it.time ? `<span class="of-time">${esc(it.time)}</span>` : "";
         return `<div class="mv-card" style="background:${sectorColor(it.chg_pct)}">
           <div class="of-top"><span class="of-name">${esc(it.name)}</span><span class="of-price">${fmt(it.value, dp)}</span></div>
-          <div class="of-bot"><span>${ps}</span><span>${cs}</span></div>
+          <div class="of-bot"><span>${ps}</span><span>${cs}${tm}</span></div>
         </div>`;
       }).join("");
       return `<div class="card-group"><div class="group-title">${esc(g.category)}</div><div class="mv-grid">${cards}</div></div>`;
     }).join("");
     if (!el.innerHTML) el.innerHTML = '<div class="muted small">暫無報價，稍後按更新重試</div>';
   } catch (e) { el.innerHTML = '<div class="muted small">載入失敗：' + esc(e.message) + "</div>"; }
+}
+
+// ===== 台股高價股即時排行（MIS）＋監控頁輪詢 =====
+let rankMarket = "all", osfutTimer = null, osfutTick = 0;
+async function loadRankPrice() {
+  const el = $("rankprice"); if (!el) return;
+  try {
+    const d = await getJSON(`/api/rank/price?market=${rankMarket}&n=30`);
+    const note = $("rankprice-note");
+    if (note) {
+      const anyLive = (d.items || []).some((i) => i.time);
+      note.textContent = anyLive ? `（證交所即時，${d.fetched_at ? d.fetched_at.slice(11, 16) : ""} 更新）` : "（收盤價）";
+    }
+    if (!d.items || !d.items.length) { el.innerHTML = '<div class="muted">尚無資料（需先跑過 OHLC 回補）</div>'; return; }
+    const head = "<tr><th>#</th><th>股票</th><th class=\"num\">成交</th><th class=\"num\">漲跌</th><th class=\"num\">漲跌%</th><th class=\"num\">時間</th></tr>";
+    const body = d.items.map((it, i) => {
+      const cls = it.chg > 0 ? "up" : it.chg < 0 ? "down" : "flat";
+      return `<tr><td>${i + 1}</td><td>${stockLink(it.code, it.name)}</td>` +
+        `<td class="num">${fmt(it.price, 2)}</td>` +
+        `<td class="num ${cls}">${it.chg == null ? "—" : (it.chg > 0 ? "+" : "") + fmt(it.chg, 2)}</td>` +
+        `<td class="num ${cls}">${it.chg_pct == null ? "—" : (it.chg_pct > 0 ? "+" : "") + fmt(it.chg_pct, 2) + "%"}</td>` +
+        `<td class="num">${it.time ? esc(it.time) : "收盤"}</td></tr>`;
+    }).join("");
+    el.innerHTML = `<table>${head}${body}</table>`;
+  } catch (e) { el.innerHTML = '<div class="muted">載入失敗：' + esc(e.message) + "</div>"; }
+}
+function startOsfutPolling() {
+  if (osfutTimer) return;                       // 防重複註冊
+  osfutTick = 0;
+  osfutTimer = setInterval(() => {
+    osfutTick++;
+    loadRankPrice();                            // 台股每 10 秒（MIS 便宜，後端 TTL 8 秒）
+    if (osfutTick % 12 === 0) loadOsFutures("live");   // 海期每 120 秒（Yahoo 較貴）
+  }, 10000);
+}
+function stopOsfutPolling() {
+  if (osfutTimer) { clearInterval(osfutTimer); osfutTimer = null; }
 }
 
 // 權值股貢獻大盤點數：色階卡片（依漲跌幅上色），主秀「貢獻幾點」
@@ -1341,7 +1383,13 @@ $("btn-export").addEventListener("click", () => {
   window.location.href = url;
 });
 $("btn-save-settings").addEventListener("click", saveSettings);
-$("btn-osfut-refresh").addEventListener("click", () => loadOsFutures(true));
+$("btn-osfut-refresh").addEventListener("click", () => { loadOsFutures("live"); loadRankPrice(); });
+document.querySelectorAll(".rkp-tab").forEach((b) => b.addEventListener("click", () => {
+  if (b.dataset.market === rankMarket) return;
+  rankMarket = b.dataset.market;
+  document.querySelectorAll(".rkp-tab").forEach((x) => x.classList.toggle("active", x === b));
+  loadRankPrice();
+}));
 document.querySelectorAll(".hm-tab").forEach((b) => b.addEventListener("click", () => {
   if (b.dataset.market === heatmapMarket) return;
   heatmapMarket = b.dataset.market;

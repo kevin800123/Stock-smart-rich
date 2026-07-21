@@ -17,6 +17,35 @@ def test_parse_chart_payload():
     assert intl.parse_chart_payload({}) is None
 
 
+def test_parse_chart_quote_meta():
+    # 準即時報價：v8 chart meta 就帶現價/昨收/報價時間，不需讀 K 棒陣列
+    # 1789006200 epoch = 2026-09-06 02:10 UTC → 台北 10:10
+    payload = {"chart": {"result": [{"meta": {
+        "regularMarketPrice": 44512.5, "chartPreviousClose": 44400.0,
+        "regularMarketTime": 1789006200}}], "error": None}}
+    q = intl.parse_chart_quote(payload)
+    assert q["value"] == 44512.5
+    assert q["chg"] == 112.5
+    assert q["chg_pct"] == 0.25
+    assert q["time"] == "10:10"          # 台北時間 HH:MM
+    # 缺 meta / 缺價 → None
+    assert intl.parse_chart_quote({"chart": {"result": [{"meta": {}}]}}) is None
+    assert intl.parse_chart_quote({}) is None
+
+
+def test_fetch_futures_live_builds_categories(monkeypatch):
+    # 逐檔 chart meta 抓盤中價，輸出與日線版同形狀（items 多 time）；單檔失敗跳過
+    quotes = {"YM=F": {"value": 44512.5, "chg": 112.5, "chg_pct": 0.25, "time": "10:10"},
+              "GC=F": {"value": 3355.0, "chg": -5.0, "chg_pct": -0.15, "time": "10:09"}}
+    monkeypatch.setattr(intl, "_fetch_chart_raw", lambda sym, range_, interval: {"sym": sym})
+    monkeypatch.setattr(intl, "parse_chart_quote", lambda p: quotes.get(p["sym"]))
+    cats = intl.fetch_futures_live()
+    idx = next(g for g in cats if g["category"] == "指數期貨")
+    assert idx["items"][0]["name"] == "小道瓊" and idx["items"][0]["time"] == "10:10"
+    metal = next(g for g in cats if g["category"] == "能源金屬")
+    assert [i["name"] for i in metal["items"]] == ["黃金"]   # 只有抓到的檔
+
+
 def test_fetch_intl_indices_chart_fallback(monkeypatch):
     """yfinance 整批一直失敗（機房 IP 被限流）→ 直連 Yahoo chart API 逐檔備援補抓。"""
     def bad_download(*a, **kw):

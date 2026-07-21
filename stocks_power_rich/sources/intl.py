@@ -46,17 +46,62 @@ def parse_chart_payload(payload) -> dict | None:
     return {"value": round(last, 2), "chg_pct": chg}
 
 
-def _fetch_chart(sym: str) -> dict | None:
-    """直連 chart API 抓單一代碼（^ 等符號需編碼進路徑）。失敗回 None、維持缺值。"""
+def _fetch_chart_raw(sym: str, range_: str = "5d", interval: str = "1d") -> dict | None:
+    """直連 chart API 抓單一代碼原始 payload（^ 等符號需編碼進路徑）。失敗回 None。"""
     try:
         r = httpx.get(_CHART_URL + quote(sym, safe=""),
-                      params={"range": "5d", "interval": "1d"},
+                      params={"range": range_, "interval": interval},
                       timeout=15, headers=_CHART_UA)
         if r.status_code == 200:
-            return parse_chart_payload(r.json())
+            return r.json()
     except Exception:  # noqa: BLE001 — 備援失敗不影響其他代碼
         pass
     return None
+
+
+def _fetch_chart(sym: str) -> dict | None:
+    """直連 chart API 抓單一代碼日線收盤。失敗回 None、維持缺值。"""
+    payload = _fetch_chart_raw(sym)
+    return parse_chart_payload(payload) if payload else None
+
+
+def parse_chart_quote(payload) -> dict | None:
+    """v8 chart meta → 準即時報價 {value, chg, chg_pct, time}。
+
+    meta 直接帶 regularMarketPrice / chartPreviousClose / regularMarketTime（epoch 秒），
+    不需讀 K 棒陣列；time 轉台北時間 HH:MM。缺價回 None。
+    """
+    from datetime import datetime, timezone, timedelta
+    try:
+        meta = payload["chart"]["result"][0]["meta"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    price, prev = meta.get("regularMarketPrice"), meta.get("chartPreviousClose")
+    if price is None:
+        return None
+    out = {"value": round(float(price), 4), "chg": None, "chg_pct": None, "time": None}
+    if prev:
+        out["chg"] = round(float(price) - float(prev), 4)
+        out["chg_pct"] = round((float(price) - float(prev)) / float(prev) * 100, 2)
+    ts = meta.get("regularMarketTime")
+    if ts:
+        out["time"] = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8))).strftime("%H:%M")
+    return out
+
+
+def fetch_futures_live() -> list[dict]:
+    """海期準即時：逐檔 chart meta 抓盤中價（1m），輸出與 fetch_futures_monitor 同形狀
+    （items 多 time 欄）。單檔失敗跳過——呼叫端以日線值補缺。期貨延遲約 10 分（CME 規定）。"""
+    out = []
+    for cat, items in OS_FUTURES:
+        rows = []
+        for name, t in items:
+            payload = _fetch_chart_raw(t, range_="1d", interval="1m")
+            q = parse_chart_quote(payload) if payload else None
+            if q is not None:
+                rows.append({"name": name, **q})
+        out.append({"category": cat, "items": rows})
+    return out
 
 
 def fetch_intl_indices(tickers: dict, tries: int = 3) -> dict:

@@ -483,6 +483,41 @@ def _os_futures(refresh: bool = False) -> dict:
     return result
 
 
+_OSFUT_LIVE_TTL = 90   # 秒；前端每 120 秒輪詢，TTL 略短於輪詢間隔即可防狂刷
+
+def _os_futures_live() -> dict:
+    """海期準即時：以日線快照為底、逐檔盤中 meta 報價覆蓋（缺檔沿用日線＝延遲值）。
+
+    Yahoo v8 per-symbol 較貴，故 90 秒 TTL 快取；雲端被節流時單檔失敗自動退回日線值，
+    頁面不破版只是該檔顯示延遲。
+    """
+    import copy
+    from ..sources import intl
+    c = conn()
+    cached = get_ai_cache(c, "osfut:live")
+    if cached is not None:
+        try:
+            age = (datetime.now() - datetime.fromisoformat(cached["fetched_at"])).total_seconds()
+            if age < _OSFUT_LIVE_TTL:
+                return cached
+        except (KeyError, ValueError, TypeError):
+            pass
+    base = copy.deepcopy(_os_futures(refresh=False))   # 日線底（含加權/台指期注入）
+    try:
+        live = intl.fetch_futures_live()
+    except Exception:  # noqa: BLE001
+        live = []
+    live_map = {(g["category"], i["name"]): i for g in live for i in g["items"]}
+    for g in base.get("categories") or []:
+        g["items"] = [{**item, **live_map.get((g["category"], item["name"]), {})}
+                      for item in g["items"]]
+    result = {**base, "live": True, "updated_at": datetime.now().isoformat(),
+              "fetched_at": datetime.now().isoformat()}
+    if live:
+        set_ai_cache(c, "osfut:live", result)
+    return result
+
+
 def _intraday_scan(c, push: bool = True) -> dict:
     cfg = load_config()
     ods = [r[0] for r in c.execute("SELECT DISTINCT date FROM stock_ohlc ORDER BY date").fetchall()]
