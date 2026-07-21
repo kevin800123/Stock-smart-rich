@@ -418,11 +418,13 @@ function renderMarketStrip(m, total3) {
 function renderCards(m, prev = {}, hist = []) {
   if (!m || !m.date) { $("cards-tw").innerHTML = '<div class="muted">尚無大盤資料。</div>'; $("cards-fut").innerHTML = ""; $("cards-intl").innerHTML = ""; $("data-date").textContent = ""; return; }
   $("data-date").textContent = "資料日期：" + m.date;
-  const ls = (v) => (v === null || v === undefined ? "—" : (v > 0 ? "散戶偏多 " : v < 0 ? "散戶偏空 " : "") + fmt(v, 3));
+  // retail_ls_mtx/tmf 是比率（如 0.139），介面一律以百分比呈現（13.9%），避免讀成「0.139 倍」
+  const pct100 = (v) => (v == null ? null : v * 100);
+  const ls = (v) => (v === null || v === undefined ? "—" : (v > 0 ? "散戶偏多 " : v < 0 ? "散戶偏空 " : "") + fmt(pct100(v), 1) + "%");
   const sum3 = (r) => [r.inst_foreign, r.inst_trust, r.inst_dealer].every((x) => x != null)
     ? r.inst_foreign + r.inst_trust + r.inst_dealer : null;
-  const lsm = dod(m.retail_ls_mtx, prev.retail_ls_mtx);
-  const lst = dod(m.retail_ls_tmf, prev.retail_ls_tmf);
+  const lsm = dod(pct100(m.retail_ls_mtx), pct100(prev.retail_ls_mtx));
+  const lst = dod(pct100(m.retail_ls_tmf), pct100(prev.retail_ls_tmf));
   // 融資/融券：當日有就用當日，否則退到最近一筆有資料的交易日（晚間才公布的容錯）
   const marginRow = [...hist].reverse().find((r) => r && r.margin_balance != null) || m;
   renderMarketStrip(m, sum3(m));   // 加權指數與三大法人合計移到頂端儀表，下方卡片不再重複
@@ -1017,10 +1019,12 @@ function chipTrendOption(hist, metric) {
       series: [{ ...LP, name: "外資台指淨未平倉", data: hist.map((r) => r.tx_foreign_oi), areaStyle: { opacity: 0.08 }, lineStyle: { color: SER.foreign }, itemStyle: { color: SER.foreign }, markLine: zeroMark }, taiexLine] };
   }
   if (metric === "retail_ls") {
-    return { ...base, yAxis: [{ type: "value", name: "多空比", axisLabel: { color: "#999" } }, axisTaiex],
+    // retail_ls_mtx/tmf 是比率（如 0.139）→ ×100 以百分比呈現，與卡片一致
+    const pct100 = (v) => (v == null ? null : v * 100);
+    return { ...base, yAxis: [{ type: "value", name: "%", axisLabel: { color: "#999" } }, axisTaiex],
       series: [
-        { ...LP, name: "小台散戶多空比", data: hist.map((r) => r.retail_ls_mtx), lineStyle: { color: SER.foreign }, itemStyle: { color: SER.foreign }, markLine: zeroMark },
-        { ...LP, name: "微台散戶多空比", data: hist.map((r) => r.retail_ls_tmf), lineStyle: { color: SER.trust }, itemStyle: { color: SER.trust } },
+        { ...LP, name: "小台散戶多空比", data: hist.map((r) => pct100(r.retail_ls_mtx)), lineStyle: { color: SER.foreign }, itemStyle: { color: SER.foreign }, markLine: zeroMark },
+        { ...LP, name: "微台散戶多空比", data: hist.map((r) => pct100(r.retail_ls_tmf)), lineStyle: { color: SER.trust }, itemStyle: { color: SER.trust } },
         taiexLine] };
   }
   // margin：融資（左軸）+ 融券（右軸，量級差很多）
