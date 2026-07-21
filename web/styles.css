@@ -113,12 +113,19 @@ body {
 .nav .ico { font-size: var(--fs-md); }
 .nav:hover { background: var(--card); }
 .nav.active { background: var(--accent); color: #1a1a1a; font-weight: 700; }
+/* 導覽分組：每組帶小標題；系統組釘在側欄底部（如同看盤軟體把設定放最下） */
+.nav-group { display: flex; flex-direction: column; gap: 4px; }
+.nav-group + .nav-group { margin-top: var(--sp-3); }
+.sidebar .nav-group-sys { margin-top: auto; }   /* 特異度需勝過上面的相鄰選擇器，設定才會釘底 */
+.nav-group-title { font-size: var(--fs-xs); color: var(--muted); font-weight: 700; letter-spacing: 1px; padding: 4px 14px 2px; }
 
 .content { min-width: 0; min-height: 0; overflow: hidden; position: relative; display: flex; flex-direction: column; }
 
 /* 公開模式（/public/overview）：只開放總覽。用隱藏而非移除 DOM——app.js 在模組層對
    各視圖元素綁事件，移除節點會讓綁定拋 TypeError 而整頁掛掉。 */
 body[data-public] .nav:not([data-view="overview"]) { display: none; }
+body[data-public] .nav-group-title { display: none; }             /* 只剩總覽，群組標題無意義 */
+body[data-public] .nav-group + .nav-group { margin-top: 0; }        /* 空群組不留間距 */
 body[data-public] .status-bar { display: none; }
 
 /* ===== 視圖：只有 active 顯示，內部自行捲動 ===== */
@@ -340,12 +347,6 @@ a.stock:hover { text-decoration: underline; }
 .set-badge.ok { background: #1c2733; color: var(--info); }
 .set-badge.no { background: #34270f; color: #f0c474; }
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; max-width: 640px; }
-.nav-order { display: flex; flex-direction: column; gap: 4px; max-width: 380px; }
-.no-row { display: flex; align-items: center; gap: 8px; background: var(--card); border: 1px solid var(--border); border-radius: var(--r); padding: 6px 10px; }
-.no-lbl { flex: 1; font-size: var(--fs-sm); }
-.no-row button { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: var(--r); width: 32px; height: 30px; cursor: pointer; font-size: var(--fs-base); }
-.no-row button:hover:not(:disabled) { border-color: var(--accent); }
-.no-row button:disabled { opacity: .35; cursor: default; }
 .stat { background: var(--card); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 10px 12px; }
 .stat-k { font-size: var(--fs-sm); color: var(--muted); }
 .stat-v { font-size: var(--fs-lg); font-weight: 700; margin-top: 3px; }
@@ -355,6 +356,9 @@ a.stock:hover { text-decoration: underline; }
   .app { grid-template-columns: 56px 1fr; }
   .nav { justify-content: center; padding: 12px 0; }
   .nav .lbl { display: none; }
+  /* 56px 圖示模式放不下文字標題 → 收起，群組間改細分隔線區隔 */
+  .nav-group-title { display: none; }
+  .nav-group + .nav-group { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border); }
   .picks-split { flex-direction: column; }
   .picks-side { flex-basis: auto; max-height: 30vh; }
   .chart-row { flex-direction: column; }
@@ -375,12 +379,16 @@ a.stock:hover { text-decoration: underline; }
   .view { padding: 12px 12px 74px; }               /* 底部留白避免被分頁列蓋住 */
   .table-wrap.fill-half { max-height: 60vh; }
 
-  /* 左側欄 → 固定底部分頁列（7 個圖示平均分佈） */
+  /* 左側欄 → 固定底部分頁列（11 個圖示平均分佈） */
   .sidebar {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
     flex-direction: row; gap: 0; padding: 0; overflow: visible;
     background: var(--panel); border-right: none; border-top: 1px solid var(--border);
   }
+  /* 群組容器 display:contents → 消失於版面，內部 nav 直接成為底部列的 flex 項目，
+     沿用下方既有底部列 CSS 不必改；群組標題與釘底一併收起 */
+  .nav-group { display: contents; }
+  .nav-group-title { display: none; }
   .nav {
     flex: 1 1 0; min-width: 0; flex-direction: column; gap: 2px;
     justify-content: center; padding: 7px 1px; border-radius: 0; font-size: 10px;

@@ -299,35 +299,9 @@ async function loadSettings() {
     $("set-stats").innerHTML = [
       ["快照天數", s.snapshots], ["台指期歷史天數", s.tx_history_days], ["最新大盤日期", s.last_market_date || "—"],
     ].map(([k, v]) => `<div class="stat"><div class="stat-k">${k}</div><div class="stat-v">${v}</div></div>`).join("");
-    renderNavOrder();
   } catch (e) { /* 忽略 */ }
 }
 
-// 左側分頁順序：套用（重排 .nav DOM，側欄與手機底部列共用同一批元素）
-function applyNavOrder(order) {
-  const bar = document.querySelector(".sidebar"); if (!bar) return;
-  const byView = {}; bar.querySelectorAll(".nav").forEach((n) => { byView[n.dataset.view] = n; });
-  const all = [...bar.querySelectorAll(".nav")].map((n) => n.dataset.view);
-  const full = (order || []).filter((v) => byView[v]).concat(all.filter((v) => !(order || []).includes(v)));
-  full.forEach((v) => bar.appendChild(byView[v]));  // 依序移到尾端＝完成重排
-}
-function renderNavOrder() {
-  const box = $("nav-order"); if (!box) return;
-  const navs = [...document.querySelectorAll(".sidebar .nav")];
-  box.innerHTML = navs.map((n, i) =>
-    `<div class="no-row"><span class="no-lbl">${esc(n.querySelector(".lbl").textContent)}</span>` +
-    `<button class="no-up" data-i="${i}"${i === 0 ? " disabled" : ""}>↑</button>` +
-    `<button class="no-dn" data-i="${i}"${i === navs.length - 1 ? " disabled" : ""}>↓</button></div>`).join("");
-}
-async function moveNav(i, dir) {
-  const bar = document.querySelector(".sidebar");
-  const navs = [...bar.querySelectorAll(".nav")];
-  const j = i + dir; if (j < 0 || j >= navs.length) return;
-  if (dir < 0) bar.insertBefore(navs[i], navs[j]); else bar.insertBefore(navs[j], navs[i]);
-  renderNavOrder();
-  const order = [...bar.querySelectorAll(".nav")].map((n) => n.dataset.view);
-  try { await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ nav_order: order }) }); } catch (e) { /* ignore */ }
-}
 async function saveSettings() {
   $("set-saved").textContent = "儲存中…";
   try {
@@ -1427,10 +1401,6 @@ $("btn-cup-bt").addEventListener("click", (e) => {
   e.target.classList.toggle("active", show);
   if (show && !cupBtLoaded) loadCupBacktest();
 });
-$("nav-order").addEventListener("click", (e) => {
-  const up = e.target.closest(".no-up"), dn = e.target.closest(".no-dn");
-  if (up) moveNav(+up.dataset.i, -1); else if (dn) moveNav(+dn.dataset.i, 1);
-});
 $("btn-tr-add").addEventListener("click", async () => {
   const st = $("tr-status"); st.textContent = "記錄中…";
   try {
@@ -1534,9 +1504,6 @@ if (document.fonts && document.fonts.ready) {
 (async () => {
   // 公開模式：只跑總覽所需的唯讀載入。設定/跨週非總覽；autoUpdate 會 POST /api/update/run
   // （寫 DB、打外部 API），匿名訪客絕不可觸發。
-  if (!PUBLIC) {
-    try { applyNavOrder((await getJSON("/api/settings")).nav_order); } catch (e) { /* 用預設順序 */ }
-  }
   const d = await loadDashboard();
   loadIndexChart();
   loadBreadth();

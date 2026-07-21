@@ -18,17 +18,29 @@
     </header>
 
     <nav class="sidebar">
-      <a class="nav active" data-view="overview"><span class="ico">📊</span><span class="lbl">總覽</span></a>
-      <a class="nav" data-view="picks"><span class="ico">🎯</span><span class="lbl">籌碼/基本選股</span></a>
-      <a class="nav" data-view="stock"><span class="ico">🔍</span><span class="lbl">個股查詢</span></a>
-      <a class="nav" data-view="rotation"><span class="ico">🔄</span><span class="lbl">族群輪動</span></a>
-      <a class="nav" data-view="watch"><span class="ico">⭐</span><span class="lbl">自選股</span></a>
-      <a class="nav" data-view="osfut"><span class="ico">🌏</span><span class="lbl">海期監控</span></a>
-      <a class="nav" data-view="cup"><span class="ico">🏆</span><span class="lbl">杯柄選股</span></a>
-      <a class="nav" data-view="trades"><span class="ico">📒</span><span class="lbl">交易帳本</span></a>
-      <a class="nav" data-view="traders"><span class="ico">🧭</span><span class="lbl">操盤手</span></a>
-      <a class="nav" data-view="weekly"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
-      <a class="nav" data-view="settings"><span class="ico">⚙️</span><span class="lbl">設定</span></a>
+      <div class="nav-group">
+        <div class="nav-group-title">市場</div>
+        <a class="nav active" data-view="overview"><span class="ico">📊</span><span class="lbl">總覽</span></a>
+        <a class="nav" data-view="rotation"><span class="ico">🔄</span><span class="lbl">族群輪動</span></a>
+        <a class="nav" data-view="weekly"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
+        <a class="nav" data-view="osfut"><span class="ico">🌏</span><span class="lbl">海期監控</span></a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">選股</div>
+        <a class="nav" data-view="picks"><span class="ico">🎯</span><span class="lbl">籌碼/基本選股</span></a>
+        <a class="nav" data-view="cup"><span class="ico">🏆</span><span class="lbl">杯柄選股</span></a>
+        <a class="nav" data-view="traders"><span class="ico">🧭</span><span class="lbl">操盤手</span></a>
+      </div>
+      <div class="nav-group">
+        <div class="nav-group-title">個股・交易</div>
+        <a class="nav" data-view="stock"><span class="ico">🔍</span><span class="lbl">個股查詢</span></a>
+        <a class="nav" data-view="watch"><span class="ico">⭐</span><span class="lbl">自選股</span></a>
+        <a class="nav" data-view="trades"><span class="ico">📒</span><span class="lbl">交易帳本</span></a>
+      </div>
+      <div class="nav-group nav-group-sys">
+        <div class="nav-group-title">系統</div>
+        <a class="nav" data-view="settings"><span class="ico">⚙️</span><span class="lbl">設定</span></a>
+      </div>
     </nav>
 
     <main class="content">
@@ -341,8 +353,6 @@
           <div class="set-row"><label>單筆可容忍虧損（元）</label><input type="number" id="set-loss-tol" class="stock-input" min="0" step="1000" placeholder="例如 20000" /><span class="muted small">（杯柄頁自動算建議部位＝此金額 ÷ 每股風險；建議填總資金的 1–2%，清空＝不啟用）</span></div>
           <div class="set-row"><button id="btn-save-settings" class="file-label">💾 儲存設定</button><span id="set-saved" class="muted"></span></div>
         </div>
-        <div class="ai-head" style="margin-top:8px"><span>左側分頁順序 <span class="muted small">（用 ↑↓ 調整，儲存後雲端同步）</span></span></div>
-        <div id="nav-order" class="nav-order"></div>
 
         <div class="ai-head" style="margin-top:8px"><span>資料庫狀態</span></div>
         <div id="set-stats" class="stats-grid"></div>
