@@ -14,7 +14,8 @@ from .helpers import (
     get_ai_cache,
     set_ai_cache,
     _os_futures,
-    _os_futures_live
+    _os_futures_live,
+    _turnover_for,
 )
 from ..sources import twse, taifex, mis
 from .. import analysis, gemini, traders
@@ -27,6 +28,25 @@ def os_futures(refresh: int = 0, live: int = 0):
     if live:
         return _os_futures_live()
     return _os_futures(refresh=bool(refresh))
+
+
+def _prev_turnover(c, today: str) -> tuple[dict, str | None]:
+    """前一個「拿得到官方成交量額」的交易日資料與日期（成交額增減的比較基準）。
+
+    交易日候選取自 stock_ohlc；最多試 2 天就放棄——連假期間再往回抓只是多打幾次無用請求，
+    寧可讓前端顯示「—」也不拖慢每 10 秒一次的排行輪詢。
+    """
+    for (d,) in c.execute(
+            "SELECT DISTINCT date FROM stock_ohlc WHERE date < ? ORDER BY date DESC LIMIT 2",
+            (today,)).fetchall():
+        try:
+            day = datetime.strptime(d, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        t = _turnover_for(c, day)
+        if t:
+            return t, d
+    return {}, None
 
 
 def _rank_ttl() -> int:
@@ -66,18 +86,37 @@ def rank_price(market: str = "all", n: int = 30):
         pool = sorted(by_mkt[market], key=lambda x: -x[1])[:n]
     tokens = [f"{'otc' if code in otc else 'tse'}_{code}.tw" for code, _ in pool]
     quotes = mis.fetch_mis_rank(tokens) if tokens else {}
+    today = datetime.now().date()
+    t_today = _turnover_for(c, today)          # 盤中通常為空 → 成交額退回估算
+    t_prev, prev_date = _prev_turnover(c, today.strftime("%Y-%m-%d"))
     items = []
     for code, close in pool:
-        q = quotes.get(code)
+        q = quotes.get(code) or {}
+        price = q.get("price") or close
+        # 成交量：MIS 即時（張）優先，盤前/缺檔退回官方盤後
+        vol = q.get("vol")
+        if vol is None:
+            vol = (t_today.get(code) or {}).get("vol")
+        # 成交額：官方精確值優先；盤中無官方值時以 量×1000×現價 估算（標記 amount_est）
+        amount = (t_today.get(code) or {}).get("amount")
+        est = amount is None
+        if est:
+            amount = round(vol * 1000 * price) if (vol is not None and price) else None
+        prev_amount = (t_prev.get(code) or {}).get("amount")
+        chg_amt = amount - prev_amount if (amount is not None and prev_amount) else None
         items.append({
             "code": code, "market": "otc" if code in otc else "twse",
-            "name": (q or {}).get("name") or otc.get(code) or code,
-            "price": (q or {}).get("price") or close,
-            "chg": (q or {}).get("chg"), "chg_pct": (q or {}).get("chg_pct"),
-            "time": (q or {}).get("time"),
+            "name": q.get("name") or otc.get(code) or code,
+            "price": price,
+            "chg": q.get("chg"), "chg_pct": q.get("chg_pct"),
+            "vol": vol, "amount": amount, "amount_est": est and amount is not None,
+            "prev_amount": prev_amount,
+            "amount_chg": chg_amt,
+            "amount_chg_pct": round(chg_amt / prev_amount * 100, 1) if chg_amt is not None else None,
+            "time": q.get("time"),
         })
     items.sort(key=lambda i: -(i["price"] or 0))
-    result = {"market": market, "items": items[:n],
+    result = {"market": market, "items": items[:n], "prev_date": prev_date,
               "fetched_at": datetime.now().isoformat()}
     if items:
         set_ai_cache(c, key, result)

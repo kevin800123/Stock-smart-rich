@@ -37,9 +37,10 @@ def parse_mis_quotes(payload: dict) -> dict:
 
 
 def parse_mis_rank(payload: dict) -> dict:
-    """getStockInfo → {代號: {price, chg, chg_pct, time, name}}（高價股排行用的完整欄位）。
+    """getStockInfo → {代號: {price, chg, chg_pct, vol, time, name}}（高價股排行用的完整欄位）。
 
-    現價沿用 _price（z，無成交退買一）；漲跌以昨收 y 計；t=成交時間取 HH:MM。無價的檔略過。
+    現價沿用 _price（z，無成交退買一）；漲跌以昨收 y 計；v=當日累積成交量（張，MIS 原生單位，
+    無成交金額欄位）；t=成交時間取 HH:MM。無價的檔略過。
     """
     out: dict[str, dict] = {}
     for m in payload.get("msgArray") or []:
@@ -47,8 +48,12 @@ def parse_mis_rank(payload: dict) -> dict:
         p = _price(m)
         if not code or p is None:
             continue
-        rec = {"price": p, "chg": None, "chg_pct": None,
+        rec = {"price": p, "chg": None, "chg_pct": None, "vol": None,
                "time": None, "name": str(m.get("n") or "").strip()}
+        try:
+            rec["vol"] = int(str(m.get("v") or ""))
+        except ValueError:
+            pass
         try:
             y = float(str(m.get("y") or ""))
             rec["chg"] = round(p - y, 2)

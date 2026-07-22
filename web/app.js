@@ -139,9 +139,9 @@ function showView(name) {
   if (name === "overview") { idxChart && idxChart.resize(); chipChart && chipChart.resize(); sectorChart && sectorChart.resize(); txVolChart && txVolChart.resize(); }
   if (name === "stock") { stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize(); }
   if (name === "rotation") { loadRotation(); loadCross(); }
-  // 監控頁：進入才啟動輪詢（台股每 10 秒、海期每 12 tick＝120 秒），切走即停——控制請求量
-  if (name === "osfut") { loadOsFutures("live"); loadRankPrice(); startOsfutPolling(); }
-  else stopOsfutPolling();
+  // 兩個監控頁各自輪詢：進入才啟動、切走即停——控制請求量
+  if (name === "osfut") { loadOsFutures("live"); startOsfutPolling(); } else stopOsfutPolling();
+  if (name === "hiprice") { loadRankPrice(); startRankPolling(); } else stopRankPolling();
   if (name === "cup") { if (!cupLoaded) loadCupHandle(); else cupChart && cupChart.resize(); }
   if (name === "weekly") loadCsvSummary(false);  // 讀快取即回；匯入後才會重新生成
   if (name === "watch") loadWatchlist();
@@ -654,8 +654,12 @@ async function loadOsFutures(mode) {
   } catch (e) { el.innerHTML = '<div class="muted small">載入失敗：' + esc(e.message) + "</div>"; }
 }
 
-// ===== 台股高價股即時排行（MIS）＋監控頁輪詢 =====
-let rankMarket = "all", osfutTimer = null, osfutTick = 0;
+// ===== 台股高價股即時排行（MIS）＝高價股監控頁 =====
+let rankMarket = "all", osfutTimer = null, rankTimer = null;
+
+// 成交額一律以「億」呈現：個股單日動輒數十億，元或萬都得數零
+function yi(v, dp) { return v == null ? "—" : fmt(v / 1e8, dp == null ? 1 : dp); }
+
 async function loadRankPrice() {
   const el = $("rankprice"); if (!el) return;
   try {
@@ -663,29 +667,44 @@ async function loadRankPrice() {
     const note = $("rankprice-note");
     if (note) {
       const anyLive = (d.items || []).some((i) => i.time);
-      note.textContent = anyLive ? `（證交所即時，${d.fetched_at ? d.fetched_at.slice(11, 16) : ""} 更新）` : "（收盤價）";
+      const base = d.prev_date ? `　量額比較基準 ${d.prev_date}` : "";
+      note.textContent = (anyLive ? `（證交所即時，${d.fetched_at ? d.fetched_at.slice(11, 16) : ""} 更新` : "（收盤價") + base + "）";
     }
     if (!d.items || !d.items.length) { el.innerHTML = '<div class="muted">尚無資料（需先跑過 OHLC 回補）</div>'; return; }
-    const head = "<tr><th>#</th><th>股票</th><th class=\"num\">成交</th><th class=\"num\">漲跌</th><th class=\"num\">漲跌%</th><th class=\"num\">時間</th></tr>";
+    const head = "<tr><th>#</th><th>股票</th><th class=\"num\">成交價</th><th class=\"num\">漲跌</th>" +
+      "<th class=\"num\">漲跌%</th><th class=\"num\">成交量(張)</th><th class=\"num\">成交額(億)</th>" +
+      "<th class=\"num\">成交額增減</th><th class=\"num\">時間</th></tr>";
     const body = d.items.map((it, i) => {
       const cls = it.chg > 0 ? "up" : it.chg < 0 ? "down" : "flat";
+      // 盤中官方成交金額尚未發布 → 後端用 量×現價 估算，標「~」並在 tooltip 說明
+      const amt = it.amount == null ? "—"
+        : yi(it.amount) + (it.amount_est ? '<span class="muted" title="盤中估算：成交量×現價（官方成交金額收盤後才發布）">~</span>' : "");
+      const acls = it.amount_chg > 0 ? "up" : it.amount_chg < 0 ? "down" : "flat";
+      const ach = it.amount_chg == null ? "—"
+        : `${it.amount_chg > 0 ? "+" : ""}${yi(it.amount_chg)} 億` +
+          (it.amount_chg_pct == null ? "" : `（${it.amount_chg_pct > 0 ? "+" : ""}${fmt(it.amount_chg_pct, 1)}%）`);
       return `<tr><td>${i + 1}</td><td>${stockLink(it.code, it.name)}</td>` +
         `<td class="num">${fmt(it.price, 2)}</td>` +
         `<td class="num ${cls}">${it.chg == null ? "—" : (it.chg > 0 ? "+" : "") + fmt(it.chg, 2)}</td>` +
         `<td class="num ${cls}">${it.chg_pct == null ? "—" : (it.chg_pct > 0 ? "+" : "") + fmt(it.chg_pct, 2) + "%"}</td>` +
+        `<td class="num">${it.vol == null ? "—" : fmt(it.vol, 0)}</td>` +
+        `<td class="num">${amt}</td>` +
+        `<td class="num ${acls}">${ach}</td>` +
         `<td class="num">${it.time ? esc(it.time) : "收盤"}</td></tr>`;
     }).join("");
     el.innerHTML = `<table>${head}${body}</table>`;
   } catch (e) { el.innerHTML = '<div class="muted">載入失敗：' + esc(e.message) + "</div>"; }
 }
-function startOsfutPolling() {
-  if (osfutTimer) return;                       // 防重複註冊
-  osfutTick = 0;
-  osfutTimer = setInterval(() => {
-    osfutTick++;
-    loadRankPrice();                            // 台股每 10 秒（MIS 便宜，後端 TTL 8 秒）
-    if (osfutTick % 12 === 0) loadOsFutures("live");   // 海期每 120 秒（Yahoo 較貴）
-  }, 10000);
+function startRankPolling() {                   // 台股每 10 秒（MIS 便宜，後端 TTL 8 秒）
+  if (rankTimer) return;                        // 防重複註冊
+  rankTimer = setInterval(loadRankPrice, 10000);
+}
+function stopRankPolling() {
+  if (rankTimer) { clearInterval(rankTimer); rankTimer = null; }
+}
+function startOsfutPolling() {                  // 海期每 120 秒（Yahoo 較貴）
+  if (osfutTimer) return;
+  osfutTimer = setInterval(() => loadOsFutures("live"), 120000);
 }
 function stopOsfutPolling() {
   if (osfutTimer) { clearInterval(osfutTimer); osfutTimer = null; }
@@ -1361,7 +1380,8 @@ $("btn-export").addEventListener("click", () => {
   window.location.href = url;
 });
 $("btn-save-settings").addEventListener("click", saveSettings);
-$("btn-osfut-refresh").addEventListener("click", () => { loadOsFutures("live"); loadRankPrice(); });
+$("btn-osfut-refresh").addEventListener("click", () => loadOsFutures("live"));
+$("btn-rank-refresh").addEventListener("click", loadRankPrice);
 document.querySelectorAll(".rkp-tab").forEach((b) => b.addEventListener("click", () => {
   if (b.dataset.market === rankMarket) return;
   rankMarket = b.dataset.market;

@@ -132,6 +132,40 @@ def parse_otc_ohlc(payload: dict) -> dict:
     return out
 
 
+def parse_otc_turnover(payload: dict) -> dict:
+    """dailyQuotes 上櫃盤後行情 → {代號: {vol: 張, amount: 元}}。
+
+    位置欄位：0 代號、8 成交股數、9 成交金額(元)。只取 4 位數普通股（排除 ETF 00xx）。
+    """
+    out: dict[str, dict] = {}
+    for t in payload.get("tables") or []:
+        for r in t.get("data") or []:
+            if not r or len(r) < 10:
+                continue
+            code = str(r[0]).strip()
+            if not (len(code) == 4 and code.isdigit() and not code.startswith("00")):
+                continue
+            shares, amount = _f(r[8]), _f(r[9])
+            if shares is None or amount is None:
+                continue
+            out[code] = {"vol": int(shares // 1000), "amount": amount}
+    return out
+
+
+def fetch_otc_turnover(date: datetime.date | None = None) -> dict:
+    """直連櫃買 dailyQuotes 取指定日全上櫃個股成交量額。當日盤後才發布，查無回空。"""
+    day = date or datetime.date.today()
+    ds = f"{day.year}/{day.month:02d}/{day.day:02d}"
+    try:
+        j = httpx.get(DAILY_QUOTES_URL, params={"date": ds, "response": "json"},
+                      timeout=25, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}).json()
+        if j.get("stat") == "ok" and j.get("tables"):
+            return parse_otc_turnover(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
 def fetch_otc_ohlc(date: datetime.date | None = None) -> dict:
     """直連櫃買 dailyQuotes 取指定日全上櫃個股 OHLC（型態選股用）。查無回空。"""
     day = date or datetime.date.today()

@@ -508,6 +508,45 @@ def fetch_stock_ohlc(date: datetime.date | None = None) -> dict:
     return {}
 
 
+def parse_stock_turnover(payload: dict) -> dict:
+    """MI_INDEX 每日收盤行情 → {代號: {vol: 張, amount: 元}}。盤中 MIS 無成交金額，故成交額以此為準。
+
+    具名取欄（TWSE 欄位有名字，不像櫃買要靠位置）；成交股數/1000 轉張；只取 4 位數普通股。
+    """
+    out: dict[str, dict] = {}
+    for tb in payload.get("tables") or []:
+        f = tb.get("fields") or []
+        if "證券代號" not in f or "成交金額" not in f or "成交股數" not in f:
+            continue
+        idx = {n: i for i, n in enumerate(f)}
+        ci, vi, ai = idx["證券代號"], idx["成交股數"], idx["成交金額"]
+        for row in tb.get("data") or []:
+            if max(ci, vi, ai) >= len(row):
+                continue
+            code = str(row[ci]).strip()
+            if not (len(code) == 4 and code.isdigit() and not code.startswith("00")):
+                continue
+            shares, amount = _f(row[vi]), _f(row[ai])
+            if shares is None or amount is None:
+                continue
+            out[code] = {"vol": int(shares // 1000), "amount": amount}
+    return out
+
+
+def fetch_stock_turnover(date: datetime.date | None = None) -> dict:
+    """直連 MI_INDEX(ALLBUT0999) 取指定日全上市個股成交量額。當日盤後才發布，查無回空。"""
+    day = date or datetime.date.today()
+    try:
+        j = httpx.get(MI_INDEX_RWD,
+                      params={"date": day.strftime("%Y%m%d"), "type": "ALLBUT0999", "response": "json"},
+                      timeout=25, follow_redirects=True).json()
+        if j.get("stat") == "OK" and j.get("tables"):
+            return parse_stock_turnover(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
 def parse_close_prices(payload: dict) -> dict:
     """MI_INDEX(type=ALLBUT0999) 個股表 → {代號: 收盤價}。"""
     out = {}

@@ -379,7 +379,7 @@ a.stock:hover { text-decoration: underline; }
   .view { padding: 12px 12px 74px; }               /* 底部留白避免被分頁列蓋住 */
   .table-wrap.fill-half { max-height: 60vh; }
 
-  /* 左側欄 → 固定底部分頁列（11 個圖示平均分佈） */
+  /* 左側欄 → 固定底部分頁列（12 個圖示平均分佈） */
   .sidebar {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
     flex-direction: row; gap: 0; padding: 0; overflow: visible;

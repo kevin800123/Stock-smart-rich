@@ -24,6 +24,7 @@
         <a class="nav" data-view="rotation"><span class="ico">🔄</span><span class="lbl">族群輪動</span></a>
         <a class="nav" data-view="weekly"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
         <a class="nav" data-view="osfut"><span class="ico">🌏</span><span class="lbl">海期監控</span></a>
+        <a class="nav" data-view="hiprice"><span class="ico">💰</span><span class="lbl">高價股監控</span></a>
       </div>
       <div class="nav-group">
         <div class="nav-group-title">選股</div>
@@ -315,23 +316,29 @@
         <div class="wave-help" id="trader-disclaimer" style="display:block"></div>
       </section>
 
-      <!-- ===== 海期監控（＋台股高價股即時排行） ===== -->
+      <!-- ===== 海期監控 ===== -->
       <section id="view-osfut" class="view">
+        <div class="toolbar">
+          <span class="pane-title" style="margin:0">海期監控</span>
+          <button id="btn-osfut-refresh" class="file-label">🔄 更新報價</button>
+          <span id="osfut-time" class="muted small"></span>
+          <span class="muted small">停留本頁每 2 分鐘自動更新（期貨延遲約 10 分）</span>
+        </div>
+        <div id="osfut"></div>
+      </section>
+
+      <!-- ===== 高價股監控（台股高價股即時排行，MIS） ===== -->
+      <section id="view-hiprice" class="view">
         <div class="toolbar">
           <span class="pane-title" style="margin:0">台股高價股</span>
           <span class="hm-tabs">
             <button class="ctf rkp-tab active" data-market="all">合併</button><button class="ctf rkp-tab" data-market="twse">上市</button><button class="ctf rkp-tab" data-market="otc">上櫃</button>
           </span>
+          <button id="btn-rank-refresh" class="file-label">🔄 更新報價</button>
           <span id="rankprice-note" class="muted small"></span>
+          <span class="muted small">停留本頁每 10 秒自動更新（證交所即時）</span>
         </div>
-        <div id="rankprice" class="table-wrap fill-half"></div>
-        <div class="toolbar" style="margin-top:8px">
-          <span class="pane-title" style="margin:0">海期監控</span>
-          <button id="btn-osfut-refresh" class="file-label">🔄 更新報價</button>
-          <span id="osfut-time" class="muted small"></span>
-          <span class="muted small">停留本頁自動更新：台股每 10 秒（證交所即時）、海期每 2 分鐘（期貨延遲約 10 分）</span>
-        </div>
-        <div id="osfut"></div>
+        <div id="rankprice" class="table-wrap fill"></div>
       </section>
 
       <!-- ===== 跨週 ＋ AI ===== -->

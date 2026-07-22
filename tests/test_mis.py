@@ -4,7 +4,8 @@ from stocks_power_rich.sources import mis
 def test_parse_mis_rank_full_fields():
     """高價股排行需要的完整欄位：現價 z（- 退回買一）、昨收 y 算漲跌、時間 t、名稱 n。"""
     payload = {"rtcode": "0000", "msgArray": [
-        {"c": "2330", "n": "台積電", "z": "1100.0000", "y": "1090.0000", "t": "10:23:45", "b": "-"},
+        {"c": "2330", "n": "台積電", "z": "1100.0000", "y": "1090.0000", "t": "10:23:45", "b": "-",
+         "v": "28754"},
         {"c": "8069", "n": "元太", "z": "-", "y": "210.0000", "t": "10:23:40", "b": "212.50_212.00_"},
         {"c": "9999", "n": "壞檔", "z": "-", "y": "-", "t": "-", "b": "-"},   # 無價 → 略過
     ]}
@@ -13,7 +14,9 @@ def test_parse_mis_rank_full_fields():
     assert r["price"] == 1100.0 and r["name"] == "台積電"
     assert r["chg"] == 10.0 and r["chg_pct"] == 0.92        # (1100-1090)/1090
     assert r["time"] == "10:23"
+    assert r["vol"] == 28754                                # v＝當日累積成交量（張）
     assert out["8069"]["price"] == 212.5                    # z='-' 退回買一
+    assert out["8069"]["vol"] is None                       # 無 v → None（不假造 0）
     assert "9999" not in out
 
 

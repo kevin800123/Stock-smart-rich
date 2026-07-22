@@ -241,3 +241,29 @@ def test_parse_margin_sums_balances():
     assert out["margin_chg"] == 566
     assert out["short_balance"] == 101
     assert out["short_chg"] == -6
+
+
+def test_parse_stock_turnover_named_fields_and_filters():
+    """MI_INDEX(ALLBUT0999) 個股表 → {代號: {vol(張), amount(元)}}；具名取欄、千分位、排除 ETF/非四碼。"""
+    payload = {"tables": [
+        {"fields": ["指數", "收盤指數"], "data": [["寶島股價指數", "49,043.31"]]},   # 非個股表 → 略過
+        {"fields": ["證券代號", "證券名稱", "成交股數", "成交筆數", "成交金額",
+                    "開盤價", "最高價", "最低價", "收盤價"],
+         "data": [
+             ["2330", "台積電", "28,754,000", "3,079", "69,009,600,000",
+              "2440.00", "2445.00", "2385.00", "2400.00"],
+             ["00400A", "主動國泰動能高息", "36,108,625", "5,830", "478,706,751",
+              "12.92", "13.45", "12.92", "13.43"],                       # ETF → 排除
+             ["0050", "元大台灣50", "1,000", "1", "50,000",
+              "50", "50", "50", "50"],                                   # 00 開頭 → 排除
+             ["2454", "聯發科", "-", "-", "-", "-", "-", "-", "-"],        # 無量 → 排除
+         ]},
+    ]}
+    out = twse.parse_stock_turnover(payload)
+    assert out == {"2330": {"vol": 28754, "amount": 69009600000.0}}
+
+
+def test_parse_stock_turnover_empty_when_no_amount_column():
+    """只有 OHLC 沒有成交金額的表（欄位缺）→ 回空，不硬猜位置。"""
+    payload = {"tables": [{"fields": ["證券代號", "收盤價"], "data": [["2330", "2400"]]}]}
+    assert twse.parse_stock_turnover(payload) == {}

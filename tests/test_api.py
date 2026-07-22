@@ -984,6 +984,64 @@ def test_stock_kline_falls_back_to_official_ohlc_when_yfinance_empty(tmp_path, m
     assert client.get("/api/stock/6894.TW/kline?interval=1h").json()["candles"] == []
 
 
+def _no_turnover(monkeypatch):
+    """官方成交量額來源全空（模擬盤中尚未發布）——同時擋掉測試對外連網。"""
+    from stocks_power_rich.sources import twse, tpex
+    monkeypatch.setattr(twse, "fetch_stock_turnover", lambda date=None: {})
+    monkeypatch.setattr(tpex, "fetch_otc_turnover", lambda date=None: {})
+
+
+def test_rank_price_turnover_official_estimate_and_prev_day_change(tmp_path, monkeypatch):
+    """/api/rank/price 量額：官方值優先、盤中退回 量×現價 估算，並與前一交易日官方成交額比增減。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc, set_ai_cache
+    from stocks_power_rich.sources import mis, twse, tpex
+    from datetime import datetime
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    today = datetime.now().strftime("%Y-%m-%d")
+    for d in ("2026-07-16", "2026-07-17"):
+        bulk_upsert_ohlc(c, d, {
+            "2330": {"open": 2400, "high": 2450, "low": 2380, "close": 2400.0},
+            "3008": {"open": 1750, "high": 1800, "low": 1740, "close": 1780.0},
+            "2454": {"open": 1500, "high": 1520, "low": 1490, "close": 1500.0},
+        })
+    monkeypatch.setattr(mis, "fetch_mis_rank", lambda tokens: {
+        "2330": {"price": 2455.0, "chg": 55.0, "chg_pct": 2.29, "vol": 30000,
+                 "time": "10:30", "name": "台積電"},
+        "3008": {"price": 1800.0, "chg": 20.0, "chg_pct": 1.12, "vol": 1000,
+                 "time": "10:30", "name": "大立光"},
+        "2454": {"price": 1500.0, "chg": 0.0, "chg_pct": 0.0, "vol": 500,
+                 "time": "10:30", "name": "聯發科"},
+    })
+    # 今日：只有 2330 有官方值（其餘退估算）；前一交易日 2026-07-17：2330/3008 有，2454 沒有
+    by_date = {
+        today: {"2330": {"vol": 30000, "amount": 73_000_000_000.0}},
+        "2026-07-17": {"2330": {"vol": 25000, "amount": 60_000_000_000.0},
+                       "3008": {"vol": 900, "amount": 1_600_000_000.0}},
+    }
+    monkeypatch.setattr(twse, "fetch_stock_turnover",
+                        lambda date=None: by_date.get(date.strftime("%Y-%m-%d"), {}))
+    monkeypatch.setattr(tpex, "fetch_otc_turnover", lambda date=None: {})
+    app = create_app()
+    client = TestClient(app)
+    r = client.get("/api/rank/price?market=twse&n=10").json()
+    assert r["prev_date"] == "2026-07-17"
+    it = {i["code"]: i for i in r["items"]}
+    # 官方值存在 → 精確、不標估算；與前一日 60 億 → +13 億 / +21.7%
+    assert it["2330"]["amount"] == 73_000_000_000.0 and it["2330"]["amount_est"] is False
+    assert it["2330"]["vol"] == 30000
+    assert it["2330"]["amount_chg"] == 13_000_000_000.0
+    assert it["2330"]["amount_chg_pct"] == 21.7
+    # 官方缺 → 估算 1000 張 × 1000 股 × 1800 元 = 18 億，標記 amount_est
+    assert it["3008"]["amount"] == 1_800_000_000 and it["3008"]["amount_est"] is True
+    assert it["3008"]["amount_chg"] == 200_000_000 and it["3008"]["amount_chg_pct"] == 12.5
+    # 前一日無官方值 → 增減兩欄皆 None（不拿估算值硬湊基準）
+    assert it["2454"]["prev_amount"] is None
+    assert it["2454"]["amount_chg"] is None and it["2454"]["amount_chg_pct"] is None
+
+
 def test_rank_price_endpoint_markets_and_live_quotes(tmp_path, monkeypatch):
     """/api/rank/price：昨收預選高價股（分上市/上櫃/合併）→ MIS 即時價覆蓋；MIS 缺檔退回昨收。"""
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
@@ -1006,6 +1064,7 @@ def test_rank_price_endpoint_markets_and_live_quotes(tmp_path, monkeypatch):
         "6415": {"price": 3080.0, "chg": 30.0, "chg_pct": 0.98, "time": "10:30", "name": "矽力*-KY"},
         # 3008/8069 MIS 缺 → 退回昨收
     })
+    _no_turnover(monkeypatch)
     app = create_app()
     client = TestClient(app)
     r = client.get("/api/rank/price?market=all&n=10").json()

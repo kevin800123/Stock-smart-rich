@@ -105,6 +105,22 @@ def _otc_names(c) -> dict:
     return m or {}
 
 
+def _turnover_for(c, day) -> dict:
+    """指定交易日全市場（上市＋上櫃）成交量額 {code: {vol: 張, amount: 元}}，依日期永久快取。
+
+    盤後數字定案後不再變動，故快取無 TTL；抓不到（盤中尚未發布/來源失效）回空且**不寫快取**，
+    讓同一天稍後可重試。上櫃來源失敗時仍回上市部分，由呼叫端降級為估算。
+    """
+    key = f"turnover:{day.strftime('%Y-%m-%d')}"
+    m = get_ai_cache(c, key)
+    if m is not None:
+        return m
+    merged = {**twse.fetch_stock_turnover(day), **tpex.fetch_otc_turnover(day)}
+    if merged:
+        set_ai_cache(c, key, merged)
+    return merged
+
+
 def _otc_industry(c) -> dict:
     """上櫃 {code: {sector, name, shares}}，月快取（熱力圖上櫃分頁用）。"""
     key = f"otc_ind:{datetime.now().strftime('%Y-%m')}"
