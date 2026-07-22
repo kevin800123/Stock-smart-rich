@@ -396,20 +396,21 @@ def _cup_push_info(c) -> dict | None:
             "picks": bool(picks)}
 
 
-def _compose_daily_text(c, full: bool, force: bool = False) -> tuple[str, dict | None]:
-    """組盤後訊息文字。回 (txt, err)；err 非 None 時 txt 為空。
+def _daily_messages(c, full: bool, force: bool = False) -> tuple[list, dict | None]:
+    """組盤後 LINE 訊息。回 (messages, err)；err 非 None 時 messages 為空。
 
-    推播（_push_line）與 webhook 主動查詢共用同一份組裝，避免兩邊內容漂移。
+    回兩則：Flex 卡片（結構化數據）＋ 純文字 AI 解讀（長散文塞進卡片會把版面壓垮，
+    且散文在純文字訊息裡本來就比較好讀）。推播與 webhook 共用，避免兩邊內容漂移。
     force=True 略過「資料日須為今日」檢查——使用者自己問的就該回，即使是昨天的收盤。
     """
     try:
         rows = c.execute("SELECT * FROM market_daily ORDER BY date DESC LIMIT 2").fetchall()
         if not rows:
-            return "", {"ok": False, "error": "尚無大盤資料"}
+            return [], {"ok": False, "error": "尚無大盤資料"}
         m = dict(rows[0])
         prev_row = dict(rows[1]) if len(rows) > 1 else {}
         if not force and m["date"] != datetime.now().strftime("%Y-%m-%d"):
-            return "", {"ok": False, "skipped": True, "error": f"資料日 {m['date']} 非今日，略過"}
+            return [], {"ok": False, "skipped": True, "error": f"資料日 {m['date']} 非今日，略過"}
         secs = _sectors_for(c, m["date"])
         watch = []
         try:
@@ -454,20 +455,27 @@ def _compose_daily_text(c, full: bool, force: bool = False) -> tuple[str, dict |
             cup = _cup_push_info(c)
         except Exception:  # noqa: BLE001
             cup = None
-        txt = line_push.compose_daily_brief(m, secs, watch, ai_text=ai_text, full=full,
-                                            tsmc=tsmc, prev=prev_row, cup=cup)
+        msgs = [line_push.compose_daily_flex(m, secs, watch, full=full, tsmc=tsmc,
+                                            prev=prev_row, cup=cup)]
+        if ai_text:
+            msgs.append({"type": "text",
+                         "text": ("🤖 AI 解讀\n" + ai_text.strip())[:line_push.MAX_LEN]})
     except Exception as e:  # noqa: BLE001 — fatal 才記推播失敗（缺資料/非今日屬正常略過）
-        return "", {"ok": False, "error": str(e), "fatal": True}
-    return txt, None
+        return [], {"ok": False, "error": str(e), "fatal": True}
+    return msgs, None
 
 
-def _weekly_text(c) -> str:
-    """籌碼週報文字（跨週變化＋AI）。週六排程與 webhook「週報」共用。"""
+def _weekly_messages(c) -> list:
+    """籌碼週報訊息：Flex 卡片＋純文字 AI 分析。週六排程與 webhook「週報」共用。"""
     from ..api.public import weekly, summary_logic
     comparison = weekly()
     ai = summary_logic(c, refresh=0)   # 讀既有快取，不觸發重新扣費
-    return line_push.compose_weekly_brief(
-        comparison, ai_text=(ai.get("text") or "") if ai.get("enabled") else "")
+    msgs = [line_push.compose_weekly_flex(comparison)]
+    ai_text = (ai.get("text") or "") if ai.get("enabled") else ""
+    if ai_text:
+        msgs.append({"type": "text",
+                     "text": ("🤖 AI 籌碼分析師\n" + ai_text.strip())[:line_push.MAX_LEN]})
+    return msgs
 
 
 def _rank_message(c) -> dict:
@@ -480,18 +488,19 @@ def _push_line(c, full: bool, force: bool = False) -> dict:
     cfg = load_config()
     if not cfg.line_token:
         return {"ok": False, "error": "未設定 LINE_CHANNEL_ACCESS_TOKEN"}
-    txt, err = _compose_daily_text(c, full=full, force=force)
+    msgs, err = _daily_messages(c, full=full, force=force)
     if err:
         if err.get("fatal"):
             _note_push_fail(c, full, err.get("error"))
         return err
     prev_fail = get_setting(c, "line_push_fail")
     if prev_fail:
-        txt = f"⚠️ 前次推播失敗（{prev_fail}），數據以本則為準\n" + txt
-    r = line_push.broadcast_text(cfg.line_token, txt)
+        msgs = [{"type": "text",
+                 "text": f"⚠️ 前次推播失敗（{prev_fail}），數據以本則為準"}] + msgs
+    r = line_push.broadcast_messages(cfg.line_token, msgs)
     if not r.get("ok"):
         time.sleep(2)
-        r = line_push.broadcast_text(cfg.line_token, txt)
+        r = line_push.broadcast_messages(cfg.line_token, msgs)
     if r.get("ok"):
         if prev_fail:
             set_setting(c, "line_push_fail", "")

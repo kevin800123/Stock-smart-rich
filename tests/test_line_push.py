@@ -288,3 +288,123 @@ def test_compose_rank_flex_flow_bar_only_for_inflow():
 def test_compose_rank_flex_empty_degrades_to_text_message():
     msg = line_push.compose_rank_flex({"items": []})
     assert msg["type"] == "text" and "尚無" in msg["text"]
+
+
+# ===== 盤後速報 / 週報 Flex 卡片 =====
+
+def _bubbles(msg):
+    c = msg["contents"]
+    return c["contents"] if c["type"] == "carousel" else [c]
+
+
+def _sect(msg, label):
+    """依區塊標籤取出該區塊（body 每個 section 的第一個元素就是標籤文字），跨所有分頁找。"""
+    for bub in _bubbles(msg):
+        for b in bub["body"]["contents"]:
+            c = (b.get("contents") or [{}])[0]
+            if b.get("type") == "box" and c.get("text") == label:
+                return b
+    return None
+
+
+def test_compose_daily_flex_header_carries_index_and_date():
+    msg = line_push.compose_daily_flex(_ROW, _SECTORS, _WATCH, tsmc=_TSMC, prev=_PREV)
+    assert msg["type"] == "flex" and _bubbles(msg)[0]["size"] == "giga"
+    head = str(_bubbles(msg)[0]["header"])
+    assert "47,018.99" in head and "2026-07-01" in head
+    assert "▲893.08" in head and "+1.94%" in head
+    assert "10,780億" in head and "昨12,860億" in head
+    assert "台股盤後速報" in msg["altText"]
+
+
+def test_compose_daily_flex_institution_bars_diverge_around_zero():
+    """資金天平：買超往右紅、賣超往左綠，長度依三者最大絕對值等比——這是本卡唯一的大動作。"""
+    row = {**_ROW, "inst_foreign": 323.76, "inst_trust": -161.88, "inst_dealer": 0.0}
+    sect = _sect(line_push.compose_daily_flex(row, [], []), "三大法人買賣超（億）")
+    foreign, trust, dealer = sect["contents"][1:4]
+    fbar = foreign["contents"][1]                      # [名稱, 天平, 數值]
+    assert fbar["contents"][0]["contents"][-1]["width"] == "0%"      # 外資買超 → 左側空
+    assert fbar["contents"][2]["contents"][0]["width"] == "100%"     # 右側滿格（最大絕對值）
+    assert fbar["contents"][2]["contents"][0]["backgroundColor"] == "#e8404a"
+    tbar = trust["contents"][1]
+    assert tbar["contents"][0]["contents"][-1]["width"] == "50%"     # 投信賣超 161.88/323.76
+    assert tbar["contents"][0]["contents"][-1]["backgroundColor"] == "#1f9e6e"
+    assert dealer["contents"][1]["contents"][2]["contents"][0]["width"] == "0%"
+
+
+def test_compose_daily_flex_ratio_stays_uncoloured():
+    """散戶多空比是反向指標，染紅綠會被讀成利多/利空——寧可留白也不給錯誤暗示。"""
+    sect = _sect(line_push.compose_daily_flex(_ROW, [], []), "期貨籌碼")
+    vals = [r["contents"][1]["contents"][1] for r in sect["contents"][1:]]   # [filler, 值, 昨值]
+    assert any("小台多空比" in str(r) for r in sect["contents"])
+    assert {v["color"] for v in vals} == {"#e6e6e6"}          # 一律主文色，不套漲跌色
+
+
+def test_compose_daily_flex_margin_only_in_full_version():
+    assert _sect(line_push.compose_daily_flex(_ROW, [], [], full=False), "融資券") is None
+    sect = _sect(line_push.compose_daily_flex(_ROW, [], [], full=True), "融資券")
+    assert "9,414,925張" in str(sect) and "165.2%" in str(sect)
+
+
+def test_compose_daily_flex_omits_empty_sections():
+    bare = line_push.compose_daily_flex({"date": "2026-07-01", "taiex": 100.0}, [], [])
+    for label in ("三大法人買賣超（億）", "期貨籌碼", "類股強弱", "自選股", "國際行情"):
+        assert _sect(bare, label) is None
+    assert _bubbles(bare)[0]["body"]["contents"]       # 但卡片本身仍成立，不是空殼
+
+
+def test_compose_weekly_flex_acceleration_bars_and_lists():
+    comparison = {"this_date": "2026-07-17", "last_date": "2026-07-10", "stocks": [
+        {"name": "上曜", "status": "加速", "big_holder_ratio": 3.95},
+        {"name": "華通", "status": "加速", "big_holder_ratio": 1.58},
+        {"name": "新股", "status": "新進榜", "big_holder_ratio": 0.5},
+        {"name": "走了", "status": "退榜", "big_holder_ratio": None},
+        {"name": "平平", "status": "持平", "big_holder_ratio": 0.1},
+    ]}
+    msg = line_push.compose_weekly_flex(comparison)
+    assert msg["type"] == "flex"
+    assert "2026-07-10 → 2026-07-17" in str(msg["contents"]["header"])
+    acc = _sect(msg, "大戶加速")
+    assert acc["contents"][1]["contents"][1]["width"] == "100%"   # 上曜 3.95 滿格
+    assert acc["contents"][2]["contents"][1]["width"] == "40%"    # 華通 1.58/3.95
+    assert "新股" in str(_sect(msg, "新進榜"))
+    assert "退榜 1 檔" in str(msg["contents"]["body"])
+    assert "平平" not in str(msg)                                  # 持平不進週報
+
+
+def test_reply_messages_sends_list_without_token_degrades():
+    r = line_push.reply_messages("", "rt", [{"type": "text", "text": "x"}])
+    assert r["ok"] is False and "LINE" in r["error"]
+    assert line_push.reply_messages("tok", "rt", [])["ok"] is False
+
+
+def test_flex_bubbles_stay_under_line_10kb_limit():
+    """LINE 單顆 bubble 上限 10 KB，超限 API 直接退件、整則推播消失。
+
+    速報內容一顆裝不下 → 拆成可滑動的兩頁（市場全貌／我的關注），並保留尾端裁切作為保險：
+    自選股變多、股名變長都不會把卡片撐爆。
+    """
+    import json as _json
+    watch = [{"code": f"{i:04d}.TW", "name": f"超長股名{i}", "close": 1234.5,
+              "chg_pct": -3.21, "in_latest": True} for i in range(30)]
+    sectors = [{"name": f"類股名稱{i}", "chg_pct": (1 if i % 2 else -1) * (i + 1)}
+               for i in range(20)]
+    cup = {"count": 99, "picks": True,
+           "breakout": [{"name": f"突破股{i}", "close": 100.0, "resistance": 99.0}
+                        for i in range(6)],
+           "new": [{"name": f"新符合股{i}"} for i in range(6)]}
+    msg = line_push.compose_daily_flex(_ROW, sectors, watch, full=True,
+                                       tsmc=_TSMC, prev=_PREV, cup=cup)
+    bubbles = _bubbles(msg)
+    assert len(bubbles) == 2                        # 市場全貌／我的關注
+    for b in bubbles:
+        assert len(_json.dumps(b, ensure_ascii=False).encode()) <= 9500
+    # carousel 全體上限 50 KB
+    assert len(_json.dumps(msg["contents"], ensure_ascii=False).encode()) <= 50000
+    # 高價股卡同樣受保護
+    big = {"prev_date": "2026-07-21", "items": [
+        {"code": f"{i:04d}", "name": f"超長股名稱{i}", "price": 12345.0, "chg_pct": 9.99,
+         "vol": 123456, "amount": 1e10, "amount_est": True,
+         "amount_chg": 5e9, "amount_chg_pct": 88.8} for i in range(30)]}
+    rank = line_push.compose_rank_flex(big)
+    assert len(_json.dumps(rank["contents"], ensure_ascii=False).encode()) <= 9500

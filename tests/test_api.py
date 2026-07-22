@@ -174,19 +174,19 @@ def test_line_test_endpoint_composes_and_broadcasts(tmp_path, monkeypatch):
     monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {})
     sent = {}
 
-    def fake_broadcast(token, text):
-        sent["token"], sent["text"] = token, text
+    def fake_broadcast(token, msgs):
+        sent["token"], sent["text"] = token, str(msgs)
         return {"ok": True, "status": 200}
 
-    monkeypatch.setattr(line_push, "broadcast_text", fake_broadcast)
+    monkeypatch.setattr(line_push, "broadcast_messages", fake_broadcast)
     app = create_app()
     client = TestClient(app)
     r = client.post("/api/line/test").json()
     assert r["ok"] is True
     assert sent["token"] == "tok-123"
-    assert "加權指數 47,018.99" in sent["text"] and "外資　+323.8" in sent["text"]
-    assert "融資 9,414,925張" in sent["text"]        # 測試端點推完整版
-    assert "🔥 半導體　　 +3.21%" in sent["text"]    # 新版型：每行一項＋全形空白對齊
+    assert "47,018.99" in sent["text"] and "+323.8" in sent["text"]
+    assert "9,414,925張" in sent["text"]             # 測試端點推完整版
+    assert "半導體" in sent["text"] and "+3.21%" in sent["text"]   # 類股強弱（領漲欄）
     # settings 只回報狀態，不洩漏 token
     s = client.get("/api/settings").json()
     assert s["line_configured"] is True and "tok" not in str(s)
@@ -213,20 +213,21 @@ def test_line_push_failure_recorded_retry_and_recovery_notice(tmp_path, monkeypa
               {"ok": True, "status": 200}, {"ok": True, "status": 200}]
     sent = []
 
-    def fake_broadcast(token, text):
-        sent.append(text)
+    def fake_broadcast(token, msgs):
+        sent.append(msgs)
         return script[len(sent) - 1]
 
-    monkeypatch.setattr(line_push, "broadcast_text", fake_broadcast)
+    monkeypatch.setattr(line_push, "broadcast_messages", fake_broadcast)
     app = create_app()
     client = TestClient(app)
     r1 = client.post("/api/line/test").json()
     assert r1["ok"] is False and len(sent) == 2            # 失敗後有自動重試一次
     r2 = client.post("/api/line/test").json()              # 恢復 → 頂部帶前次失敗告警
     assert r2["ok"] is True
-    assert sent[2].startswith("⚠️ 前次推播失敗") and "500 upstream" in sent[2]
+    # 告警自成一則純文字排在卡片前面（塞進卡片會破壞版面，且告警該最先被看到）
+    assert sent[2][0]["text"].startswith("⚠️ 前次推播失敗") and "500 upstream" in sent[2][0]["text"]
     r3 = client.post("/api/line/test").json()              # 記錄已清除 → 不再標註
-    assert r3["ok"] is True and not sent[3].startswith("⚠️")
+    assert r3["ok"] is True and not str(sent[3][0]).startswith("⚠️")
 
 
 def test_line_watchlist_pct_falls_back_to_ohlc(tmp_path, monkeypatch):
@@ -252,7 +253,8 @@ def test_line_watchlist_pct_falls_back_to_ohlc(tmp_path, monkeypatch):
     monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {})          # 杯柄段落的股名對照
     monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {})
     sent = []
-    monkeypatch.setattr(line_push, "broadcast_text", lambda tok, txt: sent.append(txt) or {"ok": True})
+    monkeypatch.setattr(line_push, "broadcast_messages",
+                        lambda tok, msgs: sent.append(str(msgs)) or {"ok": True})
     app = create_app()
     client = TestClient(app)
     client.post("/api/watchlist", json={"code": "6894"})
@@ -294,13 +296,14 @@ def test_line_cup_section_only_picks_intersection(tmp_path, monkeypatch):
     monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {})
     monkeypatch.setattr(tpex, "fetch_otc_quotes", lambda date=None: {})
     sent = []
-    monkeypatch.setattr(line_push, "broadcast_text", lambda tok, txt: sent.append(txt) or {"ok": True})
+    monkeypatch.setattr(line_push, "broadcast_messages",
+                        lambda tok, msgs: sent.append(str(msgs)) or {"ok": True})
     app = create_app()
     client = TestClient(app)
     assert client.post("/api/line/test").json()["ok"] is True
     txt = sent[0]
-    assert "【杯柄型態&籌碼/基本】符合 1 檔" in txt
-    assert "台積電" in txt.split("杯柄型態&籌碼/基本")[1].split("━")[0]
+    assert "杯柄型態&籌碼/基本" in txt and "符合 1 檔" in txt
+    assert "台積電" in txt.split("杯柄型態&籌碼/基本")[1]
     assert "元太" not in txt   # 非交集股不出現
 
 
@@ -1285,7 +1288,8 @@ def test_intraday_breakout_requires_two_round_confirmation_above_atr_threshold(t
     monkeypatch.setattr(mis, "fetch_mis_quotes",
                         lambda tokens: {"8069": 213.5, "2812": 19.85})
     sent = []
-    monkeypatch.setattr(line_push, "broadcast_text", lambda tok, txt: sent.append(txt) or {"ok": True})
+    monkeypatch.setattr(line_push, "broadcast_messages",
+                        lambda tok, msgs: sent.append(str(msgs)) or {"ok": True})
     app = create_app()
     client = TestClient(app)
     r1 = client.post("/api/intraday/test?push=1").json()
@@ -1320,7 +1324,8 @@ def test_intraday_breakout_false_cross_resets_candidate(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mis, "fetch_mis_quotes", fake_quotes)
     sent = []
-    monkeypatch.setattr(line_push, "broadcast_text", lambda tok, txt: sent.append(txt) or {"ok": True})
+    monkeypatch.setattr(line_push, "broadcast_messages",
+                        lambda tok, msgs: sent.append(str(msgs)) or {"ok": True})
     app = create_app()
     client = TestClient(app)
     assert client.post("/api/intraday/test?push=1").json()["hits"] == []  # 213.5 首見候選
@@ -1352,7 +1357,8 @@ def test_intraday_picks_only_toggle_filters_watchlist(tmp_path, monkeypatch):
     monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {"8069": "元太"})
     monkeypatch.setattr(mis, "fetch_mis_quotes", lambda tokens: {"8069": 213.5, "2812": 19.85})
     sent = []
-    monkeypatch.setattr(line_push, "broadcast_text", lambda tok, txt: sent.append(txt) or {"ok": True})
+    monkeypatch.setattr(line_push, "broadcast_messages",
+                        lambda tok, msgs: sent.append(str(msgs)) or {"ok": True})
     app = create_app()
     client = TestClient(app)
     # 預設（不開）：兩檔都盯、都突破；第一輪只記候選，第二輪站穩才一起確認、交集股標⭐且排前
@@ -1664,8 +1670,8 @@ def test_line_webhook_requires_valid_signature(tmp_path, monkeypatch):
     monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok")
     from stocks_power_rich import line_push
     sent = []
-    monkeypatch.setattr(line_push, "reply_message",
-                        lambda tok, rt, msg: sent.append((rt, msg)) or {"ok": True})
+    monkeypatch.setattr(line_push, "reply_messages",
+                        lambda tok, rt, msgs: sent.append((rt, msgs)) or {"ok": True})
     app = create_app()
     client = TestClient(app)
     body = json.dumps({"events": [
@@ -1681,7 +1687,7 @@ def test_line_webhook_requires_valid_signature(tmp_path, monkeypatch):
                     headers={"X-Line-Signature": _line_sig("sekret", body)})
     assert r.status_code == 200
     assert len(sent) == 1 and sent[0][0] == "rt1"
-    assert "大盤" in sent[0][1]["text"] and "週報" in sent[0][1]["text"]  # 說明列出可用指令
+    assert "大盤" in sent[0][1][0]["text"] and "週報" in sent[0][1][0]["text"]  # 說明列出可用指令
 
 
 def test_line_webhook_brief_command_replies_market_text(tmp_path, monkeypatch):
@@ -1697,8 +1703,8 @@ def test_line_webhook_brief_command_replies_market_text(tmp_path, monkeypatch):
     upsert_market_daily(c, {"date": "2026-07-20", "taiex": 47018.99, "taiex_chg": 893.08,
                             "turnover": 10780.3})
     sent = []
-    monkeypatch.setattr(line_push, "reply_message",
-                        lambda tok, rt, msg: sent.append((rt, msg)) or {"ok": True})
+    monkeypatch.setattr(line_push, "reply_messages",
+                        lambda tok, rt, msgs: sent.append((rt, msgs)) or {"ok": True})
     app = create_app()
     client = TestClient(app)
     body = json.dumps({"events": [
@@ -1708,7 +1714,7 @@ def test_line_webhook_brief_command_replies_market_text(tmp_path, monkeypatch):
                     headers={"X-Line-Signature": _line_sig("sekret", body)})
     assert r.status_code == 200
     # 資料日非今日也照回（使用者主動問的，不套用推播的 staleness 略過規則）
-    assert len(sent) == 1 and "47,018.99" in sent[0][1]["text"] and "2026-07-20" in sent[0][1]["text"]
+    assert len(sent) == 1 and "47,018.99" in str(sent[0][1]) and "2026-07-20" in str(sent[0][1])
 
 
 def test_line_webhook_unknown_text_replies_help_and_never_500(tmp_path, monkeypatch):
@@ -1718,8 +1724,8 @@ def test_line_webhook_unknown_text_replies_help_and_never_500(tmp_path, monkeypa
     monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok")
     from stocks_power_rich import line_push
     sent = []
-    monkeypatch.setattr(line_push, "reply_message",
-                        lambda tok, rt, msg: sent.append((rt, msg)) or {"ok": True})
+    monkeypatch.setattr(line_push, "reply_messages",
+                        lambda tok, rt, msgs: sent.append((rt, msgs)) or {"ok": True})
     app = create_app()
     client = TestClient(app)
     for payload, expect_n in (
@@ -1733,7 +1739,7 @@ def test_line_webhook_unknown_text_replies_help_and_never_500(tmp_path, monkeypa
                         headers={"X-Line-Signature": _line_sig("sekret", b)})
         assert r.status_code == 200
         assert len(sent) == expect_n
-    assert "大盤" in sent[0][1]["text"]
+    assert "大盤" in sent[0][1][0]["text"]
 
 
 def test_line_webhook_rank_command_replies_flex_table(tmp_path, monkeypatch):
@@ -1753,8 +1759,8 @@ def test_line_webhook_rank_command_replies_flex_table(tmp_path, monkeypatch):
                  "time": "10:30", "name": "台積電"}})
     _no_turnover(monkeypatch)
     sent = []
-    monkeypatch.setattr(line_push, "reply_message",
-                        lambda tok, rt, msg: sent.append(msg) or {"ok": True})
+    monkeypatch.setattr(line_push, "reply_messages",
+                        lambda tok, rt, msgs: sent.append(msgs[0]) or {"ok": True})
     app = create_app()
     client = TestClient(app)
     body = json.dumps({"events": [
