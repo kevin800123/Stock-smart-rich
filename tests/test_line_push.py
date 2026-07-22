@@ -110,30 +110,6 @@ def test_compose_breakout_alert():
     assert "⭐" not in plain
 
 
-def test_compose_weekly_brief_sections_and_order():
-    comparison = {
-        "this_date": "2026-07-17", "last_date": "2026-07-10",
-        "stocks": [
-            {"code": "1316.TW", "name": "上曜", "status": "加速", "big_holder_ratio": 3.95},
-            {"code": "2313.TW", "name": "華通", "status": "加速", "big_holder_ratio": 1.96},
-            {"code": "1709.TW", "name": "和益", "status": "加速", "big_holder_ratio": 2.77},
-            {"code": "9999.TW", "name": "新股", "status": "新進榜", "big_holder_ratio": 0.5},
-            {"code": "8888.TW", "name": "走了", "status": "退榜", "big_holder_ratio": None},
-            {"code": "7777.TW", "name": "平平", "status": "持平", "big_holder_ratio": 0.1},
-        ],
-    }
-    txt = line_push.compose_weekly_brief(comparison, ai_text="• 本週大戶進駐半導體")
-    assert "籌碼週報" in txt and "2026-07-10 → 2026-07-17" in txt
-    # 加速榜依大戶增比 desc：上曜(3.95) > 和益(2.77) > 華通(1.96)
-    i_sy, i_hy, i_ht = txt.index("上曜"), txt.index("和益"), txt.index("華通")
-    assert i_sy < i_hy < i_ht
-    assert "3.95" in txt
-    assert "新進榜" in txt and "新股" in txt
-    assert "退榜 1 檔" in txt
-    assert "本週大戶進駐半導體" in txt
-    assert "平平" not in txt   # 持平不進週報
-
-
 def test_compose_weekly_brief_degrades_when_empty():
     txt = line_push.compose_weekly_brief({"this_date": "2026-07-17", "last_date": None, "stocks": []},
                                          ai_text="")
@@ -323,19 +299,20 @@ def test_compose_daily_flex_institution_bars_diverge_around_zero():
     sect = _sect(line_push.compose_daily_flex(row, [], []), "三大法人買賣超（億）")
     foreign, trust, dealer = sect["contents"][1:4]
     fbar = foreign["contents"][1]                      # [名稱, 天平, 數值]
-    assert fbar["contents"][0]["contents"][-1]["width"] == "0%"      # 外資買超 → 左側空
+    assert [x["type"] for x in fbar["contents"][0]["contents"]] == ["filler"]   # 買超 → 左側空
     assert fbar["contents"][2]["contents"][0]["width"] == "100%"     # 右側滿格（最大絕對值）
     assert fbar["contents"][2]["contents"][0]["backgroundColor"] == "#e8404a"
     tbar = trust["contents"][1]
     assert tbar["contents"][0]["contents"][-1]["width"] == "50%"     # 投信賣超 161.88/323.76
     assert tbar["contents"][0]["contents"][-1]["backgroundColor"] == "#1f9e6e"
-    assert dealer["contents"][1]["contents"][2]["contents"][0]["width"] == "0%"
+    # 自營 0 → 兩側都只有 filler（見 test_balance_bar_omits_invisible_zero_side）
+    assert [x["type"] for x in dealer["contents"][1]["contents"][2]["contents"]] == ["filler"]
 
 
 def test_compose_daily_flex_ratio_stays_uncoloured():
     """散戶多空比是反向指標，染紅綠會被讀成利多/利空——寧可留白也不給錯誤暗示。"""
     sect = _sect(line_push.compose_daily_flex(_ROW, [], []), "期貨籌碼")
-    vals = [r["contents"][1]["contents"][1] for r in sect["contents"][1:]]   # [filler, 值, 昨值]
+    vals = [r["contents"][1] for r in sect["contents"][1:]]   # [標籤, 值, 昨值] 三欄平鋪
     assert any("小台多空比" in str(r) for r in sect["contents"])
     assert {v["color"] for v in vals} == {"#e6e6e6"}          # 一律主文色，不套漲跌色
 
@@ -362,8 +339,8 @@ def test_reply_messages_sends_list_without_token_degrades():
 def test_flex_bubbles_stay_under_line_10kb_limit():
     """LINE 單顆 bubble 上限 10 KB，超限 API 直接退件、整則推播消失。
 
-    速報內容一顆裝不下 → 拆成可滑動的兩頁（市場全貌／我的關注），並保留尾端裁切作為保險：
-    自選股變多、股名變長都不會把卡片撐爆。
+    市場數據與 AI 長文一顆裝不下 → 拆成兩頁（市場／AI 解讀），並保留尾端裁切作為保險：
+    類股變多、股名變長都不會把卡片撐爆。量測與實際送出一致（compact separators）。
     """
     import json as _json
     watch = [{"code": f"{i:04d}.TW", "name": f"超長股名{i}", "close": 1234.5,
@@ -374,68 +351,21 @@ def test_flex_bubbles_stay_under_line_10kb_limit():
            "breakout": [{"name": f"突破股{i}", "close": 100.0, "resistance": 99.0}
                         for i in range(6)],
            "new": [{"name": f"新符合股{i}"} for i in range(6)]}
-    msg = line_push.compose_daily_flex(_ROW, sectors, watch, full=True,
-                                       tsmc=_TSMC, prev=_PREV, cup=cup)
+    msg = line_push.compose_daily_flex(_ROW, sectors, watch, full=True, tsmc=_TSMC,
+                                       prev=_PREV, cup=cup, ai_text="中文長文。" * 500)
     bubbles = _bubbles(msg)
-    assert len(bubbles) == 2                        # 市場全貌／我的關注
+    assert len(bubbles) == 2                        # 市場／AI 解讀
+    cz = lambda o: len(_json.dumps(o, ensure_ascii=False, separators=(",", ":")).encode())
     for b in bubbles:
-        assert len(_json.dumps(b, ensure_ascii=False).encode()) <= 9500
-    # carousel 全體上限 50 KB
-    assert len(_json.dumps(msg["contents"], ensure_ascii=False).encode()) <= 50000
+        assert cz(b) <= line_push._BUBBLE_MAX
+    assert cz(msg["contents"]) <= 50000             # carousel 全體上限 50 KB
     # 高價股卡同樣受保護
     big = {"prev_date": "2026-07-21", "items": [
         {"code": f"{i:04d}", "name": f"超長股名稱{i}", "price": 12345.0, "chg_pct": 9.99,
          "vol": 123456, "amount": 1e10, "amount_est": True,
          "amount_chg": 5e9, "amount_chg_pct": 88.8} for i in range(30)]}
     rank = line_push.compose_rank_flex(big)
-    assert len(_json.dumps(rank["contents"], ensure_ascii=False).encode()) <= 9500
-
-
-# ===== 週報卡改版：重點類股＋本週前五（新進榜/退榜已移除）=====
-
-_WEEKLY_HL = {
-    "this_date": "2026-07-17", "last_date": "2026-07-10",
-    "highlights": {
-        "sectors": [
-            {"sector": "電子零組件", "count": 24, "avg_score": 0.349},
-            {"sector": "航運", "count": 31, "avg_score": 0.254},
-            {"sector": "生技醫療", "count": 130, "avg_score": 0.217},
-        ],
-        "stocks": [
-            {"code": "1101", "name": "小丘", "score": 26.73,
-             "big_holder_ratio": 7.7, "holder_drop_ratio": -19.03, "sector": "電子零組件"},
-            {"code": "2222", "name": "聚積", "score": 13.365,
-             "big_holder_ratio": 8.75, "holder_drop_ratio": -4.615, "sector": "半導體"},
-        ],
-    },
-    "stocks": [{"name": "不該出現", "status": "新進榜", "big_holder_ratio": 9.9}],
-}
-
-
-def test_compose_weekly_flex_shows_sectors_and_top_stocks():
-    """週報卡＝重點類股＋本週前五；新進榜/退榜/大戶加速已移除。"""
-    msg = line_push.compose_weekly_flex(_WEEKLY_HL)
-    assert "2026-07-10 → 2026-07-17" in str(_bubbles(msg)[0]["header"])
-    body = str(_bubbles(msg)[0]["body"])
-    for gone in ("新進榜", "退榜", "大戶加速", "不該出現"):
-        assert gone not in body
-
-    sec = _sect(msg, "重點類股")
-    assert "電子零組件" in str(sec) and "24 檔" in str(sec)
-    assert sec["contents"][1]["contents"][1]["width"] == "100%"   # 0.349 為最高分 → 滿格
-    assert sec["contents"][2]["contents"][1]["width"] == "73%"    # 0.254/0.349
-
-    top = _sect(msg, "本週前五")
-    # 顯示分數的「組成」而不只是 26.73——才看得出為什麼上榜
-    assert "小丘" in str(top) and "大戶+7.70" in str(top) and "人數-19.03" in str(top)
-    assert top["contents"][1]["contents"][1]["width"] == "100%"
-    assert top["contents"][2]["contents"][1]["width"] == "50%"    # 13.365/26.73
-
-
-def test_compose_weekly_flex_degrades_without_highlights():
-    msg = line_push.compose_weekly_flex({"this_date": "2026-07-17", "last_date": None,
-                                         "stocks": [], "highlights": {"sectors": [], "stocks": []}})
-    assert "本週無" in str(_bubbles(msg)[0]["body"])
+    assert cz(rank["contents"]) <= line_push._BUBBLE_MAX
 
 
 def test_compose_daily_flex_drops_watch_and_cup_shows_ai():
@@ -453,13 +383,12 @@ def test_compose_daily_flex_drops_watch_and_cup_shows_ai():
     assert "統一" in msg["altText"] or len(msg["altText"]) == 400
 
     assert _sect(msg, "自選股") is None
-    ai = _sect(msg, "AI 解讀")
-    assert "外資翻多" in str(ai)
-    # 第二頁＝類股強弱＋AI；國際行情挪到第一頁（AI 太肥，同頁會爆 10KB）
-    page2 = str(bubbles[1])
-    assert "類股與解讀" in str(bubbles[1]["header"])
-    assert "類股強弱" in page2 and "AI 解讀" in page2
-    assert "國際行情" in str(bubbles[0]) and "國際行情" not in page2
+    # 第一頁＝市場數據（含類股強弱、國際行情）；第二頁純 AI
+    page1, page2 = str(bubbles[0]), str(bubbles[1])
+    assert "類股強弱" in page1 and "國際行情" in page1
+    assert "AI 解讀" in str(bubbles[1]["header"])
+    assert "外資翻多" in page2
+    assert "類股強弱" not in page2 and "國際行情" not in page2
 
 
 def test_compose_daily_flex_without_ai_key_still_valid():
@@ -477,7 +406,8 @@ def test_compose_daily_flex_long_ai_stays_under_limit():
     msg = line_push.compose_daily_flex(_ROW, _SECTORS, _WATCH, full=True, tsmc=_TSMC,
                                        prev=_PREV, ai_text="測試中文長文。" * 400)
     for b in _bubbles(msg):
-        assert len(_json.dumps(b, ensure_ascii=False).encode()) <= 9500
+        # 與 httpx 實際送出一致（compact separators），寬鬆量法會高估 10%
+        assert len(_json.dumps(b, ensure_ascii=False, separators=(",", ":")).encode()) <= line_push._BUBBLE_MAX
 
 
 def test_strip_markdown_cleans_gemini_output():
@@ -509,3 +439,183 @@ def test_strip_markdown_cleans_gemini_output():
     assert "\n\n\n" not in out                         # 連續空行壓成一行
     assert line_push.strip_markdown("") == ""
     assert line_push.strip_markdown(None) == ""
+
+
+# ===== 版面重排：台指期/台積電上移標題帶、類股回第一頁、第二頁純 AI =====
+
+def test_compose_daily_flex_header_carries_tx_and_tsmc():
+    """台指期與台積電移到標題帶右上——它們是判讀大盤情緒的對照，該和指數並列。"""
+    msg = line_push.compose_daily_flex(_ROW, _SECTORS, [], tsmc=_TSMC, prev=_PREV,
+                                       ai_text="解讀內容")
+    head = str(_bubbles(msg)[0]["header"])
+    assert "47,018.99" in head                      # 加權指數仍是主角
+    assert "台指期" in head and "47,100" in head
+    assert "台積電" in head and "2,505" in head
+    # body 不該再有獨立的台指期/台積電列
+    assert "台指期" not in str(_bubbles(msg)[0]["body"])
+
+
+def test_compose_daily_flex_sectors_on_page1_ai_alone_on_page2():
+    """類股強弱回到第一頁；第二頁只放 AI 解讀，字級放大以利閱讀。"""
+    msg = line_push.compose_daily_flex(_ROW, _SECTORS, [], tsmc=_TSMC, prev=_PREV,
+                                       ai_text="・法人：外資翻多。")
+    b1, b2 = _bubbles(msg)
+    assert "類股強弱" in str(b1["body"]) and "國際行情" in str(b1["body"])
+    # 第二頁只有 AI：沒有類股、沒有國際行情
+    p2 = str(b2["body"])
+    assert "外資翻多" in p2
+    assert "類股強弱" not in p2 and "國際行情" not in p2
+    assert "AI 解讀" in str(b2["header"])
+    label, body_text = b2["body"]["contents"][0]["contents"]
+    assert label["text"] == "法人" and label["color"] == "#f0a500"
+    assert body_text["size"] == "sm"                # 正文比一般數據欄位大一級
+
+
+def test_compose_daily_flex_single_bubble_when_no_ai():
+    """沒有 AI（未設 GEMINI 金鑰）→ 不生出只有標題的空第二頁。"""
+    msg = line_push.compose_daily_flex(_ROW, _SECTORS, [], tsmc=_TSMC, prev=_PREV)
+    assert len(_bubbles(msg)) == 1
+    assert "類股強弱" in str(_bubbles(msg)[0]["body"])
+
+
+def test_daily_flex_page1_fits_with_sectors_and_margin():
+    """第一頁現在要吃下類股強弱＋國際行情＋融資券——這是最擠的組合，必須仍在上限內。
+
+    量測與 httpx 實際送出一致（compact separators），否則會被高估 10% 逼著砍內容。
+    """
+    import json as _json
+    sectors = [{"name": f"類股名稱{i}", "chg_pct": (1 if i % 2 else -1) * (i + 1)}
+               for i in range(20)]
+    msg = line_push.compose_daily_flex(_ROW, sectors, [], full=True, tsmc=_TSMC,
+                                       prev=_PREV, ai_text="中文長文。" * 500)
+    for b in _bubbles(msg):
+        assert len(_json.dumps(b, ensure_ascii=False, separators=(",", ":")).encode()) <= line_push._BUBBLE_MAX
+
+
+# ===== 週報回歸純文字（使用者拍板：卡片不要，純文字就好）=====
+
+def test_compose_weekly_brief_uses_highlights_not_status_lists():
+    """週報純文字＝重點類股＋本週前五（沿用卡片版的內容決策），不再列加速/新進榜/退榜。"""
+    comparison = {
+        "this_date": "2026-07-21", "last_date": "2026-07-17",
+        "highlights": {
+            "sectors": [{"sector": "運動休閒", "count": 25, "avg_score": 0.56},
+                        {"sector": "橡膠", "count": 11, "avg_score": 0.43}],
+            "stocks": [{"name": "台虹", "score": 24.9,
+                        "big_holder_ratio": 9.7, "holder_drop_ratio": -15.2},
+                       {"name": "立敦", "score": 14.42,
+                        "big_holder_ratio": 4.11, "holder_drop_ratio": -10.31}],
+        },
+        "stocks": [{"name": "不該出現", "status": "新進榜", "big_holder_ratio": 9.9}],
+    }
+    txt = line_push.compose_weekly_brief(comparison, ai_text="▍本週觀察\n・大戶進駐運動休閒")
+    assert "籌碼週報" in txt and "2026-07-17 → 2026-07-21" in txt
+    assert "【重點類股】" in txt and "運動休閒" in txt and "25 檔" in txt and "0.56" in txt
+    assert "【本週前五】" in txt and "台虹" in txt
+    assert "大戶+9.70" in txt and "人數-15.20" in txt
+    assert "大戶進駐運動休閒" in txt
+    for gone in ("新進榜", "退榜", "大戶加速", "不該出現"):
+        assert gone not in txt
+
+
+def test_compose_weekly_brief_still_degrades_when_empty():
+    txt = line_push.compose_weekly_brief({"this_date": "2026-07-21", "last_date": None,
+                                          "highlights": {"sectors": [], "stocks": []}}, ai_text="")
+    assert "籌碼週報" in txt and ("本週無" in txt or "尚無" in txt)
+
+
+def test_balance_bar_omits_invisible_zero_side():
+    """天平只畫有值的那一側：0% 的 bar 本來就看不見，輸出它只是白白吃掉 bubble 額度。
+
+    第一頁要同時容納三大法人／期貨／融資券／類股／國際行情，每列省 110B 就是國際行情
+    能不能留下來的差別。
+    """
+    buy = line_push._balance_bar(100.0, 100.0)      # 純買超 → 左側不該有 bar
+    left, _axis, right = buy["contents"]
+    assert [x["type"] for x in left["contents"]] == ["filler"]
+    assert right["contents"][0]["width"] == "100%"
+    assert right["contents"][0]["backgroundColor"] == "#e8404a"
+
+    sell = line_push._balance_bar(-50.0, 100.0)     # 純賣超 → 右側不該有 bar
+    left, _axis, right = sell["contents"]
+    assert [x["type"] for x in right["contents"]] == ["filler"]
+    assert left["contents"][-1]["width"] == "50%"
+    assert left["contents"][-1]["backgroundColor"] == "#1f9e6e"
+
+    flat = line_push._balance_bar(0, 100.0)         # 完全持平 → 兩側都只有 filler
+    assert all(x["type"] == "filler" for h in (flat["contents"][0], flat["contents"][2])
+               for x in h["contents"])
+
+
+def test_daily_flex_full_version_keeps_international_section():
+    """21:00 完整版（多了融資券）仍必須留得住國際行情——它排在最尾端，最先被裁掉。"""
+    msg = line_push.compose_daily_flex(_ROW, _SECTORS, [], full=True, tsmc=_TSMC,
+                                       prev=_PREV, ai_text="中文長文。" * 500)
+    assert _sect(msg, "融資券") is not None
+    assert _sect(msg, "國際行情") is not None
+    assert _sect(msg, "類股強弱") is not None
+
+
+# ===== AI 解讀頁：欄目拆開＋結論強調 =====
+
+_AI_SAMPLE = ("・國際：本日未提供VIX等國際風險指標。\n"
+              "・大盤：加權指數今日上漲592.91點，量價背離。\n"
+              "・法人：外資轉為買超173.44億元。\n"
+              "・結論：整體判斷為誘多警訊，操作上建議審慎觀望。\n"
+              "（數據解讀，非投資建議）")
+
+
+def test_split_ai_sections_extracts_labels():
+    """盤後 AI 每行是「・欄目：內容」的固定結構——把欄目抽出來，才掃得到『法人』或『結論』。"""
+    out = line_push.split_ai_sections(_AI_SAMPLE)
+    assert out == [
+        ("國際", "本日未提供VIX等國際風險指標。"),
+        ("大盤", "加權指數今日上漲592.91點，量價背離。"),
+        ("法人", "外資轉為買超173.44億元。"),
+        ("結論", "整體判斷為誘多警訊，操作上建議審慎觀望。"),
+        (None, "（數據解讀，非投資建議）"),
+    ]
+    # 週報格式的 ▍標題 也認得；空行略過；認不出欄目的整行原樣保留
+    assert line_push.split_ai_sections("▍本週重點\n\n一般敘述句。") == [
+        ("本週重點", ""), (None, "一般敘述句。")]
+    assert line_push.split_ai_sections("") == []
+
+
+def test_ai_page_renders_labels_and_highlights_conclusion():
+    """欄目名做成金色小標、內容另起一行；「結論」多一條左側金條——它是唯一會影響明天動作的段落。"""
+    msg = line_push.compose_daily_flex(_ROW, _SECTORS, [], tsmc=_TSMC, prev=_PREV,
+                                       ai_text=_AI_SAMPLE)
+    body = _bubbles(msg)[1]["body"]["contents"]
+    assert len(body) == 5                                  # 4 個欄目 ＋ 1 行免責
+
+    first = body[0]                                        # 一般欄目：垂直堆疊
+    assert first["layout"] == "vertical"
+    assert first["contents"][0]["text"] == "國際"
+    assert first["contents"][0]["color"] == "#f0a500" and first["contents"][0]["weight"] == "bold"
+    assert first["contents"][1]["size"] == "sm" and first["contents"][1]["wrap"] is True
+
+    concl = body[3]                                        # 結論：水平＝左金條＋內容
+    assert concl["layout"] == "horizontal"
+    assert concl["contents"][0]["width"] == "3px"
+    assert concl["contents"][0]["backgroundColor"] == "#f0a500"
+    assert concl["contents"][1]["contents"][0]["text"] == "結論"
+    assert "誘多警訊" in concl["contents"][1]["contents"][1]["text"]
+
+    assert body[4]["size"] == "xxs"                        # 免責行退到次要色階
+    assert body[4]["color"] == "#8a94a3"
+
+
+def test_header_shows_tx_and_tsmc_change_pct():
+    """右上的台指期/台積電要帶漲跌%——只有紅綠色卻沒有數字，看不出漲多少。"""
+    head = str(_bubbles(line_push.compose_daily_flex(
+        _ROW, _SECTORS, [], tsmc=_TSMC, prev=_PREV, ai_text="x"))[0]["header"])
+    assert "47,100" in head and "-0.07%" in head           # 台指期 47,100，昨收回推
+    assert "2,505" in head and "+3.94%" in head            # 台積電
+
+
+def test_international_section_keeps_label_uncoloured():
+    """國際行情換回兩欄：名稱與數值維持主文色，只有漲跌%上色——整行染色會讓標籤失去層級。"""
+    sect = _sect(line_push.compose_daily_flex(_ROW, _SECTORS, [], prev=_PREV), "國際行情")
+    cells = sect["contents"][1]["contents"]                # 第一列：日經、韓股各佔兩欄
+    assert cells[0]["text"] == "日經 40,123" and cells[0]["color"] == "#e6e6e6"
+    assert cells[1]["text"] == "+1.20%" and cells[1]["color"] == "#e8404a"

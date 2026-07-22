@@ -465,16 +465,16 @@ def _daily_messages(c, full: bool, force: bool = False) -> tuple[list, dict | No
 
 
 def _weekly_messages(c) -> list:
-    """籌碼週報訊息：Flex 卡片＋純文字 AI 分析。週六排程與 webhook「週報」共用。"""
+    """籌碼週報訊息：**純文字一則**（使用者拍板不做卡片）。週六排程與 webhook「週報」共用。
+
+    內容＝重點類股＋本週前五＋AI 分析；AI 佔篇幅最大且是週報的重點，純文字最好讀也好複製。
+    """
     from ..api.public import weekly, summary_logic
     comparison = weekly()
     ai = summary_logic(c, refresh=0)   # 讀既有快取，不觸發重新扣費
-    msgs = [line_push.compose_weekly_flex(comparison)]
     ai_text = line_push.strip_markdown(ai.get("text")) if ai.get("enabled") else ""
-    if ai_text:
-        msgs.append({"type": "text",
-                     "text": ("🤖 AI 籌碼分析師\n" + ai_text.strip())[:line_push.MAX_LEN]})
-    return msgs
+    return [{"type": "text",
+             "text": line_push.compose_weekly_brief(comparison, ai_text=ai_text)}]
 
 
 def _rank_message(c) -> dict:
