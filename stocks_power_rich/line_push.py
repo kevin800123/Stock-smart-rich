@@ -11,6 +11,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 
 import httpx
 
@@ -22,6 +23,27 @@ SEP = "━━━━━━━━━━━━"
 # 國際行情列：(欄位, 顯示名, 小數位)；日圓＝美元兌日圓（USD/JPY）
 _INTL_FIELDS = (("n225", "日經", 0), ("kospi", "韓股", 0), ("gold", "黃金", 0),
                 ("jpy", "日圓", 2), ("btc", "比特幣", 0))
+
+
+# Gemini 回的是 markdown，但 LINE（純文字與 Flex 都是）不渲染 markdown，
+# 那些 **粗體**／### 標題／--- 分隔線會原樣顯示成雜訊（實測一篇週報 AI 文 70 個 `**`）。
+_MD_RULE = re.compile(r"^\s*[-*_]{3,}\s*$", re.M)
+_MD_HEAD = re.compile(r"^\s*#{1,6}\s*(.+?)\s*$", re.M)
+_MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
+_MD_BULLET = re.compile(r"^(\s*)[*+-]\s+", re.M)
+_BLANKS = re.compile(r"\n{3,}")
+
+
+def strip_markdown(text: str | None) -> str:
+    """markdown → LINE 可讀的純文字。標題改標「▍」、項目改「・」，層級不靠字重也看得出來。"""
+    if not text:
+        return ""
+    out = _MD_RULE.sub("", text)
+    out = _MD_HEAD.sub(r"▍\1", out)
+    out = _MD_BOLD.sub(r"\1", out)
+    # 縮排的子項目用「　- 」，頂層用「・」——LINE 沒有粗體可用，只能靠符號分層級
+    out = _MD_BULLET.sub(lambda m: "　- " if m.group(1) else "・", out)
+    return _BLANKS.sub("\n\n", out).strip()
 
 
 def _fmt(v, d=2):
@@ -375,13 +397,16 @@ def _pct_colour(v):
 
 def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False,
                        tsmc: dict | None = None, prev: dict | None = None,
-                       cup: dict | None = None) -> dict:
+                       cup: dict | None = None, ai_text: str = "") -> dict:
     """盤後速報 → Flex 卡片（AI 解讀不放這裡，長散文另發一則純文字）。
 
     開場刻意不是「加權指數大數字」而是三大法人資金天平：指數使用者一天看好幾次早就知道，
     只有盤後才知道的是籌碼，而籌碼正是這個 App 的核心。指數退居標題帶當背景資訊。
     多空比一律不套漲跌色——散戶多空比是反向指標，染紅會被讀成利多。
     無資料的區塊整段省略，不留空殼。
+
+    watch/cup 只用於產生 altText（純文字版仍完整）：自選股與杯柄型態經使用者確認不放卡片，
+    第二頁改放 AI 解讀。參數保留，未來要加回卡片不必重寫取數邏輯。
     """
     pv = prev or {}
     taiex, chg = row.get("taiex"), row.get("taiex_chg")
@@ -411,7 +436,7 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
         head.append({"type": "text", "text": sub[-1], "size": "xxs",
                      "color": _C_MUTED, "margin": "xs"})
 
-    market, mine = [], []
+    market, read = [], []
     # 台指期／台積電：判斷大盤真實情緒的兩個對照，並排一列就夠
     quick = []
     if row.get("tx_price") is not None:
@@ -485,37 +510,16 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
                     {"type": "text", "text": f"{_signed(s['chg_pct'])}%", "size": "xxs",
                      "color": _pct_colour(s["chg_pct"]), "align": "end", "flex": 4}]})
             return {"type": "box", "layout": "vertical", "flex": 1, "contents": items}
-        mine.append({"type": "box", "layout": "vertical", "contents": [
+        read.append({"type": "box", "layout": "vertical", "contents": [
             _eyebrow("類股強弱"),
             {"type": "box", "layout": "horizontal", "margin": "sm", "spacing": "lg",
              "contents": [col("領漲", ups), col("領跌", downs)]}]})
 
-    if watch:
-        rows = [_eyebrow("自選股")]
-        for w in watch[:10]:
-            rows.append({"type": "box", "layout": "horizontal", "margin": "sm", "contents": [
-                {"type": "text", "text": ("● " if w.get("in_latest") else "") +
-                                         (w.get("name") or w.get("code") or ""),
-                 "size": "xs", "color": _C_GOLD if w.get("in_latest") else _C_TEXT, "flex": 5},
-                {"type": "text", "text": _fmt(w.get("close")), "size": "xs",
-                 "color": _C_TEXT, "align": "end", "flex": 4},
-                {"type": "text", "text": "—" if w.get("chg_pct") is None
-                                         else f"{_signed(w['chg_pct'])}%",
-                 "size": "xs", "color": _pct_colour(w.get("chg_pct")), "align": "end", "flex": 4}]})
-        mine.append({"type": "box", "layout": "vertical", "contents": rows})
-
-    if cup and (cup.get("new") or cup.get("breakout")):
-        label = "杯柄型態&籌碼/基本" if cup.get("picks") else "杯柄型態"
-        rows = [_eyebrow(f"{label}　符合 {cup.get('count', 0)} 檔")]
-        for b in (cup.get("breakout") or [])[:6]:
-            rows.append({"type": "text", "margin": "sm", "size": "xs", "color": _C_UP, "wrap": True,
-                         "text": f"🚀 突破 {b.get('name') or b.get('code')} "
-                                 f"{_fmt(b.get('close'))}(壓{_fmt(b.get('resistance'))})"})
-        new = [s.get("name") or s.get("code") for s in (cup.get("new") or [])[:6]]
-        if new:
-            rows.append({"type": "text", "margin": "sm", "size": "xs", "color": _C_TEXT,
-                         "wrap": True, "text": "🆕 新符合 " + "、".join(new)})
-        mine.append({"type": "box", "layout": "vertical", "contents": rows})
+    if ai_text:
+        read.append({"type": "box", "layout": "vertical", "contents": [
+            _eyebrow("AI 解讀"),
+            {"type": "text", "text": ai_text.strip(), "size": "xs", "color": _C_TEXT,
+             "wrap": True, "margin": "sm"}]})
 
     intl = [(lb, row.get(k), row.get(k + "_chg"), d) for k, lb, d in _INTL_FIELDS
             if row.get(k) is not None]
@@ -534,61 +538,67 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
                                   "size": "xxs", "color": _pct_colour(p), "align": "end", "flex": 3,
                                   "gravity": "center"}]}
                              for lb, v, p, d in pair]})
-        mine.append({"type": "box", "layout": "vertical", "contents": rows})
+        market.append({"type": "box", "layout": "vertical", "contents": rows})
 
-    if not (market or mine):   # 只有指數、其餘全空：LINE 不接受空 body，且空白畫面該說明下一步
+    if not (market or read):   # 只有指數、其餘全空：LINE 不接受空 body，且空白畫面該說明下一步
         market.append({"type": "box", "layout": "vertical", "contents": [
             {"type": "text", "size": "xs", "color": _C_MUTED, "wrap": True,
              "text": "盤後籌碼尚未發布，稍後的更新會自動補上"}]})
-    # 全部塞一顆 bubble 會超過 LINE 的 10 KB 上限 → 拆成可滑動的兩頁：市場全貌／我的關注
-    mine_head = [{"type": "text", "text": "自選股與訊號", "size": "sm", "weight": "bold",
+    # 全部塞一顆 bubble 會超過 LINE 的 10 KB 上限 → 拆成可滑動的兩頁。
+    # 類股強弱與 AI 同頁：AI 解讀本來就常在談強勢類股，並列可互相印證。
+    read_head = [{"type": "text", "text": "類股與解讀", "size": "sm", "weight": "bold",
                   "color": _C_GOLD},
                  {"type": "text", "text": str(row.get("date") or ""), "size": "xxs",
                   "color": _C_MUTED, "margin": "xs"}]
     alt = compose_daily_brief(row, sectors, watch, full=full, tsmc=tsmc, prev=prev, cup=cup)
-    return _carousel(alt, [(head, market), (mine_head, mine)])
+    return _carousel(alt, [(head, market), (read_head, read)])
+
+
+def _ranked_row(label: str, right: str, value, peak) -> dict:
+    """一列「名稱 ｜ 說明」＋下方金色 bar（長度正比於 value）。週報兩個榜共用同一種列。"""
+    return {"type": "box", "layout": "vertical", "margin": "md", "contents": [
+        {"type": "box", "layout": "horizontal", "contents": [
+            {"type": "text", "text": label, "size": "xs", "color": _C_TEXT, "flex": 5},
+            {"type": "text", "text": right, "size": "xxs", "color": _C_MUTED,
+             "align": "end", "flex": 7}]},
+        {"type": "box", "layout": "vertical", "margin": "xs", "height": "3px",
+         "width": _scale(value, peak), "backgroundColor": _C_GOLD,
+         "contents": [{"type": "filler"}]}]}
 
 
 def compose_weekly_flex(comparison: dict) -> dict:
     """籌碼週報 → Flex 卡片（AI 分析另發一則純文字）。
 
-    加速榜沿用高價股卡的金色 bar：長度正比於大戶增比，兩張卡因此看起來是同一家人。
+    只放「重點類股」與「本週前五」——新進榜/退榜沒有決策價值，大戶加速則常常是 0 檔
+    （加速的定義是大戶增比高於上週，實測某週全市場掛蛋）。兩個榜都沿用高價股卡的金色
+    bar，三張卡因此看起來是同一家人。個股列顯示分數的**組成**（大戶增比／人數降比）
+    而不只是總分，才看得出為什麼上榜。
     """
     this_d, last_d = comparison.get("this_date"), comparison.get("last_date")
     period = f"{last_d} → {this_d}" if (this_d and last_d) else (this_d or "")
-    stocks = comparison.get("stocks") or []
-    acc = sorted([s for s in stocks if s.get("status") == "加速"],
-                 key=lambda s: -(s.get("big_holder_ratio") or 0))[:8]
-    new = [s for s in stocks if s.get("status") == "新進榜"][:8]
-    out_n = sum(1 for s in stocks if s.get("status") == "退榜")
+    hl = comparison.get("highlights") or {}
+    sectors, stocks = hl.get("sectors") or [], hl.get("stocks") or []
 
     head = [{"type": "text", "text": "籌碼週報", "size": "sm", "weight": "bold", "color": _C_GOLD},
             {"type": "text", "text": period, "size": "xxs", "color": _C_MUTED, "margin": "xs"}]
     body = []
-    if acc:
-        peak = max((s.get("big_holder_ratio") or 0) for s in acc)
-        rows = [_eyebrow("大戶加速")]
-        for s in acc:
-            r = s.get("big_holder_ratio")
-            rows.append({"type": "box", "layout": "vertical", "margin": "md", "contents": [
-                {"type": "box", "layout": "horizontal", "contents": [
-                    {"type": "text", "text": s.get("name") or s.get("code") or "",
-                     "size": "xs", "color": _C_TEXT, "flex": 6},
-                    {"type": "text", "text": f"增比 {_fmt(r)}", "size": "xs",
-                     "color": _C_GOLD, "align": "end", "flex": 5}]},
-                {"type": "box", "layout": "vertical", "margin": "xs", "height": "3px",
-                 "width": _scale(r, peak), "backgroundColor": _C_GOLD,
-                 "contents": [{"type": "filler"}]}]})
+    if sectors:
+        peak = max(s.get("avg_score") or 0 for s in sectors)
+        rows = [_eyebrow("重點類股")]
+        for s in sectors:
+            rows.append(_ranked_row(s.get("sector") or "未分類",
+                                    f"{s.get('count', 0)} 檔　均分 {_fmt(s.get('avg_score'))}",
+                                    s.get("avg_score"), peak))
         body.append({"type": "box", "layout": "vertical", "contents": rows})
-    if new:
-        body.append({"type": "box", "layout": "vertical", "contents": [
-            _eyebrow("新進榜"),
-            {"type": "text", "margin": "sm", "size": "xs", "color": _C_TEXT, "wrap": True,
-             "text": "、".join(s.get("name") or s.get("code") for s in new)}]})
-    if out_n:
-        body.append({"type": "box", "layout": "vertical", "contents": [
-            {"type": "text", "text": f"退榜 {out_n} 檔", "size": "xs",
-             "color": _C_MUTED, "margin": "lg"}]})
+    if stocks:
+        peak = max(s.get("score") or 0 for s in stocks)
+        rows = [_eyebrow("本週前五")]
+        for s in stocks:
+            rows.append(_ranked_row(
+                s.get("name") or s.get("code") or "",
+                f"大戶{_signed(s.get('big_holder_ratio'))}　人數{_signed(s.get('holder_drop_ratio'))}",
+                s.get("score"), peak))
+        body.append({"type": "box", "layout": "vertical", "contents": rows})
     if not body:
         body.append({"type": "box", "layout": "vertical", "contents": [
             {"type": "text", "text": "本週無跨週變化資料（尚無上週快照或未匯入 CSV）",

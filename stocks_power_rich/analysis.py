@@ -225,6 +225,33 @@ def weekly_comparison(this_rows: list[dict], last_rows: list[dict]) -> dict:
     return {"stocks": stocks}
 
 
+def weekly_highlights(rows: list[dict], min_count: int = 10, top_n: int = 5) -> dict:
+    """週報卡用的「重點類股」與「本週前五個股」。
+
+    類股先以 industry_to_sector 正規化再分組——CSV 的產業欄帶「上市/上櫃」前綴，
+    不合併會把同一個半導體拆成兩筆互相稀釋。並要求至少 min_count 檔才入榜：
+    平均分數對樣本數很敏感，實測只有 5 檔的「其他電子」就能衝到第一名。
+
+    個股一律取全體依 _score 排序，不限「加速」狀態——實測某週「加速」是 0 檔，
+    沿用該篩選會長期是空榜。
+    """
+    groups: dict[str, list[float]] = {}
+    for r in rows:
+        key = industry_to_sector(r.get("industry")) or "未分類"
+        groups.setdefault(key, []).append(_score(r))
+    sectors = [{"sector": k, "count": len(v), "avg_score": round(sum(v) / len(v), 4)}
+               for k, v in groups.items() if len(v) >= min_count]
+    sectors.sort(key=lambda x: -x["avg_score"])
+
+    scored = sorted(rows, key=lambda r: -_score(r))[:top_n]
+    stocks = [{"code": r.get("code"), "name": r.get("name"),
+               "score": round(_score(r), 4),
+               "big_holder_ratio": r.get("big_holder_ratio"),
+               "holder_drop_ratio": r.get("holder_drop_ratio"),
+               "sector": industry_to_sector(r.get("industry"))} for r in scored]
+    return {"sectors": sectors[:top_n], "stocks": stocks}
+
+
 def industry_aggregate(rows: list[dict]) -> list[dict]:
     """依產業分組，算平均訊號分數並由高至低排名。"""
     groups: dict[str, list[float]] = {}

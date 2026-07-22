@@ -88,6 +88,7 @@ def weekly():
     last_rows = get_snapshot(c, last_date)
     result = analysis.weekly_comparison(this_rows, last_rows)
     result["industry"] = analysis.industry_aggregate(this_rows)
+    result["highlights"] = analysis.weekly_highlights(this_rows)   # LINE 週報卡：重點類股＋前五個股
     result["this_date"] = this_date
     result["last_date"] = last_date
     return result

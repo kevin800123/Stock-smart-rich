@@ -353,25 +353,6 @@ def test_compose_daily_flex_omits_empty_sections():
     assert _bubbles(bare)[0]["body"]["contents"]       # 但卡片本身仍成立，不是空殼
 
 
-def test_compose_weekly_flex_acceleration_bars_and_lists():
-    comparison = {"this_date": "2026-07-17", "last_date": "2026-07-10", "stocks": [
-        {"name": "上曜", "status": "加速", "big_holder_ratio": 3.95},
-        {"name": "華通", "status": "加速", "big_holder_ratio": 1.58},
-        {"name": "新股", "status": "新進榜", "big_holder_ratio": 0.5},
-        {"name": "走了", "status": "退榜", "big_holder_ratio": None},
-        {"name": "平平", "status": "持平", "big_holder_ratio": 0.1},
-    ]}
-    msg = line_push.compose_weekly_flex(comparison)
-    assert msg["type"] == "flex"
-    assert "2026-07-10 → 2026-07-17" in str(msg["contents"]["header"])
-    acc = _sect(msg, "大戶加速")
-    assert acc["contents"][1]["contents"][1]["width"] == "100%"   # 上曜 3.95 滿格
-    assert acc["contents"][2]["contents"][1]["width"] == "40%"    # 華通 1.58/3.95
-    assert "新股" in str(_sect(msg, "新進榜"))
-    assert "退榜 1 檔" in str(msg["contents"]["body"])
-    assert "平平" not in str(msg)                                  # 持平不進週報
-
-
 def test_reply_messages_sends_list_without_token_degrades():
     r = line_push.reply_messages("", "rt", [{"type": "text", "text": "x"}])
     assert r["ok"] is False and "LINE" in r["error"]
@@ -408,3 +389,123 @@ def test_flex_bubbles_stay_under_line_10kb_limit():
          "amount_chg": 5e9, "amount_chg_pct": 88.8} for i in range(30)]}
     rank = line_push.compose_rank_flex(big)
     assert len(_json.dumps(rank["contents"], ensure_ascii=False).encode()) <= 9500
+
+
+# ===== 週報卡改版：重點類股＋本週前五（新進榜/退榜已移除）=====
+
+_WEEKLY_HL = {
+    "this_date": "2026-07-17", "last_date": "2026-07-10",
+    "highlights": {
+        "sectors": [
+            {"sector": "電子零組件", "count": 24, "avg_score": 0.349},
+            {"sector": "航運", "count": 31, "avg_score": 0.254},
+            {"sector": "生技醫療", "count": 130, "avg_score": 0.217},
+        ],
+        "stocks": [
+            {"code": "1101", "name": "小丘", "score": 26.73,
+             "big_holder_ratio": 7.7, "holder_drop_ratio": -19.03, "sector": "電子零組件"},
+            {"code": "2222", "name": "聚積", "score": 13.365,
+             "big_holder_ratio": 8.75, "holder_drop_ratio": -4.615, "sector": "半導體"},
+        ],
+    },
+    "stocks": [{"name": "不該出現", "status": "新進榜", "big_holder_ratio": 9.9}],
+}
+
+
+def test_compose_weekly_flex_shows_sectors_and_top_stocks():
+    """週報卡＝重點類股＋本週前五；新進榜/退榜/大戶加速已移除。"""
+    msg = line_push.compose_weekly_flex(_WEEKLY_HL)
+    assert "2026-07-10 → 2026-07-17" in str(_bubbles(msg)[0]["header"])
+    body = str(_bubbles(msg)[0]["body"])
+    for gone in ("新進榜", "退榜", "大戶加速", "不該出現"):
+        assert gone not in body
+
+    sec = _sect(msg, "重點類股")
+    assert "電子零組件" in str(sec) and "24 檔" in str(sec)
+    assert sec["contents"][1]["contents"][1]["width"] == "100%"   # 0.349 為最高分 → 滿格
+    assert sec["contents"][2]["contents"][1]["width"] == "73%"    # 0.254/0.349
+
+    top = _sect(msg, "本週前五")
+    # 顯示分數的「組成」而不只是 26.73——才看得出為什麼上榜
+    assert "小丘" in str(top) and "大戶+7.70" in str(top) and "人數-19.03" in str(top)
+    assert top["contents"][1]["contents"][1]["width"] == "100%"
+    assert top["contents"][2]["contents"][1]["width"] == "50%"    # 13.365/26.73
+
+
+def test_compose_weekly_flex_degrades_without_highlights():
+    msg = line_push.compose_weekly_flex({"this_date": "2026-07-17", "last_date": None,
+                                         "stocks": [], "highlights": {"sectors": [], "stocks": []}})
+    assert "本週無" in str(_bubbles(msg)[0]["body"])
+
+
+def test_compose_daily_flex_drops_watch_and_cup_shows_ai():
+    """使用者拍板：自選股/杯柄不放卡片，第二頁改放 AI 解讀。"""
+    cup = {"count": 5, "breakout": [{"name": "元太", "close": 45.2, "resistance": 44.8}],
+           "new": [{"name": "台中銀"}]}
+    msg = line_push.compose_daily_flex(_ROW, _SECTORS, _WATCH, tsmc=_TSMC, prev=_PREV,
+                                       cup=cup, ai_text="• 外資翻多，電子零組件領漲")
+    bubbles = _bubbles(msg)
+    assert len(bubbles) == 2
+    body = str(bubbles)
+    for gone in ("自選股", "統一", "衛司特", "杯柄", "元太", "台中銀"):
+        assert gone not in body
+    # 但純文字 altText 仍完整（通知列預覽用，取數邏輯保留）
+    assert "統一" in msg["altText"] or len(msg["altText"]) == 400
+
+    assert _sect(msg, "自選股") is None
+    ai = _sect(msg, "AI 解讀")
+    assert "外資翻多" in str(ai)
+    # 第二頁＝類股強弱＋AI；國際行情挪到第一頁（AI 太肥，同頁會爆 10KB）
+    page2 = str(bubbles[1])
+    assert "類股與解讀" in str(bubbles[1]["header"])
+    assert "類股強弱" in page2 and "AI 解讀" in page2
+    assert "國際行情" in str(bubbles[0]) and "國際行情" not in page2
+
+
+def test_compose_daily_flex_without_ai_key_still_valid():
+    """未設 GEMINI 金鑰（ai_text 空）→ AI 段整段省略，第二頁只剩類股強弱，卡片仍成立。"""
+    msg = line_push.compose_daily_flex(_ROW, _SECTORS, [], tsmc=_TSMC, prev=_PREV)
+    assert _sect(msg, "AI 解讀") is None
+    assert _sect(msg, "類股強弱") is not None
+    for b in _bubbles(msg):
+        assert b["body"]["contents"]          # LINE 不接受空 body
+
+
+def test_compose_daily_flex_long_ai_stays_under_limit():
+    """AI 解讀動輒 2000 字（實測 4.4 KB）——兩頁都必須仍在 10 KB bubble 上限內。"""
+    import json as _json
+    msg = line_push.compose_daily_flex(_ROW, _SECTORS, _WATCH, full=True, tsmc=_TSMC,
+                                       prev=_PREV, ai_text="測試中文長文。" * 400)
+    for b in _bubbles(msg):
+        assert len(_json.dumps(b, ensure_ascii=False).encode()) <= 9500
+
+
+def test_strip_markdown_cleans_gemini_output():
+    """LINE 不渲染 markdown——Gemini 回的 **粗體**／### 標題／--- 分隔線會原樣變成雜訊。
+
+    實測一篇週報 AI 文有 70 個 `**`、32 個項目符號、2 個 `###`。
+    """
+    raw = (
+        "身為籌碼分析師，結論如下：\n"
+        "\n"
+        "---\n"
+        "\n"
+        "### **本週重點類股**\n"
+        "\n"
+        "*   **電子通路 (IC零組件通路商)**\n"
+        "    *   **選股理由：** 籌碼集中，站穩 W55。\n"
+        "*   **航運業 (空運)**\n"
+        "\n"
+        "\n"
+        "**免責聲明：** 僅供參考。\n"
+    )
+    out = line_push.strip_markdown(raw)
+    assert "**" not in out and "###" not in out
+    assert "---" not in out
+    assert "▍本週重點類股" in out                      # 標題改用可見標記，層級不消失
+    assert "・電子通路 (IC零組件通路商)" in out          # 頂層項目
+    assert "　- 選股理由： 籌碼集中，站穩 W55。" in out   # 次層縮排保留
+    assert "免責聲明： 僅供參考。" in out
+    assert "\n\n\n" not in out                         # 連續空行壓成一行
+    assert line_push.strip_markdown("") == ""
+    assert line_push.strip_markdown(None) == ""

@@ -232,7 +232,11 @@ def test_line_push_failure_recorded_retry_and_recovery_notice(tmp_path, monkeypa
 
 def test_line_watchlist_pct_falls_back_to_ohlc(tmp_path, monkeypatch):
     """自選股報價源查無（上市/上櫃報價都沒有）→ 以 stock_ohlc 日K收盤回推漲跌%，
-    不再出現「有價無漲跌%」的缺行（衛司特/亞通實例）。"""
+    不再出現「有價無漲跌%」的缺行（衛司特/亞通實例）。
+
+    自選股經使用者確認不放 Flex 卡片，這段取數現在只餵 altText（通知列預覽），
+    所以斷言對 altText 下——而非整包訊息字串，避免哪天版面調動就巧合通過/失敗。
+    """
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok-x")
     from stocks_power_rich import line_push
@@ -254,17 +258,22 @@ def test_line_watchlist_pct_falls_back_to_ohlc(tmp_path, monkeypatch):
     monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {})
     sent = []
     monkeypatch.setattr(line_push, "broadcast_messages",
-                        lambda tok, msgs: sent.append(str(msgs)) or {"ok": True})
+                        lambda tok, msgs: sent.append(msgs) or {"ok": True})
     app = create_app()
     client = TestClient(app)
     client.post("/api/watchlist", json={"code": "6894"})
     assert client.post("/api/line/test").json()["ok"] is True
-    assert "衛司特" in sent[0] and "105.00" in sent[0] and "+5.00%" in sent[0]
+    alt = sent[0][0]["altText"]
+    assert "衛司特" in alt and "105.00" in alt and "+5.00%" in alt
 
 
 def test_line_cup_section_only_picks_intersection(tmp_path, monkeypatch):
-    """推播的杯柄段落只列「杯柄∧籌碼/基本選股」交集（有 CSV 榜時）；
-    標題改為【杯柄型態&籌碼/基本】、count＝交集檔數。"""
+    """杯柄段落只列「杯柄∧籌碼/基本選股」交集（有 CSV 榜時）；
+    標題為【杯柄型態&籌碼/基本】、count＝交集檔數。
+
+    杯柄經使用者確認不放 Flex 卡片，所以斷言下在規則實際所在的 _cup_push_info
+    與純文字組裝上，而不是整包訊息字串（那只會碰到 altText 的前 400 字）。
+    """
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok-x")
     from datetime import date, timedelta
@@ -300,11 +309,14 @@ def test_line_cup_section_only_picks_intersection(tmp_path, monkeypatch):
                         lambda tok, msgs: sent.append(str(msgs)) or {"ok": True})
     app = create_app()
     client = TestClient(app)
-    assert client.post("/api/line/test").json()["ok"] is True
-    txt = sent[0]
-    assert "杯柄型態&籌碼/基本" in txt and "符合 1 檔" in txt
-    assert "台積電" in txt.split("杯柄型態&籌碼/基本")[1]
-    assert "元太" not in txt   # 非交集股不出現
+    assert client.post("/api/line/test").json()["ok"] is True   # 整條推播路徑不炸
+    from stocks_power_rich.api.helpers import _cup_push_info
+    info = _cup_push_info(c)
+    assert info["picks"] is True and info["count"] == 1
+    assert [s["name"] for s in (info.get("new") or [])] == ["台積電"]
+    assert "元太" not in str(info)                              # 非交集股不進清單
+    txt = line_push.compose_daily_brief({"date": last_ds}, [], [], cup=info)
+    assert "【杯柄型態&籌碼/基本】符合 1 檔" in txt and "台積電" in txt
 
 
 def test_trades_endpoints_flow(tmp_path, monkeypatch):

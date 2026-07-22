@@ -399,9 +399,9 @@ def _cup_push_info(c) -> dict | None:
 def _daily_messages(c, full: bool, force: bool = False) -> tuple[list, dict | None]:
     """組盤後 LINE 訊息。回 (messages, err)；err 非 None 時 messages 為空。
 
-    回兩則：Flex 卡片（結構化數據）＋ 純文字 AI 解讀（長散文塞進卡片會把版面壓垮，
-    且散文在純文字訊息裡本來就比較好讀）。推播與 webhook 共用，避免兩邊內容漂移。
-    force=True 略過「資料日須為今日」檢查——使用者自己問的就該回，即使是昨天的收盤。
+    回一則 Flex carousel：第一頁市場籌碼、第二頁類股強弱＋AI 解讀。推播與 webhook
+    共用，避免兩邊內容漂移。force=True 略過「資料日須為今日」檢查——使用者自己問的
+    就該回，即使是昨天的收盤。
     """
     try:
         rows = c.execute("SELECT * FROM market_daily ORDER BY date DESC LIMIT 2").fetchall()
@@ -450,16 +450,15 @@ def _daily_messages(c, full: bool, force: bool = False) -> tuple[list, dict | No
         from ..api.market import market_summary_logic
         from ..api.public import summary_logic
         ai = market_summary_logic(c, refresh=0)
-        ai_text = (ai.get("text") or "") if ai.get("enabled") else ""
+        # Gemini 回 markdown，LINE 不渲染 → 先清成純文字，否則滿屏 ** 與 ###
+        ai_text = line_push.strip_markdown(ai.get("text")) if ai.get("enabled") else ""
         try:
             cup = _cup_push_info(c)
         except Exception:  # noqa: BLE001
             cup = None
+        # AI 解讀改由卡片第二頁承載（使用者拍板：自選股/杯柄不放，改看 AI）→ 只回一則
         msgs = [line_push.compose_daily_flex(m, secs, watch, full=full, tsmc=tsmc,
-                                            prev=prev_row, cup=cup)]
-        if ai_text:
-            msgs.append({"type": "text",
-                         "text": ("🤖 AI 解讀\n" + ai_text.strip())[:line_push.MAX_LEN]})
+                                            prev=prev_row, cup=cup, ai_text=ai_text)]
     except Exception as e:  # noqa: BLE001 — fatal 才記推播失敗（缺資料/非今日屬正常略過）
         return [], {"ok": False, "error": str(e), "fatal": True}
     return msgs, None
@@ -471,7 +470,7 @@ def _weekly_messages(c) -> list:
     comparison = weekly()
     ai = summary_logic(c, refresh=0)   # 讀既有快取，不觸發重新扣費
     msgs = [line_push.compose_weekly_flex(comparison)]
-    ai_text = (ai.get("text") or "") if ai.get("enabled") else ""
+    ai_text = line_push.strip_markdown(ai.get("text")) if ai.get("enabled") else ""
     if ai_text:
         msgs.append({"type": "text",
                      "text": ("🤖 AI 籌碼分析師\n" + ai_text.strip())[:line_push.MAX_LEN]})
