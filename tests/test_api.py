@@ -1664,8 +1664,8 @@ def test_line_webhook_requires_valid_signature(tmp_path, monkeypatch):
     monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok")
     from stocks_power_rich import line_push
     sent = []
-    monkeypatch.setattr(line_push, "reply_text",
-                        lambda tok, rt, txt: sent.append((rt, txt)) or {"ok": True})
+    monkeypatch.setattr(line_push, "reply_message",
+                        lambda tok, rt, msg: sent.append((rt, msg)) or {"ok": True})
     app = create_app()
     client = TestClient(app)
     body = json.dumps({"events": [
@@ -1681,7 +1681,7 @@ def test_line_webhook_requires_valid_signature(tmp_path, monkeypatch):
                     headers={"X-Line-Signature": _line_sig("sekret", body)})
     assert r.status_code == 200
     assert len(sent) == 1 and sent[0][0] == "rt1"
-    assert "大盤" in sent[0][1] and "週報" in sent[0][1]     # 說明列出可用指令
+    assert "大盤" in sent[0][1]["text"] and "週報" in sent[0][1]["text"]  # 說明列出可用指令
 
 
 def test_line_webhook_brief_command_replies_market_text(tmp_path, monkeypatch):
@@ -1697,8 +1697,8 @@ def test_line_webhook_brief_command_replies_market_text(tmp_path, monkeypatch):
     upsert_market_daily(c, {"date": "2026-07-20", "taiex": 47018.99, "taiex_chg": 893.08,
                             "turnover": 10780.3})
     sent = []
-    monkeypatch.setattr(line_push, "reply_text",
-                        lambda tok, rt, txt: sent.append((rt, txt)) or {"ok": True})
+    monkeypatch.setattr(line_push, "reply_message",
+                        lambda tok, rt, msg: sent.append((rt, msg)) or {"ok": True})
     app = create_app()
     client = TestClient(app)
     body = json.dumps({"events": [
@@ -1708,7 +1708,7 @@ def test_line_webhook_brief_command_replies_market_text(tmp_path, monkeypatch):
                     headers={"X-Line-Signature": _line_sig("sekret", body)})
     assert r.status_code == 200
     # 資料日非今日也照回（使用者主動問的，不套用推播的 staleness 略過規則）
-    assert len(sent) == 1 and "47,018.99" in sent[0][1] and "2026-07-20" in sent[0][1]
+    assert len(sent) == 1 and "47,018.99" in sent[0][1]["text"] and "2026-07-20" in sent[0][1]["text"]
 
 
 def test_line_webhook_unknown_text_replies_help_and_never_500(tmp_path, monkeypatch):
@@ -1718,8 +1718,8 @@ def test_line_webhook_unknown_text_replies_help_and_never_500(tmp_path, monkeypa
     monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok")
     from stocks_power_rich import line_push
     sent = []
-    monkeypatch.setattr(line_push, "reply_text",
-                        lambda tok, rt, txt: sent.append((rt, txt)) or {"ok": True})
+    monkeypatch.setattr(line_push, "reply_message",
+                        lambda tok, rt, msg: sent.append((rt, msg)) or {"ok": True})
     app = create_app()
     client = TestClient(app)
     for payload, expect_n in (
@@ -1733,4 +1733,35 @@ def test_line_webhook_unknown_text_replies_help_and_never_500(tmp_path, monkeypa
                         headers={"X-Line-Signature": _line_sig("sekret", b)})
         assert r.status_code == 200
         assert len(sent) == expect_n
-    assert "大盤" in sent[0][1]
+    assert "大盤" in sent[0][1]["text"]
+
+
+def test_line_webhook_rank_command_replies_flex_table(tmp_path, monkeypatch):
+    """「高價股」回 Flex 表格（純文字對不齊、必折行），其餘指令仍是純文字。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("LINE_CHANNEL_SECRET", "sekret")
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok")
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc
+    from stocks_power_rich import line_push
+    from stocks_power_rich.sources import mis
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    bulk_upsert_ohlc(c, "2026-07-17", {"2330": {"open": 1, "high": 2, "low": 1, "close": 2400.0}})
+    monkeypatch.setattr(mis, "fetch_mis_rank", lambda tokens: {
+        "2330": {"price": 2455.0, "chg": 55.0, "chg_pct": 2.29, "vol": 30000,
+                 "time": "10:30", "name": "台積電"}})
+    _no_turnover(monkeypatch)
+    sent = []
+    monkeypatch.setattr(line_push, "reply_message",
+                        lambda tok, rt, msg: sent.append(msg) or {"ok": True})
+    app = create_app()
+    client = TestClient(app)
+    body = json.dumps({"events": [
+        {"type": "message", "replyToken": "rt", "message": {"type": "text", "text": "高價股"}}]},
+        ensure_ascii=False).encode()
+    r = client.post("/line/webhook", content=body,
+                    headers={"X-Line-Signature": _line_sig("sekret", body)})
+    assert r.status_code == 200
+    assert sent[0]["type"] == "flex" and sent[0]["contents"]["size"] == "giga"
+    assert "台積電" in sent[0]["altText"]

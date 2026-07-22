@@ -251,6 +251,82 @@ def compose_rank_brief(data: dict) -> str:
     return "\n".join(lines)[:MAX_LEN]
 
 
+# Flex 版高價股用色。漲跌%沿台股慣例紅漲綠跌；「額增減」刻意換一組色系（金＝放量、
+# 灰＝縮量）——量能變化與股價方向是兩個維度，共用紅綠會被誤讀成漲跌。
+_C_BG, _C_HEAD, _C_TEXT, _C_MUTED = "#0f1419", "#1a2029", "#e6e6e6", "#8a94a3"
+_C_UP, _C_DOWN, _C_GOLD = "#e8404a", "#1f9e6e", "#f0a500"
+_RANK_COLS = (("股票", 5), ("成交價", 4), ("漲跌", 3), ("成交量", 4), ("額增減", 5))
+
+
+def _cell(text, flex, color, align="end", weight=None):
+    c = {"type": "text", "text": text, "flex": flex, "size": "xs",
+         "color": color, "align": align, "gravity": "center"}
+    if weight:
+        c["weight"] = weight
+    return c
+
+
+def compose_rank_flex(data: dict) -> dict:
+    """高價股 Top N → LINE Flex 訊息（回傳完整 message 物件，含 altText）。
+
+    為什麼不用純文字：LINE 是比例字體，空白寬度 ≠ 數字寬度，補空白永遠對不齊；
+    訊息框又只容約 31 個半形單位，五個欄位一行必折。Flex 用 flex 比例配欄寬，
+    欄位無論內容長短都對得齊，也不會折行。
+    放量的列下方加一條「資金流向 bar」，長度正比於增額、最大者滿格——把量能變化畫成
+    長度，掃一眼就知道錢往哪去，這是純文字給不了的。**只畫放量**：縮量也畫的話，那條
+    線會被讀成表格底線而不是資料（縮量已由 ▼ 文字表達）。
+    """
+    items = data.get("items") or []
+    if not items:
+        return {"type": "text", "text": "尚無高價股資料（需先跑過 OHLC 回補）"}
+    peak = max((i["amount_chg"] for i in items if i.get("amount_chg")), default=0)
+    rows = [{"type": "box", "layout": "vertical", "contents": [
+        {"type": "box", "layout": "horizontal", "contents": [
+            _cell(n, fx, _C_MUTED, "start" if i == 0 else "end")
+            for i, (n, fx) in enumerate(_RANK_COLS)]}]}]
+    for i, it in enumerate(items, 1):
+        pct, chg = it.get("chg_pct"), it.get("amount_chg")
+        pcol = _C_MUTED if not pct else (_C_UP if pct > 0 else _C_DOWN)
+        ccol = _C_MUTED if not chg else (_C_GOLD if chg > 0 else _C_MUTED)
+        cells = [
+            _cell(f"{i} {it.get('name') or it.get('code') or ''}", 5, _C_TEXT, "start"),
+            _cell(_fmt(it.get("price"), 0), 4, _C_TEXT, weight="bold"),
+            _cell("—" if pct is None else f"{_signed(pct, 0)}%", 3, pcol),
+            _cell("—" if it.get("vol") is None else f"{_fmt(it['vol'], 0)}張", 4, _C_MUTED),
+            _cell("—" if chg is None else f"{'▲' if chg > 0 else '▼'}{_fmt(abs(chg) / 1e8, 1)}億",
+                  5, ccol),
+        ]
+        row = {"type": "box", "layout": "vertical", "margin": "md",
+               "contents": [{"type": "box", "layout": "horizontal", "contents": cells}]}
+        if chg and chg > 0 and peak:
+            row["contents"].append({
+                "type": "box", "layout": "vertical", "margin": "xs",
+                "width": f"{max(1, round(chg / peak * 100))}%", "height": "3px",
+                "backgroundColor": _C_GOLD, "contents": [{"type": "filler"}]})
+        rows.append(row)
+
+    head = [{"type": "text", "text": f"台股高價股 Top{len(items)}",
+             "color": _C_GOLD, "size": "md", "weight": "bold"},
+            {"type": "text", "size": "xxs", "color": _C_MUTED, "margin": "xs",
+             "text": f"量額基準 {data['prev_date']}" if data.get("prev_date") else "量額基準 —"}]
+    foot = "官方成交金額收盤後才發布，盤中成交額為估算"
+    return {
+        "type": "flex",
+        "altText": compose_rank_brief(data)[:400],
+        "contents": {
+            "type": "bubble", "size": "giga",
+            "header": {"type": "box", "layout": "vertical", "paddingAll": "14px",
+                       "backgroundColor": _C_HEAD, "contents": head},
+            "body": {"type": "box", "layout": "vertical", "paddingAll": "14px",
+                     "backgroundColor": _C_BG, "contents": rows},
+            "footer": {"type": "box", "layout": "vertical", "paddingAll": "12px",
+                       "backgroundColor": _C_BG, "contents": [
+                           {"type": "text", "text": foot, "size": "xxs",
+                            "color": _C_MUTED, "wrap": True}]},
+        },
+    }
+
+
 def compose_breakout_alert(hits: list[dict], hhmm: str) -> str:
     """盤中突破警示訊息。hits＝[{code,name,price,resistance,pick}]，同輪多檔合併成一則。
 
@@ -323,16 +399,22 @@ def route_command(text: str) -> str | None:
 
 
 def reply_text(token: str, reply_token: str, text: str) -> dict:
-    """回覆使用者訊息。**不計入每月免費額度**，失敗不拋例外。"""
+    """回覆純文字。**不計入每月免費額度**，失敗不拋例外。"""
+    if not text:
+        return {"ok": False, "error": "缺 replyToken 或空訊息"}
+    return reply_message(token, reply_token, {"type": "text", "text": text[:MAX_LEN]})
+
+
+def reply_message(token: str, reply_token: str, message: dict) -> dict:
+    """回覆任意型別訊息（text / flex）。**不計入每月免費額度**，失敗不拋例外。"""
     if not token:
         return {"ok": False, "error": "未設定 LINE_CHANNEL_ACCESS_TOKEN"}
-    if not (reply_token and text):
+    if not (reply_token and message):
         return {"ok": False, "error": "缺 replyToken 或空訊息"}
     try:
         r = httpx.post(REPLY_URL, timeout=15,
                        headers={"Authorization": f"Bearer {token}"},
-                       json={"replyToken": reply_token,
-                             "messages": [{"type": "text", "text": text[:MAX_LEN]}]})
+                       json={"replyToken": reply_token, "messages": [message]})
         out = {"ok": r.status_code == 200, "status": r.status_code}
         if r.status_code != 200:
             out["error"] = r.text[:200]

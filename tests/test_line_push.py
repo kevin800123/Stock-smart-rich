@@ -228,3 +228,63 @@ def test_compose_rank_brief_empty_and_missing_fields():
         {"name": "某股", "price": 1200.0, "chg_pct": None,
          "vol": None, "amount": None, "amount_chg": None, "amount_chg_pct": None}]})
     assert txt.split("\n")[-1] == " 1 某股　　1,200"   # 缺值欄位整段省略，不印「—」佔位
+
+
+# ===== 高價股 Flex（純文字無法真正對齊：LINE 為比例字體，空白寬 ≠ 數字寬）=====
+
+_RANK_D = {"prev_date": "2026-07-21", "items": [
+    {"code": "5274", "name": "信驊", "price": 15510.0, "chg_pct": 10.0, "vol": 319,
+     "amount": 4.95e9, "amount_est": True, "amount_chg": None, "amount_chg_pct": None},
+    {"code": "2059", "name": "川湖", "price": 8125.0, "chg_pct": -1.88, "vol": 381,
+     "amount": 3.4e9, "amount_est": False, "amount_chg": -4.71e9, "amount_chg_pct": -58.1},
+    {"code": "2454", "name": "聯發科", "price": 3850.0, "chg_pct": 4.9, "vol": 13004,
+     "amount": 5.378e10, "amount_est": False, "amount_chg": 2.622e10, "amount_chg_pct": 95.1},
+    {"code": "6669", "name": "緯穎", "price": 5500.0, "chg_pct": 10.0, "vol": 3320,
+     "amount": 2.098e10, "amount_est": False, "amount_chg": 1.539e10, "amount_chg_pct": 275.0},
+]}
+
+
+def _rows(msg):
+    """body 內的個股列（跳過欄位標題列）。"""
+    return [b for b in msg["contents"]["body"]["contents"] if b.get("layout") == "vertical"][1:]
+
+
+def test_compose_rank_flex_message_envelope():
+    msg = line_push.compose_rank_flex(_RANK_D)
+    assert msg["type"] == "flex"
+    assert "信驊" in msg["altText"] and len(msg["altText"]) <= 400   # LINE altText 上限
+    assert msg["contents"]["type"] == "bubble" and msg["contents"]["size"] == "giga"
+    assert "2026-07-21" in msg["contents"]["header"]["contents"][1]["text"]
+
+
+def test_compose_rank_flex_columns_align_and_colour_by_convention():
+    """六欄以 flex 比例配寬 → 永遠對齊；漲跌%紅漲綠跌，額增減另用金/灰以免與股價方向混淆。"""
+    rows = _rows(line_push.compose_rank_flex(_RANK_D))
+    cells = rows[0]["contents"][0]["contents"]
+    assert [c["text"] for c in cells] == ["1 信驊", "15,510", "+10%", "319張", "—"]
+    assert [c["flex"] for c in cells] == [5, 4, 3, 4, 5]
+    assert cells[2]["color"] == "#e8404a"                       # 上漲＝紅（台股慣例）
+    assert line_push.compose_rank_flex(_RANK_D)["contents"]["body"]["contents"][2] \
+        ["contents"][0]["contents"][2]["color"] == "#1f9e6e"    # 川湖 -1.88% ＝綠
+    tail = _rows(line_push.compose_rank_flex(_RANK_D))[2]["contents"][0]["contents"]
+    assert tail[4]["text"] == "▲262.2億" and tail[4]["color"] == "#f0a500"   # 放量＝金
+    assert rows[1]["contents"][0]["contents"][4]["color"] == "#8a94a3"       # 縮量＝灰
+
+
+def test_compose_rank_flex_flow_bar_only_for_inflow():
+    """資金流向 bar：長度正比於放量金額、最大者滿格。
+
+    只畫放量——縮量也畫的話，那條灰線會被讀成表格底線而不是資料（縮量已由 ▼ 文字表達）。
+    """
+    rows = _rows(line_push.compose_rank_flex(_RANK_D))
+    assert len(rows[0]["contents"]) == 1                        # 無增減資料 → 不畫 bar
+    assert len(rows[1]["contents"]) == 1                        # 縮量 → 不畫 bar
+    bar_mtk, bar_wiwynn = rows[2]["contents"][1], rows[3]["contents"][1]
+    assert bar_mtk["width"] == "100%"                            # 262.2 億為最大放量
+    assert bar_wiwynn["width"] == "59%"                          # 153.9/262.2 ≈ 59%
+    assert bar_mtk["backgroundColor"] == "#f0a500"
+
+
+def test_compose_rank_flex_empty_degrades_to_text_message():
+    msg = line_push.compose_rank_flex({"items": []})
+    assert msg["type"] == "text" and "尚無" in msg["text"]

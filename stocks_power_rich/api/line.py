@@ -12,25 +12,27 @@ from fastapi import APIRouter, Request, Response
 from .. import line_push
 from ..config import load_config
 from .deps import conn
-from .helpers import _compose_daily_text, _weekly_text, _rank_text
+from .helpers import _compose_daily_text, _weekly_text, _rank_message
 
 router = APIRouter()
 
 
-def _text_for(c, cmd: str) -> str:
-    """指令 → 回覆內容。組裝失敗一律降級成可讀訊息，不讓例外冒到 webhook。"""
+def _message_for(c, cmd: str) -> dict:
+    """指令 → 回覆訊息物件。組裝失敗一律降級成可讀文字，不讓例外冒到 webhook。"""
+    def text(s):
+        return {"type": "text", "text": s[:line_push.MAX_LEN]}
     try:
         if cmd in ("brief", "full"):
             # force=True：使用者自己問的就該回，即使今天還沒更新（推播才需要 staleness 保護）
             txt, err = _compose_daily_text(c, full=(cmd == "full"), force=True)
-            return txt or f"目前無法組裝訊息（{(err or {}).get('error')}）"
+            return text(txt or f"目前無法組裝訊息（{(err or {}).get('error')}）")
         if cmd == "weekly":
-            return _weekly_text(c)
+            return text(_weekly_text(c))
         if cmd == "rank":
-            return _rank_text(c)
+            return _rank_message(c)         # Flex 表格：純文字對不齊，見 compose_rank_flex
     except Exception as e:  # noqa: BLE001
-        return f"查詢失敗：{e}"
-    return line_push.HELP_TEXT
+        return text(f"查詢失敗：{e}")
+    return text(line_push.HELP_TEXT)
 
 
 @router.post("/line/webhook")
@@ -49,7 +51,6 @@ async def line_webhook(request: Request):
         events = []          # 壞 JSON：簽章既然過了就當空事件，仍回 200
     c = conn()
     for ev in events:
-        cmd = line_push.route_command(ev["text"])
-        txt = line_push.HELP_TEXT if cmd in (None, "help") else _text_for(c, cmd)
-        line_push.reply_text(cfg.line_token, ev["reply_token"], txt)
+        msg = _message_for(c, line_push.route_command(ev["text"]))
+        line_push.reply_message(cfg.line_token, ev["reply_token"], msg)
     return {"ok": True, "handled": len(events)}

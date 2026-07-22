@@ -470,10 +470,10 @@ def _weekly_text(c) -> str:
         comparison, ai_text=(ai.get("text") or "") if ai.get("enabled") else "")
 
 
-def _rank_text(c) -> str:
-    """高價股 Top10 文字（價/量/額/額增減），webhook「高價股」用。排版見 compose_rank_brief。"""
+def _rank_message(c) -> dict:
+    """高價股 Top10 的 LINE 訊息（Flex 表格，欄位真正對齊）。排版理由見 compose_rank_flex。"""
     from ..api.market import rank_price
-    return line_push.compose_rank_brief(rank_price(market="all", n=10))
+    return line_push.compose_rank_flex(rank_price(market="all", n=10))
 
 
 def _push_line(c, full: bool, force: bool = False) -> dict:
