@@ -1,3 +1,4 @@
+import json
 import os
 
 from fastapi.testclient import TestClient
@@ -1645,3 +1646,91 @@ def test_summary_includes_snap_date(tmp_path, monkeypatch):
     client = TestClient(app)
     r = client.get("/api/analysis/summary").json()
     assert r["snap_date"] == "2026-07-17"   # AI 籌碼分析師要能標示資料日期
+
+
+def _line_sig(secret: str, body: bytes) -> str:
+    import base64
+    import hashlib
+    import hmac
+    return base64.b64encode(hmac.new(secret.encode(), body, hashlib.sha256).digest()).decode()
+
+
+def test_line_webhook_requires_valid_signature(tmp_path, monkeypatch):
+    """webhook 免帳密（LINE 伺服器無法帶 Basic Auth），改以 channel secret 簽章把關。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("SPR_BASIC_USER", "u")       # 全站認證開著
+    monkeypatch.setenv("SPR_BASIC_PASS", "p")
+    monkeypatch.setenv("LINE_CHANNEL_SECRET", "sekret")
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok")
+    from stocks_power_rich import line_push
+    sent = []
+    monkeypatch.setattr(line_push, "reply_text",
+                        lambda tok, rt, txt: sent.append((rt, txt)) or {"ok": True})
+    app = create_app()
+    client = TestClient(app)
+    body = json.dumps({"events": [
+        {"type": "message", "replyToken": "rt1", "message": {"type": "text", "text": "說明"}}]},
+        ensure_ascii=False).encode()
+    # 沒有簽章 / 簽章錯 → 403，且不回覆任何訊息
+    assert client.post("/line/webhook", content=body).status_code == 403
+    assert client.post("/line/webhook", content=body,
+                       headers={"X-Line-Signature": "bogus"}).status_code == 403
+    assert sent == []
+    # 正確簽章 → 200（且沒被 Basic Auth 擋掉，未帶帳密也通）
+    r = client.post("/line/webhook", content=body,
+                    headers={"X-Line-Signature": _line_sig("sekret", body)})
+    assert r.status_code == 200
+    assert len(sent) == 1 and sent[0][0] == "rt1"
+    assert "大盤" in sent[0][1] and "週報" in sent[0][1]     # 說明列出可用指令
+
+
+def test_line_webhook_brief_command_replies_market_text(tmp_path, monkeypatch):
+    """「大盤」→ 回覆與 16:00 推播同一份盤後速報內容（走 reply，不耗免費額度）。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("LINE_CHANNEL_SECRET", "sekret")
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok")
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich import line_push
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-07-20", "taiex": 47018.99, "taiex_chg": 893.08,
+                            "turnover": 10780.3})
+    sent = []
+    monkeypatch.setattr(line_push, "reply_text",
+                        lambda tok, rt, txt: sent.append((rt, txt)) or {"ok": True})
+    app = create_app()
+    client = TestClient(app)
+    body = json.dumps({"events": [
+        {"type": "message", "replyToken": "rt9", "message": {"type": "text", "text": "大盤"}}]},
+        ensure_ascii=False).encode()
+    r = client.post("/line/webhook", content=body,
+                    headers={"X-Line-Signature": _line_sig("sekret", body)})
+    assert r.status_code == 200
+    # 資料日非今日也照回（使用者主動問的，不套用推播的 staleness 略過規則）
+    assert len(sent) == 1 and "47,018.99" in sent[0][1] and "2026-07-20" in sent[0][1]
+
+
+def test_line_webhook_unknown_text_replies_help_and_never_500(tmp_path, monkeypatch):
+    """認不得的訊息回指令說明；非文字事件不回覆。任何情況都要回 200，否則 LINE 會判定 webhook 失效。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("LINE_CHANNEL_SECRET", "sekret")
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok")
+    from stocks_power_rich import line_push
+    sent = []
+    monkeypatch.setattr(line_push, "reply_text",
+                        lambda tok, rt, txt: sent.append((rt, txt)) or {"ok": True})
+    app = create_app()
+    client = TestClient(app)
+    for payload, expect_n in (
+        ({"events": [{"type": "message", "replyToken": "rt1",
+                      "message": {"type": "text", "text": "早安"}}]}, 1),
+        ({"events": [{"type": "follow", "replyToken": "rt2"}]}, 1),   # 非文字事件 → 不新增回覆
+        ({"events": []}, 1),                                          # Console 驗證用空 body
+    ):
+        b = json.dumps(payload, ensure_ascii=False).encode()
+        r = client.post("/line/webhook", content=b,
+                        headers={"X-Line-Signature": _line_sig("sekret", b)})
+        assert r.status_code == 200
+        assert len(sent) == expect_n
+    assert "大盤" in sent[0][1]

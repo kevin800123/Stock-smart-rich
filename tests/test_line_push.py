@@ -139,3 +139,44 @@ def test_compose_weekly_brief_degrades_when_empty():
                                          ai_text="")
     assert "籌碼週報" in txt
     assert "本週無" in txt or "尚無" in txt
+
+
+# ===== Webhook（使用者傳訊息 → 回覆；回覆訊息不計入 LINE 免費額度）=====
+
+def test_verify_signature_hmac_sha256_base64():
+    """X-Line-Signature＝base64(HMAC-SHA256(channel_secret, raw_body))；差一個位元組就不放行。"""
+    import base64
+    import hashlib
+    import hmac
+
+    secret, body = "s3cr3t", b'{"events":[]}'
+    sig = base64.b64encode(hmac.new(secret.encode(), body, hashlib.sha256).digest()).decode()
+    assert line_push.verify_signature(secret, body, sig) is True
+    assert line_push.verify_signature(secret, body + b" ", sig) is False   # body 被竄改
+    assert line_push.verify_signature("other", body, sig) is False         # 金鑰不符
+    assert line_push.verify_signature(secret, body, "") is False
+    assert line_push.verify_signature("", body, sig) is False              # 未設定 secret＝一律不放行
+
+
+def test_parse_webhook_events_keeps_only_text_messages():
+    """只取文字訊息事件；follow/貼圖等其他事件與 Console 驗證用的全零 replyToken 一律略過。"""
+    payload = {"events": [
+        {"type": "message", "replyToken": "rt1", "message": {"type": "text", "id": "1", "text": " 大盤 "}},
+        {"type": "message", "replyToken": "rt2", "message": {"type": "sticker", "id": "2"}},
+        {"type": "follow", "replyToken": "rt3"},
+        {"type": "message", "replyToken": "0" * 32, "message": {"type": "text", "text": "hi"}},
+    ]}
+    assert line_push.parse_webhook_events(payload) == [{"reply_token": "rt1", "text": "大盤"}]
+    assert line_push.parse_webhook_events({}) == []
+
+
+def test_route_command_maps_synonyms_and_unknown():
+    """關鍵字→指令；大小寫/前後空白不影響；認不得的字回 None（呼叫端回說明）。"""
+    for t in ("大盤", "簡報", "速報"):
+        assert line_push.route_command(t) == "brief"
+    for t in ("完整", "總結"):
+        assert line_push.route_command(t) == "full"
+    assert line_push.route_command("週報") == "weekly"
+    assert line_push.route_command("高價股") == "rank"
+    assert line_push.route_command("Help") == "help"
+    assert line_push.route_command("今天要買什麼") is None

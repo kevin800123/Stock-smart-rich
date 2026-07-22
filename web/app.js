@@ -290,8 +290,10 @@ async function loadSettings() {
     g.textContent = s.gemini_configured ? "已設定 ✓" : "未設定";
     g.className = "set-badge " + (s.gemini_configured ? "ok" : "no");
     const ln = $("set-line");
+    // webhook 已設定＝可直接傳訊息給 OA 查詢（reply 不計入每月免費額度）
     ln.textContent = s.line_configured
       ? `已設定 ✓（速報 ${s.line_push_time}・完整版 ${s.schedule_time}・週報 週六 ${s.weekly_push_time}）`
+        + (s.line_webhook_configured ? "・查詢 webhook ✓" : "・查詢 webhook 未設定")
       : "未設定";
     ln.className = "set-badge " + (s.line_configured ? "ok" : "no");
     $("set-picks-only").checked = !!s.intraday_picks_only;

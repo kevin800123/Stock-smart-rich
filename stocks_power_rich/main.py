@@ -39,6 +39,7 @@ from .api.trades import router as trades_router
 from .api.csv import router as csv_router
 from .api.public import router as public_router
 from .api.admin import router as admin_router
+from .api.line import router as line_router
 
 # 免帳密的前端靜態資產（精確比對）：/public/overview 與站內共用同一套前端，需能載入這些檔。
 # 僅限程式碼與樣式，不含 index.html（站內入口維持鎖住）。
@@ -59,8 +60,10 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             #                     內含的只是程式碼與字型，無任何機密（金鑰皆在伺服器端），
             #                     且所有 /api/* 仍受保護，資料不會外洩。
             # 注意：/ 與 /index.html 維持鎖住；前綴一律帶結尾斜線，避免 /publicx、/vendorx 誤放行。
+            #   /line/webhook  —— LINE 伺服器無法帶 Basic Auth；改以 channel secret 簽章把關
             path = request.url.path
             if (path.startswith("/public/")
+                    or path == "/line/webhook"
                     or path in _PUBLIC_FILES
                     or path.startswith("/vendor/")):
                 return await call_next(request)
@@ -89,6 +92,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     app.include_router(csv_router)
     app.include_router(public_router)
     app.include_router(admin_router)
+    app.include_router(line_router)
 
     # 註冊排程 job
     def scheduled_job():
@@ -175,18 +179,14 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         """週六 17:00 籌碼週報：跨週變化（週對週）＋ AI 籌碼分析師 → LINE 廣播。"""
         try:
             from datetime import date, timedelta
-            from .api.public import weekly, summary_logic
+            from .api.helpers import _weekly_text
             from .db import get_snapshot_dates
             c = conn()
             dates = get_snapshot_dates(c)
             # staleness guard：最新快照距今 >7 天代表本週沒匯 CSV，別重複推舊內容
             if not dates or (date.today() - date.fromisoformat(dates[-1])) > timedelta(days=7):
                 return
-            comparison = weekly()
-            ai = summary_logic(c, refresh=0)   # 讀既有快取，不觸發重新扣費
-            txt = line_push.compose_weekly_brief(
-                comparison, ai_text=(ai.get("text") or "") if ai.get("enabled") else "")
-            line_push.broadcast_text(cfg.line_token, txt)
+            line_push.broadcast_text(cfg.line_token, _weekly_text(c))
         except Exception:  # noqa: BLE001 — 推播失敗不影響其他排程
             pass
 

@@ -1,12 +1,20 @@
-"""LINE 官方帳號推播：盤後速報/完整版訊息組裝與 broadcast。
+"""LINE 官方帳號推播：盤後速報/完整版訊息組裝、broadcast 與 webhook 回覆。
 
 訊息組裝為純函數（單元測試）；網路呼叫為 thin wrapper，無 token 時安全降級。
 broadcast 推給官方帳號的全部好友（單人自用帳號＝只推給自己），免查 userId。
 版型：逐行條列＋全形空白對齊（LINE 非等寬字體，全形空白對中文標籤最穩）＋分區線。
+
+**額度**：broadcast/push 按「收訊人數」計入每月免費額度（好友 6 人＝一則扣 6 則），
+但 **reply（回覆使用者訊息）完全不計額度、無上限**——所以主動查詢一律走 reply_text。
 """
+import base64
+import hashlib
+import hmac
+
 import httpx
 
 BROADCAST_URL = "https://api.line.me/v2/bot/message/broadcast"
+REPLY_URL = "https://api.line.me/v2/bot/message/reply"
 MAX_LEN = 4900  # LINE 單則文字上限 5000，留餘裕
 SEP = "━━━━━━━━━━━━"
 
@@ -218,6 +226,80 @@ def compose_breakout_alert(hits: list[dict], hhmm: str) -> str:
         lines.append("⭐=同時符合籌碼/基本選股")
     lines.append("（盤中價有延遲，確認量價後再行動）")
     return "\n".join(lines)[:MAX_LEN]
+
+
+# ===== Webhook（使用者主動查詢 → reply，不計免費額度）=====
+
+# 關鍵字 → 指令。一個指令收多個同義詞，手機打字才不用記得精準用詞。
+_COMMANDS = {
+    "brief": ("大盤", "簡報", "速報", "盤後"),
+    "full": ("完整", "總結", "完整版"),
+    "weekly": ("週報", "周報"),
+    "rank": ("高價股", "高價"),
+    "help": ("help", "說明", "指令", "?", "？"),
+}
+
+HELP_TEXT = ("📖 可用指令（直接傳給我）\n" + SEP
+             + "\n大盤　　盤後速報（大盤/法人/期貨/類股/自選股）"
+             + "\n完整　　速報＋融資券餘額與維持率"
+             + "\n週報　　跨週籌碼變化＋AI 分析"
+             + "\n高價股　高價股 Top10（價/量/額/額增減）"
+             + "\n說明　　顯示這則")
+
+# LINE Developers Console 按「Verify」時送的假 replyToken（全 0），不可拿去回覆
+_VERIFY_TOKEN = "0" * 32
+
+
+def verify_signature(secret: str, body: bytes, signature: str) -> bool:
+    """驗 X-Line-Signature＝base64(HMAC-SHA256(channel_secret, raw_body))。
+
+    webhook 免帳密（LINE 伺服器無法帶 Basic Auth），簽章是唯一把關；secret 未設定一律不放行。
+    """
+    if not secret or not signature:
+        return False
+    mac = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).digest()
+    return hmac.compare_digest(base64.b64encode(mac).decode(), signature)
+
+
+def parse_webhook_events(payload: dict) -> list[dict]:
+    """webhook body → [{reply_token, text}]。只取文字訊息；其他事件型別與驗證用假 token 略過。"""
+    out = []
+    for ev in payload.get("events") or []:
+        if ev.get("type") != "message" or (ev.get("message") or {}).get("type") != "text":
+            continue
+        rt = str(ev.get("replyToken") or "")
+        if not rt or rt == _VERIFY_TOKEN:
+            continue
+        out.append({"reply_token": rt, "text": str(ev["message"].get("text") or "").strip()})
+    return out
+
+
+def route_command(text: str) -> str | None:
+    """使用者輸入 → 指令代號；認不得回 None（呼叫端回 HELP_TEXT）。"""
+    t = (text or "").strip().lower()
+    for cmd, words in _COMMANDS.items():
+        if t in words:
+            return cmd
+    return None
+
+
+def reply_text(token: str, reply_token: str, text: str) -> dict:
+    """回覆使用者訊息。**不計入每月免費額度**，失敗不拋例外。"""
+    if not token:
+        return {"ok": False, "error": "未設定 LINE_CHANNEL_ACCESS_TOKEN"}
+    if not (reply_token and text):
+        return {"ok": False, "error": "缺 replyToken 或空訊息"}
+    try:
+        r = httpx.post(REPLY_URL, timeout=15,
+                       headers={"Authorization": f"Bearer {token}"},
+                       json={"replyToken": reply_token,
+                             "messages": [{"type": "text", "text": text[:MAX_LEN]}]})
+        out = {"ok": r.status_code == 200, "status": r.status_code}
+        if r.status_code != 200:
+            out["error"] = r.text[:200]
+        return out
+    except Exception as e:  # noqa: BLE001 — 回覆失敗不影響 webhook 必須回 200
+        return {"ok": False, "error": str(e)}
 
 
 def broadcast_text(token: str, text: str) -> dict:

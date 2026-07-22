@@ -120,6 +120,7 @@ def get_settings(request: Request):
     return {
         "gemini_configured": bool(cfg.gemini_api_key),
         "line_configured": bool(cfg.line_token),
+        "line_webhook_configured": bool(cfg.line_secret),   # 只回布林，絕不外洩 secret
         "offsite_backup_configured": bool(cfg.backup_git_remote),
         "line_push_time": cfg.line_push_time,
         "weekly_push_time": cfg.weekly_push_time,

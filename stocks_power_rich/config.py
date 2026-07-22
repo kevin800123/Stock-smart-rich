@@ -26,6 +26,7 @@ class Config:
     data_dir: str = "Date"
     intl_tickers: dict = field(default_factory=lambda: dict(INTL_TICKERS))
     line_token: str = ""            # LINE 官方帳號 Messaging API Channel Access Token
+    line_secret: str = ""           # LINE Channel Secret（webhook 簽章驗證；未設定＝webhook 關閉）
     line_push_time: str = "16:00"   # 盤後速報推播時間（完整版跟隨 schedule_time）
     weekly_push_time: str = "17:00"  # 每週六籌碼週報推播時間（固定週六，僅時間可調）
     basic_user: str = ""            # HTTP Basic Auth 帳號（與密碼皆設定才啟用全站認證）
@@ -41,6 +42,7 @@ def load_config() -> Config:
         db_path=os.getenv("SPR_DB_PATH", "data/spr.sqlite"),
         data_dir=os.getenv("SPR_DATA_DIR", "Date"),
         line_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip(),
+        line_secret=os.getenv("LINE_CHANNEL_SECRET", "").strip(),
         line_push_time=os.getenv("SPR_LINE_PUSH_TIME", "16:00"),
         weekly_push_time=os.getenv("SPR_WEEKLY_PUSH_TIME", "17:00"),
         basic_user=os.getenv("SPR_BASIC_USER", "").strip(),

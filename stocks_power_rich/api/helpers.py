@@ -396,18 +396,20 @@ def _cup_push_info(c) -> dict | None:
             "picks": bool(picks)}
 
 
-def _push_line(c, full: bool, force: bool = False) -> dict:
-    cfg = load_config()
-    if not cfg.line_token:
-        return {"ok": False, "error": "未設定 LINE_CHANNEL_ACCESS_TOKEN"}
+def _compose_daily_text(c, full: bool, force: bool = False) -> tuple[str, dict | None]:
+    """組盤後訊息文字。回 (txt, err)；err 非 None 時 txt 為空。
+
+    推播（_push_line）與 webhook 主動查詢共用同一份組裝，避免兩邊內容漂移。
+    force=True 略過「資料日須為今日」檢查——使用者自己問的就該回，即使是昨天的收盤。
+    """
     try:
         rows = c.execute("SELECT * FROM market_daily ORDER BY date DESC LIMIT 2").fetchall()
         if not rows:
-            return {"ok": False, "error": "尚無大盤資料"}
+            return "", {"ok": False, "error": "尚無大盤資料"}
         m = dict(rows[0])
         prev_row = dict(rows[1]) if len(rows) > 1 else {}
         if not force and m["date"] != datetime.now().strftime("%Y-%m-%d"):
-            return {"ok": False, "skipped": True, "error": f"資料日 {m['date']} 非今日，略過"}
+            return "", {"ok": False, "skipped": True, "error": f"資料日 {m['date']} 非今日，略過"}
         secs = _sectors_for(c, m["date"])
         watch = []
         try:
@@ -454,9 +456,59 @@ def _push_line(c, full: bool, force: bool = False) -> dict:
             cup = None
         txt = line_push.compose_daily_brief(m, secs, watch, ai_text=ai_text, full=full,
                                             tsmc=tsmc, prev=prev_row, cup=cup)
-    except Exception as e:  # noqa: BLE001
-        _note_push_fail(c, full, e)
-        return {"ok": False, "error": str(e)}
+    except Exception as e:  # noqa: BLE001 — fatal 才記推播失敗（缺資料/非今日屬正常略過）
+        return "", {"ok": False, "error": str(e), "fatal": True}
+    return txt, None
+
+
+def _weekly_text(c) -> str:
+    """籌碼週報文字（跨週變化＋AI）。週六排程與 webhook「週報」共用。"""
+    from ..api.public import weekly, summary_logic
+    comparison = weekly()
+    ai = summary_logic(c, refresh=0)   # 讀既有快取，不觸發重新扣費
+    return line_push.compose_weekly_brief(
+        comparison, ai_text=(ai.get("text") or "") if ai.get("enabled") else "")
+
+
+def _rank_text(c) -> str:
+    """高價股 Top10 文字（價/量/額/額增減），webhook「高價股」用。"""
+    from ..api.market import rank_price
+    d = rank_price(market="all", n=10)
+    items = d.get("items") or []
+    if not items:
+        return "尚無高價股資料（需先跑過 OHLC 回補）"
+    lines = [f"💰 台股高價股 Top{len(items)}"]
+    if d.get("prev_date"):
+        lines.append(f"（成交額比較基準 {d['prev_date']}）")
+    lines.append(line_push.SEP)
+    for i, it in enumerate(items, 1):
+        pct = it.get("chg_pct")
+        line = f"{i}. {it.get('name') or it.get('code')} {line_push._fmt(it.get('price'))}"
+        if pct is not None:
+            line += f"（{line_push._signed(pct)}%）"
+        lines.append(line)
+        amt = it.get("amount")
+        if amt is not None:
+            sub = f"　量{line_push._fmt(it.get('vol'), 0)}張　額{line_push._fmt(amt / 1e8, 1)}億"
+            if it.get("amount_est"):
+                sub += "(估)"
+            if it.get("amount_chg") is not None:
+                sub += f"　{line_push._signed(it['amount_chg'] / 1e8, 1)}億"
+                if it.get("amount_chg_pct") is not None:
+                    sub += f"（{line_push._signed(it['amount_chg_pct'], 1)}%）"
+            lines.append(sub)
+    return "\n".join(lines)[:line_push.MAX_LEN]
+
+
+def _push_line(c, full: bool, force: bool = False) -> dict:
+    cfg = load_config()
+    if not cfg.line_token:
+        return {"ok": False, "error": "未設定 LINE_CHANNEL_ACCESS_TOKEN"}
+    txt, err = _compose_daily_text(c, full=full, force=force)
+    if err:
+        if err.get("fatal"):
+            _note_push_fail(c, full, err.get("error"))
+        return err
     prev_fail = get_setting(c, "line_push_fail")
     if prev_fail:
         txt = f"⚠️ 前次推播失敗（{prev_fail}），數據以本則為準\n" + txt
