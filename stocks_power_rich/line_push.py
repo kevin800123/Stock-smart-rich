@@ -212,6 +212,45 @@ def compose_weekly_brief(comparison: dict, ai_text: str = "") -> str:
     return "\n".join(lines)[:MAX_LEN]
 
 
+def compose_rank_brief(data: dict) -> str:
+    """高價股 Top N（/api/rank/price 回應）→ LINE 訊息。
+
+    每檔壓成一行「排名 名稱 價 漲跌% 量 額增減」，手機才不會把一長串折得七零八落——
+    LINE 訊息框約容 22 個全形字，超過就折行，所以每個欄位都砍到剛好夠用：
+    - 價格取整數：高價股 tick ≥1 元本就沒小數，且「15,510.00」這種 7 位數字串會被
+      LINE 誤判成電話號碼、自動加上藍色連結
+    - 漲跌%取整數；成交額只留增減（絕對值由量×價即可推估，留著是重複資訊）
+    - 盤中估算以 * 標記＋末尾註腳，不用「(估)」——那 4 格會把最長的一行撐到折行
+    排名右靠補到 2 位、名稱補到 3 字寬，讓價格欄大致對齊（LINE 為比例字體，無法精確對齊）。
+    缺值的欄位整段省略，不留「—」佔位。
+    """
+    items = data.get("items") or []
+    if not items:
+        return "尚無高價股資料（需先跑過 OHLC 回補）"
+    lines = [f"💰 台股高價股 Top{len(items)}"]
+    if data.get("prev_date"):
+        lines.append(f"量額基準 {data['prev_date']}")
+    lines.append(SEP)
+    est_any = False
+    for i, it in enumerate(items, 1):
+        price, pct = it.get("price"), it.get("chg_pct")
+        seg = [f"{i:>2} {_pad(it.get('name') or it.get('code') or '', 3)}", _fmt(price, 0)]
+        if pct is not None:
+            seg.append(f"{_signed(pct, 0)}%")
+        if it.get("vol") is not None:
+            seg.append(f"{_fmt(it['vol'], 0)}張")
+        chg = it.get("amount_chg")
+        if chg is not None:
+            seg.append(f"{'▲' if chg > 0 else '▼'}{_fmt(abs(chg) / 1e8, 1)}億")
+        if it.get("amount_est"):
+            est_any = True
+            seg.append("*")
+        lines.append("　".join(seg))
+    if est_any:
+        lines.append("* 盤中估算（官方成交金額收盤後才發布）")
+    return "\n".join(lines)[:MAX_LEN]
+
+
 def compose_breakout_alert(hits: list[dict], hhmm: str) -> str:
     """盤中突破警示訊息。hits＝[{code,name,price,resistance,pick}]，同輪多檔合併成一則。
 

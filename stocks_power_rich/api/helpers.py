@@ -471,33 +471,9 @@ def _weekly_text(c) -> str:
 
 
 def _rank_text(c) -> str:
-    """高價股 Top10 文字（價/量/額/額增減），webhook「高價股」用。"""
+    """高價股 Top10 文字（價/量/額/額增減），webhook「高價股」用。排版見 compose_rank_brief。"""
     from ..api.market import rank_price
-    d = rank_price(market="all", n=10)
-    items = d.get("items") or []
-    if not items:
-        return "尚無高價股資料（需先跑過 OHLC 回補）"
-    lines = [f"💰 台股高價股 Top{len(items)}"]
-    if d.get("prev_date"):
-        lines.append(f"（成交額比較基準 {d['prev_date']}）")
-    lines.append(line_push.SEP)
-    for i, it in enumerate(items, 1):
-        pct = it.get("chg_pct")
-        line = f"{i}. {it.get('name') or it.get('code')} {line_push._fmt(it.get('price'))}"
-        if pct is not None:
-            line += f"（{line_push._signed(pct)}%）"
-        lines.append(line)
-        amt = it.get("amount")
-        if amt is not None:
-            sub = f"　量{line_push._fmt(it.get('vol'), 0)}張　額{line_push._fmt(amt / 1e8, 1)}億"
-            if it.get("amount_est"):
-                sub += "(估)"
-            if it.get("amount_chg") is not None:
-                sub += f"　{line_push._signed(it['amount_chg'] / 1e8, 1)}億"
-                if it.get("amount_chg_pct") is not None:
-                    sub += f"（{line_push._signed(it['amount_chg_pct'], 1)}%）"
-            lines.append(sub)
-    return "\n".join(lines)[:line_push.MAX_LEN]
+    return line_push.compose_rank_brief(rank_price(market="all", n=10))
 
 
 def _push_line(c, full: bool, force: bool = False) -> dict:

@@ -180,3 +180,51 @@ def test_route_command_maps_synonyms_and_unknown():
     assert line_push.route_command("高價股") == "rank"
     assert line_push.route_command("Help") == "help"
     assert line_push.route_command("今天要買什麼") is None
+
+
+def test_compose_rank_brief_two_line_compact_layout():
+    """高價股每檔壓成一行：排名 名稱 價 漲跌% 量 額增減。
+
+    一行放得下的前提是砍掉冗餘——價格取整數（高價股 tick ≥1 元，且「15,510.00」會被 LINE
+    誤判成電話號碼自動加藍色連結）、漲跌%取整數、成交額只留增減（絕對值已由量價可推）。
+    盤中估算值以 * 標記＋末尾註腳，不用 (估)——那 4 格會把最長的一行撐到折行。
+    """
+    d = {"prev_date": "2026-07-21", "items": [
+        {"code": "5274", "name": "信驊", "price": 15510.0, "chg_pct": 10.0,
+         "vol": 319, "amount": 4_950_000_000.0, "amount_est": True,
+         "amount_chg": None, "amount_chg_pct": None},
+        {"code": "2059", "name": "川湖", "price": 8125.0, "chg_pct": 1.88,
+         "vol": 381, "amount": 3_400_000_000.0, "amount_est": False,
+         "amount_chg": -4_710_000_000.0, "amount_chg_pct": -58.1},
+        {"code": "6669", "name": "緯穎", "price": 5500.0, "chg_pct": 10.0,
+         "vol": 3320, "amount": 20_980_000_000.0, "amount_est": False,
+         "amount_chg": 15_390_000_000.0, "amount_chg_pct": 275.0},
+    ]}
+    txt = line_push.compose_rank_brief(d)
+    lines = txt.split("\n")
+    assert "2026-07-21" in lines[1]
+    assert "15,510" in txt and "15,510.00" not in txt        # 整數價，不觸發電話號碼連結
+    # 名稱補到 3 字寬、排名右靠補到 2 位 → 價格欄大致落在同一條垂直線上
+    assert lines[3] == " 1 信驊　　15,510　+10%　319張　*"     # 估算且無前一日基準：只留 * 記號
+    assert lines[4] == " 2 川湖　　8,125　+2%　381張　▼47.1億"  # 1.88 四捨五入成 +2%
+    assert lines[5] == " 3 緯穎　　5,500　+10%　3,320張　▲153.9億"
+    assert lines[6] == "* 盤中估算（官方成交金額收盤後才發布）"
+    # 每行的顯示寬度都要壓在 LINE 訊息框內（約 22 個全形字＝44 半形單位），否則就折行了
+    def width(s):
+        return sum(2 if ord(ch) > 0x2000 else 1 for ch in s)
+    assert max(width(l) for l in lines) <= 44
+
+
+def test_compose_rank_brief_no_footnote_when_nothing_estimated():
+    d = {"items": [{"name": "川湖", "price": 8125.0, "chg_pct": 1.88, "vol": 381,
+                    "amount": 3.4e9, "amount_est": False, "amount_chg": -4.71e9,
+                    "amount_chg_pct": -58.1}]}
+    assert "*" not in line_push.compose_rank_brief(d)
+
+
+def test_compose_rank_brief_empty_and_missing_fields():
+    assert "尚無" in line_push.compose_rank_brief({"items": []})
+    txt = line_push.compose_rank_brief({"items": [
+        {"name": "某股", "price": 1200.0, "chg_pct": None,
+         "vol": None, "amount": None, "amount_chg": None, "amount_chg_pct": None}]})
+    assert txt.split("\n")[-1] == " 1 某股　　1,200"   # 缺值欄位整段省略，不印「—」佔位
