@@ -41,9 +41,20 @@
   --muted: #8a94a3;
   --label: #cfd6df;
   /* 市場方向：紅漲綠跌（台股慣例，與西方相反）。這組紅綠只代表市場方向，
-     系統狀態訊息一律不得使用，否則「成功」會讀成「跌」。 */
-  --up: #e8404a;
-  --down: #1f9e6e;
+     系統狀態訊息一律不得使用，否則「成功」會讀成「跌」。
+     亮度下限由「小字對比」決定，不是由「好不好看」決定：--up/--down 會用在
+     .card-chg(14px)、.rank-row(13px) 這類小字上，在 --card 底上必須 ≥ 4.5:1(WCAG AA)。
+     舊值 #e8404a 只有 3.58、#1f9e6e 4.20，皆不合格；現值實測 4.60 / 5.32。
+     再調暗就會掉出 AA——調整前請先量對比，別只看順不順眼。 */
+  --up: #f56069;
+  --down: #25b37d;
+  /* 同一組紅綠有兩種用途，對比要求正好相反，一個 token 服務不了兩邊：
+     --up/--down     ＝「深色底上的文字」，要夠亮才過 AA（見上）。
+     --up-fill/--down-fill ＝「白字底下的色塊」（權值股卡、熱力圖，皆由 sectorColor 產生），
+                        要夠暗白字才讀得到；實測白字對比 5.52 / 5.34。
+     用亮色當色塊會把白字壓到 3.11 / 2.68。無文字的填色（漲跌家數條、K 線）沿用亮色即可。 */
+  --up-fill: #c62b38;
+  --down-fill: #127a53;
   --up-dim: #3a1717;
   --down-dim: #14301f;
   --flat: #4a5262;
@@ -161,6 +172,22 @@ body[data-public] .status-bar { display: none; }
 .ms-inst .ms-i-k { font-size: var(--fs-sm); color: var(--muted); }
 .ms-inst .ms-i-v { font-size: var(--fs-lg); font-weight: 700; white-space: nowrap; }
 .ms-inst .ms-i.total .ms-i-v { font-size: var(--fs-xl); }
+/* 一句判讀：指數方向 vs 內部廣度的關係。背離時才套 .alert（見下方「注意」語彙）。 */
+.ms-verdict { font-size: var(--fs-md); color: var(--label); margin-top: var(--sp-2); }
+.ms-verdict:empty { display: none; }
+.ms-verdict.alert { display: inline-block; color: var(--text); font-weight: 600;
+  background: var(--sunken); border-radius: var(--r); padding: 4px 10px;
+  outline: 1px solid var(--accent); }
+
+/* 「注意這格」的唯一語彙：琥珀外框。外框與填色是兩條正交的軸，所以它能疊在
+   紅漲綠跌的卡片上而不打架——不必為了標注異常再引入第四個色相。
+   只用在兩處：背離的判讀句、異常讀數的卡片。 */
+.card.alert { outline: 1px solid var(--accent); outline-offset: -1px; }
+/* 位階條：細軌 + 目前值的百分位刻度。只畫在樣本 ≥15 天的欄位上（見 app.js RAIL_MIN_N），
+   否則幾個點的「位階」是雜訊。tooltip 標樣本數，因為各欄位有效天數差很多。 */
+.card-rail { position: relative; height: 2px; margin-top: 7px; background: var(--border); border-radius: 1px; cursor: help; }
+.card-rail i { position: absolute; top: -2px; width: 2px; height: 6px; margin-left: -1px; background: var(--label); border-radius: 1px; }
+.card.alert .card-rail i { background: var(--accent); width: 3px; }
 
 /* 區塊標題：左豎線分層 + 底部漸層底線（琥珀→透明，柔和收尾，呼應圓體暖調）。
    漸層底線只鋪在文字下方（inline-block 收合寬度），不橫貫整行。 */
@@ -287,6 +314,11 @@ body[data-public] .status-bar { display: none; }
 .ai-btn:hover { border-color: var(--accent); }
 .ai-box { background: var(--sunken); border: 1px dashed var(--border); border-radius: var(--r-lg); padding: 12px 14px; font-size: var(--fs-base); line-height: 1.75; white-space: pre-wrap; }
 .ai-box.disabled { color: var(--muted); font-style: italic; }
+/* 摘要移到頁首後預設收合三行——它是結論，值得在最上面，但不該一開頁就吃掉半個螢幕。
+   用 max-height 而非 -webkit-line-clamp：.ai-box 是 .view(flex column) 的直接子項，
+   flex item 會把 display 區塊化，-webkit-box 會被改寫成 flow-root，line-clamp 隨之失效
+   （實測收合後只剩 25.6px＝純 padding）。3 行＝3×line-height(1.75) + 上下 padding。 */
+.ai-box.clamp { max-height: calc(3 * 1.75em + 24px); overflow: hidden; flex: 0 0 auto; }
 
 /* ===== 工具列 ===== */
 .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; flex: 0 0 auto; }

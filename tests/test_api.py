@@ -52,6 +52,28 @@ def test_dashboard_includes_today_and_stale_flag(tmp_path, monkeypatch):
     assert body["data_stale"] is False  # 無資料時不標延遲
 
 
+def test_dashboard_bands_come_from_ss_trader(tmp_path, monkeypatch):
+    """總覽卡片的「異常讀數」門檻必須是 ss_trader 的那一份，不得在前端另寫一組。
+
+    這條測試存在的理由是防漂移：門檻散成兩份實作後，改了一邊另一邊不會報錯，
+    介面就會安靜地用舊標準判定（艾略特波浪的 JS/Python 雙實作已經吃過這個虧）。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich import ss_trader
+
+    app = create_app()
+    client = TestClient(app)
+    bands = client.get("/api/dashboard").json()["bands"]
+
+    assert bands["margin_maintenance"] == {
+        "low": ss_trader.MARGIN_MAINT_LOW,
+        "high": ss_trader.MARGIN_MAINT_HIGH,
+    }
+    assert bands["vix"] == {"low": ss_trader.VIX_COMPLACENT, "high": ss_trader.VIX_PANIC}
+    # 免密碼的公開總覽走同一個 handler，門檻也必須跟著出現
+    assert client.get("/public/api/dashboard").json()["bands"] == bands
+
+
 def test_sectors_endpoint_sorted_by_change(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily

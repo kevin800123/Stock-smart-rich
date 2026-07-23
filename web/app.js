@@ -27,6 +27,9 @@ let stockCode = "", stockInterval = "1d", stockWaves = false;
 let wavePct = 0.05;
 let lastIndexData = null, lastStockData = null;
 let chipChart = null, chipMetric = "inst", lastHistory = [];
+// 判讀句需要「指數方向」(dashboard) ＋「漲跌家數」(breadth) 兩支 API 的值，但兩者分開載入。
+// 兩處呼叫點都是 loadDashboard 先 await、loadBreadth 後跑，故此處存下最新一列即可。
+let lastLatest = null, lastBands = {};
 let txVolChart = null;
 let stockChipsChart = null, stockCustodyChart = null;
 // heatmapTop 預設 5：實測 1267px 寬下，5 檔比 6 檔「顯示更多可讀標籤」(110 vs 108) 且字更大、
@@ -44,8 +47,10 @@ const MA_DEFS = [
 const CSS_VAR = (name, fallback) =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 const C = {
-  up: CSS_VAR("--up", "#e8404a"),
-  down: CSS_VAR("--down", "#1f9e6e"),
+  up: CSS_VAR("--up", "#f56069"),
+  down: CSS_VAR("--down", "#25b37d"),
+  upFill: CSS_VAR("--up-fill", "#c62b38"),
+  downFill: CSS_VAR("--down-fill", "#127a53"),
   accent: CSS_VAR("--accent", "#f0a500"),
   info: CSS_VAR("--info", "#6cb6ff"),
   text: CSS_VAR("--text", "#e6e6e6"),
@@ -325,39 +330,52 @@ function dod(cur, prev) {
   const pct = (prev !== 0 && Math.sign(prev) === Math.sign(cur)) ? chg / Math.abs(prev) * 100 : null;
   return { chg, pct };
 }
-// label, value, chg(可空), pct(可空), unit
-function card(label, value, chg, pct, unit = "", title = "") {
+// 位階條：一條細軌 + 目前值所在的百分位刻度。tooltip 誠實標示樣本數，因為各欄位的
+// 有效天數差很多（融資維持率遠少於散戶多空比），不標的話會讓人以為都是同一個基準。
+function railHtml(rk) {
+  if (!rk) return "";
+  return `<div class="card-rail" title="近 ${rk.n} 日位階 ${rk.p}%（${rk.n} 筆有效資料）">`
+    + `<i style="left:${rk.p}%"></i></div>`;
+}
+// 卡片外殼：把 alert（琥珀外框）與位階條收在一處，五個卡片建構式共用。
+function cardWrap(inner, title, rk, alert) {
+  const attr = title ? ` title="${esc(title)}"` : "";
+  return `<div class="card${alert ? " alert" : ""}"${attr}>${inner}${railHtml(rk)}</div>`;
+}
+// label, value, chg(可空), pct(可空), unit；rk=位階物件（可空），alert=是否標為異常讀數
+function card(label, value, chg, pct, unit = "", title = "", rk = null, alert = false) {
   let sub = "";
   if (chg !== undefined && chg !== null) sub = `<div class="card-chg ${chgClass(chg)}">${chgText(chg)}${pctTag(pct)}</div>`;
   else if (pct !== undefined && pct !== null) sub = `<div class="card-chg ${chgClass(pct)}">${pct > 0 ? "▲" : pct < 0 ? "▼" : ""}${fmt(Math.abs(pct), 2)}%</div>`;
-  const attr = title ? ` title="${esc(title)}"` : "";
-  return `<div class="card"${attr}><div class="card-label">${label}</div><div class="card-val">${value}${unit}</div>${sub}</div>`;
+  return cardWrap(`<div class="card-label">${label}</div><div class="card-val">${value}${unit}</div>${sub}`, title, rk, alert);
 }
 // 未平倉口數卡：依淨多/淨空上色（紅多綠空），附「較昨日」增減口數與百分比
-function oiCard(label, v, prev) {
+function oiCard(label, v, prev, rk = null, alert = false) {
   if (v === null || v === undefined) return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   const cls = v > 0 ? "up" : v < 0 ? "down" : "flat";
   const head = (v > 0 ? "淨多 " : v < 0 ? "淨空 " : "") + fmt(Math.abs(v), 0) + " 口";
   const { chg, pct } = dod(v, prev);
   const sub = chg == null ? "" : `<div class="card-chg ${chgClass(chg)}">較昨 ${chg > 0 ? "+" : ""}${fmt(chg, 0)} 口${pctTag(pct)}</div>`;
-  return `<div class="card"><div class="card-label">${label}</div><div class="card-val ${cls}">${head}</div>${sub}</div>`;
+  return cardWrap(`<div class="card-label">${label}</div><div class="card-val ${cls}">${head}</div>${sub}`, "", rk, alert);
 }
 // 買賣超/淨額卡：當日淨流量，數值依正負上色，附「較昨日」增減金額
 // （淨流量基數會翻號、趨近 0，算百分比會失真，故只給金額增減、不給 %）
-function flowCard(label, v, prev, unit = "") {
+function flowCard(label, v, prev, unit = "", rk = null, alert = false) {
   if (v === null || v === undefined) return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   const chg = prev == null ? null : v - prev;
   const sub = chg == null ? "" : `<div class="card-chg ${chgClass(chg)}">較昨 ${chg > 0 ? "+" : ""}${fmt(chg)}${unit}</div>`;
-  return `<div class="card"><div class="card-label">${label}</div><div class="card-val ${chgClass(v)}">${fmt(v)}${unit}</div>${sub}</div>`;
+  return cardWrap(`<div class="card-label">${label}</div><div class="card-val ${chgClass(v)}">${fmt(v)}${unit}</div>${sub}`, "", rk, alert);
 }
 // 餘額卡（融資/融券）：當日尚未公布（晚間才出）時，退而顯示最近一筆有資料的交易日，並標註日期
-function balanceCard(label, srcRow, curDate, balKey, chgKey) {
+function balanceCard(label, srcRow, curDate, balKey, chgKey, hist = []) {
   if (!srcRow || srcRow[balKey] === null || srcRow[balKey] === undefined) {
     return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   }
   const stale = srcRow.date && srcRow.date !== curDate;
   const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
-  return card(lbl, fmt(srcRow[balKey], 0), srcRow[chgKey], pctOf(srcRow[balKey], srcRow[chgKey]));
+  const rk = pctile(hist, balKey, srcRow[balKey]);
+  return card(lbl, fmt(srcRow[balKey], 0), srcRow[chgKey], pctOf(srcRow[balKey], srcRow[chgKey]),
+    "", "", rk, isAlert(balKey, srcRow[balKey], rk));
 }
 // 融資維持率卡：DB 未存官方逐日漲跌（不像融資/融券有 margin_chg/short_chg 現成值），
 // 故從 hist 找 srcRow 當日之前最近一筆有值的交易日自行算較昨——比較基準是 srcRow 自己的日期，
@@ -375,7 +393,12 @@ function marginMaintCard(hist, srcRow, curDate) {
     ? [...hist.slice(0, idx)].reverse().find((r) => r && r.margin_maintenance != null)
     : null;
   const chg = priorRow ? srcRow.margin_maintenance - priorRow.margin_maintenance : null;
-  return card(lbl, fmt(srcRow.margin_maintenance, 1) + "%", chg, pctOf(srcRow.margin_maintenance, chg), "", MARGIN_MAINT_TIP);
+  // 有效天數通常遠少於其他欄位（官方非逐日公布），位階條會自動因 n<15 而不畫；
+  // 但 135/165 的固定門檻不受樣本數影響，仍照常判定異常。
+  const v = srcRow.margin_maintenance;
+  const rk = pctile(hist, "margin_maintenance", v);
+  return card(lbl, fmt(v, 1) + "%", chg, pctOf(v, chg), "", MARGIN_MAINT_TIP, rk,
+    isAlert("margin_maintenance", v, rk));
 }
 // 市場內部儀表：指數（方向）＋三大法人（資金）。中間的漲跌家數由 loadBreadth 填 #breadth，
 // 三者並列才看得出「指數持平但下跌家數遠多於上漲」這種內部背離。
@@ -391,6 +414,56 @@ function renderMarketStrip(m, total3) {
     + `<div class="ms-i-v ${chgClass(total3)}">${total3 == null ? "—" : fmt(total3) + " 億"}</div></div>`;
 }
 
+// 一句判讀：把「指數方向」與「內部廣度」的關係講出來，而不是把兩組數字並排讓人自己心算。
+// 背離（指數與家數不同向）才是這一列存在的理由，也只有背離會套琥珀外框。
+// 刻意只陳述觀察不給動作——「內部偏弱」可以，「偏空」不行，全站免責基調一致。
+const VERDICT_GAP = 0.1;   // 家數差需達總家數 10% 才算背離，否則平盤日天天都在響
+let lastBreadth = null;
+function renderVerdict() {
+  const el = $("ms-verdict");
+  if (!el) return;
+  const b = lastBreadth, chg = lastLatest && lastLatest.taiex_chg;
+  if (!b || chg == null) { el.textContent = ""; el.className = "ms-verdict"; return; }
+  const up = b.up || 0, flat = b.flat || 0, down = b.down || 0;
+  const tot = up + flat + down;
+  if (!tot) { el.textContent = ""; el.className = "ms-verdict"; return; }
+  const gap = up - down;
+  const wide = Math.abs(gap) >= VERDICT_GAP * tot;
+  const idxUp = chg > 0, idxDown = chg < 0;
+  let text, diverge = false;
+  if (idxUp && gap < 0 && wide) {
+    text = `指數收紅，但下跌家數多 ${fmt(-gap, 0)} 家 — 內部偏弱`; diverge = true;
+  } else if (idxDown && gap > 0 && wide) {
+    text = `指數收黑，但上漲家數多 ${fmt(gap, 0)} 家 — 內部偏強`; diverge = true;
+  } else if (idxUp && gap > 0) {
+    text = "指數與家數同步走強";
+  } else if (idxDown && gap < 0) {
+    text = "指數與家數同步走弱";
+  } else {
+    text = wide
+      ? `指數持平，家數${gap > 0 ? "偏多" : "偏空"} ${fmt(Math.abs(gap), 0)} 家`
+      : "指數與家數皆無明顯方向";
+  }
+  el.textContent = text;
+  el.className = "ms-verdict" + (diverge ? " alert" : "");
+}
+
+// 某欄位在近 N 日的百分位。位階條只在樣本夠時才畫得有意義——n<15 的欄位（如目前
+// 只有 7 筆有值的融資維持率）畫出來是雜訊，寧可不畫，改由固定門檻判定。
+const RAIL_MIN_N = 15;
+function pctile(hist, key, v) {
+  if (v == null) return null;
+  const a = hist.map((r) => r && r[key]).filter((x) => x != null);
+  if (a.length < RAIL_MIN_N) return null;
+  return { p: Math.round(a.filter((x) => x < v).length / a.length * 100), n: a.length };
+}
+// 異常＝跨過 ss_trader 的固定門檻，或位階落在頭尾 10%。兩者都套同一個琥珀外框。
+function isAlert(key, v, rank) {
+  const band = lastBands[key];
+  if (band && v != null && (v <= band.low || v >= band.high)) return true;
+  return !!rank && (rank.p >= 90 || rank.p <= 10);
+}
+
 function renderCards(m, prev = {}, hist = []) {
   if (!m || !m.date) { $("cards-tw").innerHTML = '<div class="muted">尚無大盤資料。</div>'; $("cards-fut").innerHTML = ""; $("cards-intl").innerHTML = ""; $("data-date").textContent = ""; return; }
   $("data-date").textContent = "資料日期：" + m.date;
@@ -404,22 +477,26 @@ function renderCards(m, prev = {}, hist = []) {
   // 融資/融券：當日有就用當日，否則退到最近一筆有資料的交易日（晚間才公布的容錯）
   const marginRow = [...hist].reverse().find((r) => r && r.margin_balance != null) || m;
   renderMarketStrip(m, sum3(m));   // 加權指數與三大法人合計移到頂端儀表，下方卡片不再重複
+  // 位階：把「這個數字在近期分佈的哪裡」補上。同一欄位算一次，rk 與 alert 共用。
+  const rank = (key, v) => pctile(hist, key, v === undefined ? m[key] : v);
   $("cards-tw").innerHTML = [
-    flowCard("外資買賣超", m.inst_foreign, prev.inst_foreign, " 億"),
-    flowCard("投信買賣超", m.inst_trust, prev.inst_trust, " 億"),
-    flowCard("自營買賣超", m.inst_dealer, prev.inst_dealer, " 億"),
-    balanceCard("融資餘額(張)", marginRow, m.date, "margin_balance", "margin_chg"),
-    balanceCard("融券餘額(張)", marginRow, m.date, "short_balance", "short_chg"),
+    flowCard("外資買賣超", m.inst_foreign, prev.inst_foreign, " 億", rank("inst_foreign"), isAlert("inst_foreign", m.inst_foreign, rank("inst_foreign"))),
+    flowCard("投信買賣超", m.inst_trust, prev.inst_trust, " 億", rank("inst_trust"), isAlert("inst_trust", m.inst_trust, rank("inst_trust"))),
+    flowCard("自營買賣超", m.inst_dealer, prev.inst_dealer, " 億", rank("inst_dealer"), isAlert("inst_dealer", m.inst_dealer, rank("inst_dealer"))),
+    balanceCard("融資餘額(張)", marginRow, m.date, "margin_balance", "margin_chg", hist),
+    balanceCard("融券餘額(張)", marginRow, m.date, "short_balance", "short_chg", hist),
     marginMaintCard(hist, marginRow, m.date),
   ].join("");
   $("cards-fut").innerHTML = [
     card("台指期", fmt(m.tx_price), m.tx_chg, pctOf(m.tx_price, m.tx_chg)),
-    oiCard("外資台指淨未平倉", m.tx_foreign_oi, prev.tx_foreign_oi),
-    oiCard("散戶小台淨未平倉", m.retail_oi_mtx, prev.retail_oi_mtx),
-    card("小台散戶多空比", ls(m.retail_ls_mtx), lsm.chg, lsm.pct),
-    card("微台散戶多空比", ls(m.retail_ls_tmf), lst.chg, lst.pct),
-    card("VIX 恐慌指數", fmt(m.vix), chgPts(m.vix, m.vix_chg), m.vix_chg),
+    oiCard("外資台指淨未平倉", m.tx_foreign_oi, prev.tx_foreign_oi, rank("tx_foreign_oi"), isAlert("tx_foreign_oi", m.tx_foreign_oi, rank("tx_foreign_oi"))),
+    oiCard("散戶小台淨未平倉", m.retail_oi_mtx, prev.retail_oi_mtx, rank("retail_oi_mtx"), isAlert("retail_oi_mtx", m.retail_oi_mtx, rank("retail_oi_mtx"))),
+    card("小台散戶多空比", ls(m.retail_ls_mtx), lsm.chg, lsm.pct, "", "", rank("retail_ls_mtx"), isAlert("retail_ls_mtx", m.retail_ls_mtx, rank("retail_ls_mtx"))),
+    card("微台散戶多空比", ls(m.retail_ls_tmf), lst.chg, lst.pct, "", "", rank("retail_ls_tmf"), isAlert("retail_ls_tmf", m.retail_ls_tmf, rank("retail_ls_tmf"))),
+    card("VIX 恐慌指數", fmt(m.vix), chgPts(m.vix, m.vix_chg), m.vix_chg, "", "", rank("vix"), isAlert("vix", m.vix, rank("vix"))),
   ].join("");
+  // 國際市場刻意不給位階條：價格的 45 日位階訊號薄弱，畫了只是裝飾，
+  // 反而稀釋位階條在籌碼欄位上的意義。
   $("cards-intl").innerHTML = [
     card("費城半導體", fmt(m.sox), chgPts(m.sox, m.sox_chg), m.sox_chg),
     card("日經225", fmt(m.n225), chgPts(m.n225, m.n225_chg), m.n225_chg),
@@ -446,8 +523,11 @@ async function loadDashboard() {
   const d = await getJSON("/api/dashboard");
   const hist = d.history || [];
   const prev = hist.length >= 2 ? hist[hist.length - 2] : {};
+  // lastBands 供 renderCards 判定「異常讀數」，必須在它之前設好
+  lastHistory = hist; lastLatest = d.latest || null; lastBands = d.bands || {};
   renderCards(d.latest, prev, hist);
-  lastHistory = hist; loadChipTrend();
+  renderVerdict();               // 家數尚未載入時會自行留白，loadBreadth 完再補畫一次
+  loadChipTrend();
   renderStale(d);
   if (d.latest && d.latest.updated_at) $("last-updated").textContent = "更新：" + d.latest.updated_at.replace("T", " ").slice(0, 19);
   return d;
@@ -460,10 +540,12 @@ function _hex(a, b, t) {
   const c = (x, y) => Math.round(x + (y - x) * t).toString(16).padStart(2, "0");
   return "#" + c(ar, br) + c(ag, bg) + c(ab, bb);
 }
+// 這些色塊上面疊白字（權值股卡、熱力圖），所以插值終點用 --up-fill/--down-fill 而非
+// --up/--down——後者為了小字對比調亮過，拿來當底會把白字壓到 3:1 以下。
 function sectorColor(chg) {
   if (chg == null) return "#2b3038";
   const t = 0.35 + 0.65 * Math.min(Math.abs(chg) / 3, 1); // 小漲跌也看得出方向
-  return _hex("#2b3038", chg >= 0 ? C.up : C.down, t);
+  return _hex("#2b3038", chg >= 0 ? C.upFill : C.downFill, t);
 }
 
 // 台股漲跌家數：紅漲綠跌的市場氣氛長條 + 漲停/跌停家數
@@ -472,7 +554,8 @@ async function loadBreadth() {
   const note = $("breadth-note");
   try {
     const d = await getJSON("/api/breadth");
-    if (d.up == null && d.down == null) { el.innerHTML = ""; if (note) note.textContent = ""; return; }
+    if (d.up == null && d.down == null) { el.innerHTML = ""; if (note) note.textContent = ""; lastBreadth = null; renderVerdict(); return; }
+    lastBreadth = d; renderVerdict();
     const up = d.up || 0, flat = d.flat || 0, down = d.down || 0, tot = up + flat + down || 1;
     const w = (n) => (n / tot * 100).toFixed(1) + "%";
     if (note) note.textContent = `（${d.date}）`;
@@ -489,7 +572,7 @@ async function loadBreadth() {
         <div class="seg flat" style="width:${w(flat)}" title="平盤 ${fmt(flat, 0)}"></div>
         <div class="seg down" style="width:${w(down)}" title="下跌 ${fmt(down, 0)}"></div>
       </div>`;
-  } catch (e) { el.innerHTML = ""; }
+  } catch (e) { el.innerHTML = ""; lastBreadth = null; renderVerdict(); }
 }
 
 // 亞當杯柄型態選股：清單 + K 線疊「趨勢線(左緣→右緣)＋壓力線(右緣水平)」
@@ -1460,6 +1543,12 @@ document.querySelectorAll("#view-overview .tf").forEach((btn) => btn.addEventLis
   btn.classList.add("active"); idxInterval = btn.dataset.iv; loadIndexChart();
 }));
 $("wave-help-toggle").addEventListener("click", (e) => { e.preventDefault(); $("wave-help").classList.toggle("hidden"); });
+// AI 摘要展開/收合。刻意不記進 localStorage——全專案零處使用，不為一個開合狀態破例。
+$("ai-toggle").addEventListener("click", (e) => {
+  e.preventDefault();
+  const on = $("market-summary").classList.toggle("clamp");
+  e.target.textContent = on ? "展開" : "收合";
+});
 $("wave-chk").addEventListener("change", (e) => { overviewWaves = e.target.checked; if (idxChart && lastIndexData) idxChart.setOption(candlestickOption(lastIndexData, lastIndexData.candles.length > 120 ? 70 : 0, overviewWaves, wavePct), true); });
 $("wave-pct").addEventListener("input", (e) => {
   wavePct = Number(e.target.value) / 100; $("wave-pct-val").textContent = `轉折 ${e.target.value}%`;

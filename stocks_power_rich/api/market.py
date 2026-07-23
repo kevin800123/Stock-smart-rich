@@ -18,7 +18,7 @@ from .helpers import (
     _turnover_for,
 )
 from ..sources import twse, taifex, mis
-from .. import analysis, gemini, traders
+from .. import analysis, gemini, ss_trader, traders
 from ..config import load_config
 
 router = APIRouter(prefix="/api")
@@ -151,7 +151,17 @@ def dashboard():
         "history": list(reversed(rows)),
         "today": today,
         "data_stale": data_is_stale(latest.get("date"), today, now.weekday()),
+        # 前端「異常讀數」判定用的固定門檻。刻意由後端供給而非在 app.js 複寫——
+        # 同一組數字有兩份實作就會漂移（艾略特波浪已經吃過這個虧）。ss_trader 是
+        # 這些門檻的唯一出處，「操盤手」頁與總覽卡片共用同一份。
+        "bands": _BANDS,
     }
+
+# 只列「跨過就值得看一眼」的欄位；沒有公認門檻的欄位不硬編，交給位階條處理。
+_BANDS = {
+    "margin_maintenance": {"low": ss_trader.MARGIN_MAINT_LOW, "high": ss_trader.MARGIN_MAINT_HIGH},
+    "vix": {"low": ss_trader.VIX_COMPLACENT, "high": ss_trader.VIX_PANIC},
+}
 
 @router.get("/health")
 def health():
