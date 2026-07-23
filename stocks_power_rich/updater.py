@@ -368,24 +368,18 @@ def run_update(conn, intl_tickers: dict) -> dict:
         failed.append({"source": "twse", "name": "twse_taiex", "error": str(e)})
     D = _iso_to_date(row.get("date"))
 
+    # 國際指數不在這裡抓——見下方 _backfill_intl，它是唯一寫入點。
     tasks = [
         ("twse_inst", lambda: twse.fetch_institutional(date=D)),
         ("twse_margin", lambda: twse.fetch_margin(date=D)),
         ("taifex_chips", lambda: taifex.fetch_chips_for_date(D)),
-        ("intl", lambda: intl.fetch_intl_indices(intl_tickers)),
     ]
 
     for name, fn in tasks:
         try:
             data = fn()
-            if name == "intl":
-                for key, val in data.items():
-                    if val.get("value") is not None:
-                        row[key] = val["value"]
-                        row[key + "_chg"] = val.get("chg_pct")  # 國際指數漲跌%
-            else:
-                # 只覆蓋有值的欄位；缺資料（None）保持空白，不以舊值或他日資料填充
-                row.update({k: v for k, v in data.items() if v is not None})
+            # 只覆蓋有值的欄位；缺資料（None）保持空白，不以舊值或他日資料填充
+            row.update({k: v for k, v in data.items() if v is not None})
             success.append(name)
         except Exception as e:  # noqa: BLE001 — 容錯：單一來源失敗不影響其餘
             failed.append({"source": name.split("_")[0], "name": name, "error": str(e)})
@@ -444,12 +438,24 @@ def run_update(conn, intl_tickers: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         failed.append({"source": "twse", "name": "margin_maint_heal", "error": str(e)})
 
-    # 回補近期缺的國際指數（yfinance 偶發失敗留下的洞；新代碼的冷啟動歷史走 /api/intl/backfill）
+    # 國際指數的唯一寫入點（含當日）。刻意不在上面的 tasks 裡抓「當下最新值」——
+    # 那個值取決於更新程式幾點跑，不是任何一場的收盤：實測同一個 sox 數字被寫進
+    # 2026-07-20 與 07-21 兩列，等於把別場的價格貼上 D 的標籤，違反本檔頂部的資料日 D 原則。
+    # 改由 _backfill_intl 以 pick_close_for 的場次規則寫入，當日算不出就留 NULL——
+    # NULL 會被下次更新回補，寫錯的值則因「只填 NULL 不覆蓋」而永遠留著，所以寧可留空。
     try:
-        if _backfill_intl(conn, intl_tickers):
-            success.append("intl_backfill")
+        filled = _backfill_intl(conn, intl_tickers)
+        today_ds = D.isoformat() if D else None
+        if today_ds and today_ds in filled:
+            success.append("intl")
+        elif today_ds:
+            failed.append({"source": "intl", "name": "intl",
+                           "error": "當日場次收盤尚未取得，下次更新自動回補"})
+        past = [f for f in filled if f != today_ds]
+        if past:
+            success.append(f"intl_backfill:{len(past)}")
     except Exception as e:  # noqa: BLE001
-        failed.append({"source": "intl", "name": "backfill", "error": str(e)})
+        failed.append({"source": "intl", "name": "intl", "error": str(e)})
 
     # 集保大戶比：偵測到新的一週才抓，全市場批次累積
     try:

@@ -3,19 +3,6 @@ import pandas as pd
 from stocks_power_rich.sources import intl
 
 
-def _chart_payload(closes):
-    return {"chart": {"result": [{"indicators": {"quote": [{"close": closes}]}}], "error": None}}
-
-
-def test_parse_chart_payload():
-    # 中間有 null（Yahoo 常見）→ 取最後兩個有效收盤算漲跌%
-    p = intl.parse_chart_payload(_chart_payload([100.0, None, 110.0]))
-    assert p == {"value": 110.0, "chg_pct": 10.0}
-    assert intl.parse_chart_payload(_chart_payload([110.0])) == {"value": 110.0, "chg_pct": None}
-    assert intl.parse_chart_payload(_chart_payload([])) is None
-    assert intl.parse_chart_payload({"chart": {"result": None}}) is None
-    assert intl.parse_chart_payload({}) is None
-
 
 def test_parse_chart_quote_meta():
     # 準即時報價：v8 chart meta 就帶現價/昨收/報價時間，不需讀 K 棒陣列
@@ -46,46 +33,6 @@ def test_fetch_futures_live_builds_categories(monkeypatch):
     assert [i["name"] for i in metal["items"]] == ["黃金"]   # 只有抓到的檔
 
 
-def test_fetch_intl_indices_chart_fallback(monkeypatch):
-    """yfinance 整批一直失敗（機房 IP 被限流）→ 直連 Yahoo chart API 逐檔備援補抓。"""
-    def bad_download(*a, **kw):
-        raise RuntimeError("rate limited")
-
-    class _Resp:
-        status_code = 200
-
-        def __init__(self, sym):
-            self._sym = sym
-
-        def json(self):
-            return _chart_payload([100.0, 123.0])
-
-    urls = []
-
-    def fake_get(url, **kw):
-        urls.append(url)
-        return _Resp(url)
-
-    monkeypatch.setattr(intl.time, "sleep", lambda s: None)
-    monkeypatch.setattr(intl.yf, "download", bad_download)
-    monkeypatch.setattr(intl.httpx, "get", fake_get)
-    out = intl.fetch_intl_indices({"sox": "^SOX", "btc": "BTC-USD"})
-    assert out["sox"] == {"value": 123.0, "chg_pct": 23.0}
-    assert out["btc"]["value"] == 123.0
-    assert any("%5ESOX" in u for u in urls)   # ^ 需 URL 編碼進路徑
-
-
-def test_fetch_intl_indices(monkeypatch):
-    def fake_download(tickers, period=None, **kw):
-        idx = pd.to_datetime(["2026-06-12", "2026-06-13"])
-        data = {("Close", t): [100.0, 110.0] for t in tickers.split()}
-        return pd.DataFrame(data, index=idx)
-
-    monkeypatch.setattr(intl.yf, "download", fake_download)
-    out = intl.fetch_intl_indices({"sox": "^SOX", "btc": "BTC-USD"})
-    assert out["sox"]["value"] == 110.0
-    assert out["sox"]["chg_pct"] == 10.0
-    assert out["btc"]["value"] == 110.0
 
 
 def test_fetch_futures_monitor_groups(monkeypatch):
@@ -103,27 +50,6 @@ def test_fetch_futures_monitor_groups(monkeypatch):
     assert gold["value"] == 110.0 and gold["chg"] == 10.0 and gold["chg_pct"] == 10.0
     assert len(next(g for g in cats if g["category"] == "美股")["items"]) == 14
 
-
-def test_fetch_intl_indices_retries_missing_ticker(monkeypatch):
-    """單一代碼首抓回 NaN（雲端 yfinance 偶發）→ 重試補抓，不影響其他代碼。"""
-    calls = {"n": 0}
-
-    def fake_download(tickers, period=None, **kw):
-        calls["n"] += 1
-        idx = pd.to_datetime(["2026-06-12", "2026-06-13"])
-        data = {}
-        for t in tickers.split():
-            # 第一輪 JPY=X 整欄 NaN，之後才有值
-            bad = t == "JPY=X" and calls["n"] == 1
-            data[("Close", t)] = [float("nan"), float("nan")] if bad else [100.0, 110.0]
-        return pd.DataFrame(data, index=idx)
-
-    monkeypatch.setattr(intl.time, "sleep", lambda s: None)
-    monkeypatch.setattr(intl.yf, "download", fake_download)
-    out = intl.fetch_intl_indices({"sox": "^SOX", "jpy": "JPY=X"})
-    assert out["sox"]["value"] == 110.0
-    assert out["jpy"]["value"] == 110.0   # 第二輪補抓成功
-    assert calls["n"] >= 2
 
 
 def test_parse_history_closes_skips_gaps_and_chains_chg():
@@ -148,6 +74,9 @@ def test_pick_close_for_respects_session_availability():
     ])
     # 亞股（same_day）：D 當日已收盤 → 取 D
     assert intl.pick_close_for(h, "2026-07-20", same_day=True)["value"] == 20.0
+    # 亞股當日尚未收盤／當天休市 → None。**絕不可退取前一場**：那會把別天的收盤
+    # 貼上 D 的標籤，正是本專案禁止的「walk back to another date」。
+    assert intl.pick_close_for(h, "2026-07-21", same_day=True) is None
     # 美盤（非 same_day）：台北 D 晚間 21:00 時 D 的美股尚未開盤 → 取 D 之前最近一場
     assert intl.pick_close_for(h, "2026-07-20", same_day=False)["value"] == 10.0
     # 週一往前不是「D-1 曆日(週日)」而是「最近一個有交易的日子(上週五)」
@@ -155,3 +84,36 @@ def test_pick_close_for_respects_session_availability():
     # 早於所有資料 → None，不硬湊
     assert intl.pick_close_for(h, "2026-07-17", same_day=False) is None
     assert intl.pick_close_for({}, "2026-07-20", same_day=True) is None
+
+
+def test_parse_chart_history_maps_timestamps_to_session_dates():
+    # v8 chart 的 timestamp 是每根日 K 的開盤 epoch；轉成場次日期後與 yfinance 路徑同形狀
+    payload = {"chart": {"result": [{
+        "timestamp": [1784505600, 1784592000, 1784678400],   # 2026-07-20/21/22 00:00 UTC
+        "indicators": {"quote": [{"close": [100.0, None, 110.0]}]},
+    }]}}
+    out = intl.parse_chart_history(payload)
+    assert out == {
+        "2026-07-20": {"value": 100.0, "chg_pct": None},
+        "2026-07-22": {"value": 110.0, "chg_pct": 10.0},   # None 那天不產生列
+    }
+    assert intl.parse_chart_history({"chart": {"result": None}}) == {}
+    assert intl.parse_chart_history({}) == {}
+
+
+def test_fetch_intl_history_falls_back_to_chart_api(monkeypatch):
+    """yfinance 的 cookie/crumb 握手正是機房 IP 會被擋的那段，故單一代碼失敗要有備援。"""
+    class _Boom:
+        def history(self, *a, **k):
+            raise RuntimeError("crumb rejected")
+
+    monkeypatch.setattr(intl.yf, "Ticker", lambda sym: _Boom())
+    monkeypatch.setattr(intl, "_fetch_chart_raw", lambda sym, range_="", interval="": {
+        "chart": {"result": [{
+            "timestamp": [1784505600, 1784678400],
+            "indicators": {"quote": [{"close": [100.0, 110.0]}]},
+        }]}} if sym == "^SOX" else None)
+
+    out = intl.fetch_intl_history({"sox": "^SOX", "vix": "^VIX"})
+    assert out["sox"]["2026-07-22"] == {"value": 110.0, "chg_pct": 10.0}
+    assert "vix" not in out          # 兩條路都失敗 → 該 key 缺席，呼叫端維持 NULL

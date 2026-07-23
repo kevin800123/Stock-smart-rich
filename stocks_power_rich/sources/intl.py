@@ -22,30 +22,6 @@ def _extract_series(df, sym):
     return df.dropna()                  # Series：單代碼
 
 
-def _parse_series(series) -> dict | None:
-    if len(series) >= 2:
-        last, prev = float(series.iloc[-1]), float(series.iloc[-2])
-        chg = round((last - prev) / prev * 100, 2) if prev else None
-        return {"value": round(last, 2), "chg_pct": chg}
-    if len(series) == 1:
-        return {"value": round(float(series.iloc[-1]), 2), "chg_pct": None}
-    return None
-
-
-def parse_chart_payload(payload) -> dict | None:
-    """從 Yahoo v8 chart JSON 取最後兩個有效收盤（中間常夾 null），回 {value, chg_pct}。"""
-    try:
-        closes = payload["chart"]["result"][0]["indicators"]["quote"][0]["close"]
-    except (KeyError, IndexError, TypeError):
-        return None
-    vals = [v for v in (closes or []) if v is not None]
-    if not vals:
-        return None
-    last = float(vals[-1])
-    chg = round((last - vals[-2]) / vals[-2] * 100, 2) if len(vals) >= 2 and vals[-2] else None
-    return {"value": round(last, 2), "chg_pct": chg}
-
-
 def _fetch_chart_raw(sym: str, range_: str = "5d", interval: str = "1d") -> dict | None:
     """直連 chart API 抓單一代碼原始 payload（^ 等符號需編碼進路徑）。失敗回 None。"""
     try:
@@ -57,12 +33,6 @@ def _fetch_chart_raw(sym: str, range_: str = "5d", interval: str = "1d") -> dict
     except Exception:  # noqa: BLE001 — 備援失敗不影響其他代碼
         pass
     return None
-
-
-def _fetch_chart(sym: str) -> dict | None:
-    """直連 chart API 抓單一代碼日線收盤。失敗回 None、維持缺值。"""
-    payload = _fetch_chart_raw(sym)
-    return parse_chart_payload(payload) if payload else None
 
 
 def parse_chart_quote(payload) -> dict | None:
@@ -104,34 +74,10 @@ def fetch_futures_live() -> list[dict]:
     return out
 
 
-def fetch_intl_indices(tickers: dict, tries: int = 3) -> dict:
-    out: dict = {}
-    remaining = dict(tickers)
-    for attempt in range(tries):
-        if not remaining:
-            break
-        if attempt:
-            time.sleep(1.0)
-        try:
-            # threads=False：yfinance 預設用 multitasking 開執行緒下載，從伺服器 threadpool
-            # 工作緒呼叫時會靜默失敗回空；關掉改單緒循序，任何情境都可靠。
-            df = yf.download(" ".join(remaining.values()), period="5d",
-                             progress=False, threads=False)["Close"]
-        except Exception:  # noqa: BLE001 — 整批失敗就重試
-            continue
-        for key, sym in list(remaining.items()):
-            series = _extract_series(df, sym)
-            parsed = _parse_series(series) if series is not None else None
-            if parsed is not None:
-                out[key] = parsed
-                remaining.pop(key)
-    # yfinance 重試後仍缺的代碼 → 直連 chart API 逐檔備援
-    for key, sym in list(remaining.items()):
-        parsed = _fetch_chart(sym)
-        if parsed is not None:
-            out[key] = parsed
-            remaining.pop(key)
-    return out
+# 註：曾有 fetch_intl_indices（抓「當下最新值」）供每日更新使用，已於 2026-07 移除。
+# 它回傳的是「更新程式跑的當下」的報價，而不是任何一場的收盤，等於把不確定日期的價格
+# 寫進資料日 D 那一列；且因 _backfill_intl 只填 NULL 不覆蓋，寫錯的值永遠不會被修正。
+# 現在每日更新與歷史回補共用 fetch_intl_history + pick_close_for 一套場次定義。
 
 
 # ===== 歷史回補 =====
@@ -163,29 +109,60 @@ def parse_history_closes(rows) -> dict:
 
 
 def pick_close_for(history: dict, ds: str, same_day: bool) -> dict | None:
-    """取台股資料日 ds 當晚可得的最新收盤；無資料回 None（不硬湊、不往未來取）。
+    """取台股資料日 ds 該有的收盤；取不到回 None（不硬湊、不往未來取）。
 
-    same_day=False 時取「ds 之前最近一個有交易的日子」而非「ds 減一個曆日」——
-    週一往前應落在上週五，用曆日相減會落在沒有場次的週日。
+    兩種取法對應兩種不同的「這一欄是什麼」，不是同一件事的寬鬆/嚴格版：
+    - same_day=True（日經/KOSPI）：這一欄就是「該市場在 D 當天的收盤」，故**只認 D 當天**。
+      D 當天尚未收盤（白天跑的更新）或該市場當天休市 → 留 None 等下次回補。
+      這裡若退一步取前一場，就是把別天的收盤貼上 D 的標籤——本專案明令禁止。
+    - same_day=False（美股/24 小時商品）：這一欄的定義本來就是「台北 D 日晚間可得的最近一場」，
+      D 當天那場還沒開始，所以取 D **之前**最近一場。取的是最近一個「場次」而非 D 減一個曆日，
+      週一才會正確落到上週五而不是沒有場次的週日。
     """
-    cands = [d for d in history if (d <= ds if same_day else d < ds)]
+    if same_day:
+        return history.get(ds)
+    cands = [d for d in history if d < ds]
     return history[max(cands)] if cands else None
 
 
-def fetch_intl_history(tickers: dict, days: int = 120) -> dict:
-    """批次抓各代碼近 days 天日線收盤 → {key: {session_date: {value, chg_pct}}}。
+def parse_chart_history(payload) -> dict:
+    """Yahoo v8 chart payload（timestamp 陣列版）→ {session_date: {value, chg_pct}}。
 
-    單一代碼失敗只是該 key 缺席，不影響其餘（與 fetch_intl_indices 的容錯一致）。
+    timestamp 是每根日 K 的開盤 epoch；各市場的開盤時間換算成 UTC 後仍落在同一個
+    場次日期（日經 09:00 JST＝00:00 UTC、美股 09:30 ET＝13:30/14:30 UTC），故直接取 UTC 日期。
+    """
+    from datetime import datetime, timezone
+    try:
+        res = payload["chart"]["result"][0]
+        ts, closes = res["timestamp"], res["indicators"]["quote"][0]["close"]
+    except (KeyError, IndexError, TypeError):
+        return {}
+    rows = [(datetime.fromtimestamp(t, tz=timezone.utc).strftime("%Y-%m-%d"), c)
+            for t, c in zip(ts or [], closes or [])]
+    return parse_history_closes(rows)
+
+
+def fetch_intl_history(tickers: dict, days: int = 120) -> dict:
+    """逐代碼抓近 days 天日線收盤 → {key: {session_date: {value, chg_pct}}}。
+
+    yfinance 失敗 → 直連 chart API 備援（`yf.Ticker().history()` 走 cookie/crumb 握手，
+    正是機房 IP 會被擋的那段）。兩條路都失敗只是該 key 缺席，呼叫端維持 NULL 等下次回補。
     """
     out = {}
     for key, sym in tickers.items():
+        hist = {}
         try:
             h = yf.Ticker(sym).history(period=f"{max(days, 5)}d")["Close"]
-        except Exception:  # noqa: BLE001 — 單一代碼失敗略過，呼叫端維持缺值
-            continue
-        rows = [(str(idx)[:10], None if v != v else v) for idx, v in h.items()]  # v!=v → NaN
-        if rows:
-            out[key] = parse_history_closes(rows)
+            rows = [(str(idx)[:10], None if v != v else v) for idx, v in h.items()]  # v!=v → NaN
+            hist = parse_history_closes(rows)
+        except Exception:  # noqa: BLE001 — 落到 chart API 備援
+            hist = {}
+        if not hist:
+            rng = f"{max(days // 30, 1)}mo"
+            payload = _fetch_chart_raw(sym, range_=rng, interval="1d")
+            hist = parse_chart_history(payload) if payload else {}
+        if hist:
+            out[key] = hist
     return out
 
 

@@ -2,6 +2,17 @@ __pycache__/
 *.pyc
 .env
 data/*.sqlite
+# db.backup_db 每晚輪替寫進 data/backup/（上面的 data/*.sqlite 只擋得住頂層），
+# 每個檔約 100MB。異地備份走 offsite_backup.py 的獨立 repo，不需要這裡追蹤。
+data/backup/
 data/csv/
 .venv/
 .pytest_cache/
+
+# 本機工具產物，不進版控：
+# .agents/ 是 ss-trader skill 的鏡像（正本在 .claude/skills/ss-trader/）
+# AGENTS.md 為其他 AI 工具的本機說明（本專案的正本是 CLAUDE.md）
+# docs/line-richmenu/ 是 LINE 圖文選單底圖，上傳到 LINE 後即由平台保管
+.agents/
+AGENTS.md
+docs/line-richmenu/

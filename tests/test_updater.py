@@ -20,10 +20,10 @@ def test_run_update_collects_and_tolerates_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(updater.taifex, "fetch_tx_history", lambda *a, **k: [])
     monkeypatch.setattr(updater.tdcc, "fetch_custody_distribution", lambda: {"week_date": None, "data": {}})
 
-    def boom():
+    def boom(*a, **k):
         raise RuntimeError("network down")
 
-    monkeypatch.setattr(updater.intl, "fetch_intl_indices", lambda tickers: boom())
+    monkeypatch.setattr(updater.intl, "fetch_intl_history", boom)
 
     # 過舊的 ai_cache 應在每日更新時被清掉；近期的保留
     from stocks_power_rich.db import set_ai_cache
@@ -268,3 +268,38 @@ def test_backfill_intl_fills_only_nulls_and_respects_session_availability(tmp_pa
     # 亞股：D 當日已收盤 → 直接取 D
     assert rows[d.isoformat()][3] == 400.0
     assert rows[d_prev.isoformat()][3] == 300.0
+
+
+def test_run_update_writes_session_aligned_intl_not_live_snapshot(tmp_path, monkeypatch):
+    """每日更新的國際指數必須走場次規則，而不是「跑的當下」的報價。
+
+    舊做法寫入 fetch_intl_indices 的即時值，導致同一個 sox 數字被寫進相鄰兩天
+    （2026-07-20 與 07-21 都是 11743.85）——把別場的價格貼上資料日 D 的標籤。
+    因 _backfill_intl 只填 NULL 不覆蓋，寫錯的值永遠不會被修正，故寧可留 NULL。
+    """
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    D = date.today()
+    prev_session = (D - timedelta(days=1)).isoformat()
+
+    monkeypatch.setattr(updater.twse, "fetch_taiex",
+                        lambda: {"taiex": 23000.0, "taiex_chg": 50.0, "date": D.isoformat()})
+    for name in ("fetch_institutional", "fetch_margin"):
+        monkeypatch.setattr(updater.twse, name, lambda date=None: {})
+    monkeypatch.setattr(updater.taifex, "fetch_chips_for_date", lambda date=None: {})
+    monkeypatch.setattr(updater.taifex, "fetch_tx_history", lambda *a, **k: [])
+    monkeypatch.setattr(updater.tdcc, "fetch_custody_distribution",
+                        lambda: {"week_date": None, "data": {}})
+    # sox 有「D 之前那一場」；n225 只有 D 之前，沒有 D 當天（亞股尚未收盤）
+    monkeypatch.setattr(updater.intl, "fetch_intl_history", lambda t, days=0: {
+        "sox": {prev_session: {"value": 100.0, "chg_pct": 1.0}},
+        "n225": {prev_session: {"value": 300.0, "chg_pct": 3.0}},
+    })
+
+    result = updater.run_update(conn, intl_tickers={"sox": "^SOX", "n225": "^N225"})
+
+    r = conn.execute("SELECT sox, sox_chg, n225 FROM market_daily WHERE date=?",
+                     (D.isoformat(),)).fetchone()
+    assert r[0] == 100.0 and r[1] == 1.0   # 美盤：D 當晚可得的是 D 之前那一場
+    assert r[2] is None                    # 亞股當日還沒收 → 留 NULL，不拿別場頂替
+    assert "intl" in result["success"]
