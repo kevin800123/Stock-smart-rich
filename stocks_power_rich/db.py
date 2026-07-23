@@ -130,13 +130,24 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _on_conflict(keys: str, updates: str) -> str:
+    """沒有非鍵欄位要更新時，DO UPDATE SET 後面會是空字串而讓 SQL 語法不完整
+    （sqlite3.OperationalError: incomplete input）。這種「只帶鍵」的列語意是
+    「沒有就建、有了就別動」＝DO NOTHING，而不是把既有欄位洗成 NULL——
+    _refresh_recent/_backfill_* 都是先確保列存在、再逐步補欄位，洗掉會毀資料。"""
+    return f"ON CONFLICT({keys}) DO NOTHING" if not updates \
+        else f"ON CONFLICT({keys}) DO UPDATE SET {updates}"
+
+
 def upsert_market_daily(conn: sqlite3.Connection, row: dict) -> None:
+    if not row.get("date"):
+        raise ValueError("upsert_market_daily 需要 date（market_daily 以交易日為鍵）")
     cols = [c for c in MARKET_COLS if c in row]
     placeholders = ",".join("?" for _ in cols)
     updates = ",".join(f"{c}=excluded.{c}" for c in cols if c != "date")
     conn.execute(
         f"INSERT INTO market_daily ({','.join(cols)}) VALUES ({placeholders}) "
-        f"ON CONFLICT(date) DO UPDATE SET {updates}",
+        + _on_conflict("date", updates),
         [row[c] for c in cols],
     )
     conn.commit()
@@ -150,7 +161,7 @@ def insert_chip_snapshot(conn: sqlite3.Connection, snap_date: str, rows: list[di
         upd = ",".join(f"{c}=excluded.{c}" for c in cols if c not in ("snap_date", "code"))
         conn.execute(
             f"INSERT INTO chip_snapshot ({','.join(cols)}) VALUES ({ph}) "
-            f"ON CONFLICT(snap_date,code) DO UPDATE SET {upd}",
+            + _on_conflict("snap_date,code", upd),
             vals,
         )
     conn.commit()

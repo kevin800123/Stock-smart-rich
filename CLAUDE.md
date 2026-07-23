@@ -25,6 +25,8 @@ Gotchas:
 
 **Storage** (`db.py`, stdlib `sqlite3`): schema + upserts + lazy migrations (`init_db` runs `ALTER TABLE` for newly-added columns, so adding a column to `MARKET_COLS`/`CHIP_COLS` is enough). Tables: `market_daily`, `chip_snapshot`, `tx_history`, `custody_dist`, `watchlist`, `settings`, `ai_cache`, `csv_files`. `ai_cache` doubles as a general per-key cache (valuation, T86/TPEx per date, sectors, TDCC week, etc.).
 
+`upsert_market_daily` / `insert_chip_snapshot` build their `SET` clause from whichever columns the caller supplied, so a **key-only row** (just `date`, or just `code`) produced an empty `DO UPDATE SET` and a bare `sqlite3.OperationalError: incomplete input`. Any new upsert that assembles columns dynamically must route through **`_on_conflict()`**, which emits `DO NOTHING` in that case — "create the row if absent, otherwise leave it alone". It must not blank the other columns: `_refresh_recent` / `_backfill_*` all rely on ensure-row-then-fill-columns-later, so a wiping upsert would destroy healed data. `upsert_market_daily` also rejects a row with no `date` up front, since that is a caller bug and the SQL error names nothing useful.
+
 **Data sources** (`sources/*.py`) — each module = *pure parse functions* (unit-tested with sample payloads) + *thin network wrappers* (mocked in tests). `twse` (證交所), `taifex` (期交所), `tdcc` (集保), `tpex` (櫃買), `intl` (yfinance 國際指數), `kline` (yfinance K線 + generic OHLC resampler).
 
 ### The central design: single "資料日期 D"
