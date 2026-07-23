@@ -62,6 +62,34 @@ def chips_backfill(days: int = 90, max_fetch: int = 15):
     finally:
         _backfill_lock.release()
 
+@router.get("/intl/backfill")
+def intl_backfill(days: int = 120):
+    """大範圍回補國際指數歷史（費半/VIX/日經/KOSPI/黃金/日圓/台幣/比特幣）。
+
+    每日更新的 _backfill_intl 只回看 10 天，補得到 yfinance 偶發失敗的洞，但補不到
+    「代碼加入前」的空白——每個 ticker 都只從加入當天往後累積（vix 2026-06-25、
+    jpy 07-02、twd 07-14），冷啟動歷史得靠這裡。yfinance 一次給數月，故不需分批。
+
+    只填 NULL、不覆蓋既有值：既有值是舊行為「抓取當下的最新值」，語意與本端點寫入的
+    「場次收盤」不同，覆寫等於默默改寫歷史。
+    """
+    if not _backfill_lock.acquire(blocking=False):
+        return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
+    try:
+        from datetime import date, timedelta
+        c = conn()
+        days = max(5, min(days, 365))
+        tickers = load_config().intl_tickers
+        filled = updater._backfill_intl(c, tickers, days=days)
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        cond = " OR ".join(f"{k} IS NULL" for k in tickers)
+        remaining = c.execute(
+            f"SELECT COUNT(*) FROM market_daily WHERE date >= ? AND ({cond})",
+            (cutoff,)).fetchone()[0]
+        return {"filled": filled, "remaining": remaining}
+    finally:
+        _backfill_lock.release()
+
 @router.get("/inst/backfill")
 def inst_backfill(days: int = 60, max_fetch: int = 15):
     """預熱個股三大法人（T86/TPEx）整日快取，讓個股三大法人買賣超圖能秒載 6 月前歷史。

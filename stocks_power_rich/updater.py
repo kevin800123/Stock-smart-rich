@@ -99,6 +99,85 @@ def _backfill_chips(conn, days: int = 10, cap: int = 3) -> list:
     return filled
 
 
+def _compute_margin_maintenance(D, margin_value):
+    """大盤整戶擔保維持率（需個股融資融券明細＋全市場收盤）。算不出回 None。
+
+    抽成函數是為了讓每日更新與 _heal_margin_maintenance 共用同一條計算路徑，
+    否則兩邊各寫一份會漂移。
+    """
+    if not D or not margin_value:
+        return None
+    detail = twse.fetch_margin_detail(D)
+    quotes = twse.fetch_stock_quotes(D)
+    closes = {c: q["close"] for c, q in quotes.items() if q.get("close")}
+    return analysis.margin_maintenance(
+        detail.get("margin", {}), closes, margin_value, detail.get("short"))
+
+
+def _heal_margin_maintenance(conn, days: int = 7, cap: int = 3) -> list:
+    """回補近 days 天「已有 margin_value 但維持率仍空」的交易日。
+
+    存在的理由：margin_value（官方融資金額）約 21:00 才公布，而更新可能跑在那之前
+    （16:00 推播、白天開頁的 autoUpdate），此時維持率整段算不出來。margin_value 之後
+    會被 _refresh_recent 補上，但維持率原本只在當次 run 算一次、不會回頭重算——
+    於是「被依賴的欄位自癒了，依賴它的沒有」，45 天只有 7 天有值。
+    每天兩支 TWSE 全市場請求，故限 cap 天。
+    """
+    cutoff = (_date.today() - timedelta(days=days)).isoformat()
+    pending = [(r[0], r[1]) for r in conn.execute(
+        "SELECT date, margin_value FROM market_daily WHERE date >= ? "
+        "AND margin_value IS NOT NULL AND margin_maintenance IS NULL ORDER BY date DESC",
+        (cutoff,),
+    ).fetchall()][:cap]
+    filled = []
+    for ds, mv in pending:
+        try:
+            mm = _compute_margin_maintenance(_iso_to_date(ds), mv)
+            if mm:
+                upsert_market_daily(conn, {"date": ds, "margin_maintenance": mm})
+                filled.append(ds)
+        except Exception:  # noqa: BLE001 — 單日回補失敗略過，下次再試
+            pass
+    return filled
+
+
+def _backfill_intl(conn, intl_tickers: dict, days: int = 10) -> list:
+    """回補近 days 天內國際指數為空的欄位（只填 NULL，絕不覆蓋既有值）。
+
+    治兩種缺口：新加入的代碼沒有歷史、以及 yfinance 偶發失敗留下的洞。
+    對齊規則見 intl.pick_close_for／INTL_SAME_DAY：亞股取 D 當日收盤，其餘取 D 之前
+    最近一場——台北 D 日晚間檢視時，美股 D 當日尚未開盤。
+
+    只填 NULL 的用意：既有值是舊行為「抓取當下的最新值」產生的，語意與本函數的
+    「場次收盤」不同；覆寫等於默默改寫歷史，寧可讓新舊並存且各自有明確出處。
+    """
+    cutoff = (_date.today() - timedelta(days=days)).isoformat()
+    keys = list(intl_tickers)
+    cols = ", ".join(keys)
+    rows = conn.execute(
+        f"SELECT date, {cols} FROM market_daily WHERE date >= ? ORDER BY date", (cutoff,),
+    ).fetchall()
+    holes = [r for r in rows if any(r[i + 1] is None for i in range(len(keys)))]
+    if not holes:
+        return []
+    hist = intl.fetch_intl_history(intl_tickers, days=max(days * 2, 30))
+    filled = []
+    for r in holes:
+        ds = r[0]
+        patch = {}
+        for i, key in enumerate(keys):
+            if r[i + 1] is not None or key not in hist:
+                continue
+            got = intl.pick_close_for(hist[key], ds, same_day=key in intl.INTL_SAME_DAY)
+            if got:
+                patch[key] = got["value"]
+                patch[key + "_chg"] = got["chg_pct"]
+        if patch:
+            upsert_market_daily(conn, {"date": ds, **patch})
+            filled.append(ds)
+    return filled
+
+
 def backfill_history(conn, days: int = 30) -> int:
     """回補近 days 天的加權指數＋三大法人現貨買賣超＋融資融券（逐日，供雲端冷啟動補歷史）。
 
@@ -312,16 +391,20 @@ def run_update(conn, intl_tickers: dict) -> dict:
             failed.append({"source": name.split("_")[0], "name": name, "error": str(e)})
 
     # 大盤整戶擔保維持率（需融資金額＋個股融資融券明細＋全市場收盤；約 21:00 融資公布後才算得出）
+    # 跑在 21:00 前時 margin_value 還沒公布，這裡算不出來——記進 failed 而非靜默跳過，
+    # 否則「今天為什麼沒維持率」在更新結果裡完全看不出來。缺的那天由 _heal_margin_maintenance 補。
     try:
         if D and row.get("margin_value"):
-            detail = twse.fetch_margin_detail(D)
-            quotes = twse.fetch_stock_quotes(D)
-            closes = {c: q["close"] for c, q in quotes.items() if q.get("close")}
-            mm = analysis.margin_maintenance(
-                detail.get("margin", {}), closes, row["margin_value"], detail.get("short"))
+            mm = _compute_margin_maintenance(D, row["margin_value"])
             if mm:
                 row["margin_maintenance"] = mm
                 success.append("margin_maintenance")
+            else:
+                failed.append({"source": "twse", "name": "margin_maintenance",
+                               "error": "明細或收盤不足，算不出維持率"})
+        elif D:
+            failed.append({"source": "twse", "name": "margin_maintenance",
+                           "error": "融資金額尚未公布（約 21:00），稍後回補"})
     except Exception as e:  # noqa: BLE001
         failed.append({"source": "twse", "name": "margin_maintenance", "error": str(e)})
 
@@ -353,6 +436,20 @@ def run_update(conn, intl_tickers: dict) -> dict:
             success.append("taifex_chips_backfill")
     except Exception as e:  # noqa: BLE001
         failed.append({"source": "taifex", "name": "chips_backfill", "error": str(e)})
+
+    # 補算近期缺的融資維持率（21:00 前跑的那些 run 算不出來，margin_value 事後才補上）
+    try:
+        if _heal_margin_maintenance(conn):
+            success.append("twse_margin_maint_heal")
+    except Exception as e:  # noqa: BLE001
+        failed.append({"source": "twse", "name": "margin_maint_heal", "error": str(e)})
+
+    # 回補近期缺的國際指數（yfinance 偶發失敗留下的洞；新代碼的冷啟動歷史走 /api/intl/backfill）
+    try:
+        if _backfill_intl(conn, intl_tickers):
+            success.append("intl_backfill")
+    except Exception as e:  # noqa: BLE001
+        failed.append({"source": "intl", "name": "backfill", "error": str(e)})
 
     # 集保大戶比：偵測到新的一週才抓，全市場批次累積
     try:

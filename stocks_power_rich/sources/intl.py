@@ -134,6 +134,61 @@ def fetch_intl_indices(tickers: dict, tries: int = 3) -> dict:
     return out
 
 
+# ===== 歷史回補 =====
+# fetch_intl_indices 只給「當下最新值」，沒有任何機制把歷史補回來。後果有二：
+#   ① 新加入的代碼（vix 2026-06-25、jpy 07-02、twd 07-14）只能從加入當天往後長；
+#   ② yfinance 偶發失敗那天就永久留空（_refresh_recent 只治三大法人與融資券）。
+# 以下三個純函數把「某代碼的歷史收盤」對齊到台股資料日 D，供 updater 回補缺值。
+
+# 台北 D 日晚間檢視時，哪些代碼「D 當日的收盤」已經產生。
+# 亞股約 14:00 收盤 → 已有 D 當日值；其餘（美股指數 04:00 才收、24 小時商品尚未結算）
+# 當下最新的完整場次是 D 之前那一場。
+INTL_SAME_DAY = {"n225", "kospi"}
+
+
+def parse_history_closes(rows) -> dict:
+    """[(session_date, close|None)] → {session_date: {value, chg_pct}}。
+
+    close 為 None（休市/缺報價）的日子不產生列；漲跌% 以「前一個有效收盤」為基準，
+    不是前一列日期——中間隔幾天沒報價時，用日期相減會算出錯誤的基準。
+    """
+    out, prev = {}, None
+    for ds, close in rows:
+        if close is None:
+            continue
+        v = round(float(close), 2)
+        out[ds] = {"value": v, "chg_pct": round((v - prev) / prev * 100, 2) if prev else None}
+        prev = v
+    return out
+
+
+def pick_close_for(history: dict, ds: str, same_day: bool) -> dict | None:
+    """取台股資料日 ds 當晚可得的最新收盤；無資料回 None（不硬湊、不往未來取）。
+
+    same_day=False 時取「ds 之前最近一個有交易的日子」而非「ds 減一個曆日」——
+    週一往前應落在上週五，用曆日相減會落在沒有場次的週日。
+    """
+    cands = [d for d in history if (d <= ds if same_day else d < ds)]
+    return history[max(cands)] if cands else None
+
+
+def fetch_intl_history(tickers: dict, days: int = 120) -> dict:
+    """批次抓各代碼近 days 天日線收盤 → {key: {session_date: {value, chg_pct}}}。
+
+    單一代碼失敗只是該 key 缺席，不影響其餘（與 fetch_intl_indices 的容錯一致）。
+    """
+    out = {}
+    for key, sym in tickers.items():
+        try:
+            h = yf.Ticker(sym).history(period=f"{max(days, 5)}d")["Close"]
+        except Exception:  # noqa: BLE001 — 單一代碼失敗略過，呼叫端維持缺值
+            continue
+        rows = [(str(idx)[:10], None if v != v else v) for idx, v in h.items()]  # v!=v → NaN
+        if rows:
+            out[key] = parse_history_closes(rows)
+    return out
+
+
 # 海期監控：五大分類 × (顯示名, yfinance 代碼)。中國A50 無穩定代碼故不列。
 OS_FUTURES: list[tuple[str, list[tuple[str, str]]]] = [
     ("指數期貨", [("小道瓊", "YM=F"), ("小那斯達克", "NQ=F"), ("小S&P500", "ES=F"),

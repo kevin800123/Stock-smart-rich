@@ -124,3 +124,34 @@ def test_fetch_intl_indices_retries_missing_ticker(monkeypatch):
     assert out["sox"]["value"] == 110.0
     assert out["jpy"]["value"] == 110.0   # 第二輪補抓成功
     assert calls["n"] >= 2
+
+
+def test_parse_history_closes_skips_gaps_and_chains_chg():
+    # 中間 None（休市/缺報價）不產生列，且漲跌%以「前一個有效收盤」為基準，不是前一列日期
+    out = intl.parse_history_closes([
+        ("2026-07-20", 100.0),
+        ("2026-07-21", None),
+        ("2026-07-22", 110.0),
+    ])
+    assert out == {
+        "2026-07-20": {"value": 100.0, "chg_pct": None},
+        "2026-07-22": {"value": 110.0, "chg_pct": 10.0},
+    }
+    assert intl.parse_history_closes([]) == {}
+    assert intl.parse_history_closes([("2026-07-20", None)]) == {}
+
+
+def test_pick_close_for_respects_session_availability():
+    h = intl.parse_history_closes([
+        ("2026-07-17", 10.0),   # 週五
+        ("2026-07-20", 20.0),   # 週一
+    ])
+    # 亞股（same_day）：D 當日已收盤 → 取 D
+    assert intl.pick_close_for(h, "2026-07-20", same_day=True)["value"] == 20.0
+    # 美盤（非 same_day）：台北 D 晚間 21:00 時 D 的美股尚未開盤 → 取 D 之前最近一場
+    assert intl.pick_close_for(h, "2026-07-20", same_day=False)["value"] == 10.0
+    # 週一往前不是「D-1 曆日(週日)」而是「最近一個有交易的日子(上週五)」
+    assert intl.pick_close_for(h, "2026-07-21", same_day=False)["value"] == 20.0
+    # 早於所有資料 → None，不硬湊
+    assert intl.pick_close_for(h, "2026-07-17", same_day=False) is None
+    assert intl.pick_close_for({}, "2026-07-20", same_day=True) is None

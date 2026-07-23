@@ -213,3 +213,58 @@ def test_reset_ohlc_progress_clears_state_and_unsticks(tmp_path, monkeypatch):
     r2 = updater.backfill_ohlc(conn, target=10, max_fetch=100)
     assert r2["twse_days"] == 10 and r2["otc_days"] == 10
     assert r2["twse_exhausted"] is False and r2["otc_exhausted"] is False and r2["done"] is True
+
+
+def test_heal_margin_maintenance_fills_days_that_had_no_margin_value_yet(tmp_path, monkeypatch):
+    """維持率的自癒：margin_value 由 _refresh_recent 事後補上，維持率必須跟著補算。
+
+    原本維持率只在當次 run 算一次，21:00 前跑的那些 run 因 margin_value 未公布而整段
+    跳過，之後再也不會重算——依賴補好了、被依賴的沒補，導致 45 天只有 7 天有值。
+    """
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    today = date.today()
+    d1, d2, d3 = (today - timedelta(days=i) for i in (3, 2, 1))
+    upsert_market_daily(conn, {"date": d1.isoformat(), "margin_value": 5800.0})   # 待補
+    upsert_market_daily(conn, {"date": d2.isoformat(), "taiex": 23000.0})          # 無 margin_value → 跳過
+    upsert_market_daily(conn, {"date": d3.isoformat(), "margin_value": 5900.0,
+                               "margin_maintenance": 180.0})                       # 已有 → 不動
+
+    monkeypatch.setattr(updater, "_compute_margin_maintenance", lambda D, mv: 175.5)
+    filled = updater._heal_margin_maintenance(conn, days=7)
+
+    assert filled == [d1.isoformat()]
+    got = dict(conn.execute(
+        "SELECT date, margin_maintenance FROM market_daily ORDER BY date").fetchall())
+    assert got[d1.isoformat()] == 175.5      # 補上
+    assert got[d2.isoformat()] is None       # 沒有 margin_value 就不硬算
+    assert got[d3.isoformat()] == 180.0      # 既有值不被覆寫
+
+
+def test_backfill_intl_fills_only_nulls_and_respects_session_availability(tmp_path, monkeypatch):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    today = date.today()
+    d_prev, d = today - timedelta(days=1), today
+    upsert_market_daily(conn, {"date": d_prev.isoformat(), "taiex": 23000.0})
+    upsert_market_daily(conn, {"date": d.isoformat(), "sox": 9999.0})   # 既有值：不得覆寫
+
+    tickers = {"sox": "^SOX", "n225": "^N225"}
+    monkeypatch.setattr(updater.intl, "fetch_intl_history", lambda t, days=0: {
+        "sox": {d_prev.isoformat(): {"value": 100.0, "chg_pct": 1.0},
+                d.isoformat(): {"value": 200.0, "chg_pct": 2.0}},
+        "n225": {d_prev.isoformat(): {"value": 300.0, "chg_pct": 3.0},
+                 d.isoformat(): {"value": 400.0, "chg_pct": 4.0}},
+    })
+
+    filled = updater._backfill_intl(conn, tickers, days=7)
+
+    assert filled == [d_prev.isoformat(), d.isoformat()]
+    rows = {r[0]: r for r in conn.execute(
+        "SELECT date, sox, sox_chg, n225 FROM market_daily ORDER BY date").fetchall()}
+    # 美盤：台北 D 日晚間時 D 當日尚未開盤 → 取 D 之前那一場
+    assert rows[d.isoformat()][1] == 9999.0          # 既有值原封不動
+    assert rows[d_prev.isoformat()][1] is None       # d_prev 之前沒有場次 → 不硬湊
+    # 亞股：D 當日已收盤 → 直接取 D
+    assert rows[d.isoformat()][3] == 400.0
+    assert rows[d_prev.isoformat()][3] == 300.0
