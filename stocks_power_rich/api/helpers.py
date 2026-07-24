@@ -524,6 +524,25 @@ def _has_quotes(payload) -> bool:
     return bool(payload) and any(g.get("items") for g in (payload.get("categories") or []))
 
 
+# 抓失敗（Yahoo 429）後的退避冷卻。實測 Zeabur：yf.download 與 chart API 備援
+# 兩條路徑同時被限流（"Edge: Too Many Requests"）。失敗不寫快取（見下）雖然讓快取能
+# 自己痊癒，卻也讓「每次輪詢都對 Yahoo 重打一整輪」——前端海期頁每 2 分鐘一次，
+# 一輪失敗就是 1 次批次 yfinance + 最多 34 次逐檔 chart API 請求，等於在幫限流拖時間。
+# 冷卻期內完全不打網路，只在冷卻過後才重試一次；`refresh=True`（使用者按「更新報價」）
+# 是明確的手動動作，繞過冷卻。
+_OSFUT_FAIL_COOLDOWN = 300  # 秒
+
+
+def _osfut_cooling_down(c) -> bool:
+    fail = get_ai_cache(c, "osfut:fail_at")
+    if not fail:
+        return False
+    try:
+        return (datetime.now() - datetime.fromisoformat(fail["at"])).total_seconds() < _OSFUT_FAIL_COOLDOWN
+    except (KeyError, ValueError, TypeError):
+        return False
+
+
 def _os_futures(refresh: bool = False) -> dict:
     from ..sources import intl
     c = conn()
@@ -535,10 +554,14 @@ def _os_futures(refresh: bool = False) -> dict:
     cached = get_ai_cache(c, key)
     if _has_quotes(cached) and not refresh:
         return cached
-    try:
-        cats = intl.fetch_futures_monitor()
-    except Exception:  # noqa: BLE001
-        cats = []
+    skip_network = not refresh and _osfut_cooling_down(c)
+    if skip_network:
+        cats = [{"category": cat, "items": []} for cat, _ in intl.OS_FUTURES]
+    else:
+        try:
+            cats = intl.fetch_futures_monitor()
+        except Exception:  # noqa: BLE001
+            cats = []
     last = c.execute("SELECT taiex, taiex_chg, tx_price, tx_chg FROM market_daily "
                      "ORDER BY date DESC LIMIT 1").fetchone()
     idx = next((g for g in cats if g["category"] == "指數期貨"), None)
@@ -555,6 +578,8 @@ def _os_futures(refresh: bool = False) -> dict:
     # 「5 個分類、每組 0 檔」——那是個真值，舊寫法 `if cats:` 會把整包失敗結果寫進去。
     if _has_quotes(result):
         set_ai_cache(c, key, result)
+    elif not skip_network:   # 這次真的打了網路才算一次失敗；冷卻中跳過的不重複計時
+        set_ai_cache(c, "osfut:fail_at", {"at": datetime.now().isoformat()})
     return result
 
 
@@ -577,11 +602,20 @@ def _os_futures_live() -> dict:
                 return cached
         except (KeyError, ValueError, TypeError):
             pass
-    base = copy.deepcopy(_os_futures(refresh=False))   # 日線底（含加權/台指期注入）
-    try:
-        live = intl.fetch_futures_live()
-    except Exception:  # noqa: BLE001
+    # 冷卻狀態要在呼叫 base 之前先讀：base 若這次剛好失敗，會當場寫入 fail_at，
+    # 若在那之後才判斷冷卻，read 到的會是自己剛寫的那筆，導致「這一輪」的 live 被
+    # base 這一輪的失敗誤擋——冷卻只該擋「下一輪」，不是同一輪內互相牽連。
+    skip_network = _osfut_cooling_down(c)
+    base = copy.deepcopy(_os_futures(refresh=False))   # 日線底（含加權/台指期注入，已內建冷卻）
+    # live 打的是同一個被限流的 Yahoo chart API，必須共用同一個冷卻窗——否則 base 那邊
+    # 已經在退避，這裡卻還是每次照樣打 34 檔逐檔請求，冷卻等於白設。
+    if skip_network:
         live = []
+    else:
+        try:
+            live = intl.fetch_futures_live()
+        except Exception:  # noqa: BLE001
+            live = []
     live_map = {(g["category"], i["name"]): i for g in live for i in g["items"]}
     for g in base.get("categories") or []:
         g["items"] = [{**item, **live_map.get((g["category"], item["name"]), {})}
@@ -596,6 +630,10 @@ def _os_futures_live() -> dict:
               "fetched_at": datetime.now().isoformat()}
     if _has_quotes(result):        # 與 _os_futures 同規則：空結果不寫快取
         set_ai_cache(c, "osfut:live", result)
+    elif not skip_network and not live:
+        # 這次真的打了 live 卻一無所獲，記一次失敗——base 若也失敗會各記各的，
+        # 但都是「延長冷卻到現在」，不會互相蓋掉彼此的退避
+        set_ai_cache(c, "osfut:fail_at", {"at": datetime.now().isoformat()})
     return result
 
 

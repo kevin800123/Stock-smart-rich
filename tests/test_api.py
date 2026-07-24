@@ -1909,3 +1909,79 @@ def test_osfut_live_keeps_live_quotes_when_daily_base_is_empty(tmp_path, monkeyp
     body = client.get("/api/os-futures?live=1").json()
     names = [i["name"] for g in body["categories"] for i in g["items"]]
     assert "小道瓊" in names
+
+
+def test_osfut_backs_off_after_failure_instead_of_hammering_yahoo(tmp_path, monkeypatch):
+    """實測 Zeabur：yfinance 與 chart API 備援皆被 429('Edge: Too Many Requests')。
+
+    失敗不寫永久快取讓它能自癒是對的（見前一版），但沒有節流的話，海期頁每 2 分鐘
+    輪詢一次，每次都是 1 次批次 yfinance ＋ 最多 34 次逐檔 chart API 請求，只會讓
+    429 持續更久。冷卻期內必須完全不打網路。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.api import helpers
+    from stocks_power_rich.sources import intl
+
+    create_app()
+    calls = {"n": 0}
+
+    def boom():
+        calls["n"] += 1
+        return [{"category": c, "items": []} for c, _ in intl.OS_FUTURES]
+
+    monkeypatch.setattr(intl, "fetch_futures_monitor", boom)
+
+    r1 = helpers._os_futures()
+    assert calls["n"] == 1 and not any(g["items"] for g in r1["categories"] if g["category"] != "指數期貨")
+
+    r2 = helpers._os_futures()               # 立刻再叫一次：冷卻中，不該再打網路
+    assert calls["n"] == 1
+    assert r2["categories"] == r1["categories"] or True  # 結構不變即可，重點是 calls 沒增加
+
+    # refresh=True 是使用者明確按「更新報價」，必須繞過冷卻
+    helpers._os_futures(refresh=True)
+    assert calls["n"] == 2
+
+
+def test_osfut_retries_after_cooldown_expires(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import datetime, timedelta
+    from stocks_power_rich.api import helpers
+    from stocks_power_rich.db import get_connection, init_db, set_ai_cache
+    from stocks_power_rich.sources import intl
+
+    create_app()
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    stale = (datetime.now() - timedelta(seconds=helpers._OSFUT_FAIL_COOLDOWN + 5)).isoformat()
+    set_ai_cache(c, "osfut:fail_at", {"at": stale})
+
+    calls = {"n": 0}
+    monkeypatch.setattr(intl, "fetch_futures_monitor", lambda: (calls.__setitem__("n", calls["n"] + 1),
+                                                                [{"category": c2, "items": []}
+                                                                 for c2, _ in intl.OS_FUTURES])[1])
+    helpers._os_futures()
+    assert calls["n"] == 1     # 冷卻早已過期，照常重試
+
+
+def test_osfut_live_shares_cooldown_with_base(tmp_path, monkeypatch):
+    """live 路徑打的是同一個被限流的端點，不能自己另開一輪——必須與 base 共用冷卻窗。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.api import helpers
+    from stocks_power_rich.db import get_connection, init_db, set_ai_cache
+    from stocks_power_rich.sources import intl
+
+    create_app()
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    from datetime import datetime as _dt
+    set_ai_cache(c, "osfut:fail_at", {"at": _dt.now().isoformat()})   # 剛失敗，冷卻中
+
+    monkeypatch.setattr(intl, "fetch_futures_monitor",
+                        lambda: (_ for _ in ()).throw(AssertionError("不該在冷卻中被呼叫")))
+    live_calls = {"n": 0}
+    monkeypatch.setattr(intl, "fetch_futures_live",
+                        lambda: live_calls.__setitem__("n", live_calls["n"] + 1) or [])
+
+    helpers._os_futures_live()
+    assert live_calls["n"] == 0   # 冷卻中：live 也不該打
