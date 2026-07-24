@@ -21,6 +21,30 @@ router = APIRouter(prefix="/api")
 
 _backfill_lock = threading.Lock()
 
+@router.get("/net-check")
+def net_check():
+    """一次性網路診斷：海期監控在雲端全空（yfinance 與 chart API 備援皆無資料）,
+    但兩條路徑內部都用 `except Exception: pass` 吞掉錯誤, 從回應完全看不出卡在哪。
+    這裡故意不吞——直接把實際錯誤（逾時/403/DNS/...）吐回來, 診斷完可以砍掉。
+    """
+    import httpx
+    import yfinance as yf
+    from ..sources import intl
+    out = {}
+    try:
+        df = yf.download("YM=F", period="5d", progress=False, threads=False)
+        out["yf_download"] = {"ok": not df.empty, "rows": len(df)}
+    except Exception as e:  # noqa: BLE001 — 診斷端點，刻意收集而非吞掉
+        out["yf_download"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    try:
+        r = httpx.get(intl._CHART_URL + "YM%3DF", params={"range": "5d", "interval": "1d"},
+                      timeout=15, headers=intl._CHART_UA)
+        out["chart_api"] = {"ok": r.status_code == 200, "status": r.status_code,
+                            "body_head": r.text[:200]}
+    except Exception as e:  # noqa: BLE001
+        out["chart_api"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    return out
+
 @router.post("/update/run")
 def run_update():
     cfg = load_config()
