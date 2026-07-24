@@ -21,26 +21,6 @@ router = APIRouter(prefix="/api")
 
 _backfill_lock = threading.Lock()
 
-@router.get("/tv-check")
-def tv_check():
-    """一次性診斷：Zeabur 出站 IP 連不連得到 TradingView 公開 scanner 端點。
-
-    Yahoo 已確認被 Zeabur 網段擋（429），改探 TradingView 是否可通——本機測得通不代表
-    Zeabur 通（Yahoo 就是這樣），只有在雲端實打才知道。故意不吞錯誤，直接吐回實際狀態。
-    診斷完即移除。
-    """
-    import httpx
-    body = {"symbols": {"tickers": ["CME_MINI:ES1!", "NASDAQ:NVDA", "TVC:GOLD", "FX:EURUSD"],
-                        "query": {"types": []}},
-            "columns": ["close", "change", "change_abs", "description"]}
-    try:
-        r = httpx.post("https://scanner.tradingview.com/global/scan", json=body,
-                       timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-        return {"ok": r.status_code == 200, "status": r.status_code,
-                "body_head": r.text[:400]}
-    except Exception as e:  # noqa: BLE001 — 診斷端點，刻意回報而非吞掉
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-
 @router.post("/update/run")
 def run_update():
     cfg = load_config()

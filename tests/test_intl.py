@@ -4,20 +4,53 @@ from stocks_power_rich.sources import intl
 
 
 
+def test_parse_tv_scan_maps_by_ticker_and_skips_missing_close():
+    # TradingView scanner 回應：每列 d=[close, change_pct, change_abs]，依 "s"(代碼) 對映
+    payload = {"totalCount": 3, "data": [
+        {"s": "COMEX:GC1!", "d": [4058.7, 0.22, 8.9]},
+        {"s": "NASDAQ:NVDA", "d": [207.13, -0.78, -1.63]},
+        {"s": "FX:EURUSD", "d": [None, None, None]},   # 缺 close → 跳過，不入表
+    ]}
+    out = intl.parse_tv_scan(payload)
+    assert out["COMEX:GC1!"] == {"value": 4058.7, "chg": 8.9, "chg_pct": 0.22}
+    assert out["NASDAQ:NVDA"]["value"] == 207.13 and out["NASDAQ:NVDA"]["chg"] == -1.63
+    assert "FX:EURUSD" not in out
+    assert intl.parse_tv_scan({}) == {}
+    assert intl.parse_tv_scan({"data": None}) == {}
+
+
 def test_fetch_futures_monitor_groups(monkeypatch):
-    def fake_download(tickers, period=None, **kw):
-        idx = pd.to_datetime(["2026-06-12", "2026-06-13"])
-        data = {("Close", t): [100.0, 110.0] for t in tickers.split()}
-        return pd.DataFrame(data, index=idx)
+    # 一次 POST TradingView scanner，回應依代碼對回五大分類
+    def fake_post(url, json=None, **kw):
+        tickers = json["symbols"]["tickers"]
+        data = [{"s": t, "d": [110.0, 10.0, 10.0]} for t in tickers]
+
+        class _R:
+            status_code = 200
+            def json(self):  # noqa: N802
+                return {"totalCount": len(data), "data": data}
+        return _R()
 
     monkeypatch.setattr(intl.time, "sleep", lambda s: None)
-    monkeypatch.setattr(intl.yf, "download", fake_download)
+    monkeypatch.setattr(intl.httpx, "post", fake_post)
     cats = intl.fetch_futures_monitor()
     assert [g["category"] for g in cats] == ["指數期貨", "能源金屬", "農產品", "外匯", "美股"]
     gold = next(it for g in cats if g["category"] == "能源金屬"
                 for it in g["items"] if it["name"] == "黃金")
     assert gold["value"] == 110.0 and gold["chg"] == 10.0 and gold["chg_pct"] == 10.0
     assert len(next(g for g in cats if g["category"] == "美股")["items"]) == 14
+
+
+def test_fetch_futures_monitor_returns_empty_groups_on_http_error(monkeypatch):
+    # 端點掛掉（非 200 或連線失敗）→ 五個分類、每組 0 檔；呼叫端據此判定不寫快取
+    def boom(url, json=None, **kw):
+        raise RuntimeError("blocked")
+
+    monkeypatch.setattr(intl.time, "sleep", lambda s: None)
+    monkeypatch.setattr(intl.httpx, "post", boom)
+    cats = intl.fetch_futures_monitor()
+    assert [g["category"] for g in cats] == ["指數期貨", "能源金屬", "農產品", "外匯", "美股"]
+    assert all(g["items"] == [] for g in cats)
 
 
 
@@ -88,30 +121,3 @@ def test_fetch_intl_history_falls_back_to_chart_api(monkeypatch):
     assert "vix" not in out          # 兩條路都失敗 → 該 key 缺席，呼叫端維持 NULL
 
 
-def test_fetch_futures_monitor_falls_back_to_chart_api(monkeypatch):
-    """yf.download 整批被擋（機房 IP 常態）時，必須逐檔退回 chart API。
-
-    少了這層，雲端拿到的是「5 個分類、每組 0 檔」，而呼叫端會把它當有效結果快取，
-    海期監控就永遠空著（見 api/helpers.py::_os_futures 的註解）。
-    """
-    def blocked(*a, **k):
-        raise RuntimeError("rate limited")
-
-    monkeypatch.setattr(intl.yf, "download", blocked)
-    monkeypatch.setattr(intl.time, "sleep", lambda s: None)
-    monkeypatch.setattr(intl, "_fetch_chart_raw", lambda sym, range_="", interval="": {
-        "chart": {"result": [{"indicators": {"quote": [{"close": [100.0, 110.0]}]}}]}})
-
-    cats = intl.fetch_futures_monitor()
-    assert any(g["items"] for g in cats)
-    ym = next(i for g in cats if g["category"] == "指數期貨"
-              for i in g["items"] if i["name"] == "小道瓊")
-    assert ym["value"] == 110.0 and ym["chg"] == 10.0 and ym["chg_pct"] == 10.0
-
-
-def test_parse_chart_stats_handles_thin_payloads():
-    mk = lambda closes: {"chart": {"result": [{"indicators": {"quote": [{"close": closes}]}}]}}
-    assert intl.parse_chart_stats(mk([100.0, 110.0])) == {"value": 110.0, "chg": 10.0, "chg_pct": 10.0}
-    assert intl.parse_chart_stats(mk([110.0])) == {"value": 110.0, "chg": None, "chg_pct": None}
-    assert intl.parse_chart_stats(mk([])) is None
-    assert intl.parse_chart_stats({}) is None

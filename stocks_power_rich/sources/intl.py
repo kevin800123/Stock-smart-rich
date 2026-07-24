@@ -1,8 +1,10 @@
-"""國際指數抓取：費半(^SOX)、日經(^N225)、KOSPI(^KS11)、黃金(GC=F)、日圓(JPY=X 美元兌日圓)、比特幣(BTC-USD)。
+"""國際市場資料抓取。兩套來源，用途不同：
 
-來源 yfinance；回傳每個 key 的最新值與相對前一日漲跌百分比。
-雲端（資料中心 IP）yfinance 偶發限流／單一代碼整欄 NaN，故批次抓後對缺漏代碼重試補抓；
-重試仍缺者再直連 Yahoo chart API 備援（同代碼、免 cookie/crumb 握手，機房 IP 較不易被擋）。
+- **國際指數歷史**（總覽的 費半/VIX/日經/KOSPI/黃金/日圓/台幣/比特幣 卡）：來源 yfinance，
+  需要多日歷史做場次對齊，故仍走 `fetch_intl_history`＋Yahoo chart API 備援。
+- **海期監控**（fetch_futures_monitor）：來源 **TradingView 公開 scanner**（不用 key、單一
+  POST 涵蓋期貨/商品/外匯/股票）。Yahoo 的 download／chart API 皆被 Zeabur 出站 IP 429 擋死，
+  2026-07 全面換掉；只需當下報價、不需歷史，TradingView scanner 剛好夠用。
 """
 import time
 from urllib.parse import quote
@@ -12,14 +14,6 @@ import yfinance as yf
 
 _CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/"
 _CHART_UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-
-
-def _extract_series(df, sym):
-    """從 yf.download()['Close'] 取某代碼的序列。多代碼→DataFrame(缺欄回 None 跳過)；
-    單代碼→Series 直接用。避免『缺欄時 fallback 整個 DataFrame』導致 float(多列) 崩潰。"""
-    if hasattr(df, "columns"):          # DataFrame：多代碼
-        return df[sym].dropna() if sym in df.columns else None
-    return df.dropna()                  # Series：單代碼
 
 
 def _fetch_chart_raw(sym: str, range_: str = "5d", interval: str = "1d") -> dict | None:
@@ -131,84 +125,76 @@ def fetch_intl_history(tickers: dict, days: int = 120) -> dict:
     return out
 
 
-# 海期監控：五大分類 × (顯示名, yfinance 代碼)。中國A50 無穩定代碼故不列。
+# 海期監控：五大分類 × (顯示名, TradingView 代碼)。中國A50 無穩定代碼故不列。
+# 2026-07 從 yfinance 換成 TradingView 公開 scanner：Yahoo 的 download／chart API 皆被
+# Zeabur 出站 IP 整段 429 擋死（net-check 診斷實測，排程降頻也無效）。TradingView scanner
+# 不用 key、單一 POST 涵蓋全部四類資產，且從 Zeabur 實測可通（tv-check 診斷 ok:true）。
+# 期貨用近月連續合約（"1!"），日經/恆生/法蘭克福維持現貨指數（同舊 yfinance 口徑）。
 OS_FUTURES: list[tuple[str, list[tuple[str, str]]]] = [
-    ("指數期貨", [("小道瓊", "YM=F"), ("小那斯達克", "NQ=F"), ("小S&P500", "ES=F"),
-                  ("小羅素", "RTY=F"), ("日經", "^N225"), ("恆生", "^HSI"), ("法蘭克福", "^GDAXI")]),
-    ("能源金屬", [("輕原油", "CL=F"), ("天然氣", "NG=F"), ("高級銅", "HG=F"),
-                  ("白銀", "SI=F"), ("黃金", "GC=F"), ("白金", "PL=F")]),
-    ("農產品", [("黃豆", "ZS=F"), ("小麥", "ZW=F"), ("玉米", "ZC=F"), ("咖啡", "KC=F"),
-                ("11號糖", "SB=F"), ("可可", "CC=F"), ("黃豆油", "ZL=F")]),
-    ("外匯", [("美元指數", "DX-Y.NYB"), ("澳幣", "AUDUSD=X"), ("英鎊", "GBPUSD=X"),
-              ("加幣", "USDCAD=X"), ("歐元", "EURUSD=X"), ("日圓", "JPY=X"), ("瑞朗", "USDCHF=X")]),
-    ("美股", [("輝達", "NVDA"), ("蘋果", "AAPL"), ("Alphabet", "GOOGL"), ("微軟", "MSFT"),
-              ("亞馬遜", "AMZN"), ("META", "META"), ("特斯拉", "TSLA"), ("台積電ADR", "TSM"),
-              ("博通", "AVGO"), ("甲骨文", "ORCL"), ("美光", "MU"), ("英特爾", "INTC"),
-              ("美超微", "AMD"), ("Palantir", "PLTR")]),
+    ("指數期貨", [("小道瓊", "CBOT_MINI:YM1!"), ("小那斯達克", "CME_MINI:NQ1!"),
+                  ("小S&P500", "CME_MINI:ES1!"), ("小羅素", "CME_MINI:RTY1!"),
+                  ("日經", "TVC:NI225"), ("恆生", "TVC:HSI"), ("法蘭克福", "XETR:DAX")]),
+    ("能源金屬", [("輕原油", "NYMEX:CL1!"), ("天然氣", "NYMEX:NG1!"), ("高級銅", "COMEX:HG1!"),
+                  ("白銀", "COMEX:SI1!"), ("黃金", "COMEX:GC1!"), ("白金", "NYMEX:PL1!")]),
+    ("農產品", [("黃豆", "CBOT:ZS1!"), ("小麥", "CBOT:ZW1!"), ("玉米", "CBOT:ZC1!"),
+                ("咖啡", "ICEUS:KC1!"), ("11號糖", "ICEUS:SB1!"), ("可可", "ICEUS:CC1!"),
+                ("黃豆油", "CBOT:ZL1!")]),
+    ("外匯", [("美元指數", "TVC:DXY"), ("澳幣", "FX:AUDUSD"), ("英鎊", "FX:GBPUSD"),
+              ("加幣", "FX:USDCAD"), ("歐元", "FX:EURUSD"), ("日圓", "FX:USDJPY"),
+              ("瑞朗", "FX:USDCHF")]),
+    ("美股", [("輝達", "NASDAQ:NVDA"), ("蘋果", "NASDAQ:AAPL"), ("Alphabet", "NASDAQ:GOOGL"),
+              ("微軟", "NASDAQ:MSFT"), ("亞馬遜", "NASDAQ:AMZN"), ("META", "NASDAQ:META"),
+              ("特斯拉", "NASDAQ:TSLA"), ("台積電ADR", "NYSE:TSM"), ("博通", "NASDAQ:AVGO"),
+              ("甲骨文", "NYSE:ORCL"), ("美光", "NASDAQ:MU"), ("英特爾", "NASDAQ:INTC"),
+              ("美超微", "NASDAQ:AMD"), ("Palantir", "NASDAQ:PLTR")]),
 ]
 
-
-def _series_stats(series) -> dict | None:
-    if len(series) >= 2:
-        last, prev = float(series.iloc[-1]), float(series.iloc[-2])
-        return {"value": round(last, 4), "chg": round(last - prev, 4),
-                "chg_pct": round((last - prev) / prev * 100, 2) if prev else None}
-    if len(series) == 1:
-        return {"value": round(float(series.iloc[-1]), 4), "chg": None, "chg_pct": None}
-    return None
+_TV_SCAN_URL = "https://scanner.tradingview.com/global/scan"
+_TV_UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
 
-def parse_chart_stats(payload) -> dict | None:
-    """v8 chart 日線 payload → {value, chg, chg_pct}（與 _series_stats 同形狀）。"""
-    closes = []
-    try:
-        q = payload["chart"]["result"][0]["indicators"]["quote"][0]["close"]
-        closes = [v for v in (q or []) if v is not None]
-    except (KeyError, IndexError, TypeError):
-        return None
-    if not closes:
-        return None
-    last = round(float(closes[-1]), 4)
-    if len(closes) < 2 or not closes[-2]:
-        return {"value": last, "chg": None, "chg_pct": None}
-    prev = float(closes[-2])
-    return {"value": last, "chg": round(last - prev, 4),
-            "chg_pct": round((last - prev) / prev * 100, 2)}
+def parse_tv_scan(payload) -> dict:
+    """TradingView scanner 回應 → {ticker: {value, chg, chg_pct}}。
+
+    每列 `d` 依 columns 順序＝[close, change(百分比), change_abs]；缺 close 的列（休市/無報價）
+    跳過，回傳只含有效報價的代碼。以 "s"(代碼) 對映——回應順序未必等於請求順序。
+    """
+    out = {}
+    for row in (payload.get("data") or []):
+        d = row.get("d") or []
+        if len(d) < 3 or d[0] is None:
+            continue
+        out[row.get("s")] = {
+            "value": round(float(d[0]), 4),
+            "chg_pct": round(float(d[1]), 2) if d[1] is not None else None,
+            "chg": round(float(d[2]), 4) if d[2] is not None else None,
+        }
+    return out
 
 
 def fetch_futures_monitor(tries: int = 3) -> list[dict]:
-    """一次批次抓海期五大分類的報價（延遲/收盤），回 [{category, items:[{name,value,chg,chg_pct}]}]。
+    """一次 POST TradingView 公開 scanner 抓五大分類報價，回
+    [{category, items:[{name,value,chg,chg_pct}]}]。抓不到的代碼略過不顯示。
 
-    yf.download 走 cookie/crumb 握手，機房 IP 常被整批擋掉；擋掉時逐檔退回 v8 chart API
-    （fetch_futures_live 用的就是這條，已證實機房可通）。少了這層備援時，雲端會回
-    「5 個分類、每組 0 檔」，而呼叫端又把它當成有效結果快取起來——海期監控就此空著。
+    整批失敗（非 200／連線失敗）就回「5 個分類、每組 0 檔」，由呼叫端 _os_futures 據此
+    判定不寫快取（見該處 got_remote 說明）。單一 POST 就涵蓋所有資產，不需逐檔備援。
     """
-    remaining = {t for _, items in OS_FUTURES for _, t in items}
-    stats: dict[str, dict] = {}
+    tickers = [t for _, items in OS_FUTURES for _, t in items]
+    body = {"symbols": {"tickers": tickers, "query": {"types": []}},
+            "columns": ["close", "change", "change_abs"]}
+    quotes: dict[str, dict] = {}
     for attempt in range(tries):
-        if not remaining:
-            break
-        if attempt:
-            time.sleep(1.0)
         try:
-            df = yf.download(" ".join(remaining), period="5d",
-                             progress=False, threads=False)["Close"]  # 見 fetch_intl_history 說明
-        except Exception:  # noqa: BLE001
-            continue
-        for t in list(remaining):
-            series = _extract_series(df, t)
-            st = _series_stats(series) if series is not None else None
-            if st is not None:
-                stats[t] = st
-                remaining.discard(t)
-    for t in list(remaining):          # yfinance 拿不到的逐檔備援
-        payload = _fetch_chart_raw(t, range_="5d", interval="1d")
-        st = parse_chart_stats(payload) if payload else None
-        if st is not None:
-            stats[t] = st
-            remaining.discard(t)
+            r = httpx.post(_TV_SCAN_URL, json=body, timeout=20, headers=_TV_UA)
+            if r.status_code == 200:
+                quotes = parse_tv_scan(r.json())
+                break
+        except Exception:  # noqa: BLE001 — 整批失敗就重試，仍失敗回空分類
+            pass
+        if attempt < tries - 1:
+            time.sleep(1.0)
     out = []
     for cat, items in OS_FUTURES:
-        rows = [{"name": name, **stats[t]} for name, t in items if t in stats]
+        rows = [{"name": name, **quotes[t]} for name, t in items if t in quotes]
         out.append({"category": cat, "items": rows})
     return out

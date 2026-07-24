@@ -519,17 +519,10 @@ def _push_line(c, full: bool, force: bool = False) -> dict:
     return r
 
 
-def _has_quotes(payload) -> bool:
-    """這包海期資料裡到底有沒有報價。空的分類清單是「抓失敗」而非「今天沒行情」。"""
-    return bool(payload) and any(g.get("items") for g in (payload.get("categories") or []))
-
-
-# 抓失敗（Yahoo 429）後的退避冷卻。實測 Zeabur：yf.download 與 chart API 備援
-# 兩條路徑同時被限流（"Edge: Too Many Requests"）——原因是海期頁曾經每 2 分鐘輪詢一次，
-# 一輪失敗就是 1 次批次 yfinance + 最多 34 次逐檔 chart API 請求，等於在幫限流拖時間。
-# 2026-07 改成排程每日固定兩次（main.py 的 07:30／21:30 job），請求量已經大幅降低，
-# 冷卻在這裡的用途縮小為「同一天兩次排程之間，使用者手動連按『更新報價』」時的保險，
-# 不再是主要防線；仍然保留，成本很低。`refresh=True`（手動按鈕／排程 job）繞過冷卻。
+# 抓失敗後的退避冷卻。海期監控 2026-07 已改為排程每日固定兩次（main.py 的 07:30／21:30
+# job）＋ TradingView 資料源（Yahoo 被 Zeabur IP 429 擋死，已換掉）。冷卻在這裡的用途
+# 縮小為「同一天兩次排程之間，使用者手動連按『更新報價』」時的保險，不再是主要防線；
+# 成本低故保留。`refresh=True`（手動按鈕／排程 job）繞過冷卻。
 _OSFUT_FAIL_COOLDOWN = 300  # 秒
 
 
@@ -546,13 +539,15 @@ def _osfut_cooling_down(c) -> bool:
 def _os_futures(refresh: bool = False) -> dict:
     from ..sources import intl
     c = conn()
-    # 讀取端也要擋空值，不能只擋寫入端：已經寫進去的壞快取沒有 TTL，
-    # 只防未來、不治現有的話，機房那份空結果會被永遠端出來（部署後仍空白就是這個原因）。
-    # 空的一律當快取未命中 → 重抓 → 自己好，不必人工進 DB 清。
-    # key 帶日期：這是「日線底」，舊寫法固定 key 又無 TTL，曾把 7/5 的報價一路端到 7/24。
+    # 讀取端也要認「有沒有真的遠端資料」，不能只擋寫入端：已寫進去的壞快取沒有 TTL，
+    # 只防未來、不治現有的話，那份壞快取會被永遠端出來（部署後仍空白就是這個原因）。
+    # 用 has_remote 旗標判斷——不能看「有沒有 items」，因為下面會注入本地的加權/台指期，
+    # 「遠端全滅、只剩注入兩檔」也會有 items。只有 has_remote=True 的快取才可信；
+    # 舊版寫的壞快取沒有這個旗標 → 視為未命中 → 重抓 → 自己好，不必人工進 DB 清。
+    # key 帶日期：這是當日快取，舊寫法固定 key 又無 TTL，曾把 7/5 的報價一路端到 7/24。
     key = f"osfut:{datetime.now().strftime('%Y-%m-%d')}"
     cached = get_ai_cache(c, key)
-    if _has_quotes(cached) and not refresh:
+    if cached and cached.get("has_remote") and not refresh:
         return cached
     skip_network = not refresh and _osfut_cooling_down(c)
     if skip_network:
@@ -562,6 +557,10 @@ def _os_futures(refresh: bool = False) -> dict:
             cats = intl.fetch_futures_monitor()
         except Exception:  # noqa: BLE001
             cats = []
+    # 快取「是否成功」要看遠端抓到沒，不能看最終結果——下面會注入本地的加權/台指期，
+    # 那兩檔永遠有值，用 _has_quotes(result) 判斷會把「遠端全滅、只剩注入兩檔」也當成功寫入
+    # （這是 Yahoo 全滅時 updated_at 照樣更新、資料卻空的成因）。故在注入前先記下遠端戰果。
+    got_remote = any(g.get("items") for g in cats)
     last = c.execute("SELECT taiex, taiex_chg, tx_price, tx_chg FROM market_daily "
                      "ORDER BY date DESC LIMIT 1").fetchone()
     idx = next((g for g in cats if g["category"] == "指數期貨"), None)
@@ -573,10 +572,9 @@ def _os_futures(refresh: bool = False) -> dict:
                 local.append({"name": name, "value": val, "chg": chg,
                               "chg_pct": round(chg / base * 100, 2) if base else None})
         idx["items"] = local + idx["items"]
-    result = {"categories": cats, "updated_at": datetime.now().isoformat()}
-    # 只在「真的抓到報價」時才寫快取。fetch_futures_monitor 抓不到時回的是
-    # 「5 個分類、每組 0 檔」——那是個真值，舊寫法 `if cats:` 會把整包失敗結果寫進去。
-    if _has_quotes(result):
+    result = {"categories": cats, "updated_at": datetime.now().isoformat(),
+              "has_remote": got_remote}
+    if got_remote:
         set_ai_cache(c, key, result)
     elif not skip_network:   # 這次真的打了網路才算一次失敗；冷卻中跳過的不重複計時
         set_ai_cache(c, "osfut:fail_at", {"at": datetime.now().isoformat()})

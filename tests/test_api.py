@@ -1780,26 +1780,33 @@ def test_line_webhook_rank_command_replies_flex_table(tmp_path, monkeypatch):
     assert "台積電" in sent[0]["altText"]
 
 
-def test_osfut_does_not_cache_an_empty_fetch(tmp_path, monkeypatch):
-    """抓不到報價時不得寫進那個「無 TTL」的快取，否則失敗會被永久固化。
+def test_osfut_remote_failure_not_cached_even_though_local_indices_are_injected(tmp_path, monkeypatch):
+    """遠端全滅時不得寫快取——即使加權/台指期照樣被本地注入。
 
-    fetch_futures_monitor 失敗時回的是「5 個分類、每組 0 檔」——那是個真值，
-    舊寫法 `if cats:` 會把它當有效結果存起來，於是機房 IP（yfinance 常被擋）
-    只要失敗一次，海期監控就永遠只剩注入的加權/台指期，且不會自己好。
+    這是 Yahoo 全滅時「updated_at 照樣更新、資料卻空」的成因：注入的兩檔讓最終結果
+    看起來「有 items」，若用那個當快取條件就把失敗寫成成功。快取條件必須看「遠端有沒有
+    抓到」（has_remote 旗標），與本地注入無關。
     """
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
-    from stocks_power_rich.db import get_ai_cache, get_connection, init_db
+    from datetime import datetime as _dt
+    from stocks_power_rich.api import helpers
+    from stocks_power_rich.db import get_ai_cache, get_connection, init_db, upsert_market_daily
     from stocks_power_rich.sources import intl
 
-    app = create_app()
-    client = TestClient(app)
-    empty = [{"category": c, "items": []} for c in ("指數期貨", "能源金屬")]
-    monkeypatch.setattr(intl, "fetch_futures_monitor", lambda: empty)
-    assert client.get("/api/os-futures").status_code == 200
-
+    create_app()
     c = get_connection(str(tmp_path / "t.sqlite"))
     init_db(c)
-    assert get_ai_cache(c, "osfut:current") is None      # 失敗不留痕，下次可重試
+    upsert_market_daily(c, {"date": "2026-07-24", "taiex": 44850.0, "taiex_chg": 25.0,
+                            "tx_price": 44930.0, "tx_chg": 285.0})   # 供本地注入
+    monkeypatch.setattr(intl, "fetch_futures_monitor",
+                        lambda: [{"category": cat, "items": []} for cat, _ in intl.OS_FUTURES])
+
+    result = helpers._os_futures()
+    injected = [i["name"] for g in result["categories"] for i in g["items"]]
+    assert "加權指數" in injected and "台指期" in injected   # 注入仍在，畫面不會全空
+    assert result["has_remote"] is False
+    key = f"osfut:{_dt.now().strftime('%Y-%m-%d')}"
+    assert get_ai_cache(c, key) is None                    # 但這包不進快取，下次可重試
 
 
 def test_turnover_cache_is_per_market_so_one_failure_cannot_poison_the_other(tmp_path, monkeypatch):
@@ -1860,12 +1867,11 @@ def test_osfut_empty_cache_is_treated_as_a_miss_and_self_heals(tmp_path, monkeyp
     assert "小道瓊" in names            # 沒有被那份空快取擋住
 
 
-def test_osfut_backs_off_after_failure_instead_of_hammering_yahoo(tmp_path, monkeypatch):
-    """實測 Zeabur：yfinance 與 chart API 備援皆被 429('Edge: Too Many Requests')。
+def test_osfut_backs_off_after_failure_instead_of_hammering_source(tmp_path, monkeypatch):
+    """抓失敗後短時間內不重打資料源——冷卻期內完全不打網路（避免連按更新報價狂刷）。
 
-    失敗不寫永久快取讓它能自癒是對的（見前一版），但沒有節流的話，海期頁每 2 分鐘
-    輪詢一次，每次都是 1 次批次 yfinance ＋ 最多 34 次逐檔 chart API 請求，只會讓
-    429 持續更久。冷卻期內必須完全不打網路。
+    海期監控現已改排程每日兩次＋TradingView，冷卻的角色降為手動連按時的保險，
+    但機制本身仍要正確：失敗後冷卻窗內直接回空骨架、不打網路；refresh 繞過冷卻。
     """
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.api import helpers
