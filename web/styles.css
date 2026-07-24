@@ -189,11 +189,23 @@ body[data-public] .status-bar { display: none; }
 .card-rail i { position: absolute; top: -2px; width: 2px; height: 6px; margin-left: -1px; background: var(--label); border-radius: 1px; }
 .card.alert .card-rail i { background: var(--accent); width: 3px; }
 
-/* 區塊標題：左豎線分層 + 底部漸層底線（琥珀→透明，柔和收尾，呼應圓體暖調）。
-   漸層底線只鋪在文字下方（inline-block 收合寬度），不橫貫整行。 */
-.group-title { display: inline-block; font-size: var(--fs-md); color: var(--label); font-weight: 600; margin-bottom: var(--sp-2); border-left: 3px solid var(--border); padding: 0 2px 5px 8px;
-  background-image: linear-gradient(90deg, var(--accent) 8px, color-mix(in srgb, var(--accent) 55%, transparent) 45%, transparent);
-  background-size: 100% 2px; background-position: 0 100%; background-repeat: no-repeat; }
+/* 標題有兩階：.section-head（這一段回答什麼問題）＞ .group-title（單一區塊）。
+   層級全靠字級／字重／亮度／留白拉開，不加新裝飾——本頁的視覺重點已經花在
+   判讀句與位階條上，標題再搶就變成兩個都不突出。
+   琥珀在此刻意缺席：--accent 只表「你在這裡」與「注意這格」，拿來裝飾標題會稀釋那兩個意思。 */
+/* 每個 section-head 上方一律留 --sp-5：第一個緊接 AI 摘要，那個間距正好把
+   「結論」與下面的「證據」分開，所以不需要為它另設例外。
+   （曾試過 .section-head:first-of-type 減少間距——:first-of-type 是比對元素型別(div)
+   而非 class，#view-overview 的第一個 div 是 .market-strip，該規則永遠不會命中。） */
+.section-head { display: flex; align-items: baseline; gap: var(--sp-3); flex-wrap: wrap;
+  margin: var(--sp-5) 0 var(--sp-1); }
+.sh-title { font-size: var(--fs-lg); font-weight: 700; color: var(--text); letter-spacing: 1px; }
+.sh-desc { font-size: var(--fs-sm); color: var(--muted); }
+
+/* 區塊標題：左豎線分層。原本還有一條琥珀漸層底線，在只有單階標題時是好看的收尾，
+   但補上 .section-head 後，8 條琥珀底線會與新的一階互相競爭、也稀釋琥珀的語意，
+   故移除——階層改由上面那階承擔，這階只要能被認出是標題即可。 */
+.group-title { display: inline-block; font-size: var(--fs-md); color: var(--label); font-weight: 600; margin-bottom: var(--sp-2); border-left: 3px solid var(--border); padding: 0 2px 2px 8px; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: var(--sp-2); }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r); padding: 10px 13px; }
 /* 有懸停說明的卡片：標籤加點狀底線當「這裡有解釋」的視覺提示 */

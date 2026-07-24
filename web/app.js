@@ -1113,11 +1113,16 @@ function chipTrendOption(hist, metric) {
       { ...LP, name: "融資餘額", data: hist.map((r) => r.margin_balance), lineStyle: { color: C.up }, itemStyle: { color: C.up } },
       { ...LP, name: "融券餘額", yAxisIndex: 1, data: hist.map((r) => r.short_balance), lineStyle: { color: C.down }, itemStyle: { color: C.down } }] };
 }
+// echarts.init 會把「當下」的容器尺寸記下來，之後不會自己重量。初次載入時若這行早於
+// 版面完成，寬度就被記成 0，畫布維持 0px 直到有人縮視窗或切分頁才復原（間歇性、
+// 重整幾次才遇得到一次）。熱力圖沒這問題正是因為它在 render 後補了 resize()，
+// 這裡比照辦理——setOption 後量一次，讓結果不依賴 init 的時機。
 function loadChipTrend() {
   if (!$("chipchart")) return;
   if (!chipChart) chipChart = echarts.init($("chipchart"));
   if (!lastHistory.length) { chipChart.clear(); return; }
   chipChart.setOption(chipTrendOption(lastHistory, chipMetric), true);
+  chipChart.resize();
 }
 
 async function loadIndexChart() {
@@ -1130,6 +1135,7 @@ async function loadIndexChart() {
     $("idx-note").textContent = d.proxy ? "（台指期歷史抓取失敗，暫以加權指數近似）" : (idxSymbol === "tx" ? "（台指期：期交所近月歷史日K）" : "");
     lastIndexData = d;
     idxChart.setOption(candlestickOption(d, d.candles.length > 120 ? 70 : 0, overviewWaves, wavePct), true);
+    idxChart.resize();      // 同 loadChipTrend：不依賴 init 當下的容器尺寸
   } catch (e) { idxChart.hideLoading(); $("idx-note").textContent = "載入失敗：" + e.message; }
   const panel = $("tx-vol-panel");
   if (panel) {
@@ -1165,6 +1171,7 @@ async function loadTxVolumeChart() {
     const d = await getJSON("/api/tx/volume-sessions?days=60");
     if (!d.dates || !d.dates.length) { txVolChart.clear(); return; }
     txVolChart.setOption(txVolumeOption(d), true);
+    txVolChart.resize();    // 同上；此圖藏在 .hidden 面板裡，init 時尺寸為 0 更是常態
   } catch (e) { txVolChart.clear(); }
 }
 

@@ -64,29 +64,15 @@
         <div class="ai-head"><span>AI 盤勢摘要 <span class="muted small">（每日數據到齊後自動生成）</span></span>
           <a href="#" id="ai-toggle" class="help-link">展開</a></div>
         <div id="market-summary" class="ai-box clamp">載入中…</div>
+        <!-- 兩階層：section-head（這一段回答什麼問題）＞ group-title（單一區塊）。
+             分組照本站自己的世界觀：籌碼解釋行情，所以「誰在動錢」與「價格長什麼樣」
+             各成一段，而不是把 8 個同權重的區塊平鋪。 -->
+        <div class="section-head">
+          <span class="sh-title">籌碼</span><span class="sh-desc">誰在買、買了多少</span>
+        </div>
         <div class="card-group"><div class="group-title">台股大盤 <span id="breadth-note" class="muted small"></span></div><div id="cards-tw" class="cards"></div></div>
-        <div class="card-group"><div class="group-title">權值股貢獻大盤點數 <span id="movers-note" class="muted small"></span></div><div id="movers" class="mv-grid"></div></div>
         <div class="card-group"><div class="group-title">期貨籌碼</div><div id="cards-fut" class="cards"></div></div>
         <div class="card-group"><div class="group-title">期權情緒・大額交易人 <span id="opt-note" class="muted small"></span></div><div id="cards-opt" class="cards"></div></div>
-        <div class="card-group"><div class="group-title">國際市場</div><div id="cards-intl" class="cards"></div></div>
-        <div class="card-group"><div class="group-title">個股熱力圖
-          <span class="hm-tabs">
-            <button class="tf hm-tab active" data-market="tse">上市</button><button class="tf hm-tab" data-market="otc">上櫃</button><button class="tf hm-tab" data-market="all">全部</button>
-          </span>
-          <span class="hm-tabs">
-            <button class="tf hm-top active" data-top="5">每類股 5 檔</button><button class="tf hm-top" data-top="10">10 檔</button>
-          </span>
-          <span id="sectors-note" class="muted small"></span></div><div id="sectors" class="sectors"></div></div>
-        <div class="card-group">
-          <div class="group-title">籌碼趨勢（近 60 日）</div>
-          <div class="chart-toolbar">
-            <button class="ctf active" data-metric="inst">三大法人買賣超</button>
-            <button class="ctf" data-metric="foreign_oi">外資台指未平倉</button>
-            <button class="ctf" data-metric="retail_ls">散戶多空比</button>
-            <button class="ctf" data-metric="margin">融資融券</button>
-          </div>
-          <div id="chipchart" class="chart"></div>
-        </div>
         <div class="card-group">
           <div class="group-title">法人買賣超排行 <span id="rank-note" class="muted small"></span></div>
           <div class="chart-toolbar">
@@ -102,6 +88,30 @@
             <div class="rank-col"><div class="rank-h down">賣超 Top</div><div id="rank-sell"></div></div>
           </div>
         </div>
+        <div class="card-group">
+          <div class="group-title">籌碼趨勢（近 60 日）</div>
+          <div class="chart-toolbar">
+            <button class="ctf active" data-metric="inst">三大法人買賣超</button>
+            <button class="ctf" data-metric="foreign_oi">外資台指未平倉</button>
+            <button class="ctf" data-metric="retail_ls">散戶多空比</button>
+            <button class="ctf" data-metric="margin">融資融券</button>
+          </div>
+          <div id="chipchart" class="chart"></div>
+        </div>
+
+        <div class="section-head">
+          <span class="sh-title">行情</span><span class="sh-desc">漲跌集中在哪裡、外盤怎麼走</span>
+        </div>
+        <div class="card-group"><div class="group-title">權值股貢獻大盤點數 <span id="movers-note" class="muted small"></span></div><div id="movers" class="mv-grid"></div></div>
+        <div class="card-group"><div class="group-title">個股熱力圖
+          <span class="hm-tabs">
+            <button class="tf hm-tab active" data-market="tse">上市</button><button class="tf hm-tab" data-market="otc">上櫃</button><button class="tf hm-tab" data-market="all">全部</button>
+          </span>
+          <span class="hm-tabs">
+            <button class="tf hm-top active" data-top="5">每類股 5 檔</button><button class="tf hm-top" data-top="10">10 檔</button>
+          </span>
+          <span id="sectors-note" class="muted small"></span></div><div id="sectors" class="sectors"></div></div>
+        <div class="card-group"><div class="group-title">國際市場</div><div id="cards-intl" class="cards"></div></div>
 
         <div class="chart-row">
           <div class="chart-side">
