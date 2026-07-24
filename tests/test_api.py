@@ -1856,3 +1856,32 @@ def test_turnover_cache_is_per_market_so_one_failure_cannot_poison_the_other(tmp
                         lambda d: {"5274": {"vol": 2, "amount": 20.0}})
     second = helpers._turnover_for(c, day)
     assert second["2330"]["amount"] == 10.0 and second["5274"]["amount"] == 20.0
+
+
+def test_osfut_empty_cache_is_treated_as_a_miss_and_self_heals(tmp_path, monkeypatch):
+    """已經寫進去的空快取必須能自己好，不能只擋未來的寫入。
+
+    這個快取沒有 TTL，所以「只防寫入、不治讀取」等於要人工進 DB 清才會恢復——
+    正是修完第一版後雲端仍然空白的原因。空的一律當未命中 → 重抓。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import datetime as _dt
+    from stocks_power_rich.db import get_connection, init_db, set_ai_cache
+    from stocks_power_rich.sources import intl
+
+    app = create_app()
+    client = TestClient(app)
+    key = f"osfut:{_dt.now().strftime('%Y-%m-%d')}"
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    # 先種一份「壞掉的」快取，模擬機房抓失敗時留下的殘骸
+    set_ai_cache(c, key, {"categories": [{"category": "指數期貨", "items": []}],
+                          "updated_at": "2026-07-05T18:20:33"})
+
+    good = [{"category": "指數期貨", "items": [{"name": "小道瓊", "value": 44512.5,
+                                                "chg": 1.0, "chg_pct": 0.1}]}]
+    monkeypatch.setattr(intl, "fetch_futures_monitor", lambda: good)
+    body = client.get("/api/os-futures").json()
+
+    names = [i["name"] for g in body["categories"] for i in g["items"]]
+    assert "小道瓊" in names            # 沒有被那份空快取擋住

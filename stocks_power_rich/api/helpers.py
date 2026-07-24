@@ -519,11 +519,21 @@ def _push_line(c, full: bool, force: bool = False) -> dict:
     return r
 
 
+def _has_quotes(payload) -> bool:
+    """這包海期資料裡到底有沒有報價。空的分類清單是「抓失敗」而非「今天沒行情」。"""
+    return bool(payload) and any(g.get("items") for g in (payload.get("categories") or []))
+
+
 def _os_futures(refresh: bool = False) -> dict:
     from ..sources import intl
     c = conn()
-    cached = get_ai_cache(c, "osfut:current")
-    if cached is not None and not refresh:
+    # 讀取端也要擋空值，不能只擋寫入端：已經寫進去的壞快取沒有 TTL，
+    # 只防未來、不治現有的話，機房那份空結果會被永遠端出來（部署後仍空白就是這個原因）。
+    # 空的一律當快取未命中 → 重抓 → 自己好，不必人工進 DB 清。
+    # key 帶日期：這是「日線底」，舊寫法固定 key 又無 TTL，曾把 7/5 的報價一路端到 7/24。
+    key = f"osfut:{datetime.now().strftime('%Y-%m-%d')}"
+    cached = get_ai_cache(c, key)
+    if _has_quotes(cached) and not refresh:
         return cached
     try:
         cats = intl.fetch_futures_monitor()
@@ -542,11 +552,9 @@ def _os_futures(refresh: bool = False) -> dict:
         idx["items"] = local + idx["items"]
     result = {"categories": cats, "updated_at": datetime.now().isoformat()}
     # 只在「真的抓到報價」時才寫快取。fetch_futures_monitor 抓不到時回的是
-    # 「5 個分類、每組 0 檔」——那是個真值，舊寫法 `if cats:` 會把整包失敗結果寫進
-    # 這個**無 TTL** 的快取，於是機房 IP（yfinance 常被擋）只要失敗一次，海期監控就
-    # 永遠只剩下面注入的加權/台指期，連重試的機會都沒有。
-    if any(g.get("items") for g in cats):
-        set_ai_cache(c, "osfut:current", result)
+    # 「5 個分類、每組 0 檔」——那是個真值，舊寫法 `if cats:` 會把整包失敗結果寫進去。
+    if _has_quotes(result):
+        set_ai_cache(c, key, result)
     return result
 
 
@@ -562,7 +570,7 @@ def _os_futures_live() -> dict:
     from ..sources import intl
     c = conn()
     cached = get_ai_cache(c, "osfut:live")
-    if cached is not None:
+    if _has_quotes(cached):        # 空的當未命中，理由同 _os_futures
         try:
             age = (datetime.now() - datetime.fromisoformat(cached["fetched_at"])).total_seconds()
             if age < _OSFUT_LIVE_TTL:
