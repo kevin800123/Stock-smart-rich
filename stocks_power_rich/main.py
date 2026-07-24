@@ -135,10 +135,6 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         except Exception:  # noqa: BLE001
             pass
         try:
-            _os_futures(refresh=True)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
             from .ledger import record_daily_signals, update_ledger_returns
             record_daily_signals(c)
             update_ledger_returns(c)
@@ -161,6 +157,15 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             _push_line(c, full=False)
         except Exception:  # noqa: BLE001
             pass
+
+    def osfut_job():
+        """海期監控排程：一天固定兩次（07:30／21:30），取代舊的「每 2 分鐘輪詢」。
+
+        那個輪詢頻率正是把 Zeabur 出站 IP 打到被 Yahoo 429 限流的主因（net-check 診斷
+        實測 yfinance 與 chart API 備援皆遭拒）；改成排程後請求量大幅降低，且與 LINE
+        是否設定無關——獨立掛兩個 cron，不搭在 line_brief_job／scheduled_job 上，
+        避免那兩個 job 的既有時間（16:00／21:00）又疊加出使用者沒要求的額外抓取次數。
+        """
         try:
             _os_futures(refresh=True)
         except Exception:  # noqa: BLE001
@@ -194,6 +199,11 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         from .scheduler import build_trigger_kwargs, start_scheduler
 
         app.state.scheduler = start_scheduler(scheduled_job, effective_schedule(conn()))
+        # 海期監控：固定兩次，與 LINE 是否設定無關（不歸在下面的 line_token 區塊內）
+        app.state.scheduler.add_job(
+            osfut_job, "cron", hour=7, minute=30, id="osfut_morning", replace_existing=True)
+        app.state.scheduler.add_job(
+            osfut_job, "cron", hour=21, minute=30, id="osfut_evening", replace_existing=True)
         if cfg.line_token:
             app.state.scheduler.add_job(
                 line_brief_job, "cron", **build_trigger_kwargs(cfg.line_push_time),

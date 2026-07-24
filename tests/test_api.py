@@ -1117,33 +1117,6 @@ def test_rank_price_endpoint_markets_and_live_quotes(tmp_path, monkeypatch):
     assert [i["code"] for i in otc["items"]] == ["6415", "8069"]
 
 
-def test_os_futures_live_mode_overlays_and_caches(tmp_path, monkeypatch):
-    """/api/os-futures?live=1：盤中報價覆蓋日線值、缺檔沿用日線；90 秒 TTL 快取防狂刷。"""
-    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
-    from stocks_power_rich.sources import intl
-
-    daily = [{"category": "指數期貨", "items": [
-        {"name": "小道瓊", "value": 44400.0, "chg": -100.0, "chg_pct": -0.22},
-        {"name": "日經", "value": 64000.0, "chg": 100.0, "chg_pct": 0.16}]}]
-    calls = {"n": 0}
-    def fake_live():
-        calls["n"] += 1
-        return [{"category": "指數期貨", "items": [
-            {"name": "小道瓊", "value": 44512.5, "chg": 112.5, "chg_pct": 0.25, "time": "10:10"}]}]
-    monkeypatch.setattr(intl, "fetch_futures_monitor", lambda: daily)
-    monkeypatch.setattr(intl, "fetch_futures_live", fake_live)
-    app = create_app()
-    client = TestClient(app)
-    r = client.get("/api/os-futures?live=1").json()
-    idx = next(g for g in r["categories"] if g["category"] == "指數期貨")
-    dow = next(i for i in idx["items"] if i["name"] == "小道瓊")
-    nikkei = next(i for i in idx["items"] if i["name"] == "日經")
-    assert dow["value"] == 44512.5 and dow["time"] == "10:10"    # live 覆蓋
-    assert nikkei["value"] == 64000.0 and "time" not in nikkei   # 缺檔沿用日線
-    client.get("/api/os-futures?live=1")
-    assert calls["n"] == 1                                       # TTL 內第二次吃快取
-
-
 def test_custody_backfill_pulls_history_into_custody_dist(tmp_path, monkeypatch):
     """/api/stock/{code}/custody/backfill：從 TDCC 智能網回補該股歷史週次到 custody_dist，
     讓集保大戶趨勢能顯示 6 月前（opendata 只給當週、拿不回歷史）。"""
@@ -1887,30 +1860,6 @@ def test_osfut_empty_cache_is_treated_as_a_miss_and_self_heals(tmp_path, monkeyp
     assert "小道瓊" in names            # 沒有被那份空快取擋住
 
 
-def test_osfut_live_keeps_live_quotes_when_daily_base_is_empty(tmp_path, monkeypatch):
-    """機房實況：yf.download 全被擋（日線底空），chart API 可通（live 有報價）。
-
-    live 是「合併進日線清單」的——聯集之前，日線底空掉時明明抓到的 live 會被
-    全數丟棄，頁面只剩注入的加權/台指期。base 的失敗與 live 的成功互相獨立，
-    不能讓前者否決後者。
-    """
-    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
-    from stocks_power_rich.sources import intl
-
-    app = create_app()
-    client = TestClient(app)
-    empty = [{"category": c, "items": []} for c in ("指數期貨", "能源金屬")]
-    monkeypatch.setattr(intl, "fetch_futures_monitor", lambda: empty)
-    live = [{"category": "指數期貨", "items": [{"name": "小道瓊", "value": 44512.5,
-                                                "chg": 112.5, "chg_pct": 0.25, "time": "10:10"}]},
-            {"category": "能源金屬", "items": []}]
-    monkeypatch.setattr(intl, "fetch_futures_live", lambda: live)
-
-    body = client.get("/api/os-futures?live=1").json()
-    names = [i["name"] for g in body["categories"] for i in g["items"]]
-    assert "小道瓊" in names
-
-
 def test_osfut_backs_off_after_failure_instead_of_hammering_yahoo(tmp_path, monkeypatch):
     """實測 Zeabur：yfinance 與 chart API 備援皆被 429('Edge: Too Many Requests')。
 
@@ -1964,24 +1913,3 @@ def test_osfut_retries_after_cooldown_expires(tmp_path, monkeypatch):
     assert calls["n"] == 1     # 冷卻早已過期，照常重試
 
 
-def test_osfut_live_shares_cooldown_with_base(tmp_path, monkeypatch):
-    """live 路徑打的是同一個被限流的端點，不能自己另開一輪——必須與 base 共用冷卻窗。"""
-    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
-    from stocks_power_rich.api import helpers
-    from stocks_power_rich.db import get_connection, init_db, set_ai_cache
-    from stocks_power_rich.sources import intl
-
-    create_app()
-    c = get_connection(str(tmp_path / "t.sqlite"))
-    init_db(c)
-    from datetime import datetime as _dt
-    set_ai_cache(c, "osfut:fail_at", {"at": _dt.now().isoformat()})   # 剛失敗，冷卻中
-
-    monkeypatch.setattr(intl, "fetch_futures_monitor",
-                        lambda: (_ for _ in ()).throw(AssertionError("不該在冷卻中被呼叫")))
-    live_calls = {"n": 0}
-    monkeypatch.setattr(intl, "fetch_futures_live",
-                        lambda: live_calls.__setitem__("n", live_calls["n"] + 1) or [])
-
-    helpers._os_futures_live()
-    assert live_calls["n"] == 0   # 冷卻中：live 也不該打

@@ -144,8 +144,9 @@ function showView(name) {
   if (name === "overview") { idxChart && idxChart.resize(); chipChart && chipChart.resize(); sectorChart && sectorChart.resize(); txVolChart && txVolChart.resize(); }
   if (name === "stock") { stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize(); }
   if (name === "rotation") { loadRotation(); loadCross(); }
-  // 兩個監控頁各自輪詢：進入才啟動、切走即停——控制請求量
-  if (name === "osfut") { loadOsFutures("live"); startOsfutPolling(); } else stopOsfutPolling();
+  // 高價股監控輪詢：進入才啟動、切走即停——控制請求量。海期監控 2026-07 起改排程
+  // 每日兩次更新（見 main.py::osfut_job），切進頁面只讀快取，不再輪詢。
+  if (name === "osfut") loadOsFutures();
   if (name === "hiprice") { loadRankPrice(); startRankPolling(); } else stopRankPolling();
   if (name === "cup") { if (!cupLoaded) loadCupHandle(); else cupChart && cupChart.resize(); }
   if (name === "weekly") loadCsvSummary(false);  // 讀快取即回；匯入後才會重新生成
@@ -754,15 +755,16 @@ async function loadCupBacktest() {
   } catch (e) { box.innerHTML = '<span class="muted small">回測載入失敗：' + esc(e.message) + "</span>"; }
 }
 
-// 海期監控：五大分類色階卡片（名稱/價格上排、漲跌%/點數下排）
+// 海期監控：五大分類色階卡片（名稱/價格上排、漲跌%/點數下排）。
+// 2026-07 起改為排程每日 07:30／21:30 更新兩次（main.py::osfut_job），不再前端輪詢——
+// 舊的每 2 分鐘輪詢正是把 Zeabur 出站 IP 打到被 Yahoo 429 限流的主因。切進頁面只讀快取，
+// 「更新報價」按鈕才會強制重抓一次（refresh=1）。
 function osDecimals(v) { const a = Math.abs(v); return a >= 1000 ? 0 : a >= 10 ? 2 : 4; }
-async function loadOsFutures(mode) {
+async function loadOsFutures(forceRefresh) {
   const el = $("osfut"); if (!el) return;
-  if (!el.innerHTML) el.innerHTML = '<div class="muted small">載入報價中…（首次抓取約 5–10 秒）</div>';
+  if (!el.innerHTML) el.innerHTML = '<div class="muted small">載入中…</div>';
   try {
-    // "live"＝盤中 meta 報價（後端 90 秒 TTL）；true＝強制重抓日線（排程用，前端已不用）
-    const q = mode === "live" ? "?live=1" : mode ? "?refresh=1" : "";
-    const d = await getJSON("/api/os-futures" + q);
+    const d = await getJSON("/api/os-futures" + (forceRefresh ? "?refresh=1" : ""));
     const t = $("osfut-time");
     if (t && d.updated_at) t.textContent = "更新：" + d.updated_at.slice(0, 16).replace("T", " ");
     if (!d.categories || !d.categories.every) { el.innerHTML = '<div class="muted small">暫無報價，稍後按更新重試</div>'; return; }
@@ -784,7 +786,7 @@ async function loadOsFutures(mode) {
 }
 
 // ===== 台股高價股即時排行（MIS）＝高價股監控頁 =====
-let rankMarket = "all", osfutTimer = null, rankTimer = null;
+let rankMarket = "all", rankTimer = null;
 
 // 成交額一律以「億」呈現：個股單日動輒數十億，元或萬都得數零
 function yi(v, dp) { return v == null ? "—" : fmt(v / 1e8, dp == null ? 1 : dp); }
@@ -830,13 +832,6 @@ function startRankPolling() {                   // 台股每 10 秒（MIS 便宜
 }
 function stopRankPolling() {
   if (rankTimer) { clearInterval(rankTimer); rankTimer = null; }
-}
-function startOsfutPolling() {                  // 海期每 120 秒（Yahoo 較貴）
-  if (osfutTimer) return;
-  osfutTimer = setInterval(() => loadOsFutures("live"), 120000);
-}
-function stopOsfutPolling() {
-  if (osfutTimer) { clearInterval(osfutTimer); osfutTimer = null; }
 }
 
 // 權值股貢獻大盤點數：色階卡片（依漲跌幅上色），主秀「貢獻幾點」
@@ -1516,7 +1511,7 @@ $("btn-export").addEventListener("click", () => {
   window.location.href = url;
 });
 $("btn-save-settings").addEventListener("click", saveSettings);
-$("btn-osfut-refresh").addEventListener("click", () => loadOsFutures("live"));
+$("btn-osfut-refresh").addEventListener("click", () => loadOsFutures(true));
 $("btn-rank-refresh").addEventListener("click", loadRankPrice);
 document.querySelectorAll(".rkp-tab").forEach((b) => b.addEventListener("click", () => {
   if (b.dataset.market === rankMarket) return;

@@ -35,45 +35,10 @@ def _fetch_chart_raw(sym: str, range_: str = "5d", interval: str = "1d") -> dict
     return None
 
 
-def parse_chart_quote(payload) -> dict | None:
-    """v8 chart meta → 準即時報價 {value, chg, chg_pct, time}。
-
-    meta 直接帶 regularMarketPrice / chartPreviousClose / regularMarketTime（epoch 秒），
-    不需讀 K 棒陣列；time 轉台北時間 HH:MM。缺價回 None。
-    """
-    from datetime import datetime, timezone, timedelta
-    try:
-        meta = payload["chart"]["result"][0]["meta"]
-    except (KeyError, IndexError, TypeError):
-        return None
-    price, prev = meta.get("regularMarketPrice"), meta.get("chartPreviousClose")
-    if price is None:
-        return None
-    out = {"value": round(float(price), 4), "chg": None, "chg_pct": None, "time": None}
-    if prev:
-        out["chg"] = round(float(price) - float(prev), 4)
-        out["chg_pct"] = round((float(price) - float(prev)) / float(prev) * 100, 2)
-    ts = meta.get("regularMarketTime")
-    if ts:
-        out["time"] = datetime.fromtimestamp(ts, tz=timezone(timedelta(hours=8))).strftime("%H:%M")
-    return out
-
-
-def fetch_futures_live() -> list[dict]:
-    """海期準即時：逐檔 chart meta 抓盤中價（1m），輸出與 fetch_futures_monitor 同形狀
-    （items 多 time 欄）。單檔失敗跳過——呼叫端以日線值補缺。期貨延遲約 10 分（CME 規定）。"""
-    out = []
-    for cat, items in OS_FUTURES:
-        rows = []
-        for name, t in items:
-            payload = _fetch_chart_raw(t, range_="1d", interval="1m")
-            q = parse_chart_quote(payload) if payload else None
-            if q is not None:
-                rows.append({"name": name, **q})
-        out.append({"category": cat, "items": rows})
-    return out
-
-
+# 註：曾有 fetch_futures_live（逐檔 chart meta 抓盤中準即時價，供「海期監控」每 2 分鐘
+# 輪詢）與 parse_chart_quote，2026-07 隨「海期監控」改為每日排程 07:30/21:30 兩次更新
+# 一併移除——那樣的輪詢頻率正是把 Zeabur 的出站 IP 打到被 Yahoo 429 限流的主因（net-check
+# 診斷實測 yfinance 與 chart API 備援皆遭拒），改成一天兩次後才真的降得下請求量。
 # 註：曾有 fetch_intl_indices（抓「當下最新值」）供每日更新使用，已於 2026-07 移除。
 # 它回傳的是「更新程式跑的當下」的報價，而不是任何一場的收盤，等於把不確定日期的價格
 # 寫進資料日 D 那一列；且因 _backfill_intl 只填 NULL 不覆蓋，寫錯的值永遠不會被修正。

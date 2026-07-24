@@ -14,7 +14,6 @@ from .helpers import (
     get_ai_cache,
     set_ai_cache,
     _os_futures,
-    _os_futures_live,
     _turnover_for,
 )
 from ..sources import twse, taifex, mis
@@ -24,9 +23,10 @@ from ..config import load_config
 router = APIRouter(prefix="/api")
 
 @router.get("/os-futures")
-def os_futures(refresh: int = 0, live: int = 0):
-    if live:
-        return _os_futures_live()
+def os_futures(refresh: int = 0):
+    # 「即時監控」已於 2026-07 移除（前端每 2 分鐘輪詢正是把 Zeabur 出站 IP 打到被 Yahoo
+    # 429 限流的主因）。現在資料只由 main.py 的排程 job（每日 07:30／21:30）主動更新，
+    # 這裡永遠是讀快取；refresh=1 供「更新報價」手動按鈕做一次性強制重抓。
     return _os_futures(refresh=bool(refresh))
 
 

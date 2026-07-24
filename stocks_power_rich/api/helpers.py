@@ -525,11 +525,11 @@ def _has_quotes(payload) -> bool:
 
 
 # 抓失敗（Yahoo 429）後的退避冷卻。實測 Zeabur：yf.download 與 chart API 備援
-# 兩條路徑同時被限流（"Edge: Too Many Requests"）。失敗不寫快取（見下）雖然讓快取能
-# 自己痊癒，卻也讓「每次輪詢都對 Yahoo 重打一整輪」——前端海期頁每 2 分鐘一次，
+# 兩條路徑同時被限流（"Edge: Too Many Requests"）——原因是海期頁曾經每 2 分鐘輪詢一次，
 # 一輪失敗就是 1 次批次 yfinance + 最多 34 次逐檔 chart API 請求，等於在幫限流拖時間。
-# 冷卻期內完全不打網路，只在冷卻過後才重試一次；`refresh=True`（使用者按「更新報價」）
-# 是明確的手動動作，繞過冷卻。
+# 2026-07 改成排程每日固定兩次（main.py 的 07:30／21:30 job），請求量已經大幅降低，
+# 冷卻在這裡的用途縮小為「同一天兩次排程之間，使用者手動連按『更新報價』」時的保險，
+# 不再是主要防線；仍然保留，成本很低。`refresh=True`（手動按鈕／排程 job）繞過冷卻。
 _OSFUT_FAIL_COOLDOWN = 300  # 秒
 
 
@@ -579,60 +579,6 @@ def _os_futures(refresh: bool = False) -> dict:
     if _has_quotes(result):
         set_ai_cache(c, key, result)
     elif not skip_network:   # 這次真的打了網路才算一次失敗；冷卻中跳過的不重複計時
-        set_ai_cache(c, "osfut:fail_at", {"at": datetime.now().isoformat()})
-    return result
-
-
-_OSFUT_LIVE_TTL = 90   # 秒；前端每 120 秒輪詢，TTL 略短於輪詢間隔即可防狂刷
-
-def _os_futures_live() -> dict:
-    """海期準即時：以日線快照為底、逐檔盤中 meta 報價覆蓋（缺檔沿用日線＝延遲值）。
-
-    Yahoo v8 per-symbol 較貴，故 90 秒 TTL 快取；雲端被節流時單檔失敗自動退回日線值，
-    頁面不破版只是該檔顯示延遲。
-    """
-    import copy
-    from ..sources import intl
-    c = conn()
-    cached = get_ai_cache(c, "osfut:live")
-    if _has_quotes(cached):        # 空的當未命中，理由同 _os_futures
-        try:
-            age = (datetime.now() - datetime.fromisoformat(cached["fetched_at"])).total_seconds()
-            if age < _OSFUT_LIVE_TTL:
-                return cached
-        except (KeyError, ValueError, TypeError):
-            pass
-    # 冷卻狀態要在呼叫 base 之前先讀：base 若這次剛好失敗，會當場寫入 fail_at，
-    # 若在那之後才判斷冷卻，read 到的會是自己剛寫的那筆，導致「這一輪」的 live 被
-    # base 這一輪的失敗誤擋——冷卻只該擋「下一輪」，不是同一輪內互相牽連。
-    skip_network = _osfut_cooling_down(c)
-    base = copy.deepcopy(_os_futures(refresh=False))   # 日線底（含加權/台指期注入，已內建冷卻）
-    # live 打的是同一個被限流的 Yahoo chart API，必須共用同一個冷卻窗——否則 base 那邊
-    # 已經在退避，這裡卻還是每次照樣打 34 檔逐檔請求，冷卻等於白設。
-    if skip_network:
-        live = []
-    else:
-        try:
-            live = intl.fetch_futures_live()
-        except Exception:  # noqa: BLE001
-            live = []
-    live_map = {(g["category"], i["name"]): i for g in live for i in g["items"]}
-    for g in base.get("categories") or []:
-        g["items"] = [{**item, **live_map.get((g["category"], item["name"]), {})}
-                      for item in g["items"]]
-        # 日線底缺的檔直接用 live 報價補上（聯集，不是只覆蓋）。原本只把 live 合併
-        # 「進日線清單」，機房 yfinance 被擋、日線底空掉時，明明抓到的 live 全被丟棄，
-        # 頁面只剩注入的加權/台指期——base 的空與 live 的成功互相獨立，不能讓前者否決後者。
-        have = {i["name"] for i in g["items"]}
-        g["items"].extend(i for lg in live if lg["category"] == g["category"]
-                          for i in lg["items"] if i["name"] not in have)
-    result = {**base, "live": True, "updated_at": datetime.now().isoformat(),
-              "fetched_at": datetime.now().isoformat()}
-    if _has_quotes(result):        # 與 _os_futures 同規則：空結果不寫快取
-        set_ai_cache(c, "osfut:live", result)
-    elif not skip_network and not live:
-        # 這次真的打了 live 卻一無所獲，記一次失敗——base 若也失敗會各記各的，
-        # 但都是「延長冷卻到現在」，不會互相蓋掉彼此的退避
         set_ai_cache(c, "osfut:fail_at", {"at": datetime.now().isoformat()})
     return result
 
