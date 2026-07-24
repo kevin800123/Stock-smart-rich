@@ -109,16 +109,27 @@ def _turnover_for(c, day) -> dict:
     """指定交易日全市場（上市＋上櫃）成交量額 {code: {vol: 張, amount: 元}}，依日期永久快取。
 
     盤後數字定案後不再變動，故快取無 TTL；抓不到（盤中尚未發布/來源失效）回空且**不寫快取**，
-    讓同一天稍後可重試。上櫃來源失敗時仍回上市部分，由呼叫端降級為估算。
+    讓同一天稍後可重試。
+
+    **兩個市場分開快取**：舊版把兩邊合併成一個 key，只要櫃買當下失敗（憑證/限流）而證交所
+    成功，就會把「只有上市」的半套結果永久寫死——上櫃高價股的成交額增減從此永遠是「—」，
+    且因為無 TTL 而不會自己好。分開存之後，失敗的那半留白、下次自行重抓。
     """
-    key = f"turnover:{day.strftime('%Y-%m-%d')}"
-    m = get_ai_cache(c, key)
-    if m is not None:
-        return m
-    merged = {**twse.fetch_stock_turnover(day), **tpex.fetch_otc_turnover(day)}
-    if merged:
-        set_ai_cache(c, key, merged)
-    return merged
+    ds = day.strftime("%Y-%m-%d")
+    out = {}
+    for name, fetch in (("tse", lambda: twse.fetch_stock_turnover(day)),
+                        ("otc", lambda: tpex.fetch_otc_turnover(day))):
+        key = f"turnover:{name}:{ds}"
+        part = get_ai_cache(c, key)
+        if part is None:
+            try:
+                part = fetch()
+            except Exception:  # noqa: BLE001 — 單一市場失敗不影響另一邊
+                part = {}
+            if part:
+                set_ai_cache(c, key, part)
+        out.update(part or {})
+    return out
 
 
 def _otc_industry(c) -> dict:
@@ -530,7 +541,11 @@ def _os_futures(refresh: bool = False) -> dict:
                               "chg_pct": round(chg / base * 100, 2) if base else None})
         idx["items"] = local + idx["items"]
     result = {"categories": cats, "updated_at": datetime.now().isoformat()}
-    if cats:
+    # 只在「真的抓到報價」時才寫快取。fetch_futures_monitor 抓不到時回的是
+    # 「5 個分類、每組 0 檔」——那是個真值，舊寫法 `if cats:` 會把整包失敗結果寫進
+    # 這個**無 TTL** 的快取，於是機房 IP（yfinance 常被擋）只要失敗一次，海期監控就
+    # 永遠只剩下面注入的加權/台指期，連重試的機會都沒有。
+    if any(g.get("items") for g in cats):
         set_ai_cache(c, "osfut:current", result)
     return result
 

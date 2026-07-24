@@ -382,7 +382,7 @@ function flowCard(label, v, prev, unit = "", rk = null, alert = false) {
 }
 // 餘額卡（融資/融券）：當日尚未公布（晚間才出）時，退而顯示最近一筆有資料的交易日，並標註日期
 // amtKey＝該餘額對應的金額欄；est=true 代表那是我們用現價估的，不是官方數字（融券沒有官方金額）
-function balanceCard(label, srcRow, curDate, balKey, chgKey, hist = [], amtKey = "", est = false) {
+function balanceCard(label, srcRow, curDate, balKey, chgKey, hist = [], amtKey = "", est = false, amtChgKey = "") {
   if (!srcRow || srcRow[balKey] === null || srcRow[balKey] === undefined) {
     return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   }
@@ -390,8 +390,11 @@ function balanceCard(label, srcRow, curDate, balKey, chgKey, hist = [], amtKey =
   const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
   const rk = pctile(hist, balKey, srcRow[balKey]);
   const amt = amtKey ? srcRow[amtKey] : null;
+  // 金額的較昨增減：融資有官方逐日值（margin_value_chg）；融券是我們自己估的市值，沒有官方增減
+  const amtChg = amtChgKey ? srcRow[amtChgKey] : null;
   const extra = amt == null ? ""
-    : `${est ? "市值" : "金額"} ${fmt(amt, 1)} 億${est ? "（估）" : ""}`;
+    : `${est ? "市值" : "金額"} ${fmt(amt, 1)} 億${est ? "（估）" : ""}`
+      + (amtChg == null ? "" : `　較昨 ${amtChg > 0 ? "+" : ""}${fmt(amtChg, 1)} 億`);
   return card(lbl, fmt(srcRow[balKey], 0), srcRow[chgKey], pctOf(srcRow[balKey], srcRow[chgKey]),
     "", "", rk, isAlert(balKey, srcRow[balKey], rk), extra);
 }
@@ -521,7 +524,7 @@ function renderCards(m, prev = {}, hist = []) {
     flowCard("投信買賣超", m.inst_trust, prev.inst_trust, " 億", rank("inst_trust"), isAlert("inst_trust", m.inst_trust, rank("inst_trust"))),
     flowCard("自營買賣超", m.inst_dealer, prev.inst_dealer, " 億", rank("inst_dealer"), isAlert("inst_dealer", m.inst_dealer, rank("inst_dealer"))),
     // 融資金額是官方數字；融券金額官方不發布，只能以現價估算，故標「估」
-    balanceCard("融資餘額(張)", marginRow, m.date, "margin_balance", "margin_chg", hist, "margin_value"),
+    balanceCard("融資餘額(張)", marginRow, m.date, "margin_balance", "margin_chg", hist, "margin_value", false, "margin_value_chg"),
     balanceCard("融券餘額(張)", marginRow, m.date, "short_balance", "short_chg", hist, "short_mv", true),
     marginMaintCard(hist, marginRow, m.date, { label: "融資維持率（上市）", col: "margin_maintenance",
       mvCol: "margin_mv", svCol: "short_mv", amtCol: "margin_value" }),

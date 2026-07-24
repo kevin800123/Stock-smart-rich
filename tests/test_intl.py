@@ -117,3 +117,32 @@ def test_fetch_intl_history_falls_back_to_chart_api(monkeypatch):
     out = intl.fetch_intl_history({"sox": "^SOX", "vix": "^VIX"})
     assert out["sox"]["2026-07-22"] == {"value": 110.0, "chg_pct": 10.0}
     assert "vix" not in out          # 兩條路都失敗 → 該 key 缺席，呼叫端維持 NULL
+
+
+def test_fetch_futures_monitor_falls_back_to_chart_api(monkeypatch):
+    """yf.download 整批被擋（機房 IP 常態）時，必須逐檔退回 chart API。
+
+    少了這層，雲端拿到的是「5 個分類、每組 0 檔」，而呼叫端會把它當有效結果快取，
+    海期監控就永遠空著（見 api/helpers.py::_os_futures 的註解）。
+    """
+    def blocked(*a, **k):
+        raise RuntimeError("rate limited")
+
+    monkeypatch.setattr(intl.yf, "download", blocked)
+    monkeypatch.setattr(intl.time, "sleep", lambda s: None)
+    monkeypatch.setattr(intl, "_fetch_chart_raw", lambda sym, range_="", interval="": {
+        "chart": {"result": [{"indicators": {"quote": [{"close": [100.0, 110.0]}]}}]}})
+
+    cats = intl.fetch_futures_monitor()
+    assert any(g["items"] for g in cats)
+    ym = next(i for g in cats if g["category"] == "指數期貨"
+              for i in g["items"] if i["name"] == "小道瓊")
+    assert ym["value"] == 110.0 and ym["chg"] == 10.0 and ym["chg_pct"] == 10.0
+
+
+def test_parse_chart_stats_handles_thin_payloads():
+    mk = lambda closes: {"chart": {"result": [{"indicators": {"quote": [{"close": closes}]}}]}}
+    assert intl.parse_chart_stats(mk([100.0, 110.0])) == {"value": 110.0, "chg": 10.0, "chg_pct": 10.0}
+    assert intl.parse_chart_stats(mk([110.0])) == {"value": 110.0, "chg": None, "chg_pct": None}
+    assert intl.parse_chart_stats(mk([])) is None
+    assert intl.parse_chart_stats({}) is None

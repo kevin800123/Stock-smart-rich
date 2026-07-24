@@ -193,10 +193,30 @@ def _series_stats(series) -> dict | None:
     return None
 
 
+def parse_chart_stats(payload) -> dict | None:
+    """v8 chart 日線 payload → {value, chg, chg_pct}（與 _series_stats 同形狀）。"""
+    closes = []
+    try:
+        q = payload["chart"]["result"][0]["indicators"]["quote"][0]["close"]
+        closes = [v for v in (q or []) if v is not None]
+    except (KeyError, IndexError, TypeError):
+        return None
+    if not closes:
+        return None
+    last = round(float(closes[-1]), 4)
+    if len(closes) < 2 or not closes[-2]:
+        return {"value": last, "chg": None, "chg_pct": None}
+    prev = float(closes[-2])
+    return {"value": last, "chg": round(last - prev, 4),
+            "chg_pct": round((last - prev) / prev * 100, 2)}
+
+
 def fetch_futures_monitor(tries: int = 3) -> list[dict]:
     """一次批次抓海期五大分類的報價（延遲/收盤），回 [{category, items:[{name,value,chg,chg_pct}]}]。
 
-    與 fetch_intl_indices 同機制（單次批次下載，雲端可跑）；抓不到的代碼略過不顯示。
+    yf.download 走 cookie/crumb 握手，機房 IP 常被整批擋掉；擋掉時逐檔退回 v8 chart API
+    （fetch_futures_live 用的就是這條，已證實機房可通）。少了這層備援時，雲端會回
+    「5 個分類、每組 0 檔」，而呼叫端又把它當成有效結果快取起來——海期監控就此空著。
     """
     remaining = {t for _, items in OS_FUTURES for _, t in items}
     stats: dict[str, dict] = {}
@@ -207,7 +227,7 @@ def fetch_futures_monitor(tries: int = 3) -> list[dict]:
             time.sleep(1.0)
         try:
             df = yf.download(" ".join(remaining), period="5d",
-                             progress=False, threads=False)["Close"]  # 見 fetch_intl_indices 說明
+                             progress=False, threads=False)["Close"]  # 見 fetch_intl_history 說明
         except Exception:  # noqa: BLE001
             continue
         for t in list(remaining):
@@ -216,6 +236,12 @@ def fetch_futures_monitor(tries: int = 3) -> list[dict]:
             if st is not None:
                 stats[t] = st
                 remaining.discard(t)
+    for t in list(remaining):          # yfinance 拿不到的逐檔備援
+        payload = _fetch_chart_raw(t, range_="5d", interval="1d")
+        st = parse_chart_stats(payload) if payload else None
+        if st is not None:
+            stats[t] = st
+            remaining.discard(t)
     out = []
     for cat, items in OS_FUTURES:
         rows = [{"name": name, **stats[t]} for name, t in items if t in stats]

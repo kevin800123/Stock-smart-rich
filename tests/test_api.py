@@ -1805,3 +1805,54 @@ def test_line_webhook_rank_command_replies_flex_table(tmp_path, monkeypatch):
     assert r.status_code == 200
     assert sent[0]["type"] == "flex" and sent[0]["contents"]["size"] == "giga"
     assert "台積電" in sent[0]["altText"]
+
+
+def test_osfut_does_not_cache_an_empty_fetch(tmp_path, monkeypatch):
+    """抓不到報價時不得寫進那個「無 TTL」的快取，否則失敗會被永久固化。
+
+    fetch_futures_monitor 失敗時回的是「5 個分類、每組 0 檔」——那是個真值，
+    舊寫法 `if cats:` 會把它當有效結果存起來，於是機房 IP（yfinance 常被擋）
+    只要失敗一次，海期監控就永遠只剩注入的加權/台指期，且不會自己好。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_ai_cache, get_connection, init_db
+    from stocks_power_rich.sources import intl
+
+    app = create_app()
+    client = TestClient(app)
+    empty = [{"category": c, "items": []} for c in ("指數期貨", "能源金屬")]
+    monkeypatch.setattr(intl, "fetch_futures_monitor", lambda: empty)
+    assert client.get("/api/os-futures").status_code == 200
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    assert get_ai_cache(c, "osfut:current") is None      # 失敗不留痕，下次可重試
+
+
+def test_turnover_cache_is_per_market_so_one_failure_cannot_poison_the_other(tmp_path, monkeypatch):
+    """櫃買失敗時不得把「只有上市」的半套結果永久寫死。
+
+    舊版合併成單一 key 且無 TTL：只要櫃買當下掛掉而證交所成功，上櫃的成交額增減
+    就永遠是「—」，且不會自己好。分開快取後，失敗的那半留白、下次自行重抓。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import date as _d
+    from stocks_power_rich.api import helpers
+    from stocks_power_rich.db import get_connection, init_db
+
+    create_app()
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    day = _d(2026, 7, 23)
+    monkeypatch.setattr(helpers.twse, "fetch_stock_turnover",
+                        lambda d: {"2330": {"vol": 1, "amount": 10.0}})
+    monkeypatch.setattr(helpers.tpex, "fetch_otc_turnover",
+                        lambda d: (_ for _ in ()).throw(RuntimeError("tpex down")))
+    first = helpers._turnover_for(c, day)
+    assert "2330" in first and "5274" not in first        # 上市可用、上櫃缺
+
+    # 櫃買恢復後，同一天必須補得回來（舊版會被半套快取擋住）
+    monkeypatch.setattr(helpers.tpex, "fetch_otc_turnover",
+                        lambda d: {"5274": {"vol": 2, "amount": 20.0}})
+    second = helpers._turnover_for(c, day)
+    assert second["2330"]["amount"] == 10.0 and second["5274"]["amount"] == 20.0
