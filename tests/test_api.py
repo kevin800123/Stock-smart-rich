@@ -1885,3 +1885,27 @@ def test_osfut_empty_cache_is_treated_as_a_miss_and_self_heals(tmp_path, monkeyp
 
     names = [i["name"] for g in body["categories"] for i in g["items"]]
     assert "小道瓊" in names            # 沒有被那份空快取擋住
+
+
+def test_osfut_live_keeps_live_quotes_when_daily_base_is_empty(tmp_path, monkeypatch):
+    """機房實況：yf.download 全被擋（日線底空），chart API 可通（live 有報價）。
+
+    live 是「合併進日線清單」的——聯集之前，日線底空掉時明明抓到的 live 會被
+    全數丟棄，頁面只剩注入的加權/台指期。base 的失敗與 live 的成功互相獨立，
+    不能讓前者否決後者。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.sources import intl
+
+    app = create_app()
+    client = TestClient(app)
+    empty = [{"category": c, "items": []} for c in ("指數期貨", "能源金屬")]
+    monkeypatch.setattr(intl, "fetch_futures_monitor", lambda: empty)
+    live = [{"category": "指數期貨", "items": [{"name": "小道瓊", "value": 44512.5,
+                                                "chg": 112.5, "chg_pct": 0.25, "time": "10:10"}]},
+            {"category": "能源金屬", "items": []}]
+    monkeypatch.setattr(intl, "fetch_futures_live", lambda: live)
+
+    body = client.get("/api/os-futures?live=1").json()
+    names = [i["name"] for g in body["categories"] for i in g["items"]]
+    assert "小道瓊" in names

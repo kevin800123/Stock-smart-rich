@@ -586,9 +586,15 @@ def _os_futures_live() -> dict:
     for g in base.get("categories") or []:
         g["items"] = [{**item, **live_map.get((g["category"], item["name"]), {})}
                       for item in g["items"]]
+        # 日線底缺的檔直接用 live 報價補上（聯集，不是只覆蓋）。原本只把 live 合併
+        # 「進日線清單」，機房 yfinance 被擋、日線底空掉時，明明抓到的 live 全被丟棄，
+        # 頁面只剩注入的加權/台指期——base 的空與 live 的成功互相獨立，不能讓前者否決後者。
+        have = {i["name"] for i in g["items"]}
+        g["items"].extend(i for lg in live if lg["category"] == g["category"]
+                          for i in lg["items"] if i["name"] not in have)
     result = {**base, "live": True, "updated_at": datetime.now().isoformat(),
               "fetched_at": datetime.now().isoformat()}
-    if live:
+    if _has_quotes(result):        # 與 _os_futures 同規則：空結果不寫快取
         set_ai_cache(c, "osfut:live", result)
     return result
 
