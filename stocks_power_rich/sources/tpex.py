@@ -11,6 +11,7 @@ import httpx
 DAILY_TRADE_URL = "https://www.tpex.org.tw/www/zh-tw/insti/dailyTrade"
 OTC_COMPANY_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"  # 上櫃公司基本資料
 DAILY_QUOTES_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes"  # 上櫃盤後每日行情
+OTC_MARGIN_URL = "https://www.tpex.org.tw/www/zh-tw/margin/balance"  # 上櫃融資融券餘額
 
 
 def _f(v):
@@ -192,6 +193,62 @@ def fetch_otc_quotes(date: datetime.date | None = None) -> dict:
     except Exception:  # noqa: BLE001
         pass
     return {}
+
+
+def parse_otc_margin(payload: dict) -> dict:
+    """櫃買 margin/balance → 上櫃融資融券。
+
+    逐檔在 tables[0].data，市場合計在 tables[0].summary 的兩列（「合計(張)」與
+    「融資金(仟元)」），兩列都以「今日餘額」欄（與 fields 同位置）為準。
+    融資金額換成「億」以對齊 twse.parse_margin_rwd 的單位。
+    餘額為 0 的檔不入表——後續要拿去乘收盤價加總，留著只是白費迴圈。
+    """
+    out = {"balance": None, "short_balance": None, "value": None, "margin": {}, "short": {}}
+    tables = payload.get("tables") or []
+    t = tables[0] if tables else {}
+    fields = t.get("fields") or []
+    idx = {name: i for i, name in enumerate(fields)}
+    ic, im, isr = idx.get("代號"), idx.get("資餘額"), idx.get("券餘額")
+    if ic is not None:
+        for row in t.get("data") or []:
+            code = str(row[ic]).strip()
+            if not code:
+                continue
+            if im is not None and (v := _f(row[im])):
+                out["margin"][code] = v
+            if isr is not None and (v := _f(row[isr])):
+                out["short"][code] = v
+    for row in t.get("summary") or []:
+        label = "".join(str(x) for x in row[:2])
+        if im is None:
+            break
+        today = _f(row[im]) if im < len(row) else None
+        if "融資金" in label:                       # 仟元 → 億
+            out["value"] = round(today * 1000 / 1e8, 1) if today is not None else None
+        elif "合計" in label:
+            out["balance"] = round(today) if today is not None else None
+            if isr is not None and isr < len(row):
+                s = _f(row[isr])
+                out["short_balance"] = round(s) if s is not None else None
+    return out
+
+
+def fetch_otc_margin(date: datetime.date | None = None) -> dict:
+    """直連櫃買 margin/balance 取指定日上櫃融資融券餘額。查無回空殼。
+
+    verify=False：櫃買憑證缺 Subject Key Identifier，與 TDCC 同一個毛病。
+    """
+    day = date or datetime.date.today()
+    ds = f"{day.year}/{day.month:02d}/{day.day:02d}"
+    try:
+        j = httpx.get(OTC_MARGIN_URL, params={"date": ds, "type": "Daily", "response": "json"},
+                      timeout=30, follow_redirects=True, verify=False,
+                      headers={"User-Agent": "Mozilla/5.0"}).json()
+        if j.get("tables"):
+            return parse_otc_margin(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"balance": None, "short_balance": None, "value": None, "margin": {}, "short": {}}
 
 
 def fetch_tpex_insti(date: datetime.date | None = None) -> dict:

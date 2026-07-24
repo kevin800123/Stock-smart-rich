@@ -103,3 +103,41 @@ def test_qoq_rising_picks_filters_and_sorts():
     ]
     out = ss_trader.qoq_rising_picks(rows)
     assert [r["code"] for r in out] == ["1111", "2222"]  # 過濾負值、依蘭值排序
+
+
+def test_margin_verdict_reads_each_market_against_its_own_breakeven():
+    """同一個數字在兩個市場意義相反——這正是舊的固定門檻(135/165)漏掉的東西。
+
+    上市融資成數 60% → 兩平線 166.7%，180.1% 是帳面獲利；
+    上櫃成數 50% → 兩平線 200%，166.8% 反而是套牢一成六。
+    舊門檻會把兩者都判成「偏熱」(>165)，等於把反向訊號抹平。
+    """
+    _, tse_rel, tse_note = ss_trader.margin_verdict(180.1, ss_trader.MARGIN_RATIO_TSE)
+    _, otc_rel, otc_note = ss_trader.margin_verdict(166.8, ss_trader.MARGIN_RATIO_OTC)
+    assert ss_trader.margin_breakeven(ss_trader.MARGIN_RATIO_TSE) == 166.7
+    assert ss_trader.margin_breakeven(ss_trader.MARGIN_RATIO_OTC) == 200.0
+    # 原始數字 180.1 > 166.8，相對各自兩平線卻是一個獲利、一個套牢——正負號相反才是重點
+    assert round(tse_rel) == 8 and round(otc_rel) == -17
+    assert "獲利" in tse_note and "套牢" in otc_note
+
+
+def test_margin_verdict_treats_low_maintenance_as_contrarian_bull():
+    """方向與 VIX 一致——低維持率是斷頭清洗，Ss 視為抄底而非利空。
+
+    這條釘住的是「不要把它寫成 bear」：逼近追繳線在直覺上像利空，但整套方法論
+    （見 SKILL.md「散戶都怕的時候，就是很好的底部」）把它當反指標。
+    """
+    assert ss_trader.margin_verdict(135.0, ss_trader.MARGIN_RATIO_TSE)[0] == "bull"
+    assert ss_trader.margin_verdict(138.0, ss_trader.MARGIN_RATIO_OTC)[0] == "bull"
+    # 深度套牢(相對兩平 <= -20%)也算抄底區，即使離追繳線還遠
+    assert ss_trader.margin_verdict(150.0, ss_trader.MARGIN_RATIO_OTC)[0] == "bull"
+    # 相對兩平獲利 >= 20% ＝ 水位偏熱
+    assert ss_trader.margin_verdict(205.0, ss_trader.MARGIN_RATIO_TSE)[0] == "warn"
+
+
+def test_market_checklist_lists_both_margin_markets():
+    rows = [{"margin_maintenance": 180.1, "otc_margin_maintenance": 166.8}]
+    items = {i["key"]: i for i in ss_trader.market_checklist(rows)}
+    assert items["margin_maint"]["value"] == 180.1
+    assert items["margin_maint_otc"]["value"] == 166.8
+    assert "上市" in items["margin_maint"]["name"] and "上櫃" in items["margin_maint_otc"]["name"]

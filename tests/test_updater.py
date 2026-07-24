@@ -224,21 +224,44 @@ def test_heal_margin_maintenance_fills_days_that_had_no_margin_value_yet(tmp_pat
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
     today = date.today()
-    d1, d2, d3 = (today - timedelta(days=i) for i in (3, 2, 1))
+    d1, d2 = (today - timedelta(days=i) for i in (2, 1))
     upsert_market_daily(conn, {"date": d1.isoformat(), "margin_value": 5800.0})   # 待補
-    upsert_market_daily(conn, {"date": d2.isoformat(), "taiex": 23000.0})          # 無 margin_value → 跳過
-    upsert_market_daily(conn, {"date": d3.isoformat(), "margin_value": 5900.0,
-                               "margin_maintenance": 180.0})                       # 已有 → 不動
+    upsert_market_daily(conn, {"date": d2.isoformat(), "taiex": 23000.0})          # 無 margin_value
 
-    monkeypatch.setattr(updater, "_compute_margin_maintenance", lambda D, mv: 175.5)
+    monkeypatch.setattr(updater, "_compute_margin_maintenance",
+                        lambda D, mv: {"margin_maintenance": 175.5, "margin_mv": 100.0,
+                                       "short_mv": 2.0})
+    monkeypatch.setattr(updater, "_compute_otc_margin_maintenance", lambda D: {})
     filled = updater._heal_margin_maintenance(conn, days=7)
 
-    assert filled == [d1.isoformat()]
-    got = dict(conn.execute(
-        "SELECT date, margin_maintenance FROM market_daily ORDER BY date").fetchall())
-    assert got[d1.isoformat()] == 175.5      # 補上
-    assert got[d2.isoformat()] is None       # 沒有 margin_value 就不硬算
-    assert got[d3.isoformat()] == 180.0      # 既有值不被覆寫
+    assert d1.isoformat() in filled
+    got = {r[0]: r for r in conn.execute(
+        "SELECT date, margin_maintenance, margin_mv FROM market_daily ORDER BY date")}
+    assert got[d1.isoformat()][1] == 175.5 and got[d1.isoformat()][2] == 100.0  # 補上比率與分子
+    assert got[d2.isoformat()][1] is None      # 沒有 margin_value 就不硬算
+
+
+def test_heal_computes_otc_independently_of_tse(tmp_path, monkeypatch):
+    """上櫃走櫃買自己的端點（餘額與融資金額同一支），不該被上市那邊的缺料卡住。
+
+    兩個市場的融資成數不同（60% vs 50%），損益兩平線 166.7% vs 200%，本來就要分開判讀；
+    若上櫃跟著上市一起失敗，等於少掉一個獨立訊號。
+    """
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    ds = (date.today() - timedelta(days=1)).isoformat()
+    upsert_market_daily(conn, {"date": ds, "taiex": 23000.0})   # 刻意沒有 margin_value
+
+    monkeypatch.setattr(updater, "_compute_otc_margin_maintenance", lambda D: {
+        "otc_margin_maintenance": 166.8, "otc_margin_mv": 3203.7, "otc_short_mv": 45.9,
+        "otc_margin_value": 1927.5, "otc_margin_balance": 2365064, "otc_short_balance": 29937})
+    filled = updater._heal_margin_maintenance(conn, days=7)
+
+    assert filled == [ds]
+    r = conn.execute("SELECT otc_margin_maintenance, otc_margin_value, margin_maintenance "
+                     "FROM market_daily WHERE date=?", (ds,)).fetchone()
+    assert r[0] == 166.8 and r[1] == 1927.5
+    assert r[2] is None            # 上市仍留空，兩邊互不牽連
 
 
 def test_backfill_intl_fills_only_nulls_and_respects_session_availability(tmp_path, monkeypatch):

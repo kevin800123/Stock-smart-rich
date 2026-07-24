@@ -159,7 +159,12 @@ def dashboard():
 
 # 只列「跨過就值得看一眼」的欄位；沒有公認門檻的欄位不硬編，交給位階條處理。
 _BANDS = {
-    "margin_maintenance": {"low": ss_trader.MARGIN_MAINT_LOW, "high": ss_trader.MARGIN_MAINT_HIGH},
+    # 維持率沒有單一門檻——兩個市場的融資成數不同，兩平線也不同。前端要靠 breakeven
+    # 才能把「180.1% 與 166.8% 意義相反」講清楚，所以送的是各自的錨點而非一組上下限。
+    "margin_maintenance": {"breakeven": ss_trader.margin_breakeven(ss_trader.MARGIN_RATIO_TSE),
+                           "call": ss_trader.MARGIN_CALL_LINE},
+    "otc_margin_maintenance": {"breakeven": ss_trader.margin_breakeven(ss_trader.MARGIN_RATIO_OTC),
+                               "call": ss_trader.MARGIN_CALL_LINE},
     "vix": {"low": ss_trader.VIX_COMPLACENT, "high": ss_trader.VIX_PANIC},
 }
 

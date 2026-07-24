@@ -213,7 +213,14 @@ body[data-public] .status-bar { display: none; }
 .card[title] .card-label { text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
 .card-label { font-size: var(--fs-sm); color: var(--muted); }
 .card-label .asof { color: var(--muted); font-weight: 400; font-size: var(--fs-xs); }
-.card-val { font-size: var(--fs-xl); font-weight: 700; margin-top: var(--sp-1); line-height: 1.15; }
+/* 26px 只留給數字。修飾語（淨多/淨空/散戶偏多）與單位降級後，「淨空 75,198 口」
+   才不會在 175px 的卡片裡把「口」擠到第二行——而且真正的讀數本來就是數字，
+   修飾語只是標籤，兩者同一級是排版上的誤植。 */
+.card-val { font-size: var(--fs-xl); font-weight: 700; margin-top: var(--sp-1); line-height: 1.15; white-space: nowrap; }
+.card-qual { font-size: var(--fs-sm); color: var(--muted); margin-top: var(--sp-1); line-height: 1.2; }
+.card-qual + .card-val { margin-top: 0; }
+.card-unit { font-size: var(--fs-sm); font-weight: 400; margin-left: 3px; }
+.card-note { font-size: var(--fs-xs); color: var(--muted); margin-top: 3px; white-space: nowrap; }
 .card-chg { font-size: var(--fs-sm); margin-top: 3px; }
 .up { color: var(--up); }
 .down { color: var(--down); }
@@ -326,11 +333,11 @@ body[data-public] .status-bar { display: none; }
 .ai-btn:hover { border-color: var(--accent); }
 .ai-box { background: var(--sunken); border: 1px dashed var(--border); border-radius: var(--r-lg); padding: 12px 14px; font-size: var(--fs-base); line-height: 1.75; white-space: pre-wrap; }
 .ai-box.disabled { color: var(--muted); font-style: italic; }
-/* 摘要移到頁首後預設收合三行——它是結論，值得在最上面，但不該一開頁就吃掉半個螢幕。
-   用 max-height 而非 -webkit-line-clamp：.ai-box 是 .view(flex column) 的直接子項，
-   flex item 會把 display 區塊化，-webkit-box 會被改寫成 flow-root，line-clamp 隨之失效
-   （實測收合後只剩 25.6px＝純 padding）。3 行＝3×line-height(1.75) + 上下 padding。 */
-.ai-box.clamp { max-height: calc(3 * 1.75em + 24px); overflow: hidden; flex: 0 0 auto; }
+/* 摘要放頁尾且全文攤開（使用者決定：不要再按一次才看得到）。曾經放頁首＋收合三行，
+   收合是用 max-height 而非 -webkit-line-clamp——.ai-box 是 .view(flex column) 的直接子項，
+   flex item 會把 display 區塊化，-webkit-box 變成 flow-root、line-clamp 靜默失效。
+   若日後要再做收合，記住這個坑。 */
+.ai-box { flex: 0 0 auto; }
 
 /* ===== 工具列 ===== */
 .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; flex: 0 0 auto; }

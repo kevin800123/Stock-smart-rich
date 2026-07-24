@@ -342,21 +342,35 @@ function cardWrap(inner, title, rk, alert) {
   const attr = title ? ` title="${esc(title)}"` : "";
   return `<div class="card${alert ? " alert" : ""}"${attr}>${inner}${railHtml(rk)}</div>`;
 }
+// 修飾語（淨多/淨空/散戶偏多）獨立成一行小字。原本它跟數字同為 26px 擠在 .card-val 裡，
+// 175px 的卡片放不下就把單位「口」擠到第二行；而且真正的讀數是數字，修飾語只是標籤，
+// 兩者本就不該同一級。
+function qual(text) { return text ? `<div class="card-qual">${text}</div>` : ""; }
+// 補充資訊（金額、相對兩平…）。放在漲跌之後，不與主數值爭位置。
+function note(text) { return text ? `<div class="card-note">${text}</div>` : ""; }
+// 帶修飾語的數值卡（多空比）：標籤一行、數字一行，不讓兩者擠在同一級
+function qualCard(label, q, value, chg, pct, rk = null, alert = false) {
+  const sub = chg == null ? ""
+    : `<div class="card-chg ${chgClass(chg)}">${chgText(chg)}${pctTag(pct)}</div>`;
+  return cardWrap(`<div class="card-label">${label}</div>${qual(q)}`
+    + `<div class="card-val">${value}</div>${sub}`, "", rk, alert);
+}
 // label, value, chg(可空), pct(可空), unit；rk=位階物件（可空），alert=是否標為異常讀數
-function card(label, value, chg, pct, unit = "", title = "", rk = null, alert = false) {
+function card(label, value, chg, pct, unit = "", title = "", rk = null, alert = false, extra = "") {
   let sub = "";
   if (chg !== undefined && chg !== null) sub = `<div class="card-chg ${chgClass(chg)}">${chgText(chg)}${pctTag(pct)}</div>`;
   else if (pct !== undefined && pct !== null) sub = `<div class="card-chg ${chgClass(pct)}">${pct > 0 ? "▲" : pct < 0 ? "▼" : ""}${fmt(Math.abs(pct), 2)}%</div>`;
-  return cardWrap(`<div class="card-label">${label}</div><div class="card-val">${value}${unit}</div>${sub}`, title, rk, alert);
+  return cardWrap(`<div class="card-label">${label}</div><div class="card-val">${value}${unit}</div>${sub}${note(extra)}`, title, rk, alert);
 }
 // 未平倉口數卡：依淨多/淨空上色（紅多綠空），附「較昨日」增減口數與百分比
 function oiCard(label, v, prev, rk = null, alert = false) {
   if (v === null || v === undefined) return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   const cls = v > 0 ? "up" : v < 0 ? "down" : "flat";
-  const head = (v > 0 ? "淨多 " : v < 0 ? "淨空 " : "") + fmt(Math.abs(v), 0) + " 口";
+  const q = v > 0 ? "淨多" : v < 0 ? "淨空" : "";
+  const head = `${fmt(Math.abs(v), 0)}<span class="card-unit">口</span>`;
   const { chg, pct } = dod(v, prev);
   const sub = chg == null ? "" : `<div class="card-chg ${chgClass(chg)}">較昨 ${chg > 0 ? "+" : ""}${fmt(chg, 0)} 口${pctTag(pct)}</div>`;
-  return cardWrap(`<div class="card-label">${label}</div><div class="card-val ${cls}">${head}</div>${sub}`, "", rk, alert);
+  return cardWrap(`<div class="card-label">${label}</div>${qual(q)}<div class="card-val ${cls}">${head}</div>${sub}`, "", rk, alert);
 }
 // 買賣超/淨額卡：當日淨流量，數值依正負上色，附「較昨日」增減金額
 // （淨流量基數會翻號、趨近 0，算百分比會失真，故只給金額增減、不給 %）
@@ -367,38 +381,57 @@ function flowCard(label, v, prev, unit = "", rk = null, alert = false) {
   return cardWrap(`<div class="card-label">${label}</div><div class="card-val ${chgClass(v)}">${fmt(v)}${unit}</div>${sub}`, "", rk, alert);
 }
 // 餘額卡（融資/融券）：當日尚未公布（晚間才出）時，退而顯示最近一筆有資料的交易日，並標註日期
-function balanceCard(label, srcRow, curDate, balKey, chgKey, hist = []) {
+// amtKey＝該餘額對應的金額欄；est=true 代表那是我們用現價估的，不是官方數字（融券沒有官方金額）
+function balanceCard(label, srcRow, curDate, balKey, chgKey, hist = [], amtKey = "", est = false) {
   if (!srcRow || srcRow[balKey] === null || srcRow[balKey] === undefined) {
     return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   }
   const stale = srcRow.date && srcRow.date !== curDate;
   const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
   const rk = pctile(hist, balKey, srcRow[balKey]);
+  const amt = amtKey ? srcRow[amtKey] : null;
+  const extra = amt == null ? ""
+    : `${est ? "市值" : "金額"} ${fmt(amt, 1)} 億${est ? "（估）" : ""}`;
   return card(lbl, fmt(srcRow[balKey], 0), srcRow[chgKey], pctOf(srcRow[balKey], srcRow[chgKey]),
-    "", "", rk, isAlert(balKey, srcRow[balKey], rk));
+    "", "", rk, isAlert(balKey, srcRow[balKey], rk), extra);
 }
 // 融資維持率卡：DB 未存官方逐日漲跌（不像融資/融券有 margin_chg/short_chg 現成值），
 // 故從 hist 找 srcRow 當日之前最近一筆有值的交易日自行算較昨——比較基準是 srcRow 自己的日期，
 // 而非「今天」，避免資料延遲時把「vs 6 天前」誤標成「較昨」
-const MARGIN_MAINT_TIP = "整戶擔保維持率＝(融資市值＋融券擔保品＋融券保證金)÷(融資金額＋融券市值)，一般約130~190%，低於130%會被追繳";
-function marginMaintCard(hist, srcRow, curDate) {
-  const label = "融資維持率";
-  if (!srcRow || srcRow.margin_maintenance === null || srcRow.margin_maintenance === undefined) {
-    return `<div class="card" title="${esc(MARGIN_MAINT_TIP)}"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+// 兩個市場各一張。融資成數不同（上市 60%／上櫃 50%）→ 損益兩平線 166.7% vs 200%，
+// 所以原始數字看起來接近時意義可能相反（今日：上市 180.1% 獲利、上櫃 166.8% 套牢）。
+// 副標放「相對兩平 ±X%」才是兩張卡之間唯一可比的量；兩平線與追繳線由後端 bands 供給。
+function maintTip(even, call, mv, sv, amt, est) {
+  return `整戶擔保維持率＝(融資市值＋融券擔保品＋融券保證金)÷(融資金額＋融券市值)。`
+    + `\n損益兩平 ${even}%（剛融資買進、價格未動的水準，由融資成數推得）；`
+    + `低於 ${call}% 會被追繳、限期未補即斷頭。`
+    + (mv != null ? `\n本日 融資市值 ${fmt(mv, 0)} 億 ÷ 融資金額 ${fmt(amt, 0)} 億` : "")
+    + `\n註：成數為一般股票標準值，警示股／處置股更低，故兩平線為近似；`
+    + `各家計算口徑不同（是否含 ETF 等），與外部數字不可直接對照。`;
+}
+function marginMaintCard(hist, srcRow, curDate, opts) {
+  const { label, col, mvCol, amtCol } = opts;
+  const band = (lastBands[col] || {});
+  const even = band.breakeven, call = band.call;
+  if (!srcRow || srcRow[col] === null || srcRow[col] === undefined) {
+    return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   }
   const stale = srcRow.date && srcRow.date !== curDate;
   const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
   const idx = hist.findIndex((r) => r && r.date === srcRow.date);
   const priorRow = idx > 0
-    ? [...hist.slice(0, idx)].reverse().find((r) => r && r.margin_maintenance != null)
+    ? [...hist.slice(0, idx)].reverse().find((r) => r && r[col] != null)
     : null;
-  const chg = priorRow ? srcRow.margin_maintenance - priorRow.margin_maintenance : null;
-  // 有效天數通常遠少於其他欄位（官方非逐日公布），位階條會自動因 n<15 而不畫；
-  // 但 135/165 的固定門檻不受樣本數影響，仍照常判定異常。
-  const v = srcRow.margin_maintenance;
-  const rk = pctile(hist, "margin_maintenance", v);
-  return card(lbl, fmt(v, 1) + "%", chg, pctOf(v, chg), "", MARGIN_MAINT_TIP, rk,
-    isAlert("margin_maintenance", v, rk));
+  const chg = priorRow ? srcRow[col] - priorRow[col] : null;
+  const v = srcRow[col];
+  const rk = pctile(hist, col, v);
+  const rel = even ? (v - even) / even * 100 : null;
+  const extra = rel == null ? ""
+    : `相對兩平 ${rel > 0 ? "+" : ""}${fmt(rel, 1)}%（${rel >= 0 ? "獲利" : "套牢"}）`;
+  const tip = maintTip(even, call, srcRow[mvCol], srcRow[opts.svCol], srcRow[amtCol]);
+  // 逼近追繳線或深度套牢＝值得看一眼（與 ss_trader 同向：低維持率是反指標，不是利空）
+  const alert = call != null && (v < call * 1.08 || (rel != null && rel <= -20));
+  return card(lbl, fmt(v, 1) + "%", chg, pctOf(v, chg), "", tip, rk, alert, extra);
 }
 // 市場內部儀表：指數（方向）＋三大法人（資金）。中間的漲跌家數由 loadBreadth 填 #breadth，
 // 三者並列才看得出「指數持平但下跌家數遠多於上漲」這種內部背離。
@@ -469,13 +502,17 @@ function renderCards(m, prev = {}, hist = []) {
   $("data-date").textContent = "資料日期：" + m.date;
   // retail_ls_mtx/tmf 是比率（如 0.139），介面一律以百分比呈現（13.9%），避免讀成「0.139 倍」
   const pct100 = (v) => (v == null ? null : v * 100);
-  const ls = (v) => (v === null || v === undefined ? "—" : (v > 0 ? "散戶偏多 " : v < 0 ? "散戶偏空 " : "") + fmt(pct100(v), 1) + "%");
+  // 多空比同樣把「散戶偏多/偏空」降成小字標籤，26px 只留給數字（見 qual 的說明）
+  const lsQual = (v) => (v == null ? "" : v > 0 ? "散戶偏多" : v < 0 ? "散戶偏空" : "");
+  const ls = (v) => (v === null || v === undefined ? "—" : fmt(pct100(v), 1) + "%");
   const sum3 = (r) => [r.inst_foreign, r.inst_trust, r.inst_dealer].every((x) => x != null)
     ? r.inst_foreign + r.inst_trust + r.inst_dealer : null;
   const lsm = dod(pct100(m.retail_ls_mtx), pct100(prev.retail_ls_mtx));
   const lst = dod(pct100(m.retail_ls_tmf), pct100(prev.retail_ls_tmf));
   // 融資/融券：當日有就用當日，否則退到最近一筆有資料的交易日（晚間才公布的容錯）
   const marginRow = [...hist].reverse().find((r) => r && r.margin_balance != null) || m;
+  // 上櫃走櫃買自己的發布時程，與上市未必同時到齊，故各自找最近一筆有值的列
+  const otcRow = [...hist].reverse().find((r) => r && r.otc_margin_maintenance != null) || m;
   renderMarketStrip(m, sum3(m));   // 加權指數與三大法人合計移到頂端儀表，下方卡片不再重複
   // 位階：把「這個數字在近期分佈的哪裡」補上。同一欄位算一次，rk 與 alert 共用。
   const rank = (key, v) => pctile(hist, key, v === undefined ? m[key] : v);
@@ -483,16 +520,20 @@ function renderCards(m, prev = {}, hist = []) {
     flowCard("外資買賣超", m.inst_foreign, prev.inst_foreign, " 億", rank("inst_foreign"), isAlert("inst_foreign", m.inst_foreign, rank("inst_foreign"))),
     flowCard("投信買賣超", m.inst_trust, prev.inst_trust, " 億", rank("inst_trust"), isAlert("inst_trust", m.inst_trust, rank("inst_trust"))),
     flowCard("自營買賣超", m.inst_dealer, prev.inst_dealer, " 億", rank("inst_dealer"), isAlert("inst_dealer", m.inst_dealer, rank("inst_dealer"))),
-    balanceCard("融資餘額(張)", marginRow, m.date, "margin_balance", "margin_chg", hist),
-    balanceCard("融券餘額(張)", marginRow, m.date, "short_balance", "short_chg", hist),
-    marginMaintCard(hist, marginRow, m.date),
+    // 融資金額是官方數字；融券金額官方不發布，只能以現價估算，故標「估」
+    balanceCard("融資餘額(張)", marginRow, m.date, "margin_balance", "margin_chg", hist, "margin_value"),
+    balanceCard("融券餘額(張)", marginRow, m.date, "short_balance", "short_chg", hist, "short_mv", true),
+    marginMaintCard(hist, marginRow, m.date, { label: "融資維持率（上市）", col: "margin_maintenance",
+      mvCol: "margin_mv", svCol: "short_mv", amtCol: "margin_value" }),
+    marginMaintCard(hist, otcRow, m.date, { label: "融資維持率（上櫃）", col: "otc_margin_maintenance",
+      mvCol: "otc_margin_mv", svCol: "otc_short_mv", amtCol: "otc_margin_value" }),
   ].join("");
   $("cards-fut").innerHTML = [
     card("台指期", fmt(m.tx_price), m.tx_chg, pctOf(m.tx_price, m.tx_chg)),
     oiCard("外資台指淨未平倉", m.tx_foreign_oi, prev.tx_foreign_oi, rank("tx_foreign_oi"), isAlert("tx_foreign_oi", m.tx_foreign_oi, rank("tx_foreign_oi"))),
     oiCard("散戶小台淨未平倉", m.retail_oi_mtx, prev.retail_oi_mtx, rank("retail_oi_mtx"), isAlert("retail_oi_mtx", m.retail_oi_mtx, rank("retail_oi_mtx"))),
-    card("小台散戶多空比", ls(m.retail_ls_mtx), lsm.chg, lsm.pct, "", "", rank("retail_ls_mtx"), isAlert("retail_ls_mtx", m.retail_ls_mtx, rank("retail_ls_mtx"))),
-    card("微台散戶多空比", ls(m.retail_ls_tmf), lst.chg, lst.pct, "", "", rank("retail_ls_tmf"), isAlert("retail_ls_tmf", m.retail_ls_tmf, rank("retail_ls_tmf"))),
+    qualCard("小台散戶多空比", lsQual(m.retail_ls_mtx), ls(m.retail_ls_mtx), lsm.chg, lsm.pct, rank("retail_ls_mtx"), isAlert("retail_ls_mtx", m.retail_ls_mtx, rank("retail_ls_mtx"))),
+    qualCard("微台散戶多空比", lsQual(m.retail_ls_tmf), ls(m.retail_ls_tmf), lst.chg, lst.pct, rank("retail_ls_tmf"), isAlert("retail_ls_tmf", m.retail_ls_tmf, rank("retail_ls_tmf"))),
     card("VIX 恐慌指數", fmt(m.vix), chgPts(m.vix, m.vix_chg), m.vix_chg, "", "", rank("vix"), isAlert("vix", m.vix, rank("vix"))),
   ].join("");
   // 國際市場刻意不給位階條：價格的 45 日位階訊號薄弱，畫了只是裝飾，
@@ -1550,12 +1591,6 @@ document.querySelectorAll("#view-overview .tf").forEach((btn) => btn.addEventLis
   btn.classList.add("active"); idxInterval = btn.dataset.iv; loadIndexChart();
 }));
 $("wave-help-toggle").addEventListener("click", (e) => { e.preventDefault(); $("wave-help").classList.toggle("hidden"); });
-// AI 摘要展開/收合。刻意不記進 localStorage——全專案零處使用，不為一個開合狀態破例。
-$("ai-toggle").addEventListener("click", (e) => {
-  e.preventDefault();
-  const on = $("market-summary").classList.toggle("clamp");
-  e.target.textContent = on ? "展開" : "收合";
-});
 $("wave-chk").addEventListener("change", (e) => { overviewWaves = e.target.checked; if (idxChart && lastIndexData) idxChart.setOption(candlestickOption(lastIndexData, lastIndexData.candles.length > 120 ? 70 : 0, overviewWaves, wavePct), true); });
 $("wave-pct").addEventListener("input", (e) => {
   wavePct = Number(e.target.value) / 100; $("wave-pct-val").textContent = `轉折 ${e.target.value}%`;

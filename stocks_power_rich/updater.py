@@ -99,45 +99,90 @@ def _backfill_chips(conn, days: int = 10, cap: int = 3) -> list:
     return filled
 
 
+def _maint(lots, shorts, closes, margin_value, prefix=""):
+    """把「明細×收盤 → 維持率＋分子分母」收在一處，上市與上櫃共用。
+
+    分子分母一併回傳（億），是為了讓卡片能把算式秀出來——維持率是個推導值，
+    只給結果的話沒人能檢查它對不對。
+    """
+    mm = analysis.margin_maintenance(lots, closes, margin_value, shorts)
+    if mm is None:
+        return {}
+    mv = sum(l * 1000 * closes[c] for c, l in lots.items() if c in closes and l)
+    sv = sum(l * 1000 * closes[c] for c, l in (shorts or {}).items() if c in closes and l)
+    return {f"{prefix}margin_maintenance": mm,
+            f"{prefix}margin_mv": round(mv / 1e8, 1),
+            f"{prefix}short_mv": round(sv / 1e8, 1)}
+
+
 def _compute_margin_maintenance(D, margin_value):
-    """大盤整戶擔保維持率（需個股融資融券明細＋全市場收盤）。算不出回 None。
+    """上市整戶擔保維持率＋分子分母。算不出回 {}。
 
     抽成函數是為了讓每日更新與 _heal_margin_maintenance 共用同一條計算路徑，
     否則兩邊各寫一份會漂移。
     """
     if not D or not margin_value:
-        return None
+        return {}
     detail = twse.fetch_margin_detail(D)
     quotes = twse.fetch_stock_quotes(D)
     closes = {c: q["close"] for c, q in quotes.items() if q.get("close")}
-    return analysis.margin_maintenance(
-        detail.get("margin", {}), closes, margin_value, detail.get("short"))
+    return _maint(detail.get("margin", {}), detail.get("short"), closes, margin_value)
+
+
+def _compute_otc_margin_maintenance(D):
+    """上櫃版。餘額與融資金額都在同一支櫃買端點，故連 otc_margin_value 一起回傳。
+
+    上櫃融資成數 50%（上市 60%），損益兩平線因此是 200% 而非 166.7%——同一個數字
+    在兩個市場意義不同，所以分開存、分開判讀，不併成單一「大盤」值。
+    """
+    if not D:
+        return {}
+    d = tpex.fetch_otc_margin(D)
+    if not d.get("value"):
+        return {}
+    quotes = tpex.fetch_otc_quotes(D)
+    closes = {c: q["close"] for c, q in quotes.items() if q.get("close")}
+    out = _maint(d.get("margin", {}), d.get("short"), closes, d["value"], prefix="otc_")
+    if not out:
+        return {}
+    out.update({"otc_margin_value": d["value"], "otc_margin_balance": d.get("balance"),
+                "otc_short_balance": d.get("short_balance")})
+    return out
 
 
 def _heal_margin_maintenance(conn, days: int = 7, cap: int = 3) -> list:
-    """回補近 days 天「已有 margin_value 但維持率仍空」的交易日。
+    """回補近 days 天維持率仍缺的交易日（上市＋上櫃）。
 
     存在的理由：margin_value（官方融資金額）約 21:00 才公布，而更新可能跑在那之前
     （16:00 推播、白天開頁的 autoUpdate），此時維持率整段算不出來。margin_value 之後
     會被 _refresh_recent 補上，但維持率原本只在當次 run 算一次、不會回頭重算——
     於是「被依賴的欄位自癒了，依賴它的沒有」，45 天只有 7 天有值。
-    每天兩支 TWSE 全市場請求，故限 cap 天。
+    每天數支全市場請求，故限 cap 天。
     """
     cutoff = (_date.today() - timedelta(days=days)).isoformat()
-    pending = [(r[0], r[1]) for r in conn.execute(
-        "SELECT date, margin_value FROM market_daily WHERE date >= ? "
-        "AND margin_value IS NOT NULL AND margin_maintenance IS NULL ORDER BY date DESC",
+    pending = conn.execute(
+        "SELECT date, margin_value, margin_mv, otc_margin_maintenance FROM market_daily "
+        "WHERE date >= ? AND ((margin_value IS NOT NULL AND margin_mv IS NULL) "
+        "                     OR otc_margin_maintenance IS NULL) ORDER BY date DESC",
         (cutoff,),
-    ).fetchall()][:cap]
+    ).fetchall()[:cap]
     filled = []
-    for ds, mv in pending:
-        try:
-            mm = _compute_margin_maintenance(_iso_to_date(ds), mv)
-            if mm:
-                upsert_market_daily(conn, {"date": ds, "margin_maintenance": mm})
-                filled.append(ds)
-        except Exception:  # noqa: BLE001 — 單日回補失敗略過，下次再試
-            pass
+    for ds, mval, mmv, otc_mm in pending:
+        patch = {}
+        D = _iso_to_date(ds)
+        if mval is not None and mmv is None:
+            try:
+                patch.update(_compute_margin_maintenance(D, mval))
+            except Exception:  # noqa: BLE001 — 單邊失敗不影響另一邊
+                pass
+        if otc_mm is None:
+            try:
+                patch.update(_compute_otc_margin_maintenance(D))
+            except Exception:  # noqa: BLE001
+                pass
+        if patch:
+            upsert_market_daily(conn, {"date": ds, **patch})
+            filled.append(ds)
     return filled
 
 
@@ -391,7 +436,7 @@ def run_update(conn, intl_tickers: dict) -> dict:
         if D and row.get("margin_value"):
             mm = _compute_margin_maintenance(D, row["margin_value"])
             if mm:
-                row["margin_maintenance"] = mm
+                row.update(mm)
                 success.append("margin_maintenance")
             else:
                 failed.append({"source": "twse", "name": "margin_maintenance",
@@ -401,6 +446,18 @@ def run_update(conn, intl_tickers: dict) -> dict:
                            "error": "融資金額尚未公布（約 21:00），稍後回補"})
     except Exception as e:  # noqa: BLE001
         failed.append({"source": "twse", "name": "margin_maintenance", "error": str(e)})
+
+    # 上櫃維持率（櫃買同一支端點就給餘額與融資金額，不必等 TWSE）
+    try:
+        otc = _compute_otc_margin_maintenance(D)
+        if otc:
+            row.update(otc)
+            success.append("otc_margin_maintenance")
+        elif D:
+            failed.append({"source": "tpex", "name": "otc_margin_maintenance",
+                           "error": "上櫃融資餘額尚未發布，稍後回補"})
+    except Exception as e:  # noqa: BLE001
+        failed.append({"source": "tpex", "name": "otc_margin_maintenance", "error": str(e)})
 
     upsert_market_daily(conn, row)
     # 清理：以「真實今天」為基準刪掉未來幽靈列，並清掉異常過舊(>400天)的髒列。

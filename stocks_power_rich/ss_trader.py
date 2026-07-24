@@ -6,8 +6,43 @@
 """
 from datetime import date, timedelta
 
-MARGIN_MAINT_LOW = 135.0    # Ss：「融資維持率 13X% 算低了，可以抄底」
-MARGIN_MAINT_HIGH = 165.0   # 假除權息強補上限，視為融資水位偏熱
+# 融資維持率的刻度。原本用固定的 135/165（抄底/偏熱），那是照外部常見指標的刻度訂的，
+# 而我們的算法口徑不同：實測自家 42 天序列 min=168.0 > 165，於是 42 天全判「偏熱」、
+# 另外兩檔永遠不可能觸發，整個檢核項等於沒有資訊量。
+# 改用「相對損益兩平」——維持率的分母是融資金額，剛買進時 市值÷融資金額 = 1/融資成數，
+# 所以兩平線可由成數直接推出，是我們自己定義下就成立的錨點，不必借外部數字。
+# 一套比例規則同時適用兩個市場（成數不同，兩平線自然不同）。
+MARGIN_CALL_LINE = 130.0         # 整戶維持率追繳線（法規常數，兩市場相同）
+MARGIN_RATIO_TSE = 0.6           # 上市融資成數 → 兩平線 166.7%
+MARGIN_RATIO_OTC = 0.5           # 上櫃融資成數 → 兩平線 200%
+MARGIN_SUNK_DEEP = -20.0         # 相對兩平低於此％：融資深度套牢＝Ss 的抄底區（反指標）
+MARGIN_HOT = 20.0                # 高於此％：融資整體獲利偏多，防高檔反殺
+# 註：成數是一般股票的標準值，警示股／處置股更低，故兩平線是近似值。
+
+
+def margin_breakeven(ratio: float) -> float:
+    """融資成數 → 整體損益兩平的維持率（%）。剛融資買進、價格未動時的水準。"""
+    return round(100 / ratio, 1)
+
+
+def margin_verdict(maintenance, ratio: float) -> tuple[str, float, str]:
+    """維持率 → (status, 相對兩平%, 說明)。兩個市場共用這一套判讀。
+
+    方向與 VIX 同為反指標：維持率極低代表融資被斷頭清洗，Ss 視為抄底區而非利空
+    （「散戶都怕的時候，就是很好的底部」）；極高代表融資戶普遍獲利、追高水位偏熱。
+    """
+    even = margin_breakeven(ratio)
+    rel = round((maintenance - even) / even * 100, 1)
+    near_call = maintenance < MARGIN_CALL_LINE * 1.08      # 追繳線上方約 8% 內
+    if near_call or rel <= MARGIN_SUNK_DEEP:
+        tail = "，已逼近追繳線" if near_call else ""
+        return "bull", rel, (f"融資整體套牢 {abs(rel):.0f}%{tail}"
+                             f"，斷頭清洗（Ss：可留意抄底，除非有重大事件）")
+    if rel >= MARGIN_HOT:
+        return "warn", rel, f"融資整體獲利 {rel:.0f}%，水位偏熱、防高檔反殺（兩平線 {even}%）"
+    if rel < 0:
+        return "neutral", rel, f"融資整體套牢 {abs(rel):.0f}%（兩平線 {even}%）"
+    return "neutral", rel, f"融資整體帳面獲利 {rel:.0f}%（兩平線 {even}%）"
 VIX_PANIC = 30.0            # 極度恐慌：散戶拋、大戶接（反指標偏多）
 VIX_COMPLACENT = 15.0       # 過度樂觀：注意高點
 TWD_DEPRECIATE_PCT = 0.5    # 台幣單日急貶 %（USD/TWD 上漲）→ 資金流出警訊
@@ -52,17 +87,18 @@ def market_checklist(rows: list[dict], osfut: dict | None = None,
     bull/bear 指「對後市偏多/偏空」，warn 為需留意的中性警示。"""
     out = []
 
-    # 1) 融資維持率（抄底區判定）
-    mm = _last_valid(rows, "margin_maintenance")
-    if mm is None:
-        out.append(_item("margin_maint", "融資維持率", "na", note="尚無資料"))
-    elif mm < MARGIN_MAINT_LOW:
-        out.append(_item("margin_maint", "融資維持率", "bull", round(mm, 1),
-                         "13X% 融資斷頭清洗，Ss：可抄底（除非有重大事件）"))
-    elif mm > MARGIN_MAINT_HIGH:
-        out.append(_item("margin_maint", "融資維持率", "warn", round(mm, 1), "融資水位偏熱，防高檔反殺"))
-    else:
-        out.append(_item("margin_maint", "融資維持率", "neutral", round(mm, 1), "中性區間"))
+    # 1) 融資維持率：上市與上櫃分開判讀。兩者融資成數不同（60%/50%），兩平線 166.7% vs 200%，
+    #    所以原始數字看起來接近時意義可能相反——併成單一「大盤」值會把這個訊號抵銷掉。
+    for key, name, col, ratio in (
+        ("margin_maint", "融資維持率（上市）", "margin_maintenance", MARGIN_RATIO_TSE),
+        ("margin_maint_otc", "融資維持率（上櫃）", "otc_margin_maintenance", MARGIN_RATIO_OTC),
+    ):
+        mm = _last_valid(rows, col)
+        if mm is None:
+            out.append(_item(key, name, "na", note="尚無資料"))
+            continue
+        status, rel, note = margin_verdict(mm, ratio)
+        out.append(_item(key, name, status, round(mm, 1), note))
 
     # 2) 融資 vs 大盤（近5日）：融資跌幅大於大盤 = 籌碼清洗，底部訊號
     recent = [r for r in rows if r.get("taiex") is not None and r.get("margin_balance") is not None][-5:]

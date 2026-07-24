@@ -59,11 +59,6 @@
           </div>
           <div id="ms-inst" class="ms-inst"></div>
         </div>
-        <!-- AI 摘要緊接儀表：這是全頁唯一的「結論」，放在資料之前而非 3800px 捲動的盡頭。
-             預設收合三行，展開才占版面。 -->
-        <div class="ai-head"><span>AI 盤勢摘要 <span class="muted small">（每日數據到齊後自動生成）</span></span>
-          <a href="#" id="ai-toggle" class="help-link">展開</a></div>
-        <div id="market-summary" class="ai-box clamp">載入中…</div>
         <!-- 兩階層：section-head（這一段回答什麼問題）＞ group-title（單一區塊）。
              分組照本站自己的世界觀：籌碼解釋行情，所以「誰在動錢」與「價格長什麼樣」
              各成一段，而不是把 8 個同權重的區塊平鋪。 -->
@@ -151,6 +146,9 @@
           </div>
         </div>
 
+        <!-- AI 摘要收在頁尾：看完籌碼與行情之後才讀的總結，全文直接攤開不收合 -->
+        <div class="ai-head"><span>AI 盤勢摘要 <span class="muted small">（每日數據到齊後自動生成）</span></span></div>
+        <div id="market-summary" class="ai-box">載入中…</div>
       </section>
 
       <!-- ===== 選股清單 ===== -->

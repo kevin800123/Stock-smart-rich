@@ -65,10 +65,10 @@ def test_dashboard_bands_come_from_ss_trader(tmp_path, monkeypatch):
     client = TestClient(app)
     bands = client.get("/api/dashboard").json()["bands"]
 
-    assert bands["margin_maintenance"] == {
-        "low": ss_trader.MARGIN_MAINT_LOW,
-        "high": ss_trader.MARGIN_MAINT_HIGH,
-    }
+    # 維持率送的是「兩平線＋追繳線」而非上下限：兩個市場成數不同，兩平線也不同，
+    # 前端要靠它才能說明「上市 180.1% 是獲利、上櫃 166.8% 是套牢」。
+    assert bands["margin_maintenance"] == {"breakeven": 166.7, "call": ss_trader.MARGIN_CALL_LINE}
+    assert bands["otc_margin_maintenance"] == {"breakeven": 200.0, "call": ss_trader.MARGIN_CALL_LINE}
     assert bands["vix"] == {"low": ss_trader.VIX_COMPLACENT, "high": ss_trader.VIX_PANIC}
     # 免密碼的公開總覽走同一個 handler，門檻也必須跟著出現
     assert client.get("/public/api/dashboard").json()["bands"] == bands
