@@ -755,7 +755,8 @@ async function loadCupBacktest() {
   } catch (e) { box.innerHTML = '<span class="muted small">回測載入失敗：' + esc(e.message) + "</span>"; }
 }
 
-// 海期監控：五大分類色階卡片（名稱/價格上排、漲跌%/點數下排）。
+// 海期監控：五大分類色階卡片，垂直三層——名稱獨佔一行、價格為主角、漲跌%/點數在下。
+// 名稱單獨一行才放得下「小那斯達克」「小S&P500」這種長名，不再被價格擠到截斷（…）。
 // 2026-07 起改為排程每日 07:30／21:30 更新兩次（main.py::osfut_job），不再前端輪詢——
 // 舊的每 2 分鐘輪詢正是把 Zeabur 出站 IP 打到被 Yahoo 429 限流的主因。切進頁面只讀快取，
 // 「更新報價」按鈕才會強制重抓一次（refresh=1）。
@@ -775,7 +776,8 @@ async function loadOsFutures(forceRefresh) {
         const cs = it.chg == null ? "" : (it.chg >= 0 ? "+" : "") + fmt(it.chg, dp);
         const tm = it.time ? `<span class="of-time">${esc(it.time)}</span>` : "";
         return `<div class="mv-card" style="background:${sectorColor(it.chg_pct)}">
-          <div class="of-top"><span class="of-name">${esc(it.name)}</span><span class="of-price">${fmt(it.value, dp)}</span></div>
+          <div class="of-name">${esc(it.name)}</div>
+          <div class="of-price">${fmt(it.value, dp)}</div>
           <div class="of-bot"><span>${ps}</span><span>${cs}${tm}</span></div>
         </div>`;
       }).join("");

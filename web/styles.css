@@ -260,11 +260,13 @@ body[data-public] .status-bar { display: none; }
 .mv-contrib { font-size: 18px; font-weight: 800; margin-top: 2px; line-height: 1.1; }
 .mv-contrib .mv-unit { font-size: var(--fs-xs); font-weight: 400; margin-left: 2px; }
 .mv-sub { font-size: var(--fs-xs); opacity: .92; margin-top: 2px; white-space: nowrap; }
-/* 海期卡片：名稱/價格上排、漲跌%/點數下排 */
-.of-top, .of-bot { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-.of-name { font-size: var(--fs-data); font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.of-price { font-size: var(--fs-sm); font-weight: 700; white-space: nowrap; }
-.of-bot { font-size: var(--fs-data); margin-top: 5px; font-weight: 600; }
+/* 海期卡片：垂直三層——名稱獨佔整行（不截斷）、價格為主角、漲跌%/點數分列下方。
+   名稱給滿整張卡片寬度才放得下 5 字中文名（小那斯達克）與長英文名（Alphabet），
+   不再與價格搶同一行而被 ellipsis 切掉。 */
+.of-name { font-size: var(--fs-data); font-weight: 700; white-space: nowrap; line-height: 1.25; }
+.of-price { font-size: var(--fs-md); font-weight: 800; white-space: nowrap; margin-top: 1px; line-height: 1.15; }
+.of-bot { display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+  font-size: var(--fs-data); margin-top: 3px; font-weight: 600; }
 .of-time { font-size: var(--fs-xs); opacity: .8; font-weight: 400; margin-left: 6px; }
 
 /* ===== 當日漲跌族群 ===== */
