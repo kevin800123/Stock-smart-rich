@@ -418,6 +418,30 @@ def breadth(date: str | None = None):
         set_ai_cache(c, key, result)
     return result
 
+def _distribution(date: str | None = None):
+    """全市場漲跌幅分布直方圖。漲跌家數只給數量，這個給『形狀』——今天跌很多是廣而淺
+    還是窄而深。資料取自已逐日快取的全市場報價，濾 4 碼普通股（排除 6 碼權證/ETF，
+    與漲跌家數同宇宙），合併上市＋上櫃餵 analysis.change_histogram。"""
+    c = conn()
+    date = date or _latest_date(c)
+    if not date:
+        return {"date": None}
+    key = f"dist:{date}"
+    cached = get_ai_cache(c, key)
+    if cached is not None:
+        return cached
+    pcts = [q["chg_pct"] for src in (_quotes_for(c, date), _otc_quotes_for(c, date))
+            for code, q in src.items()
+            if len(code) == 4 and code.isdigit() and q.get("chg_pct") is not None]
+    result = {"date": date, **analysis.change_histogram(pcts)}
+    if pcts:                       # 抓不到報價（假日/尚未開盤）不寫快取，稍後可重試
+        set_ai_cache(c, key, result)
+    return result
+
+@router.get("/breadth/distribution")
+def breadth_distribution(date: str | None = None):
+    return _distribution(date)
+
 def market_summary_logic(c, refresh: int = 0):
     cfg = load_config()
     rows = [dict(r) for r in c.execute(

@@ -16,6 +16,7 @@ from .market import (
     market_summary_logic,
     dashboard as _dashboard,
     breadth as _breadth,
+    _distribution,
     index_movers as _index_movers,
     heatmap as _heatmap,
     options_sentiment as _options_sentiment,
@@ -143,6 +144,10 @@ def p_dashboard():
 @router.get("/public/api/breadth")
 def p_breadth(date: str | None = None):
     return _breadth(date=date)
+
+@router.get("/public/api/breadth/distribution")
+def p_breadth_distribution(date: str | None = None):
+    return _distribution(date=date)
 
 @router.get("/public/api/index-movers")
 def p_index_movers(date: str | None = None, top: int = 20):

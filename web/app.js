@@ -30,7 +30,7 @@ let chipChart = null, chipMetric = "inst", lastHistory = [];
 // 判讀句需要「指數方向」(dashboard) ＋「漲跌家數」(breadth) 兩支 API 的值，但兩者分開載入。
 // 兩處呼叫點都是 loadDashboard 先 await、loadBreadth 後跑，故此處存下最新一列即可。
 let lastLatest = null, lastBands = {};
-let txVolChart = null;
+let txVolChart = null, distChart = null;
 let stockChipsChart = null, stockCustodyChart = null;
 // heatmapTop 預設 5：實測 1267px 寬下，5 檔比 6 檔「顯示更多可讀標籤」(110 vs 108) 且字更大、
 // 留白更少——格數少 → 格子大 → 過得了 11px 中文可讀下限的格子反而變多。
@@ -141,7 +141,7 @@ function candlestickOption(data, startPct, showW, pct) {
 function showView(name) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + name));
   document.querySelectorAll(".nav").forEach((n) => n.classList.toggle("active", n.dataset.view === name));
-  if (name === "overview") { idxChart && idxChart.resize(); chipChart && chipChart.resize(); sectorChart && sectorChart.resize(); txVolChart && txVolChart.resize(); }
+  if (name === "overview") { idxChart && idxChart.resize(); chipChart && chipChart.resize(); sectorChart && sectorChart.resize(); txVolChart && txVolChart.resize(); distChart && distChart.resize(); }
   if (name === "stock") { stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize(); }
   if (name === "rotation") { loadRotation(); loadCross(); }
   // 高價股監控輪詢：進入才啟動、切走即停——控制請求量。海期監控 2026-07 起改排程
@@ -1166,6 +1166,47 @@ function loadChipTrend() {
   chipChart.resize();
 }
 
+// 全市場漲跌幅分布：漲跌家數只給數量，這張給「形狀」——跌得多是廣而淺還是窄而深。
+// 長條無文字，故用亮色 C.up/C.down（同漲跌家數條與 K 線的 token 規則）；0 桶灰。
+function distBarColor(b) { return b > 0 ? C.up : b < 0 ? C.down : C.muted; }
+async function loadDistribution() {
+  const el = $("dist-chart"); if (!el) return;
+  if (!distChart) distChart = echarts.init(el);
+  try {
+    const d = await getJSON("/api/breadth/distribution");
+    const note = $("dist-note");
+    if (!d.buckets || !d.n) {
+      distChart.clear();
+      if (note) note.textContent = "";
+      return;
+    }
+    if (note) {
+      const a = d.avg == null ? "" : `平均 ${d.avg > 0 ? "+" : ""}${fmt(d.avg, 2)}%　`;
+      note.textContent = `（${a}共 ${fmt(d.n, 0)} 檔　紅漲綠跌）`;
+    }
+    // 桶標籤：下界 b 代表 [b, b+1)；端桶標「≤−10 / ≥10」以示含超界
+    const label = (b) => b <= -10 ? "≤−10" : b >= 10 ? "≥10" : `${b}`;
+    distChart.setOption({
+      tooltip: { trigger: "axis", axisPointer: { type: "shadow" },
+        formatter: (ps) => {
+          const b = ps[0].data.bucket;
+          const range = b <= -10 ? "跌停區(≤−10%)" : b >= 10 ? "漲停區(≥10%)"
+            : `${b}% ~ ${b + 1}%`;
+          return `${range}<br/>${fmt(ps[0].data.value, 0)} 檔`;
+        } },
+      grid: { left: 44, right: 16, top: 16, bottom: 26 },
+      xAxis: { type: "category", data: d.buckets.map((x) => label(x.bucket)),
+        axisLabel: { color: "#999", fontSize: 11, interval: 1 },
+        axisTick: { alignWithLabel: true } },
+      yAxis: { type: "value", name: "家數", axisLabel: { color: "#999" }, splitLine: { lineStyle: { color: "#222" } } },
+      series: [{ type: "bar", barWidth: "88%",
+        data: d.buckets.map((x) => ({ value: x.count, bucket: x.bucket,
+          itemStyle: { color: distBarColor(x.bucket) } })) }],
+    }, true);
+    distChart.resize();   // 同 loadChipTrend：不依賴 init 當下的容器尺寸
+  } catch (e) { distChart.clear(); }
+}
+
 async function loadIndexChart() {
   if (!idxChart) idxChart = echarts.init($("idxchart"));
   idxChart.showLoading();
@@ -1245,7 +1286,7 @@ async function autoUpdate() {
     const fail = (res.failed || []).map((f) => f.name).join("、");
     bar.innerHTML = fail ? `已自動更新（部分來源未取得：${fail}）` : "✅ 已自動更新";
     bar.className = "status-bar " + (fail ? "warn" : "ok");
-    await loadDashboard(); await loadIndexChart(); loadBreadth(); loadMovers(); loadSectors(); loadMarketSummary(false);
+    await loadDashboard(); await loadIndexChart(); loadBreadth(); loadDistribution(); loadMovers(); loadSectors(); loadMarketSummary(false);
     setTimeout(() => bar.classList.add("hidden"), 5000);
   } catch (e) {
     bar.textContent = "自動更新失敗：" + e.message; bar.className = "status-bar err";
@@ -1646,7 +1687,7 @@ document.querySelectorAll(".rku").forEach((b) => b.addEventListener("click", () 
   document.querySelectorAll(".rku").forEach((x) => x.classList.toggle("active", x === b));
   rankUnit = b.dataset.unit; loadInstRanking();
 }));
-window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); chipChart && chipChart.resize(); stockChipsChart && stockChipsChart.resize(); if (sectorChart) { sectorChart.resize(); if (lastHeatmapData) fitHeatmapFonts(lastHeatmapData); } cupChart && cupChart.resize(); txVolChart && txVolChart.resize(); });
+window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); chipChart && chipChart.resize(); stockChipsChart && stockChipsChart.resize(); if (sectorChart) { sectorChart.resize(); if (lastHeatmapData) fitHeatmapFonts(lastHeatmapData); } cupChart && cupChart.resize(); txVolChart && txVolChart.resize(); distChart && distChart.resize(); });
 // 粉圓/M PLUS 是 async 載入。若熱力圖在字型載入前已排版，measureText 量到的是系統字寬度，
 // 字型 swap 後實際寬度改變 → 可能截字。字型就緒後重跑一次字級擬合（重用既有 refit 路徑）。
 if (document.fonts && document.fonts.ready) {
@@ -1660,6 +1701,7 @@ if (document.fonts && document.fonts.ready) {
   const d = await loadDashboard();
   loadIndexChart();
   loadBreadth();
+  loadDistribution();
   loadMovers();
   loadSectors();
   loadMarketSummary(false);  // 讀快取即回；排程更新完會自動預先生成，開頁不另扣費

@@ -4,6 +4,38 @@
 """
 
 
+import math
+
+
+def change_histogram(pcts: list[float], lo: int = -10, hi: int = 10) -> dict:
+    """全市場漲跌幅分布。pcts＝各檔當日漲跌%清單 → 分整數桶的家數 + 摘要。
+
+    每檔以 floor 分桶、夾在 [lo, hi]（±10% 是漲跌停上限，超界併入端桶，不長出 −11/+11）。
+    桶的 `bucket` 是「下界」——−3 代表 [−3%, −2%)、0 代表 [0%, 1%)。桶架構固定 lo..hi 全列出
+    （空桶也給 count 0），前端 X 軸才不會隨當日資料抖動。
+    up/down/flat 依原值正負分（0% 算平盤），與漲跌家數同語意；avg 為全體平均漲跌幅。
+    """
+    buckets = {b: 0 for b in range(lo, hi + 1)}
+    up = down = flat = 0
+    for p in pcts:
+        if p is None:
+            continue
+        b = max(lo, min(hi, math.floor(p)))
+        buckets[b] += 1
+        if p > 0:
+            up += 1
+        elif p < 0:
+            down += 1
+        else:
+            flat += 1
+    n = up + down + flat
+    return {
+        "buckets": [{"bucket": b, "count": buckets[b]} for b in range(lo, hi + 1)],
+        "up": up, "down": down, "flat": flat, "n": n,
+        "avg": round(sum(p for p in pcts if p is not None) / n, 2) if n else None,
+    }
+
+
 def _num(v):
     return v if isinstance(v, (int, float)) and v is not None else 0.0
 

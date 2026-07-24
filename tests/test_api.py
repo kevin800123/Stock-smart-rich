@@ -52,6 +52,34 @@ def test_dashboard_includes_today_and_stale_flag(tmp_path, monkeypatch):
     assert body["data_stale"] is False  # 無資料時不標延遲
 
 
+def test_breadth_distribution_filters_to_common_stocks_and_merges_markets(tmp_path, monkeypatch):
+    """漲跌幅分布：合併上市＋上櫃，只算 4 碼普通股（排除 6 碼權證/ETF），分桶。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import twse, tpex
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-07-24", "taiex": 100.0})
+    monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {
+        "2330": {"name": "台積電", "close": 1000.0, "chg_pct": 2.5},
+        "2317": {"name": "鴻海", "close": 200.0, "chg_pct": -1.2},
+        "030123": {"name": "某權證", "close": 3.0, "chg_pct": 9.9},   # 6 碼權證 → 排除
+    })
+    monkeypatch.setattr(tpex, "fetch_otc_quotes", lambda date=None: {
+        "5483": {"name": "中美晶", "close": 300.0, "chg_pct": 0.0},   # 上櫃普通股 → 平盤
+    })
+    app = create_app()
+    client = TestClient(app)
+    d = client.get("/api/breadth/distribution").json()
+    assert d["n"] == 3                       # 只算 3 檔普通股，權證被濾掉
+    assert d["up"] == 1 and d["down"] == 1 and d["flat"] == 1
+    counts = {b["bucket"]: b["count"] for b in d["buckets"]}
+    assert counts[2] == 1 and counts[-2] == 1 and counts[0] == 1
+    # 免密碼公開總覽走同一支邏輯
+    assert client.get("/public/api/breadth/distribution").json()["n"] == 3
+
+
 def test_dashboard_bands_come_from_ss_trader(tmp_path, monkeypatch):
     """總覽卡片的「異常讀數」門檻必須是 ss_trader 的那一份，不得在前端另寫一組。
 
