@@ -421,20 +421,27 @@ def breadth(date: str | None = None):
 def _distribution(date: str | None = None):
     """全市場漲跌幅分布直方圖。漲跌家數只給數量，這個給『形狀』——今天跌很多是廣而淺
     還是窄而深。資料取自已逐日快取的全市場報價，濾 4 碼普通股（排除 6 碼權證/ETF，
-    與漲跌家數同宇宙），合併上市＋上櫃餵 analysis.change_histogram。"""
+    與漲跌家數同宇宙），合併上市＋上櫃餵 analysis.change_histogram。
+
+    快取必須兩市場都有資料才寫（`has_otc`），不能只憑 pcts 非空就存——上市/上櫃同步休市，
+    但不同步失敗（曾發生 tpex 端 TLS 憑證問題導致 _otc_quotes_for 靜默抓空，
+    上市那邊仍抓得到），若只看「有沒有 pcts」，一次上櫃單邊失敗就會把「只算上市」的
+    退化結果寫進無 TTL 的快取，之後 tpex 端修好了也永遠讀到那筆舊的半套資料——
+    讀取端因此也要同時檢查 `has_otc`，不能只看「快取存在與否」，舊快取缺這個欄位
+    （fix 之前寫入的）視同未命中，才能自己重算自癒（跟 os-futures 的 has_remote 同一套規則）。"""
     c = conn()
     date = date or _latest_date(c)
     if not date:
         return {"date": None}
     key = f"dist:{date}"
     cached = get_ai_cache(c, key)
-    if cached is not None:
+    if cached is not None and cached.get("has_otc"):
         return cached
-    pcts = [q["chg_pct"] for src in (_quotes_for(c, date), _otc_quotes_for(c, date))
-            for code, q in src.items()
+    tse, otc = _quotes_for(c, date), _otc_quotes_for(c, date)
+    pcts = [q["chg_pct"] for src in (tse, otc) for code, q in src.items()
             if len(code) == 4 and code.isdigit() and q.get("chg_pct") is not None]
-    result = {"date": date, **analysis.change_histogram(pcts)}
-    if pcts:                       # 抓不到報價（假日/尚未開盤）不寫快取，稍後可重試
+    result = {"date": date, "has_otc": bool(otc), **analysis.change_histogram(pcts)}
+    if pcts and otc:                # 兩市場都有資料才快取；否則下次重試，等上櫃也抓到
         set_ai_cache(c, key, result)
     return result
 

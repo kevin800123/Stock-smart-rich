@@ -80,6 +80,61 @@ def test_breadth_distribution_filters_to_common_stocks_and_merges_markets(tmp_pa
     assert client.get("/public/api/breadth/distribution").json()["n"] == 3
 
 
+def test_breadth_distribution_does_not_cache_when_otc_side_empty(tmp_path, monkeypatch):
+    """上市抓得到、上櫃抓空（如 TLS 憑證問題）→ 不可把「只算上市」的退化結果寫進快取，
+    否則上櫃端修好後也永遠讀到這筆半套舊資料（同 os-futures 的 has_remote 規則）。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily, get_ai_cache
+    from stocks_power_rich.sources import twse, tpex
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-07-24", "taiex": 100.0})
+    monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {
+        "2330": {"name": "台積電", "close": 1000.0, "chg_pct": 2.5},
+    })
+    monkeypatch.setattr(tpex, "fetch_otc_quotes", lambda date=None: {})   # 上櫃這次抓空
+    app = create_app()
+    client = TestClient(app)
+
+    d1 = client.get("/api/breadth/distribution").json()
+    assert d1["n"] == 1 and d1["has_otc"] is False
+    assert get_ai_cache(c, "dist:2026-07-24") is None   # 半套結果不得進快取
+
+    # 上櫃端修好了 → 下次呼叫應該重算，拿到完整資料，這次才快取
+    monkeypatch.setattr(tpex, "fetch_otc_quotes", lambda date=None: {
+        "5483": {"name": "中美晶", "close": 300.0, "chg_pct": 1.0},
+    })
+    d2 = client.get("/api/breadth/distribution").json()
+    assert d2["n"] == 2 and d2["has_otc"] is True
+    assert get_ai_cache(c, "dist:2026-07-24") is not None
+
+
+def test_breadth_distribution_stale_cache_without_has_otc_self_heals(tmp_path, monkeypatch):
+    """修這支 bug 之前寫入的舊快取沒有 has_otc 欄位——讀取端要當成未命中重算，
+    不能永遠信任「快取存在」這件事，否則舊的半套資料永遠出不去。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily, set_ai_cache
+    from stocks_power_rich.sources import twse, tpex
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-07-24", "taiex": 100.0})
+    # 模擬修 bug 前寫入的舊快取：只有上市，沒有 has_otc 欄位
+    set_ai_cache(c, "dist:2026-07-24", {"date": "2026-07-24", "n": 1, "up": 1, "down": 0,
+                                        "flat": 0, "avg": 2.5, "buckets": []})
+    monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {
+        "2330": {"name": "台積電", "close": 1000.0, "chg_pct": 2.5},
+    })
+    monkeypatch.setattr(tpex, "fetch_otc_quotes", lambda date=None: {
+        "5483": {"name": "中美晶", "close": 300.0, "chg_pct": 1.0},
+    })
+    app = create_app()
+    client = TestClient(app)
+    d = client.get("/api/breadth/distribution").json()
+    assert d["n"] == 2   # 沒有被舊的 n=1 快取卡住，重算後拿到完整的兩市場資料
+
+
 def test_dashboard_bands_come_from_ss_trader(tmp_path, monkeypatch):
     """總覽卡片的「異常讀數」門檻必須是 ss_trader 的那一份，不得在前端另寫一組。
 
