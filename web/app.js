@@ -1053,6 +1053,124 @@ async function loadInstRanking() {
 }
 
 // ========== 自選股 + 進出榜追蹤 ==========
+let openEstCode = null;   // 展開中的估價面板（重載表格後用來還原展開狀態，不必每次都收合）
+
+function estFieldNum(code, field) {
+  const el = document.querySelector(`.est-panel[data-code="${CSS.escape(code)}"] [data-field="${field}"]`);
+  const v = el ? parseFloat(el.value) : NaN;
+  return Number.isFinite(v) ? v : null;
+}
+
+// 跟 analysis.estimate_price_range 同一條算式（純算術，供打字時即時預覽；
+// 真正存檔值以後端算的為準，兩邊不會漂移——這裡只影響「儲存前的預覽」）。
+function computeEstimate(revenue, grossMarginPct, opex, tax, shares, peLow, peMid, peHigh) {
+  if ([revenue, grossMarginPct, opex, tax, shares, peLow, peMid, peHigh].some((v) => v == null)) return null;
+  if (!(shares > 0)) return null;
+  const grossProfit = revenue * grossMarginPct / 100;
+  const netIncome = grossProfit - opex - tax;
+  const epsQuarter = netIncome / shares;
+  const epsAnnual = epsQuarter * 4;
+  return {
+    eps_quarter: epsQuarter, eps_annual: epsAnnual,
+    low: epsAnnual * peLow, mid: epsAnnual * peMid, high: epsAnnual * peHigh,
+  };
+}
+
+function estRangeBarHtml(low, mid, high, close) {
+  if (low == null || mid == null || high == null) {
+    return '<div class="est-range muted small">填齊上方欄位才能算出預估價位區間</div>';
+  }
+  const lo = Math.min(low, mid, high), hi = Math.max(low, mid, high);
+  const span = hi - lo;
+  const pct = (v) => (span > 0 ? Math.max(0, Math.min(100, ((v - lo) / span) * 100)) : 50);
+  const markerColor = close == null ? "var(--muted)" : close > mid ? "var(--up)" : close < mid ? "var(--down)" : "var(--muted)";
+  const marker = close == null ? "" :
+    `<div class="est-range-marker" style="left:${pct(close)}%;background:${markerColor}" title="現價 ${fmt(close)}"></div>`;
+  return `<div class="est-range">
+    <div class="est-range-track">
+      <div class="est-range-mid" style="left:${pct(mid)}%"></div>
+      ${marker}
+    </div>
+    <div class="est-range-labels">
+      <span>低 ${fmt(low)}</span><span>中 ${fmt(mid)}</span><span>高 ${fmt(high)}</span>
+      ${close != null ? `<span style="color:${markerColor}">現價 ${fmt(close)}</span>` : ""}
+    </div>
+  </div>`;
+}
+
+function recalcEstPanel(code) {
+  const panel = document.querySelector(`.est-panel[data-code="${CSS.escape(code)}"]`);
+  if (!panel) return;
+  const revenue = estFieldNum(code, "revenue");
+  const grossMarginPct = estFieldNum(code, "gross_margin");
+  const opex = estFieldNum(code, "opex");
+  const tax = estFieldNum(code, "tax");
+  const shares = parseFloat(panel.dataset.shares) || null;
+  const peLow = estFieldNum(code, "pe_low");
+  const peMid = estFieldNum(code, "pe_mid");
+  const peHigh = estFieldNum(code, "pe_high");
+  const grossProfit = revenue != null && grossMarginPct != null ? revenue * grossMarginPct / 100 : null;
+  const netIncome = grossProfit != null && opex != null && tax != null ? grossProfit - opex - tax : null;
+  panel.querySelector('[data-out="gross_profit"]').textContent = grossProfit == null ? "—" : fmt(grossProfit);
+  panel.querySelector('[data-out="net_income"]').textContent = netIncome == null ? "—" : fmt(netIncome);
+  const est = computeEstimate(revenue, grossMarginPct, opex, tax, shares, peLow, peMid, peHigh);
+  panel.querySelector('[data-out="eps_quarter"]').textContent = est ? fmt(est.eps_quarter) : "—";
+  panel.querySelector('[data-out="eps_annual"]').textContent = est ? fmt(est.eps_annual) : "—";
+  const close = parseFloat(panel.dataset.close);
+  panel.querySelector(".est-range-wrap").innerHTML = est
+    ? estRangeBarHtml(est.low, est.mid, est.high, Number.isFinite(close) ? close : null)
+    : estRangeBarHtml(null, null, null, null);
+}
+
+async function saveEstPanel(code) {
+  const payload = {
+    est_revenue: estFieldNum(code, "revenue"), est_gross_margin: estFieldNum(code, "gross_margin"),
+    est_opex: estFieldNum(code, "opex"), est_tax: estFieldNum(code, "tax"),
+    est_pe_low: estFieldNum(code, "pe_low"), est_pe_mid: estFieldNum(code, "pe_mid"),
+    est_pe_high: estFieldNum(code, "pe_high"),
+  };
+  try {
+    await fetch(`/api/watchlist/${encodeURIComponent(code)}/estimate`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+    });
+  } catch (e) { /* ignore */ }
+  openEstCode = code;
+  loadWatchlist();
+}
+
+function estPanelHtml(s) {
+  const ch = s.chip || {};
+  // 中本益比：已存過的估值用存的，否則預帶該股當日本益比；低/高預設 ±20%，使用者可自行改。
+  const round1 = (v) => (v == null ? null : Math.round(v * 10) / 10);
+  const peMid = s.est_pe_mid != null ? s.est_pe_mid : round1(ch.lpe);
+  const peLow = s.est_pe_low != null ? s.est_pe_low : round1(peMid != null ? peMid * 0.8 : null);
+  const peHigh = s.est_pe_high != null ? s.est_pe_high : round1(peMid != null ? peMid * 1.2 : null);
+  // CSP 是 script-src 'self'（無 unsafe-inline），inline oninput="..." 會被靜默擋掉不執行——
+  // 監聽改走 #watch-table 上的委派 input 事件（見下方 addEventListener），不用行內屬性。
+  const numIn = (field, val) => `<input type="number" step="any" data-field="${field}" value="${val == null ? "" : val}">`;
+  const est = s.estimate;
+  return `<tr id="est-row-${esc(s.code)}" class="hidden est-row"><td colspan="13">
+    <div class="est-panel" data-code="${esc(s.code)}" data-shares="${s.shares == null ? "" : s.shares}" data-close="${ch.close == null ? "" : ch.close}">
+      <div class="settings-grid">
+        <div class="set-row"><label>最近三個月營收</label>${numIn("revenue", s.est_revenue)}<span class="muted small">元</span></div>
+        <div class="set-row"><label>毛利率(估)</label>${numIn("gross_margin", s.est_gross_margin)}<span class="muted small">%</span></div>
+        <div class="set-row"><label>毛利(估)</label><span data-out="gross_profit">—</span></div>
+        <div class="set-row"><label>營業費用(估)</label>${numIn("opex", s.est_opex)}<span class="muted small">元</span></div>
+        <div class="set-row"><label>所得稅(估)</label>${numIn("tax", s.est_tax)}<span class="muted small">元</span></div>
+        <div class="set-row"><label>稅後淨利</label><span data-out="net_income">—</span></div>
+        <div class="set-row"><label>股數</label><span>${s.shares == null ? "—" : fmt(s.shares, 0)}</span><span class="muted small">股（股本÷面額 10 元推算）</span></div>
+        <div class="set-row"><label>本業EPS(估)</label><span data-out="eps_quarter">${est ? fmt(est.eps_quarter) : "—"}</span></div>
+        <div class="set-row"><label>年化EPS(試算)</label><span data-out="eps_annual">${est ? fmt(est.eps_annual) : "—"}</span></div>
+        <div class="set-row"><label>本益比 低/中/高</label>
+          ${numIn("pe_low", peLow)}${numIn("pe_mid", peMid)}${numIn("pe_high", peHigh)}
+        </div>
+        <div class="est-range-wrap">${est ? estRangeBarHtml(est.low, est.mid, est.high, ch.close) : estRangeBarHtml(null, null, null, null)}</div>
+        <div class="set-row"><button class="file-label est-save" data-code="${esc(s.code)}">儲存</button></div>
+      </div>
+    </div>
+  </td></tr>`;
+}
+
 async function loadWatchlist() {
   const el = $("watch-table");
   if (!el) return;
@@ -1066,10 +1184,15 @@ async function loadWatchlist() {
       const ch = s.chip || {};
       return `<tr><td>${stockLink(s.code, s.name)}</td><td>${onb}</td><td style="text-align:right">${s.times}</td><td>${s.entry_date || "—"}</td><td style="text-align:right">${ret}</td>` +
         num(ch.close) + num(ch.lan_value, 1) + num(ch.lpe, 1) + num(ch.est_profit) + num(ch.rev_yoy, 1) + num(ch.holder_drop_ratio) + num(ch.big_holder_ratio) +
-        `<td><a href="#" class="watch-del err-text" data-code="${s.code}">移除</a></td></tr>`;
+        `<td><a href="#" class="watch-est" data-code="${esc(s.code)}">估價</a> ／ <a href="#" class="watch-del err-text" data-code="${esc(s.code)}">移除</a></td></tr>` +
+        estPanelHtml(s);
     }).join("");
     const rh = (t) => `<th style="text-align:right">${t}</th>`;
     el.innerHTML = `<table><tr><th>股票</th><th>今日選股榜</th>${rh("在榜次數")}<th>進榜日</th>${rh("自進榜報酬")}${rh("收盤")}${rh("蘭值")}${rh("本益比")}${rh("推估EPS")}${rh("營收年增%")}${rh("人數降比")}${rh("大戶增比")}<th></th></tr>${rows}</table>`;
+    if (openEstCode) {
+      const row = document.getElementById(`est-row-${openEstCode}`);
+      if (row) { row.classList.remove("hidden"); recalcEstPanel(openEstCode); }
+    }
   } catch (e) { el.innerHTML = '<div class="muted small">載入失敗</div>'; }
 }
 async function addWatch() {
@@ -1641,7 +1764,25 @@ $("wave-pct").addEventListener("input", (e) => {
 // 個股圖控制
 $("watch-add").addEventListener("click", addWatch);
 $("watch-input").addEventListener("keydown", (e) => { if (e.key === "Enter") addWatch(); });
+$("watch-table").addEventListener("input", (e) => {
+  const panel = e.target.closest(".est-panel");
+  if (panel && e.target.matches("input[data-field]")) recalcEstPanel(panel.dataset.code);
+});
 $("watch-table").addEventListener("click", async (e) => {
+  const est = e.target.closest(".watch-est");
+  if (est) {
+    e.preventDefault();
+    const code = est.dataset.code;
+    const row = document.getElementById(`est-row-${code}`);
+    if (!row) return;
+    const opening = row.classList.contains("hidden");
+    row.classList.toggle("hidden", !opening);
+    openEstCode = opening ? code : null;
+    if (opening) recalcEstPanel(code);
+    return;
+  }
+  const save = e.target.closest(".est-save");
+  if (save) { e.preventDefault(); saveEstPanel(save.dataset.code); return; }
   const a = e.target.closest(".watch-del"); if (!a) return; e.preventDefault();
   try { await fetch(`/api/watchlist/${encodeURIComponent(a.dataset.code)}`, { method: "DELETE" }); } catch (er) { /* ignore */ }
   loadWatchlist();

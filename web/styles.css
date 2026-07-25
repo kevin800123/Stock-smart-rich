@@ -390,6 +390,20 @@ a.stock:hover { text-decoration: underline; }
 .pf-item { color: var(--muted); margin-right: 10px; white-space: nowrap; }
 .pf-item b { color: var(--text); font-weight: 600; }
 
+/* ===== 自選股：輸入預估面板 ===== */
+.watch-est { color: var(--info); text-decoration: none; }
+.est-panel { background: var(--bg); border: 1px solid var(--border); border-radius: var(--r); padding: 14px 16px; margin: 4px 0; }
+.est-panel .settings-grid { max-width: 560px; }
+.est-panel .set-row > span { color: var(--text); font-size: var(--fs-sm); }
+.est-panel input[type=number] { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: var(--r); padding: 6px 10px; font-size: var(--fs-sm); width: 120px; }
+.est-panel .set-row label { width: 140px; }
+.est-save { align-self: flex-start; }
+.est-range { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.est-range-track { position: relative; height: 8px; border-radius: var(--r-pill); background: var(--border); }
+.est-range-mid { position: absolute; top: -3px; width: 2px; height: 14px; background: var(--muted); transform: translateX(-1px); }
+.est-range-marker { position: absolute; top: -4px; width: 10px; height: 16px; border-radius: 3px; transform: translateX(-5px); }
+.est-range-labels { display: flex; gap: 14px; flex-wrap: wrap; font-size: var(--fs-xs); color: var(--muted); }
+
 /* ===== 設定頁 ===== */
 .settings-grid { display: flex; flex-direction: column; gap: 14px; max-width: 640px; }
 .set-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }

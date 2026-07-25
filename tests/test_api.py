@@ -208,6 +208,38 @@ def test_watchlist_add_track_remove(tmp_path, monkeypatch):
     assert client.delete("/api/watchlist/2330.TW").json()["stocks"] == []
 
 
+def test_watchlist_estimate_save_partial_then_computes_when_complete(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, insert_chip_snapshot
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    # capital=100(億元) → 股數 100*1e7=1,000,000,000 股
+    insert_chip_snapshot(c, "2026-06-25", [{"code": "2330.TW", "name": "台積電",
+                                            "close": 100, "capital": 100, "lpe": 15}])
+    app = create_app()
+    client = TestClient(app)
+    client.post("/api/watchlist", json={"code": "2330"})
+
+    # 只填一部分：算不出區間，estimate 應為 None，但輸入要保留
+    r1 = client.put("/api/watchlist/2330.TW/estimate", json={"est_revenue": 2000000000}).json()
+    s1 = r1["stocks"][0]
+    assert s1["est_revenue"] == 2000000000
+    assert s1["estimate"] is None
+    assert s1["shares"] == 1_000_000_000.0
+
+    # 補齊其餘欄位 → 算出區間；且第一次存的 est_revenue 沒被這次只帶其他欄位的存檔洗掉
+    r2 = client.put("/api/watchlist/2330.TW/estimate", json={
+        "est_gross_margin": 50, "est_opex": 100000000, "est_tax": 50000000,
+        "est_pe_low": 10, "est_pe_mid": 15, "est_pe_high": 20,
+    }).json()
+    s2 = r2["stocks"][0]
+    assert s2["est_revenue"] == 2000000000        # 第一次存的欄位仍在
+    assert s2["estimate"] is not None
+    assert s2["estimate"]["eps_annual"] > 0
+    assert s2["estimate"]["mid"] == round(s2["estimate"]["eps_annual"] * 15, 2)
+
+
 def test_line_test_endpoint_composes_and_broadcasts(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok-123")

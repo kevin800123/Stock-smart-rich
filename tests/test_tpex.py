@@ -112,3 +112,35 @@ def test_parse_otc_margin_reads_totals_and_per_stock():
     assert out["short"] == {"6488": 20.0}   # 餘額 0 者不入表，免得拖累後續加總
     assert tpex.parse_otc_margin({}) == {"balance": None, "short_balance": None,
                                          "value": None, "margin": {}, "short": {}}
+
+
+def test_all_tpex_www_fetchers_use_verify_false(monkeypatch):
+    """www.tpex.org.tw 憑證缺 SKI，Windows 容忍、Zeabur(Linux) 不容忍——曾經只有
+    fetch_otc_margin 加了 verify=False，其餘打同一個主機的 fetcher 在雲端全數靜默失敗
+    （本機測試照樣綠燈，因為 Windows 的 TLS 堆疊根本不會踩到這個問題）。
+    這支測試把整個模組的呼叫一次鎖住，往後新增打 www.tpex.org.tw 的 fetcher 忘了帶
+    verify=False 會立刻紅燈，不必等到雲端才發現「資料靜默消失」。
+    """
+    calls = []
+
+    class _Resp:
+        def json(self):
+            return {}
+
+    def fake_get(url, **kwargs):
+        calls.append(kwargs)
+        return _Resp()
+
+    monkeypatch.setattr(tpex.httpx, "get", fake_get)
+
+    tpex.fetch_otc_names()
+    tpex.fetch_otc_industry()
+    tpex.fetch_otc_turnover()
+    tpex.fetch_otc_ohlc()
+    tpex.fetch_otc_quotes()
+    tpex.fetch_otc_margin()
+    tpex.fetch_tpex_insti()
+
+    assert len(calls) == 7
+    for kwargs in calls:
+        assert kwargs.get("verify") is False

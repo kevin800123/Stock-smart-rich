@@ -7,7 +7,9 @@
   2026-07 全面換掉；只需當下報價、不需歷史，TradingView scanner 剛好夠用。
 """
 import time
+from datetime import datetime, timezone
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 import httpx
 import yfinance as yf
@@ -170,6 +172,46 @@ def parse_tv_scan(payload) -> dict:
             "chg": round(float(d[2]), 4) if d[2] is not None else None,
         }
     return out
+
+
+_KOSPI_TICKER = "TVC:KOSPI"
+
+
+def parse_tv_scan_dated(payload, tz: str = "Asia/Seoul") -> dict | None:
+    """TradingView scanner 回應（多要 time 欄位）→ {date, value, chg_pct}，或 None。
+
+    scanner 是即時快照 API，沒有「這是哪個場次的收盤」的保證——`time` 是該筆報價的
+    bar 時間戳，換算成該市場當地時區的日期後即可反查。與 fetch_intl_history 的
+    same_day 邏輯一樣：**只在算出的日期真的等於呼叫端要的資料日時才可信**，這裡只負責
+    把日期解出來，比對交給呼叫端（updater._backfill_intl_kospi）。
+    缺 time／缺 close／payload 格式不對 → 一律回 None，不硬猜。
+    """
+    rows = payload.get("data") or []
+    if not rows:
+        return None
+    d = rows[0].get("d") or []
+    if len(d) < 4 or d[0] is None or d[3] is None:
+        return None
+    ds = datetime.fromtimestamp(d[3], tz=timezone.utc).astimezone(ZoneInfo(tz)).strftime("%Y-%m-%d")
+    return {"date": ds, "value": round(float(d[0]), 4),
+            "chg_pct": round(float(d[1]), 2) if d[1] is not None else None}
+
+
+def fetch_kospi_dated() -> dict | None:
+    """KOSPI 現貨指數的單筆帶日期快照（南韓收盤在台北傍晚更新前已結束，故可信）。
+
+    不像 fetch_intl_history 有歷史可回補——scanner 只給「現在」，這裡一次只能填
+    「今天」這一格，日期核對留給呼叫端。
+    """
+    body = {"symbols": {"tickers": [_KOSPI_TICKER], "query": {"types": []}},
+            "columns": ["close", "change", "change_abs", "time"]}
+    try:
+        r = httpx.post(_TV_SCAN_URL, json=body, timeout=20, headers=_TV_UA)
+        if r.status_code == 200:
+            return parse_tv_scan_dated(r.json())
+    except Exception:  # noqa: BLE001
+        pass
+    return None
 
 
 def fetch_futures_monitor(tries: int = 3) -> list[dict]:

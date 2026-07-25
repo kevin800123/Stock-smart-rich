@@ -103,6 +103,46 @@ def test_parse_chart_history_maps_timestamps_to_session_dates():
     assert intl.parse_chart_history({}) == {}
 
 
+def test_parse_tv_scan_dated_converts_epoch_to_local_session_date():
+    # KOSPI 收盤在台北傍晚更新前已結束，用回傳的 time 欄位反查是否真的落在該場次日期，
+    # 不是像 sox 那樣可能抓到盤中即時價。1784851200 UTC = 2026-07-24 00:00 UTC，
+    # 換成 Asia/Seoul(+9) 仍是 2026-07-24。
+    payload = {"data": [{"s": "TVC:KOSPI", "d": [6690.63, -5.72, -406.27, 1784851200]}]}
+    out = intl.parse_tv_scan_dated(payload)
+    assert out == {"date": "2026-07-24", "value": 6690.63, "chg_pct": -5.72}
+
+
+def test_parse_tv_scan_dated_missing_fields_returns_none():
+    assert intl.parse_tv_scan_dated({"data": []}) is None
+    assert intl.parse_tv_scan_dated({}) is None
+    # 缺 time 欄位（只有 3 個元素）→ 無法判定場次日期，不可硬猜
+    assert intl.parse_tv_scan_dated({"data": [{"s": "TVC:KOSPI", "d": [6690.63, -5.72, -406.27]}]}) is None
+    assert intl.parse_tv_scan_dated({"data": [{"s": "TVC:KOSPI", "d": [None, None, None, 1784851200]}]}) is None
+
+
+def test_fetch_kospi_dated_wraps_scanner(monkeypatch):
+    def fake_post(url, json=None, **kw):
+        assert json["symbols"]["tickers"] == ["TVC:KOSPI"]
+
+        class _R:
+            status_code = 200
+            def json(self):  # noqa: N802
+                return {"data": [{"s": "TVC:KOSPI", "d": [6690.63, -5.72, -406.27, 1784851200]}]}
+        return _R()
+
+    monkeypatch.setattr(intl.httpx, "post", fake_post)
+    out = intl.fetch_kospi_dated()
+    assert out == {"date": "2026-07-24", "value": 6690.63, "chg_pct": -5.72}
+
+
+def test_fetch_kospi_dated_failure_returns_none(monkeypatch):
+    def boom(url, json=None, **kw):
+        raise RuntimeError("blocked")
+
+    monkeypatch.setattr(intl.httpx, "post", boom)
+    assert intl.fetch_kospi_dated() is None
+
+
 def test_fetch_intl_history_falls_back_to_chart_api(monkeypatch):
     """yfinance 的 cookie/crumb 握手正是機房 IP 會被擋的那段，故單一代碼失敗要有備援。"""
     class _Boom:

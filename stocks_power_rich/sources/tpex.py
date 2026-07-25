@@ -55,9 +55,12 @@ def parse_otc_names(records: list) -> dict:
 
 
 def fetch_otc_names() -> dict:
-    """上櫃公司 {代號: 簡稱}。近乎靜態，呼叫端宜快取。查無回空 dict。"""
+    """上櫃公司 {代號: 簡稱}。近乎靜態，呼叫端宜快取。查無回空 dict。
+
+    verify=False：櫃買憑證缺 Subject Key Identifier，與 TDCC 同一個毛病。
+    """
     try:
-        j = httpx.get(OTC_COMPANY_URL, timeout=25,
+        j = httpx.get(OTC_COMPANY_URL, timeout=25, verify=False,
                       headers={"User-Agent": "Mozilla/5.0"}).json()
         return parse_otc_names(j)
     except Exception:  # noqa: BLE001
@@ -85,9 +88,12 @@ def parse_otc_industry(records: list) -> dict:
 
 
 def fetch_otc_industry() -> dict:
-    """上櫃公司 {代號: {sector, name, shares}}。近乎靜態，呼叫端宜快取。查無回空。"""
+    """上櫃公司 {代號: {sector, name, shares}}。近乎靜態，呼叫端宜快取。查無回空。
+
+    verify=False：櫃買憑證缺 Subject Key Identifier，與 TDCC 同一個毛病。
+    """
     try:
-        j = httpx.get(OTC_COMPANY_URL, timeout=25,
+        j = httpx.get(OTC_COMPANY_URL, timeout=25, verify=False,
                       headers={"User-Agent": "Mozilla/5.0"}).json()
         return parse_otc_industry(j)
     except Exception:  # noqa: BLE001
@@ -154,12 +160,16 @@ def parse_otc_turnover(payload: dict) -> dict:
 
 
 def fetch_otc_turnover(date: datetime.date | None = None) -> dict:
-    """直連櫃買 dailyQuotes 取指定日全上櫃個股成交量額。當日盤後才發布，查無回空。"""
+    """直連櫃買 dailyQuotes 取指定日全上櫃個股成交量額。當日盤後才發布，查無回空。
+
+    verify=False：櫃買憑證缺 Subject Key Identifier，與 TDCC 同一個毛病。
+    """
     day = date or datetime.date.today()
     ds = f"{day.year}/{day.month:02d}/{day.day:02d}"
     try:
         j = httpx.get(DAILY_QUOTES_URL, params={"date": ds, "response": "json"},
-                      timeout=25, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}).json()
+                      timeout=25, follow_redirects=True, verify=False,
+                      headers={"User-Agent": "Mozilla/5.0"}).json()
         if j.get("stat") == "ok" and j.get("tables"):
             return parse_otc_turnover(j)
     except Exception:  # noqa: BLE001
@@ -168,12 +178,16 @@ def fetch_otc_turnover(date: datetime.date | None = None) -> dict:
 
 
 def fetch_otc_ohlc(date: datetime.date | None = None) -> dict:
-    """直連櫃買 dailyQuotes 取指定日全上櫃個股 OHLC（型態選股用）。查無回空。"""
+    """直連櫃買 dailyQuotes 取指定日全上櫃個股 OHLC（型態選股用）。查無回空。
+
+    verify=False：櫃買憑證缺 Subject Key Identifier，與 TDCC 同一個毛病。
+    """
     day = date or datetime.date.today()
     ds = f"{day.year}/{day.month:02d}/{day.day:02d}"
     try:
         j = httpx.get(DAILY_QUOTES_URL, params={"date": ds, "response": "json"},
-                      timeout=25, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}).json()
+                      timeout=25, follow_redirects=True, verify=False,
+                      headers={"User-Agent": "Mozilla/5.0"}).json()
         if j.get("stat") == "ok" and j.get("tables"):
             return parse_otc_ohlc(j)
     except Exception:  # noqa: BLE001
@@ -182,12 +196,16 @@ def fetch_otc_ohlc(date: datetime.date | None = None) -> dict:
 
 
 def fetch_otc_quotes(date: datetime.date | None = None) -> dict:
-    """直連櫃買 dailyQuotes 取指定日（預設今天）全上櫃個股收盤與漲跌%。查無回空。"""
+    """直連櫃買 dailyQuotes 取指定日（預設今天）全上櫃個股收盤與漲跌%。查無回空。
+
+    verify=False：櫃買憑證缺 Subject Key Identifier，與 TDCC 同一個毛病。
+    """
     day = date or datetime.date.today()
     ds = f"{day.year}/{day.month:02d}/{day.day:02d}"
     try:
         j = httpx.get(DAILY_QUOTES_URL, params={"date": ds, "response": "json"},
-                      timeout=25, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}).json()
+                      timeout=25, follow_redirects=True, verify=False,
+                      headers={"User-Agent": "Mozilla/5.0"}).json()
         if j.get("stat") == "ok" and j.get("tables"):
             return parse_otc_quotes(j)
     except Exception:  # noqa: BLE001
@@ -252,12 +270,16 @@ def fetch_otc_margin(date: datetime.date | None = None) -> dict:
 
 
 def fetch_tpex_insti(date: datetime.date | None = None) -> dict:
-    """直連櫃買 dailyTrade 取指定日（預設今天）全上櫃個股三大法人買賣超。"""
+    """直連櫃買 dailyTrade 取指定日（預設今天）全上櫃個股三大法人買賣超。
+
+    verify=False：櫃買憑證缺 Subject Key Identifier，與 TDCC 同一個毛病。
+    """
     day = date or datetime.date.today()
     ds = f"{day.year}/{day.month:02d}/{day.day:02d}"
     try:
         j = httpx.get(DAILY_TRADE_URL, params={"type": "Daily", "date": ds, "response": "json"},
-                      timeout=25, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}).json()
+                      timeout=25, follow_redirects=True, verify=False,
+                      headers={"User-Agent": "Mozilla/5.0"}).json()
         if j.get("stat") == "ok" and j.get("tables"):
             return parse_tpex_insti(j)
     except Exception:  # noqa: BLE001

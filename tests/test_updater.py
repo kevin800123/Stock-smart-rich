@@ -293,6 +293,90 @@ def test_backfill_intl_fills_only_nulls_and_respects_session_availability(tmp_pa
     assert rows[d_prev.isoformat()][3] == 300.0
 
 
+def test_backfill_intl_fred_fills_only_nulls_and_respects_session_availability(tmp_path, monkeypatch):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    today = date.today()
+    d_prev, d = today - timedelta(days=1), today
+    upsert_market_daily(conn, {"date": d_prev.isoformat(), "taiex": 23000.0})
+    upsert_market_daily(conn, {"date": d.isoformat(), "vix": 15.0})   # 既有值：不得覆寫
+
+    def fake_fetch(series_id, start_date):
+        if series_id == "VIXCLS":
+            return {d_prev.isoformat(): 18.0, d.isoformat(): 19.0}
+        if series_id == "NIKKEI225":
+            return {d_prev.isoformat(): 30000.0, d.isoformat(): 31000.0}
+        return {}
+
+    monkeypatch.setattr(updater.fred, "fetch_fred_series", fake_fetch)
+
+    filled = updater._backfill_intl_fred(conn, days=7)
+
+    assert filled == [d_prev.isoformat(), d.isoformat()]
+    rows = {r[0]: r for r in conn.execute(
+        "SELECT date, vix, n225 FROM market_daily ORDER BY date").fetchall()}
+    assert rows[d.isoformat()][1] == 15.0        # vix 既有值原封不動
+    # vix 非 same_day：要找「d_prev 之前」那一場，測試資料裡沒有更早的一場 → 不硬湊
+    assert rows[d_prev.isoformat()][1] is None
+    # n225 是 same_day：D 當日已收盤 → 直接取 D
+    assert rows[d.isoformat()][2] == 31000.0
+    assert rows[d_prev.isoformat()][2] == 30000.0
+
+
+def test_backfill_intl_fred_no_holes_skips_fetch(tmp_path, monkeypatch):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    upsert_market_daily(conn, {"date": date.today().isoformat(), "vix": 15.0, "n225": 30000.0})
+    called = []
+    monkeypatch.setattr(updater.fred, "fetch_fred_series",
+                        lambda *a, **k: called.append(1) or {})
+    assert updater._backfill_intl_fred(conn, days=7) == []
+    assert not called
+
+
+def test_backfill_intl_kospi_fills_when_date_matches_a_hole(tmp_path, monkeypatch):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    d = date.today()
+    upsert_market_daily(conn, {"date": d.isoformat(), "taiex": 23000.0})   # kospi 缺 → 是個洞
+
+    monkeypatch.setattr(updater.intl, "fetch_kospi_dated",
+                        lambda: {"date": d.isoformat(), "value": 6690.63, "chg_pct": -5.72})
+
+    filled = updater._backfill_intl_kospi(conn, days=7)
+
+    assert filled == [d.isoformat()]
+    row = conn.execute("SELECT kospi, kospi_chg FROM market_daily WHERE date=?",
+                       (d.isoformat(),)).fetchone()
+    assert tuple(row) == (6690.63, -5.72)
+
+
+def test_backfill_intl_kospi_no_match_writes_nothing(tmp_path, monkeypatch):
+    """快照解出的日期跟任何一個洞都對不上（例如南韓還沒收盤）→ 不硬猜、不寫入。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    d = date.today()
+    upsert_market_daily(conn, {"date": d.isoformat(), "taiex": 23000.0})
+
+    monkeypatch.setattr(updater.intl, "fetch_kospi_dated",
+                        lambda: {"date": (d - timedelta(days=5)).isoformat(),
+                                 "value": 1.0, "chg_pct": 1.0})
+
+    assert updater._backfill_intl_kospi(conn, days=7) == []
+    row = conn.execute("SELECT kospi FROM market_daily WHERE date=?", (d.isoformat(),)).fetchone()
+    assert row[0] is None
+
+
+def test_backfill_intl_kospi_no_holes_skips_fetch(tmp_path, monkeypatch):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    upsert_market_daily(conn, {"date": date.today().isoformat(), "kospi": 6690.63})
+    called = []
+    monkeypatch.setattr(updater.intl, "fetch_kospi_dated", lambda: called.append(1) or None)
+    assert updater._backfill_intl_kospi(conn, days=7) == []
+    assert not called
+
+
 def test_run_update_writes_session_aligned_intl_not_live_snapshot(tmp_path, monkeypatch):
     """每日更新的國際指數必須走場次規則，而不是「跑的當下」的報價。
 
@@ -313,11 +397,15 @@ def test_run_update_writes_session_aligned_intl_not_live_snapshot(tmp_path, monk
     monkeypatch.setattr(updater.taifex, "fetch_tx_history", lambda *a, **k: [])
     monkeypatch.setattr(updater.tdcc, "fetch_custody_distribution",
                         lambda: {"week_date": None, "data": {}})
-    # sox 有「D 之前那一場」；n225 只有 D 之前，沒有 D 當天（亞股尚未收盤）
+    # sox 仍走 yfinance：有「D 之前那一場」。n225 現在改走 FRED（見 _backfill_intl_fred），
+    # 只有 D 之前，沒有 D 當天（亞股尚未收盤）。kospi 走 TradingView 帶日期快照，這裡模擬抓不到。
     monkeypatch.setattr(updater.intl, "fetch_intl_history", lambda t, days=0: {
         "sox": {prev_session: {"value": 100.0, "chg_pct": 1.0}},
-        "n225": {prev_session: {"value": 300.0, "chg_pct": 3.0}},
     })
+    monkeypatch.setattr(updater.fred, "fetch_fred_series", lambda series_id, start_date: (
+        {prev_session: 300.0} if series_id == "NIKKEI225" else {}
+    ))
+    monkeypatch.setattr(updater.intl, "fetch_kospi_dated", lambda: None)
 
     result = updater.run_update(conn, intl_tickers={"sox": "^SOX", "n225": "^N225"})
 

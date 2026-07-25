@@ -62,6 +62,30 @@ def chips_backfill(days: int = 90, max_fetch: int = 15):
     finally:
         _backfill_lock.release()
 
+@router.get("/margin-maintenance/heal")
+def margin_maintenance_heal(days: int = 45, max_fetch: int = 15):
+    """大範圍回補融資維持率歷史（上市＋上櫃）。
+
+    每日更新的 _heal_margin_maintenance 只回看 7 天、每次最多 3 筆——上線前累積的洞
+    （尤其上櫃：verify=False 修好前，Zeabur 上一天都沒補到過）永遠補不到。此端點用
+    同一支自癒函式放大視窗與上限，重複呼叫直到 remaining 不再下降。
+    """
+    if not _backfill_lock.acquire(blocking=False):
+        return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
+    try:
+        from datetime import date, timedelta
+        c = conn()
+        days = max(5, min(days, 120))
+        filled = updater._heal_margin_maintenance(c, days=days, cap=max(1, min(max_fetch, 30)))
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        remaining = c.execute(
+            "SELECT COUNT(*) FROM market_daily WHERE date >= ? "
+            "AND ((margin_value IS NOT NULL AND margin_mv IS NULL) OR otc_margin_maintenance IS NULL)",
+            (cutoff,)).fetchone()[0]
+        return {"filled": filled, "remaining": remaining}
+    finally:
+        _backfill_lock.release()
+
 @router.get("/intl/backfill")
 def intl_backfill(days: int = 120):
     """大範圍回補國際指數歷史（費半/VIX/日經/KOSPI/黃金/日圓/台幣/比特幣）。
@@ -80,7 +104,11 @@ def intl_backfill(days: int = 120):
         c = conn()
         days = max(5, min(days, 365))
         tickers = load_config().intl_tickers
-        filled = updater._backfill_intl(c, tickers, days=days)
+        yf_tickers = {k: v for k, v in tickers.items() if k not in updater.INTL_NON_YFINANCE_KEYS}
+        filled = list(updater._backfill_intl(c, yf_tickers, days=days))
+        filled += updater._backfill_intl_fred(c, days=days)
+        filled += updater._backfill_intl_kospi(c, days=days)
+        filled = sorted(set(filled))
         cutoff = (date.today() - timedelta(days=days)).isoformat()
         cond = " OR ".join(f"{k} IS NULL" for k in tickers)
         remaining = c.execute(

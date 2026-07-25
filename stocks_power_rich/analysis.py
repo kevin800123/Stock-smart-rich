@@ -135,6 +135,36 @@ def margin_maintenance(lots_by_code: dict, closes: dict, margin_value_yi,
     return round(numerator / denominator * 100, 1)
 
 
+def estimate_price_range(revenue, gross_margin_pct, opex, tax, shares,
+                         pe_low, pe_mid, pe_high) -> dict | None:
+    """自選股「輸入預估」面板：單季逐步推導 EPS 再年化 ×4，套本益比低/中/高算價位區間。
+
+    推導順序對齊財報狗風格的階梯（使用者截圖）：
+    最近三個月營收 ×毛利率(估)% → 毛利(估) → −營業費用(估) −所得稅(估) → 稅後淨利
+    → ÷股數 → 單季本業EPS → ×4 年化 → ×本益比低/中/高 → 三個預估價位。
+
+    任何一個輸入缺漏（None）或 shares 非正 → 回 None，前端顯示「—」（算不出就留白，
+    不擲例外——跟 margin_maintenance 同一套風格）。稅後淨利/EPS 可以是負值（虧損季度），
+    不擋，讓使用者自己判讀。
+    """
+    inputs = (revenue, gross_margin_pct, opex, tax, shares, pe_low, pe_mid, pe_high)
+    if any(v is None for v in inputs):
+        return None
+    if shares <= 0:
+        return None
+    gross_profit = revenue * gross_margin_pct / 100
+    net_income = gross_profit - opex - tax
+    eps_quarter = net_income / shares
+    eps_annual = eps_quarter * 4
+    return {
+        "eps_quarter": round(eps_quarter, 2),
+        "eps_annual": round(eps_annual, 2),
+        "low": round(eps_annual * pe_low, 2),
+        "mid": round(eps_annual * pe_mid, 2),
+        "high": round(eps_annual * pe_high, 2),
+    }
+
+
 DEFAULT_TRADE_FEE = 0.585  # 來回費用%＝買賣手續費 0.1425%×2 ＋ 賣出證交稅 0.3%
 
 

@@ -29,6 +29,14 @@ CHIP_COLS = [
     "est_profit", "lan_score", "lpe", "lan_value", "raw_json",
 ]
 
+# 自選股「輸入預估」面板的使用者輸入（analysis.estimate_price_range 的原始參數）。
+# 全部可為 NULL：既有 watchlist 列補上這些欄位後預設是「尚未填預估」，前端據此顯示「—」
+# 並用當日 chip.lpe 預帶中本益比，不是資料錯誤。
+WATCHLIST_COLS = [
+    "est_revenue", "est_gross_margin", "est_opex", "est_tax",
+    "est_pe_low", "est_pe_mid", "est_pe_high",
+]
+
 
 def backup_db(db_path: str, keep: int = 7, stamp: str | None = None) -> str | None:
     """以 SQLite 線上備份 API 複製整個 DB 到同目錄 backup/spr-YYYYMMDD.sqlite，輪替保留最近 keep 份。
@@ -131,6 +139,10 @@ def init_db(conn: sqlite3.Connection) -> None:
     tx_existing = {r[1] for r in conn.execute("PRAGMA table_info(tx_history)").fetchall()}
     if "night_volume" not in tx_existing:
         conn.execute("ALTER TABLE tx_history ADD COLUMN night_volume REAL")
+    wl_existing = {r[1] for r in conn.execute("PRAGMA table_info(watchlist)").fetchall()}
+    for col in WATCHLIST_COLS:
+        if col not in wl_existing:
+            conn.execute(f"ALTER TABLE watchlist ADD COLUMN {col} REAL")
     # 一次性資料修正：jpy 語意由「日圓兌台幣(~0.2)」改為「美元兌日圓(~150)」，清掉舊語意殘值
     conn.execute("UPDATE market_daily SET jpy=NULL, jpy_chg=NULL WHERE jpy IS NOT NULL AND jpy < 10")
     conn.commit()
@@ -294,8 +306,9 @@ def get_custody_trend(conn: sqlite3.Connection, code: str) -> list[dict]:
 
 
 def list_watch(conn: sqlite3.Connection) -> list[dict]:
+    cols = ", ".join(["code", "name", "added_at"] + WATCHLIST_COLS)
     return [dict(r) for r in conn.execute(
-        "SELECT code, name, added_at FROM watchlist ORDER BY added_at").fetchall()]
+        f"SELECT {cols} FROM watchlist ORDER BY added_at").fetchall()]
 
 
 def add_watch(conn: sqlite3.Connection, code: str, name: str = "") -> None:
@@ -308,6 +321,31 @@ def add_watch(conn: sqlite3.Connection, code: str, name: str = "") -> None:
 
 def remove_watch(conn: sqlite3.Connection, code: str) -> None:
     conn.execute("DELETE FROM watchlist WHERE code=?", (code,))
+    conn.commit()
+
+
+def get_watch_estimate(conn: sqlite3.Connection, code: str) -> dict | None:
+    row = conn.execute(
+        f"SELECT {', '.join(WATCHLIST_COLS)} FROM watchlist WHERE code=?", (code,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def set_watch_estimate(conn: sqlite3.Connection, code: str, fields: dict) -> None:
+    """存「輸入預估」面板的原始輸入。code 必須已在 watchlist（先 add_watch 才會呼叫這裡）。
+
+    SET 子句只組呼叫端這次有帶的欄位，沒帶的既有值原封不動——跟 upsert_market_daily
+    同一個「不得洗掉既有欄位」的原則，差別是這裡保證列已存在，用 UPDATE 即可，
+    不需要 _on_conflict 的 INSERT-ON-CONFLICT 三段式。
+    """
+    cols = [c for c in WATCHLIST_COLS if c in fields]
+    if not cols:
+        return
+    updates = ", ".join(f"{c}=?" for c in cols)
+    conn.execute(
+        f"UPDATE watchlist SET {updates} WHERE code=?",
+        [fields[c] for c in cols] + [code],
+    )
     conn.commit()
 
 

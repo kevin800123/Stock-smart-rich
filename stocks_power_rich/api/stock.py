@@ -5,6 +5,7 @@ from .deps import conn
 from .helpers import (
     _latest_date,
     _get_watchlist,
+    _save_watch_estimate,
     _ohlc_names,
     _picks_code_set,
     _valuation_for,
@@ -221,6 +222,15 @@ def add_watchlist(payload: dict = Body(...)):
 def del_watchlist(code: str):
     remove_watch(conn(), code)
     return _get_watchlist(conn())
+
+@router.put("/watchlist/{code}/estimate")
+def put_watchlist_estimate(code: str, payload: dict = Body(...)):
+    """存自選股「輸入預估」面板的原始輸入（最近三個月營收/毛利率/營業費用/所得稅/本益比低中高）。
+
+    回傳整份自選股清單（跟其餘 watchlist 端點一致），前端已算好的 estimate/shares
+    就在裡面，不必再開一個 GET 端點。
+    """
+    return _save_watch_estimate(conn(), code, payload)
 
 @router.get("/patterns/cup-handle")
 def cup_handle_screen(min_r: float = patterns.MIN_R_DEFAULT):

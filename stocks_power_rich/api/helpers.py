@@ -16,6 +16,7 @@ from ..db import (
     get_ai_cache,
     set_ai_cache,
     list_watch,
+    set_watch_estimate,
     get_snapshot_dates,
     get_snapshot,
     list_trades,
@@ -285,7 +286,7 @@ def _get_watchlist(c) -> dict:
         ret = round((lc - ec) / ec * 100, 2) if (ec and lc) else None
         chip_row = c.execute(
             "SELECT snap_date, name, close, lan_value, lpe, est_profit, rev_yoy, "
-            "holder_drop_ratio, big_holder_ratio FROM chip_snapshot "
+            "holder_drop_ratio, big_holder_ratio, capital FROM chip_snapshot "
             "WHERE code=? ORDER BY snap_date DESC LIMIT 1", (code,)).fetchone()
         chip = dict(chip_row) if chip_row else None
         nm = w["name"] or (chip or {}).get("name") or ""
@@ -298,9 +299,25 @@ def _get_watchlist(c) -> dict:
                 if omap is None:
                     omap = _otc_names(c)
                 nm = omap.get(pure) or ""
+        # 股數(股) = 股本(億元) × 1e7，假設面額 10 元（絕大多數上市櫃股票通例，特例不逐股查表）。
+        shares = chip["capital"] * 1e7 if (chip and chip.get("capital")) else None
+        estimate = analysis.estimate_price_range(
+            revenue=w.get("est_revenue"), gross_margin_pct=w.get("est_gross_margin"),
+            opex=w.get("est_opex"), tax=w.get("est_tax"), shares=shares,
+            pe_low=w.get("est_pe_low"), pe_mid=w.get("est_pe_mid"), pe_high=w.get("est_pe_high"),
+        )
         out.append({**w, "name": nm, "in_latest": bool(latest and code in picks_by_date.get(latest, {})),
-                    "times": len(on), "entry_date": entry, "ret_pct": ret, "chip": chip})
+                    "times": len(on), "entry_date": entry, "ret_pct": ret, "chip": chip,
+                    "shares": shares, "estimate": estimate})
     return {"stocks": out, "latest": latest}
+
+
+def _save_watch_estimate(c, code: str, payload: dict) -> dict:
+    """存自選股「輸入預估」面板的原始輸入（只存呼叫端有帶的欄位，其餘既有值不動）。"""
+    from ..db import WATCHLIST_COLS
+    fields = {k: payload.get(k) for k in WATCHLIST_COLS if k in payload}
+    set_watch_estimate(c, code, fields)
+    return _get_watchlist(c)
 
 
 def _trades_payload(c) -> dict:
