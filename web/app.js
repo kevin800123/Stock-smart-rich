@@ -1269,13 +1269,14 @@ function chipTrendOption(hist, metric) {
         { ...LP, name: "微台散戶多空比", data: hist.map((r) => pct100(r.retail_ls_tmf)), lineStyle: { color: SER.trust }, itemStyle: { color: SER.trust } },
         taiexLine] };
   }
-  // margin：融資（左軸）+ 融券（右軸，量級差很多）
+  // margin：融資金額（左軸，官方數字）+ 融券市值估（右軸，量級差很多；無官方融券金額，
+  // 用收盤價×張數推估，跟卡片的 short_mv 同一份算式，不是官方公布值）
   return { ...base, yAxis: [
-      { type: "value", name: "融資(張)", axisLabel: { color: "#999" } },
-      { type: "value", name: "融券(張)", position: "right", axisLabel: { color: "#999" }, splitLine: { show: false } }],
+      { type: "value", name: "融資(億)", axisLabel: { color: "#999" } },
+      { type: "value", name: "融券市值(估,億)", position: "right", axisLabel: { color: "#999" }, splitLine: { show: false } }],
     series: [
-      { ...LP, name: "融資餘額", data: hist.map((r) => r.margin_balance), lineStyle: { color: C.up }, itemStyle: { color: C.up } },
-      { ...LP, name: "融券餘額", yAxisIndex: 1, data: hist.map((r) => r.short_balance), lineStyle: { color: C.down }, itemStyle: { color: C.down } }] };
+      { ...LP, name: "融資金額", data: hist.map((r) => r.margin_value), lineStyle: { color: C.up }, itemStyle: { color: C.up } },
+      { ...LP, name: "融券市值(估)", yAxisIndex: 1, data: hist.map((r) => r.short_mv), lineStyle: { color: C.down }, itemStyle: { color: C.down } }] };
 }
 // echarts.init 會把「當下」的容器尺寸記下來，之後不會自己重量。初次載入時若這行早於
 // 版面完成，寬度就被記成 0，畫布維持 0px 直到有人縮視窗或切分頁才復原（間歇性、
