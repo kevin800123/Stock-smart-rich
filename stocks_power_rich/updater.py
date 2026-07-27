@@ -288,37 +288,60 @@ def _backfill_intl_kospi(conn, days: int = 10) -> list:
     return [got["date"]]
 
 
-def backfill_history(conn, days: int = 30) -> int:
+def backfill_history(conn, days: int = 30, cap: int = 20) -> dict:
     """回補近 days 天的加權指數＋三大法人現貨買賣超＋融資融券（逐日，供雲端冷啟動補歷史）。
 
     逐日 upsert 且各自 commit，即使中途逾時，已處理日期也會保存，重跑可續補。
     期貨籌碼（未平倉/多空比）來源較慢，不在此整月回補，改由每日更新逐步累積。
+
+    **月度錨點數由 days 推得，不可寫死。** 原本是 `for _ in range(3)`，days 只當過濾條件
+    用，所以無論傳多大都只補到 3 個月前；加上端點當時把 days 夾在 60，傳 180 等於完全沒
+    多補（實測回報 backfilled_days=41 卻一列都沒新增，因為 60 天前正好是既有資料的起點）。
+
+    **指數/成交金額來自月度批次抓取（每月一個請求），法人與融資券則是逐日兩個請求**——
+    後者是成本大頭，所以只對「還缺」的日期發請求，並以 cap 限制每次呼叫處理幾天，回傳
+    remaining 讓呼叫端重複呼叫直到 0（比照 chips/margin 回補的慣例）。指數不受 cap 限制，
+    窗口內每一列都會建好，否則對照圖的 K 線窗格會缺列。
     """
     cutoff = (_date.today() - timedelta(days=days)).isoformat()
-    seen: dict = {}
-    # 近 3 個月錨點（本月、上月、上上月最後一天），避免月初漏掉整個上月
+    # 錨點＝每月最後一天往回走，直到覆蓋 cutoff 所在月份（月初往回一天即上月底）
     anchor, anchors = _date.today(), []
-    for _ in range(3):
+    while len(anchors) < 14:          # 14 個月保險：run_update 只保留近 400 天
         anchors.append(anchor)
-        anchor = anchor.replace(day=1) - timedelta(days=1)
+        first = anchor.replace(day=1)
+        if first.isoformat() <= cutoff:
+            break
+        anchor = first - timedelta(days=1)
+    seen: dict = {}
     for a in anchors:
         for r in twse.fetch_taiex_history(a):
             if r["date"] >= cutoff:
                 seen[r["date"]] = r
+    # 指數/成交金額：無額外請求，窗口內全部建列
     for iso in sorted(seen):
         r = seen[iso]
         row = {"date": iso, "updated_at": datetime.now().isoformat()}
         for k in ("taiex", "taiex_chg", "turnover"):
             if r.get(k) is not None:
                 row[k] = r[k]
+        upsert_market_daily(conn, row)
+    # 法人＋融資券：已經兩者都有的日期不必再打請求
+    done = {r[0] for r in conn.execute(
+        "SELECT date FROM market_daily WHERE date >= ? "
+        "AND inst_foreign IS NOT NULL AND margin_balance IS NOT NULL", (cutoff,)).fetchall()}
+    todo = [iso for iso in sorted(seen, reverse=True) if iso not in done]   # 由新到舊
+    filled = 0
+    for iso in todo[:cap]:
         d = _iso_to_date(iso)
+        row = {"date": iso, "updated_at": datetime.now().isoformat()}
         for fetch in (lambda: twse.fetch_institutional(date=d), lambda: twse.fetch_margin(date=d)):
             try:
                 row.update({k: v for k, v in fetch().items() if v is not None})
             except Exception:  # noqa: BLE001
                 pass
         upsert_market_daily(conn, row)
-    return len(seen)
+        filled += 1
+    return {"backfilled_days": filled, "remaining": max(0, len(todo) - filled)}
 
 
 # 指標股：以其是否存在判斷某日「該市場已回補」（2330 上市必有；上櫃取三檔大型股任一）

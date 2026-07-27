@@ -35,9 +35,20 @@ def run_update():
     return res
 
 @router.get("/backfill")
-def backfill(days: int = 30):
-    n = updater.backfill_history(conn(), max(5, min(days, 60)))
-    return {"backfilled_days": n}
+def backfill(days: int = 30, max_fetch: int = 20):
+    """回補加權指數＋現貨法人＋融資融券歷史（建列的唯一入口）。
+
+    上限 400 天而非原本的 60——run_update 只保留近 400 天，60 是沒有理由的窄。
+    每個日期約 2 個 TWSE 請求，故以 max_fetch 分批，重複呼叫直到 remaining 為 0
+    （同 chips/margin 回補的慣例）。指數不受 max_fetch 限制，窗口內一次建滿。
+    """
+    if not _backfill_lock.acquire(blocking=False):
+        return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
+    try:
+        return updater.backfill_history(conn(), max(5, min(days, 400)),
+                                       cap=max(1, min(max_fetch, 40)))
+    finally:
+        _backfill_lock.release()
 
 @router.get("/chips/backfill")
 def chips_backfill(days: int = 90, max_fetch: int = 15):

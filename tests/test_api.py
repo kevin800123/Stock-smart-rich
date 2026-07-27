@@ -159,6 +159,37 @@ def test_dashboard_bands_come_from_ss_trader(tmp_path, monkeypatch):
     assert client.get("/public/api/dashboard").json()["bands"] == bands
 
 
+def test_backfill_endpoint_allows_wide_window_and_reports_remaining(tmp_path, monkeypatch):
+    """/api/backfill 的 days 上限必須夠寬（run_update 只留近 400 天，原本夾在 60 沒有理由）。
+
+    夾在 60 的後果是靜默的：傳 days=180 會回報 backfilled_days=41 看起來成功，實際上
+    60 天前正好是既有資料起點，一列都沒新增。這條測試鎖住「窗口真的吃得到更早的日期」
+    與「回傳帶 remaining 供分批呼叫」。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import date, timedelta
+    from stocks_power_rich.sources import twse
+
+    def fake_hist(anchor=None):
+        a = anchor or date.today()
+        return [{"date": a.replace(day=d).isoformat(), "taiex": 100.0 + d,
+                 "taiex_chg": 1.0, "turnover": 5000.0} for d in (1, 15)]
+    monkeypatch.setattr(twse, "fetch_taiex_history", fake_hist)
+    monkeypatch.setattr(twse, "fetch_institutional", lambda date=None: {"inst_foreign": 1.0})
+    monkeypatch.setattr(twse, "fetch_margin", lambda date=None: {"margin_balance": 9.0})
+    app = create_app()
+    client = TestClient(app)
+
+    r = client.get("/api/backfill?days=200&max_fetch=3").json()
+    assert r["backfilled_days"] == 3            # 依 max_fetch 分批
+    assert r["remaining"] > 0                   # 還有，供重複呼叫
+    # 建出的最舊一列必須早於 3 個月前，證明 days=200 沒被夾成 60 也沒被寫死 3 個月錨點
+    from stocks_power_rich.db import get_connection
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    oldest = c.execute("SELECT MIN(date) FROM market_daily").fetchone()[0]
+    assert oldest < (date.today() - timedelta(days=95)).isoformat()
+
+
 def test_dashboard_injects_turnover_ma10_on_every_row(tmp_path, monkeypatch):
     """10 日均量逐列注入（不只最新一列）——前端位階條要拿整個視窗當樣本。
 

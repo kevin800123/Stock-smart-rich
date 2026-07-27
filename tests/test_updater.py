@@ -59,6 +59,90 @@ def test_refresh_recent_corrects_inst_and_fills_margin(tmp_path, monkeypatch):
     assert r[1] == 9999.0    # 融資回補
 
 
+def _stub_taiex_month(monkeypatch, per_month=20):
+    """fetch_taiex_history(anchor) → 該錨點所在月份的每日指數（每月 per_month 個交易日）。"""
+    def fake(anchor=None):
+        a = anchor or date.today()
+        out = []
+        for d in range(1, per_month + 1):
+            try:
+                iso = a.replace(day=d).isoformat()
+            except ValueError:
+                break
+            out.append({"date": iso, "taiex": 100.0 + d, "taiex_chg": 1.0, "turnover": 5000.0})
+        return out
+    monkeypatch.setattr(updater.twse, "fetch_taiex_history", fake)
+
+
+def test_backfill_history_anchors_derive_from_days_not_hardcoded_three_months(tmp_path, monkeypatch):
+    """月度錨點數必須由 days 推得。
+
+    原本錨點迴圈寫死 `for _ in range(3)`，days 只當過濾條件用——所以 days=180 實際上
+    只補到 3 個月前，且因為端點還把 days 夾在 60，傳 180 等於什麼都沒多補（實測
+    backfilled_days=41 卻一列都沒新增）。這條測試鎖住「窗口真的會跟著 days 變寬」。
+    """
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _stub_taiex_month(monkeypatch)
+    monkeypatch.setattr(updater.twse, "fetch_institutional", lambda date=None: {"inst_foreign": 1.0})
+    monkeypatch.setattr(updater.twse, "fetch_margin", lambda date=None: {"margin_balance": 9.0})
+
+    wide = updater.backfill_history(conn, days=150, cap=500)
+    cutoff = (date.today() - timedelta(days=150)).isoformat()
+    rows = [r[0] for r in conn.execute(
+        "SELECT date FROM market_daily ORDER BY date").fetchall()]
+    assert rows, "應建出歷史列"
+    # 最舊一列必須早於「3 個月前」，證明錨點不再寫死 3 個月
+    three_months_ago = (date.today() - timedelta(days=95)).isoformat()
+    assert rows[0] < three_months_ago, f"最舊列 {rows[0]} 未超過 3 個月，錨點仍被寫死"
+    assert all(r >= cutoff for r in rows), "不得補到 cutoff 之外"
+    assert wide["backfilled_days"] > 0 and wide["remaining"] == 0
+
+
+def test_backfill_history_caps_per_call_and_reports_remaining(tmp_path, monkeypatch):
+    """每天要打兩支 TWSE 請求（法人＋融資券），所以每次呼叫只處理 cap 天並回報 remaining，
+    比照 chips/margin 回補的慣例（重複呼叫直到 remaining 為 0），不要一次打幾百個請求。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _stub_taiex_month(monkeypatch)
+    calls = {"n": 0}
+
+    def inst(date=None):
+        calls["n"] += 1
+        return {"inst_foreign": 1.0}
+    monkeypatch.setattr(updater.twse, "fetch_institutional", inst)
+    monkeypatch.setattr(updater.twse, "fetch_margin", lambda date=None: {"margin_balance": 9.0})
+
+    first = updater.backfill_history(conn, days=90, cap=5)
+    assert first["backfilled_days"] == 5
+    assert first["remaining"] > 0
+    assert calls["n"] == 5, "只該對 cap 天發請求"
+
+    # 第二次呼叫要接著補，不從頭重打已完成的日期
+    before = calls["n"]
+    second = updater.backfill_history(conn, days=90, cap=5)
+    assert second["backfilled_days"] == 5
+    assert second["remaining"] == first["remaining"] - 5
+    assert calls["n"] - before == 5, "已完成的日期不該重打請求"
+
+
+def test_backfill_history_fills_index_without_extra_requests(tmp_path, monkeypatch):
+    """指數/成交金額來自月度批次抓取，不花逐日請求——即使 cap 用完，當窗口內每一列都該
+    建好並帶有 taiex（否則對照圖的 K 線窗格會缺列）。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _stub_taiex_month(monkeypatch)
+    monkeypatch.setattr(updater.twse, "fetch_institutional", lambda date=None: {"inst_foreign": 1.0})
+    monkeypatch.setattr(updater.twse, "fetch_margin", lambda date=None: {"margin_balance": 9.0})
+
+    res = updater.backfill_history(conn, days=90, cap=1)
+    assert res["backfilled_days"] == 1 and res["remaining"] > 0
+    n_rows, n_taiex, n_inst = conn.execute(
+        "SELECT COUNT(*), COUNT(taiex), COUNT(inst_foreign) FROM market_daily").fetchone()
+    assert n_rows == n_taiex > 1, "窗口內每一列都要建好並帶指數"
+    assert n_inst == 1, "法人只補了 cap 天"
+
+
 def test_backfill_chips_fills_recent_null_futures(tmp_path, monkeypatch):
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
