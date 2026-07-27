@@ -805,8 +805,8 @@ async function loadRankPrice() {
     }
     if (!d.items || !d.items.length) { el.innerHTML = '<div class="muted">尚無資料（需先跑過 OHLC 回補）</div>'; return; }
     const head = "<tr><th>#</th><th>股票</th><th class=\"num\">成交價</th><th class=\"num\">漲跌</th>" +
-      "<th class=\"num\">漲跌%</th><th class=\"num\">成交量(張)</th><th class=\"num\">成交額(億)</th>" +
-      "<th class=\"num\">成交額增減</th><th class=\"num\">時間</th></tr>";
+      "<th class=\"num\">漲跌%</th><th class=\"num\">成交量(張)</th><th class=\"num\">成交量增減(張)</th>" +
+      "<th class=\"num\">成交額(億)</th><th class=\"num\">成交額增減</th><th class=\"num\">時間</th></tr>";
     const body = d.items.map((it, i) => {
       const cls = it.chg > 0 ? "up" : it.chg < 0 ? "down" : "flat";
       // 盤中官方成交金額尚未發布 → 後端用 量×現價 估算，標「~」並在 tooltip 說明
@@ -816,11 +816,16 @@ async function loadRankPrice() {
       const ach = it.amount_chg == null ? "—"
         : `${it.amount_chg > 0 ? "+" : ""}${yi(it.amount_chg)} 億` +
           (it.amount_chg_pct == null ? "" : `（${it.amount_chg_pct > 0 ? "+" : ""}${fmt(it.amount_chg_pct, 1)}%）`);
+      const vcls = it.vol_chg > 0 ? "up" : it.vol_chg < 0 ? "down" : "flat";
+      const vch = it.vol_chg == null ? "—"
+        : `${it.vol_chg > 0 ? "+" : ""}${fmt(it.vol_chg, 0)}` +
+          (it.vol_chg_pct == null ? "" : `（${it.vol_chg_pct > 0 ? "+" : ""}${fmt(it.vol_chg_pct, 1)}%）`);
       return `<tr><td>${i + 1}</td><td>${stockLink(it.code, it.name)}</td>` +
         `<td class="num">${fmt(it.price, 2)}</td>` +
         `<td class="num ${cls}">${it.chg == null ? "—" : (it.chg > 0 ? "+" : "") + fmt(it.chg, 2)}</td>` +
         `<td class="num ${cls}">${it.chg_pct == null ? "—" : (it.chg_pct > 0 ? "+" : "") + fmt(it.chg_pct, 2) + "%"}</td>` +
         `<td class="num">${it.vol == null ? "—" : fmt(it.vol, 0)}</td>` +
+        `<td class="num ${vcls}">${vch}</td>` +
         `<td class="num">${amt}</td>` +
         `<td class="num ${acls}">${ach}</td>` +
         `<td class="num">${it.time ? esc(it.time) : "收盤"}</td></tr>`;

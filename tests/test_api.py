@@ -1193,6 +1193,12 @@ def test_rank_price_turnover_official_estimate_and_prev_day_change(tmp_path, mon
     # 前一日無官方值 → 增減兩欄皆 None（不拿估算值硬湊基準）
     assert it["2454"]["prev_amount"] is None
     assert it["2454"]["amount_chg"] is None and it["2454"]["amount_chg_pct"] is None
+    # 成交量增減：今日 30000 張 vs 前一日 25000 張 → +5000（+20%）
+    assert it["2330"]["vol_chg"] == 5000 and it["2330"]["vol_chg_pct"] == 20.0
+    assert it["3008"]["vol_chg"] == 100 and it["3008"]["vol_chg_pct"] == 11.1
+    # 前一日無量 → 增減兩欄皆 None
+    assert it["2454"]["prev_vol"] is None
+    assert it["2454"]["vol_chg"] is None and it["2454"]["vol_chg_pct"] is None
 
 
 def test_rank_price_endpoint_markets_and_live_quotes(tmp_path, monkeypatch):

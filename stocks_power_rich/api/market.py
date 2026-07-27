@@ -104,6 +104,8 @@ def rank_price(market: str = "all", n: int = 30):
             amount = round(vol * 1000 * price) if (vol is not None and price) else None
         prev_amount = (t_prev.get(code) or {}).get("amount")
         chg_amt = amount - prev_amount if (amount is not None and prev_amount) else None
+        prev_vol = (t_prev.get(code) or {}).get("vol")
+        chg_vol = vol - prev_vol if (vol is not None and prev_vol) else None
         items.append({
             "code": code, "market": "otc" if code in otc else "twse",
             "name": q.get("name") or otc.get(code) or code,
@@ -113,6 +115,9 @@ def rank_price(market: str = "all", n: int = 30):
             "prev_amount": prev_amount,
             "amount_chg": chg_amt,
             "amount_chg_pct": round(chg_amt / prev_amount * 100, 1) if chg_amt is not None else None,
+            "prev_vol": prev_vol,
+            "vol_chg": chg_vol,
+            "vol_chg_pct": round(chg_vol / prev_vol * 100, 1) if chg_vol is not None else None,
             "time": q.get("time"),
         })
     items.sort(key=lambda i: -(i["price"] or 0))
