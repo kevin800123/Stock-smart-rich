@@ -159,6 +159,41 @@ def test_dashboard_bands_come_from_ss_trader(tmp_path, monkeypatch):
     assert client.get("/public/api/dashboard").json()["bands"] == bands
 
 
+def test_chips_and_maint_backfill_windows_reach_as_far_as_row_creation(tmp_path, monkeypatch):
+    """兩支「只填既有列」的回補，窗口必須跟得上 /api/backfill 的建列窗口（200 天）。
+
+    窄一截的後果是安靜的不對稱：最舊那段只有大盤與法人、沒有期貨籌碼與維持率，
+    對照圖的那幾個窗格就比其他窗格短（實測上限 120 時為 80~81/130 列、自 03-30 才有值）。
+    這裡用「180 天前的缺值列有沒有被算進 remaining」來證明窗口真的伸得到那麼遠。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import date, timedelta
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import taifex, twse, tpex
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    old = (date.today() - timedelta(days=180)).isoformat()
+    # 180 天前的列：期貨籌碼與維持率都缺，但 margin_value 有（=> 維持率可補）
+    upsert_market_daily(c, {"date": old, "taiex": 100.0, "margin_value": 5000.0})
+    # 不讓測試打網路；回傳 None/空代表「該日補不到」，remaining 因此不會歸零
+    monkeypatch.setattr(taifex, "fetch_chips_for_date", lambda d: {})
+    monkeypatch.setattr(twse, "fetch_margin_detail", lambda date=None: {"margin": {}, "short": {}})
+    monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {})
+    monkeypatch.setattr(tpex, "fetch_otc_margin", lambda date=None: {"value": None, "margin": {}, "short": {}})
+    monkeypatch.setattr(tpex, "fetch_otc_quotes", lambda date=None: {})
+    client = TestClient(create_app())
+
+    chips = client.get("/api/chips/backfill?days=200&max_fetch=1").json()
+    assert chips["remaining"] >= 1, "200 天的窗口要看得到 180 天前的缺值列"
+    maint = client.get("/api/margin-maintenance/heal?days=200&max_fetch=1").json()
+    assert maint["remaining"] >= 1
+
+    # 對照：窄窗口看不到它，證明上面不是恆真
+    assert client.get("/api/chips/backfill?days=60&max_fetch=1").json()["remaining"] == 0
+    assert client.get("/api/margin-maintenance/heal?days=60&max_fetch=1").json()["remaining"] == 0
+
+
 def test_dashboard_window_is_wide_enough_for_the_combo_chart(tmp_path, monkeypatch):
     """/api/dashboard 的視窗要吃得到回補來的歷史。
 

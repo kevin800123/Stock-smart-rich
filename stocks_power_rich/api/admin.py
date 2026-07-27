@@ -57,13 +57,18 @@ def chips_backfill(days: int = 90, max_fetch: int = 15):
     每日更新的 _backfill_chips 只回看 10 天、每次 3 筆，功能上線前的歷史永遠補不到——
     此端點用同一支回補函式放大視窗與上限，重複呼叫直到 remaining 不再下降
     （連假日期交所無資料者留 NULL，屬預期）。每個日期約 4 個 TAIFEX CSV 請求，勿設過大 max_fetch。
+
+    上限 200（原 120）：`/api/backfill` 修好後建列窗口是 200 天，而這支只填既有列——
+    上限比它窄的話，最舊那段永遠只有大盤與法人、沒有期貨籌碼，「大盤×籌碼對照圖」的
+    期貨窗格就比其他窗格短一截（實測 120 時是 81/130 列、自 03-30 才有值）。已實測
+    期交所對 200 天前的日期仍取得到完整籌碼。
     """
     if not _backfill_lock.acquire(blocking=False):
         return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
     try:
         from datetime import date, timedelta
         c = conn()
-        days = max(5, min(days, 120))
+        days = max(5, min(days, 200))     # 200 對齊 /api/backfill 建列的窗口，見下方註記
         filled = updater._backfill_chips(c, days=days, cap=max(1, min(max_fetch, 30)))
         cutoff = (date.today() - timedelta(days=days)).isoformat()
         remaining = c.execute(
@@ -80,13 +85,18 @@ def margin_maintenance_heal(days: int = 45, max_fetch: int = 15):
     每日更新的 _heal_margin_maintenance 只回看 7 天、每次最多 3 筆——上線前累積的洞
     （尤其上櫃：verify=False 修好前，Zeabur 上一天都沒補到過）永遠補不到。此端點用
     同一支自癒函式放大視窗與上限，重複呼叫直到 remaining 不再下降。
+
+    上限 200（原 120）：理由同 chips/backfill——建列窗口是 200 天，上限比它窄會讓
+    維持率窗格比其他窗格短一截（實測 120 時是 80/130 列）。每個日期 4 個請求，其中
+    TWSE 全市場收盤約 1.7 萬列，故 max_fetch 勿設過大。已實測 TWSE 逐檔融資明細與
+    櫃買融資對 200 天前的日期都仍有資料。
     """
     if not _backfill_lock.acquire(blocking=False):
         return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
     try:
         from datetime import date, timedelta
         c = conn()
-        days = max(5, min(days, 120))
+        days = max(5, min(days, 200))     # 200 對齊 /api/backfill 建列的窗口，見下方註記
         filled = updater._heal_margin_maintenance(c, days=days, cap=max(1, min(max_fetch, 30)))
         cutoff = (date.today() - timedelta(days=days)).isoformat()
         remaining = c.execute(
