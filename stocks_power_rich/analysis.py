@@ -7,6 +7,25 @@
 import math
 
 
+def turnover_ma(values: list, n: int = 10) -> list:
+    """逐點回傳「到該點為止最近 n 個有效值」的均值，長度與輸入相同、不足 n 筆給 None。
+
+    None 是略過而非中斷視窗：turnover 偶因來源當日尚未發布而留 NULL（實測 3/41），
+    若要求連續 n 筆非空，一個洞會讓後面整整 n 列都算不出來。取「最近 n 個有效值」
+    可以跨過洞往前撈，代價是均量偶爾會橫跨多於 n 個日曆交易日——對量能水位這種
+    緩變量是可接受的近似，總比整段留白好。同 ss_trader 既有量能檢查的做法。
+
+    不足 n 筆一律 None，不用「有幾筆算幾筆」：拿 3 筆算出來的東西叫「10 日均量」
+    是誤導，寧可留白。
+    """
+    out, seen = [], []
+    for v in values:
+        if v is not None:
+            seen.append(v)
+        out.append(round(sum(seen[-n:]) / n, 1) if len(seen) >= n else None)
+    return out
+
+
 def change_histogram(pcts: list[float], lo: int = -10, hi: int = 10) -> dict:
     """全市場漲跌幅分布。pcts＝各檔當日漲跌%清單 → 分整數桶的家數 + 摘要。
 

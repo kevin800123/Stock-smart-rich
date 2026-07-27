@@ -153,8 +153,36 @@ def test_dashboard_bands_come_from_ss_trader(tmp_path, monkeypatch):
     assert bands["margin_maintenance"] == {"breakeven": 166.7, "call": ss_trader.MARGIN_CALL_LINE}
     assert bands["otc_margin_maintenance"] == {"breakeven": 200.0, "call": ss_trader.MARGIN_CALL_LINE}
     assert bands["vix"] == {"low": ss_trader.VIX_COMPLACENT, "high": ss_trader.VIX_PANIC}
+    # 量能只有下緣：量縮才是要看的事，給 high 反而會讓「爆量」也亮琥珀外框
+    assert bands["turnover_ma10"] == {"low": ss_trader.VOL_QUIET_YI}
     # 免密碼的公開總覽走同一個 handler，門檻也必須跟著出現
     assert client.get("/public/api/dashboard").json()["bands"] == bands
+
+
+def test_dashboard_injects_turnover_ma10_on_every_row(tmp_path, monkeypatch):
+    """10 日均量逐列注入（不只最新一列）——前端位階條要拿整個視窗當樣本。
+
+    它是純衍生值、不落地成 DB 欄位，所以這裡順帶鎖住「market_daily 沒有這一欄
+    也要算得出來」這件事。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich import ss_trader
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    # 12 個交易日，成交金額固定 100 → 第 10 列起才有均量，且均量恆為 100
+    for i in range(1, 13):
+        upsert_market_daily(c, {"date": f"2026-07-{i:02d}", "taiex": 100.0, "turnover": 100.0})
+    app = create_app()
+    client = TestClient(app)
+    d = client.get("/api/dashboard").json()
+    hist = d["history"]                      # 由舊到新
+    assert len(hist) == 12
+    assert all(r["turnover_ma10"] is None for r in hist[:ss_trader.VOL_MA_DAYS - 1])
+    assert all(r["turnover_ma10"] == 100.0 for r in hist[ss_trader.VOL_MA_DAYS - 1:])
+    # latest 與 history 最後一列是同一天，均量必須一致（不是各算各的）
+    assert d["latest"]["turnover_ma10"] == hist[-1]["turnover_ma10"] == 100.0
 
 
 def test_sectors_endpoint_sorted_by_change(tmp_path, monkeypatch):

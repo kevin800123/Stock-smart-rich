@@ -148,12 +148,18 @@ def dashboard():
     rows = [dict(r) for r in c.execute(
         "SELECT * FROM market_daily ORDER BY date DESC LIMIT 60"
     ).fetchall()]
-    latest = rows[0] if rows else {}
+    # 10 日均量是純衍生值，不落地成 DB 欄位（落地就要配自己的自癒 pass——見融資維持率
+    # 那條教訓）。逐列注入而非只算最新一列，是為了讓前端的位階條有整個視窗可取樣。
+    asc = list(reversed(rows))
+    mas = analysis.turnover_ma([r.get("turnover") for r in asc], ss_trader.VOL_MA_DAYS)
+    for r, ma in zip(asc, mas):
+        r["turnover_ma10"] = ma
+    latest = rows[0] if rows else {}      # 與 asc[-1] 是同一個 dict，均量自動帶到
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
     return {
         "latest": latest,
-        "history": list(reversed(rows)),
+        "history": asc,
         "today": today,
         "data_stale": data_is_stale(latest.get("date"), today, now.weekday()),
         # 前端「異常讀數」判定用的固定門檻。刻意由後端供給而非在 app.js 複寫——
@@ -171,6 +177,9 @@ _BANDS = {
     "otc_margin_maintenance": {"breakeven": ss_trader.margin_breakeven(ss_trader.MARGIN_RATIO_OTC),
                                "call": ss_trader.MARGIN_CALL_LINE},
     "vix": {"low": ss_trader.VIX_COMPLACENT, "high": ss_trader.VIX_PANIC},
+    # 量能只有下緣有意義（量縮才是要看的事），不給 high——前端 isAlert 對 undefined
+    # 的比較恆為 false，單邊門檻是安全的。
+    "turnover_ma10": {"low": ss_trader.VOL_QUIET_YI},
 }
 
 @router.get("/health")

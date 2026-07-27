@@ -437,6 +437,27 @@ function marginMaintCard(hist, srcRow, curDate, opts) {
   const alert = call != null && (v < call * 1.08 || (rel != null && rel <= -20));
   return card(lbl, fmt(v, 1) + "%", chg, pctOf(v, chg), "", tip, rk, alert, extra);
 }
+// 10 日均量卡：大盤量能的「絕對水位」（既有的爆量/量縮判定看的是相對變化，兩者互補）。
+// 比照上面的維持率卡：有一條有意義的錨線時，卡片永遠顯示「距錨線多遠」而不是只在
+// 跨過時才有反應——不然門檻沒觸發的日子，這張卡就只是一個沒有尺度的數字。
+// alert 自行由後端門檻算，不吃泛用 isAlert 的「位階頭尾 10%」：這張卡的琥珀外框
+// 要專門代表「量縮到那條線以下」，混入位階極端會稀釋掉它的意思。
+function volMaCard(hist, m, prev) {
+  const v = m.turnover_ma10;
+  const lo = (lastBands.turnover_ma10 || {}).low;
+  const label = "10日均量";
+  if (v === null || v === undefined) {
+    return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+  }
+  const { chg, pct } = dod(v, prev && prev.turnover_ma10);
+  const rel = lo ? (v - lo) / lo * 100 : null;
+  const extra = rel == null ? "" : `距 ${fmt(lo, 0)} 億 ${rel > 0 ? "+" : ""}${fmt(rel, 1)}%`;
+  const tip = `近 10 個交易日成交金額的平均（上市，證交所 FMTQIK 官方值）。`
+    + (lo ? `\n${fmt(lo, 0)} 億是市場常用的量能萎縮觀察線，跌破時本卡片標示琥珀外框。` : "")
+    + `\n註：本站為上市口徑，與「上市櫃合計」的數字不可直接對照。`;
+  return card(label, fmt(v, 0), chg, pct, '<span class="card-unit">億</span>', tip,
+    pctile(hist, "turnover_ma10", v), lo != null && v <= lo, extra);
+}
 // 市場內部儀表：指數（方向）＋三大法人（資金）。中間的漲跌家數由 loadBreadth 填 #breadth，
 // 三者並列才看得出「指數持平但下跌家數遠多於上漲」這種內部背離。
 function renderMarketStrip(m, total3) {
@@ -531,6 +552,7 @@ function renderCards(m, prev = {}, hist = []) {
       mvCol: "margin_mv", svCol: "short_mv", amtCol: "margin_value" }),
     marginMaintCard(hist, otcRow, m.date, { label: "融資維持率（上櫃）", col: "otc_margin_maintenance",
       mvCol: "otc_margin_mv", svCol: "otc_short_mv", amtCol: "otc_margin_value" }),
+    volMaCard(hist, m, prev),
   ].join("");
   $("cards-fut").innerHTML = [
     card("台指期", fmt(m.tx_price), m.tx_chg, pctOf(m.tx_price, m.tx_chg)),
