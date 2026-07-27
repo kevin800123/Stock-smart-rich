@@ -1315,13 +1315,19 @@ function chipTrendOption(hist, kl, paneKeys) {
   const klIdx = new Map(klDates.map((d, i) => [d, i]));
   // 逐日期查表取值；該日無資料給 null（前導 null 讓線自然從有資料處才開始畫）
   const at = (fn) => dates.map((d) => { const r = byDate.get(d); return r ? (fn(r) ?? null) : null; });
-  const candles = dates.map((d) => (klIdx.has(d) ? (kl.candles[klIdx.get(d)] ?? null) : null));
+  // 缺 K 線的日期必須給 '-' 而不是 null：ECharts 的 candlestick 在 getInitialData 會對
+  // 每個點讀 .value，遇到 null 直接丟 TypeError，整個 setOption 中止 → 圖全白（而且不會
+  // 進 console，因為呼叫端沒 try/catch）。'-' 是 ECharts 的空值標記，line/bar 也吃。
+  // 這個洞只在「籌碼日期比 K 線早（或晚）」時才出現，本機的 K 線剛好涵蓋所有籌碼日、
+  // 一個 null 都沒有，所以本機全綠、production 全白——實測 production 有 13 個。
+  const candles = dates.map((d) => (klIdx.has(d) ? (kl.candles[klIdx.get(d)] ?? "-") : "-"));
 
   const panes = CHIP_PANES.filter((p) => paneKeys.has(p.key));
   const grids = [{ left: 66, right: 66, top: TOP, height: KL_H }];
   const xAxes = [{ type: "category", data: dates, gridIndex: 0, boundaryGap: true, axisLabel: { show: false }, axisLine: { lineStyle: { color: C.border } } }];
   const yAxes = [{ scale: true, gridIndex: 0, axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.border } } }];
-  const closes = candles.map((c) => (c ? c[1] : null));
+  // 只認陣列：'-' 是字串、truthy，用 `c ? c[1] : null` 會取到 undefined 餵進 ma()
+  const closes = candles.map((c) => (Array.isArray(c) ? c[1] : null));
   const series = [
     { name: "加權指數", type: "candlestick", xAxisIndex: 0, yAxisIndex: 0, data: candles,
       itemStyle: { color: C.up, color0: C.down, borderColor: C.up, borderColor0: C.down } },
