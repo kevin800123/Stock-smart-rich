@@ -142,11 +142,22 @@ def trader_detail(tid: str):
         raise HTTPException(status_code=404, detail=f"找不到操盤手 {tid}")
     return {**m.META, **m.analyze(conn())}
 
+DASHBOARD_DAYS = 150
+"""總覽一次取幾個交易日。
+
+原本是 60，在 `market_daily` 只有 42 列時不是瓶頸；把 `/api/backfill` 的雙重上限修掉、
+歷史回補到 130+ 列之後，這個 60 就成了「大盤×籌碼對照圖」看得到多少籌碼的天花板
+（回補明明補到了，圖上卻停在 60 天）。放大到 150 同時也讓卡片的位階條從 60 日基準變成
+150 日基準——樣本更長、極端值判定更穩，且位階條的 tooltip 本來就會誠實印出樣本數
+（`rk.n`），不會讓人誤以為兩者同基準。
+"""
+
+
 @router.get("/dashboard")
 def dashboard():
     c = conn()
     rows = [dict(r) for r in c.execute(
-        "SELECT * FROM market_daily ORDER BY date DESC LIMIT 60"
+        "SELECT * FROM market_daily ORDER BY date DESC LIMIT ?", (DASHBOARD_DAYS,)
     ).fetchall()]
     # 10 日均量是純衍生值，不落地成 DB 欄位（落地就要配自己的自癒 pass——見融資維持率
     # 那條教訓）。逐列注入而非只算最新一列，是為了讓前端的位階條有整個視窗可取樣。

@@ -159,6 +159,29 @@ def test_dashboard_bands_come_from_ss_trader(tmp_path, monkeypatch):
     assert client.get("/public/api/dashboard").json()["bands"] == bands
 
 
+def test_dashboard_window_is_wide_enough_for_the_combo_chart(tmp_path, monkeypatch):
+    """/api/dashboard 的視窗要吃得到回補來的歷史。
+
+    原本寫死 LIMIT 60，在 market_daily 只有 42 列時看不出問題；歷史回補到 130+ 列之後
+    這個 60 就成了對照圖的天花板——回補明明補到了，圖上的籌碼窗格卻停在 60 天。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.api import market
+    from datetime import date, timedelta
+
+    assert market.DASHBOARD_DAYS >= 120, "視窗需容得下回補的歷史，否則對照圖被截斷"
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    start = date(2026, 1, 5)
+    n = 100
+    for i in range(n):
+        upsert_market_daily(c, {"date": (start + timedelta(days=i)).isoformat(), "taiex": 100.0 + i})
+    hist = TestClient(create_app()).get("/api/dashboard").json()["history"]
+    assert len(hist) == n, "100 列都要回傳，不得被舊的 LIMIT 60 截掉"
+    assert hist[0]["date"] < hist[-1]["date"], "history 仍為由舊到新"
+
+
 def test_backfill_endpoint_allows_wide_window_and_reports_remaining(tmp_path, monkeypatch):
     """/api/backfill 的 days 上限必須夠寬（run_update 只留近 400 天，原本夾在 60 沒有理由）。
 
