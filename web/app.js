@@ -26,7 +26,11 @@ let idxSymbol = "taiex", idxInterval = "1d", overviewWaves = false;
 let stockCode = "", stockInterval = "1d", stockWaves = false;
 let wavePct = 0.05;
 let lastIndexData = null, lastStockData = null;
-let chipChart = null, chipMetric = "inst", lastHistory = [];
+let chipChart = null, lastHistory = [];
+// 大盤×籌碼對照圖：勾選了哪些籌碼窗格（與 index.html 的 .cpn checkbox 同步）。
+// comboKline 是這張圖自己抓的日K，刻意不共用 lastIndexData——後者會隨 K 線區塊的
+// 台指期／週K／月K 切換而變，共用的話一按「週K」對照圖頂端就變週線，與日頻籌碼對不起來。
+let chipPanes = new Set(["margin", "inst"]), comboKline = null;
 // 判讀句需要「指數方向」(dashboard) ＋「漲跌家數」(breadth) 兩支 API 的值，但兩者分開載入。
 // 兩處呼叫點都是 loadDashboard 先 await、loadBreadth 後跑，故此處存下最新一列即可。
 let lastLatest = null, lastBands = {};
@@ -1263,56 +1267,120 @@ async function loadCross() {
   } catch (e) { el.innerHTML = '<div class="muted small">交叉選股載入失敗</div>'; }
 }
 
-// ========== 籌碼趨勢圖（用 dashboard 的近 60 日 history，純前端） ==========
-function chipTrendOption(hist, metric) {
-  const dates = hist.map((r) => (r.date ? r.date.slice(5) : ""));
-  // 顯示實際資料點、斷點自動連線(不留假空白)、輕微平滑(不腦補誇大轉折)
-  const LP = { type: "line", smooth: 0.15, showSymbol: true, symbolSize: 5, connectNulls: true };
-  const axisTaiex = { type: "value", scale: true, position: "right", axisLabel: { color: "#777", fontSize: 11 }, splitLine: { show: false } };
-  const taiexLine = { ...LP, name: "加權", yAxisIndex: 1, symbolSize: 0, data: hist.map((r) => r.taiex), lineStyle: { width: 1, color: "#8a94a3", type: "dashed" }, itemStyle: { color: "#8a94a3" } };
-  const base = {
+// ========== 大盤 × 籌碼對照圖（多窗格共用一條 X 軸，純前端） ==========
+// 兩張獨立的圖沒辦法回答這張圖要回答的問題：大盤轉折那天，融資/法人/未平倉怎麼動。
+// 資料合併只是「日期對齊」這種呈現層黏合，不是分析邏輯，所以不開後端 merge 端點——
+// 兩份資料本來就都到得了瀏覽器，複製一份只會多一個快取一致性的面。
+
+// 顯示實際資料點、斷點自動連線(不留假空白)、輕微平滑(不腦補誇大轉折)
+const LP = { type: "line", smooth: 0.15, showSymbol: true, symbolSize: 4, connectNulls: true };
+const pct100 = (v) => (v == null ? null : v * 100);
+const zeroMark = () => ({ silent: true, symbol: "none", data: [{ yAxis: 0 }],
+  lineStyle: { color: C.border, type: "dashed" } });
+// 籌碼窗格定義表：加一個窗格＝加一筆。series() 拿對齊後的列陣列（缺該日則為 null），
+// 回傳該窗格的 series（gridIndex/xAxisIndex/yAxisIndex 由 option 組裝時統一補上）。
+// 成交量刻意用 turnover（億）而非 K 線的 volumes（股數），單位才與其他窗格一致。
+const CHIP_PANES = [
+  { key: "turnover", label: "成交金額", unit: "億", bar: true, series: (at) => [
+      { name: "成交金額", type: "bar", data: at((r) => r.turnover), itemStyle: { color: SER.dealer, opacity: 0.55 } },
+      { ...LP, name: "10日均量", symbolSize: 0, data: at((r) => r.turnover_ma10), lineStyle: { color: C.accent, width: 1.5 }, itemStyle: { color: C.accent } }] },
+  { key: "margin", label: "融資／融券", unit: "億", series: (at) => [
+      { ...LP, name: "融資金額", data: at((r) => r.margin_value), lineStyle: { color: C.up }, itemStyle: { color: C.up } },
+      { ...LP, name: "融券市值(估)", data: at((r) => r.short_mv), lineStyle: { color: C.down }, itemStyle: { color: C.down } }] },
+  { key: "maint", label: "融資維持率", unit: "%", series: (at) => [
+      { ...LP, name: "維持率(上市)", data: at((r) => r.margin_maintenance), lineStyle: { color: C.up }, itemStyle: { color: C.up } },
+      { ...LP, name: "維持率(上櫃)", data: at((r) => r.otc_margin_maintenance), lineStyle: { color: SER.trust }, itemStyle: { color: SER.trust } }] },
+  { key: "inst", label: "三大法人", unit: "億", bar: true, series: (at) => [
+      { name: "外資", type: "bar", data: at((r) => r.inst_foreign), itemStyle: { color: SER.foreign } },
+      { name: "投信", type: "bar", data: at((r) => r.inst_trust), itemStyle: { color: SER.trust } },
+      { name: "自營", type: "bar", data: at((r) => r.inst_dealer), itemStyle: { color: SER.dealer } }] },
+  { key: "oi", label: "外資台指未平倉", unit: "口", series: (at) => [
+      { ...LP, name: "外資台指淨未平倉", data: at((r) => r.tx_foreign_oi), areaStyle: { opacity: 0.08 },
+        lineStyle: { color: SER.foreign }, itemStyle: { color: SER.foreign }, markLine: zeroMark() }] },
+  { key: "ls", label: "散戶多空比", unit: "%", series: (at) => [
+      // retail_ls_mtx/tmf 是比率（如 0.139）→ ×100 以百分比呈現，與卡片一致
+      { ...LP, name: "小台散戶多空比", data: at((r) => pct100(r.retail_ls_mtx)), lineStyle: { color: SER.foreign }, itemStyle: { color: SER.foreign }, markLine: zeroMark() },
+      { ...LP, name: "微台散戶多空比", data: at((r) => pct100(r.retail_ls_tmf)), lineStyle: { color: SER.trust }, itemStyle: { color: SER.trust } }] },
+];
+// 版面用 px 而非 %：窗格數會變，% 每次都要重算比例，px 直接相加。
+const KL_H = 300, PANE_H = 130, GAP = 30, TOP = 34, BOTTOM = 56;
+const comboHeight = (n) => TOP + KL_H + n * (GAP + PANE_H) + BOTTOM;
+
+function chipTrendOption(hist, kl, paneKeys) {
+  // X 軸＝兩邊日期的聯集後排序。不直接拿 kline 的 dates 當主軸：market_daily 已經有
+  // 07-27 而 kline 只到 07-24，以 kline 為主軸會把最新一天的籌碼吃掉。聯集則哪邊超前都不漏。
+  const klDates = (kl && kl.dates) || [];
+  const byDate = new Map(hist.map((r) => [r.date, r]));
+  const dates = [...new Set([...klDates, ...hist.map((r) => r.date)])].filter(Boolean).sort();
+  const klIdx = new Map(klDates.map((d, i) => [d, i]));
+  // 逐日期查表取值；該日無資料給 null（前導 null 讓線自然從有資料處才開始畫）
+  const at = (fn) => dates.map((d) => { const r = byDate.get(d); return r ? (fn(r) ?? null) : null; });
+  const candles = dates.map((d) => (klIdx.has(d) ? (kl.candles[klIdx.get(d)] ?? null) : null));
+
+  const panes = CHIP_PANES.filter((p) => paneKeys.has(p.key));
+  const grids = [{ left: 66, right: 66, top: TOP, height: KL_H }];
+  const xAxes = [{ type: "category", data: dates, gridIndex: 0, boundaryGap: true, axisLabel: { show: false }, axisLine: { lineStyle: { color: C.border } } }];
+  const yAxes = [{ scale: true, gridIndex: 0, axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.border } } }];
+  const closes = candles.map((c) => (c ? c[1] : null));
+  const series = [
+    { name: "加權指數", type: "candlestick", xAxisIndex: 0, yAxisIndex: 0, data: candles,
+      itemStyle: { color: C.up, color0: C.down, borderColor: C.up, borderColor0: C.down } },
+    { name: "MA20", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: ma(closes, 20), smooth: true,
+      showSymbol: false, lineStyle: { width: 1, color: MA_DEFS[1].color }, itemStyle: { color: MA_DEFS[1].color } },
+    { name: "MA60", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: ma(closes, 60), smooth: true,
+      showSymbol: false, lineStyle: { width: 1, color: MA_DEFS[2].color }, itemStyle: { color: MA_DEFS[2].color } },
+  ];
+  panes.forEach((p, i) => {
+    const gi = i + 1, last = i === panes.length - 1;
+    grids.push({ left: 66, right: 66, top: TOP + KL_H + (i + 1) * GAP + i * PANE_H, height: PANE_H });
+    xAxes.push({ type: "category", data: dates, gridIndex: gi, boundaryGap: true,
+      axisLabel: last ? { color: C.muted } : { show: false }, axisLine: { lineStyle: { color: C.border } } });
+    yAxes.push({ scale: !p.bar, gridIndex: gi, name: p.unit, nameTextStyle: { color: C.muted, fontSize: 11 },
+      axisLabel: { color: C.muted, fontSize: 11 }, splitLine: { lineStyle: { color: C.border, opacity: 0.5 } } });
+    p.series(at).forEach((s) => series.push({ ...s, xAxisIndex: gi, yAxisIndex: gi }));
+  });
+
+  const allX = grids.map((_, i) => i);
+  // 預設視窗定在有籌碼的區段（籌碼只有近 2 個月，日K 有一年）；使用者可自行往左拉看完整 K 線
+  const firstChip = hist.length ? dates.indexOf(hist[0].date) : -1;
+  const start = firstChip > 0 ? Math.max(0, (firstChip / dates.length) * 100 - 3) : 0;
+  return {
+    textStyle: { fontFamily: HM_FONT },
     tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
-    legend: { textStyle: { color: "#ccc" }, top: 0 },
-    grid: { left: 64, right: 60, top: 30, bottom: 26 },
-    xAxis: { type: "category", data: dates, boundaryGap: metric === "inst", axisLabel: { color: "#999" } },
+    // 十字線貫穿所有窗格——這張圖的重點就是同一天上下對齊
+    axisPointer: { link: [{ xAxisIndex: "all" }], label: { backgroundColor: C.border } },
+    legend: { top: 0, textStyle: { color: C.label, fontSize: 11 }, itemGap: 10 },
+    grid: grids, xAxis: xAxes, yAxis: yAxes, series,
+    dataZoom: [{ type: "inside", xAxisIndex: allX, start, end: 100 },
+      { type: "slider", xAxisIndex: allX, start, end: 100, bottom: 6, height: 16,
+        borderColor: C.border, textStyle: { color: C.muted } }],
   };
-  const zeroMark = { silent: true, symbol: "none", data: [{ yAxis: 0 }], lineStyle: { color: "#555", type: "dashed" } };
-  if (metric === "inst") {
-    const bar = (name, key, color) => ({ name, type: "bar", data: hist.map((r) => r[key]), itemStyle: { color } });
-    return { ...base, yAxis: [{ type: "value", name: "億", axisLabel: { color: "#999" } }, axisTaiex],
-      series: [bar("外資", "inst_foreign", SER.foreign), bar("投信", "inst_trust", SER.trust), bar("自營", "inst_dealer", SER.dealer), taiexLine] };
-  }
-  if (metric === "foreign_oi") {
-    return { ...base, yAxis: [{ type: "value", name: "口", axisLabel: { color: "#999" } }, axisTaiex],
-      series: [{ ...LP, name: "外資台指淨未平倉", data: hist.map((r) => r.tx_foreign_oi), areaStyle: { opacity: 0.08 }, lineStyle: { color: SER.foreign }, itemStyle: { color: SER.foreign }, markLine: zeroMark }, taiexLine] };
-  }
-  if (metric === "retail_ls") {
-    // retail_ls_mtx/tmf 是比率（如 0.139）→ ×100 以百分比呈現，與卡片一致
-    const pct100 = (v) => (v == null ? null : v * 100);
-    return { ...base, yAxis: [{ type: "value", name: "%", axisLabel: { color: "#999" } }, axisTaiex],
-      series: [
-        { ...LP, name: "小台散戶多空比", data: hist.map((r) => pct100(r.retail_ls_mtx)), lineStyle: { color: SER.foreign }, itemStyle: { color: SER.foreign }, markLine: zeroMark },
-        { ...LP, name: "微台散戶多空比", data: hist.map((r) => pct100(r.retail_ls_tmf)), lineStyle: { color: SER.trust }, itemStyle: { color: SER.trust } },
-        taiexLine] };
-  }
-  // margin：融資金額（左軸，官方數字）+ 融券市值估（右軸，量級差很多；無官方融券金額，
-  // 用收盤價×張數推估，跟卡片的 short_mv 同一份算式，不是官方公布值）
-  return { ...base, yAxis: [
-      { type: "value", name: "融資(億)", axisLabel: { color: "#999" } },
-      { type: "value", name: "融券市值(估,億)", position: "right", axisLabel: { color: "#999" }, splitLine: { show: false } }],
-    series: [
-      { ...LP, name: "融資金額", data: hist.map((r) => r.margin_value), lineStyle: { color: C.up }, itemStyle: { color: C.up } },
-      { ...LP, name: "融券市值(估)", yAxisIndex: 1, data: hist.map((r) => r.short_mv), lineStyle: { color: C.down }, itemStyle: { color: C.down } }] };
 }
 // echarts.init 會把「當下」的容器尺寸記下來，之後不會自己重量。初次載入時若這行早於
 // 版面完成，寬度就被記成 0，畫布維持 0px 直到有人縮視窗或切分頁才復原（間歇性、
-// 重整幾次才遇得到一次）。熱力圖沒這問題正是因為它在 render 後補了 resize()，
-// 這裡比照辦理——setOption 後量一次，讓結果不依賴 init 的時機。
-function loadChipTrend() {
-  if (!$("chipchart")) return;
-  if (!chipChart) chipChart = echarts.init($("chipchart"));
-  if (!lastHistory.length) { chipChart.clear(); return; }
-  chipChart.setOption(chipTrendOption(lastHistory, chipMetric), true);
+// 重整幾次才遇得到一次）。這裡容器高度還是動態的（窗格數會變），所以順序是
+// 先寫 inline height、再 setOption、最後 resize()——寫在 resize 之後畫布會停在舊高度。
+async function loadChipTrend() {
+  const el = $("chipchart");
+  if (!el) return;
+  if (!chipChart) chipChart = echarts.init(el);
+  if (!comboKline) {
+    try { comboKline = await getJSON("/api/index/kline?symbol=taiex&interval=1d"); }
+    catch (e) { comboKline = null; }
+  }
+  const note = $("combo-note");
+  if (!lastHistory.length) {
+    chipChart.clear();
+    if (note) note.textContent = "（尚無籌碼資料）";
+    return;
+  }
+  if (note) {
+    const kn = (comboKline && comboKline.dates && comboKline.dates.length) || 0;
+    note.textContent = `（日K ${kn} 根；籌碼 ${lastHistory.length} 日 ${lastHistory[0].date.slice(5)}～${lastHistory[lastHistory.length - 1].date.slice(5)}，更早僅有 K 線）`
+      + (kn ? "" : "　K 線載入失敗，僅顯示籌碼");
+  }
+  el.style.height = comboHeight(CHIP_PANES.filter((p) => chipPanes.has(p.key)).length) + "px";
+  chipChart.setOption(chipTrendOption(lastHistory, comboKline, chipPanes), true);
   chipChart.resize();
 }
 
@@ -1843,9 +1911,11 @@ document.addEventListener("click", (e) => {
   const a = e.target.closest("a.stock");
   if (a) { e.preventDefault(); showView("stock"); $("stock-input").value = a.dataset.code; loadStock(a.dataset.code, a.dataset.name); }
 });
-document.querySelectorAll(".ctf").forEach((b) => b.addEventListener("click", () => {
-  document.querySelectorAll(".ctf").forEach((x) => x.classList.toggle("active", x === b));
-  chipMetric = b.dataset.metric; loadChipTrend();
+// 對照圖的窗格勾選。checkbox 是靜態 HTML，逐一掛 listener 即可——不得寫 inline on*=
+// （CSP script-src 'self' 會靜默丟掉，什麼錯都不報）。全部取消勾選時仍留 K 線窗格。
+document.querySelectorAll(".cpn").forEach((b) => b.addEventListener("change", () => {
+  if (b.checked) chipPanes.add(b.dataset.pane); else chipPanes.delete(b.dataset.pane);
+  loadChipTrend();
 }));
 document.querySelectorAll(".rkf").forEach((b) => b.addEventListener("click", () => {
   document.querySelectorAll(".rkf").forEach((x) => x.classList.toggle("active", x === b));

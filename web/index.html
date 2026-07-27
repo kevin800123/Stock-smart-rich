@@ -84,12 +84,15 @@
           </div>
         </div>
         <div class="card-group">
-          <div class="group-title">籌碼趨勢（近 60 日）</div>
+          <div class="group-title">大盤 × 籌碼對照 <span id="combo-note" class="muted small"></span></div>
+          <!-- 勾幾個就畫幾個窗格，共用一條 X 軸；圖高跟著窗格數算（見 app.js CHIP_PANES） -->
           <div class="chart-toolbar">
-            <button class="ctf active" data-metric="inst">三大法人買賣超</button>
-            <button class="ctf" data-metric="foreign_oi">外資台指未平倉</button>
-            <button class="ctf" data-metric="retail_ls">散戶多空比</button>
-            <button class="ctf" data-metric="margin">融資融券</button>
+            <label class="wave-toggle"><input type="checkbox" class="cpn" data-pane="turnover" /> 成交金額</label>
+            <label class="wave-toggle"><input type="checkbox" class="cpn" data-pane="margin" checked /> 融資／融券</label>
+            <label class="wave-toggle"><input type="checkbox" class="cpn" data-pane="maint" /> 融資維持率</label>
+            <label class="wave-toggle"><input type="checkbox" class="cpn" data-pane="inst" checked /> 三大法人</label>
+            <label class="wave-toggle"><input type="checkbox" class="cpn" data-pane="oi" /> 外資台指未平倉</label>
+            <label class="wave-toggle"><input type="checkbox" class="cpn" data-pane="ls" /> 散戶多空比</label>
           </div>
           <div id="chipchart" class="chart"></div>
         </div>
