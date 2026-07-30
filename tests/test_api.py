@@ -159,6 +159,35 @@ def test_dashboard_bands_come_from_ss_trader(tmp_path, monkeypatch):
     assert client.get("/public/api/dashboard").json()["bands"] == bands
 
 
+def test_inst_ranking_falls_back_to_last_date_with_data(tmp_path, monkeypatch):
+    """T86 約 16:00 後才公布，但 market_daily 當天早上就有列（指數是盤中就有的）。
+
+    原本直接用最新日期去抓 T86，抓不到就整張榜空白，標題卻仍寫著今天——使用者看到的是
+    「2026-07-30」配兩個「—」。實測 07-30 的 T86 是 0 列、07-29 有 13527 列。
+    改成往回找到最近一個真的有資料的交易日，並回報那個日期讓前端標「截至」。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import twse
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    for ds in ("2026-07-28", "2026-07-29", "2026-07-30"):
+        upsert_market_daily(c, {"date": ds, "taiex": 100.0})
+    # 只有 07-29 有 T86（07-30 today 尚未公布）
+    t86 = {"2330": {"name": "台積電", "foreign": 5000, "trust": 100, "dealer": 10, "total": 5110},
+           "2317": {"name": "鴻海", "foreign": -3000, "trust": -50, "dealer": -5, "total": -3055}}
+    monkeypatch.setattr(twse, "fetch_t86",
+                        lambda date=None: t86 if date.isoformat() == "2026-07-29" else {})
+    client = TestClient(create_app())
+
+    d = client.get("/api/inst-ranking?who=foreign&unit=shares&top=5").json()
+    assert d["date"] == "2026-07-29", "應退回最近一個有 T86 的交易日，而非空著標今天"
+    assert d["buy"] and d["sell"], "退回後榜單不得是空的"
+    assert d["buy"][0]["code"] == "2330" and d["buy"][0]["net"] == 5000
+    assert d["sell"][0]["code"] == "2317" and d["sell"][0]["net"] == -3000
+
+
 def test_chips_and_maint_backfill_windows_reach_as_far_as_row_creation(tmp_path, monkeypatch):
     """兩支「只填既有列」的回補，窗口必須跟得上 /api/backfill 的建列窗口（200 天）。
 

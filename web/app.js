@@ -397,9 +397,13 @@ function balanceCard(label, srcRow, curDate, balKey, chgKey, hist = [], amtKey =
   const amt = amtKey ? srcRow[amtKey] : null;
   // 金額的較昨增減：融資有官方逐日值（margin_value_chg）；融券是我們自己估的市值，沒有官方增減
   const amtChg = amtChgKey ? srcRow[amtChgKey] : null;
+  // 單位只講一次、方向用既有的 ▲▼ 字彙（比「較昨 -」省 5 個字）——原本「金額 5,070.1 億
+  // 　較昨 -385.2 億」在 12px 下約 190px，超過卡片內容寬；而 .card-note 是 nowrap，
+  // grid item 的 min-content 因此被撐大，整列 minmax(175px,1fr) 的欄寬就不齊了（跑版）。
+  // 不著色：紅綠在本站鎖給「行情漲跌」，融資餘額減少是籌碼清洗、不是下跌，著色會誤導。
   const extra = amt == null ? ""
     : `${est ? "市值" : "金額"} ${fmt(amt, 1)} 億${est ? "（估）" : ""}`
-      + (amtChg == null ? "" : `　較昨 ${amtChg > 0 ? "+" : ""}${fmt(amtChg, 1)} 億`);
+      + (amtChg == null ? "" : `　${amtChg > 0 ? "▲" : "▼"}${fmt(Math.abs(amtChg), 1)}`);
   return card(lbl, fmt(srcRow[balKey], 0), srcRow[chgKey], pctOf(srcRow[balKey], srcRow[chgKey]),
     "", "", rk, isAlert(balKey, srcRow[balKey], rk), extra);
 }
@@ -1075,10 +1079,20 @@ async function loadInstRanking() {
   try {
     const d = await getJSON(`/api/inst-ranking?who=${rankWho}&unit=${rankUnit}&top=15`);
     const isVal = d.unit === "value";
-    const note = $("rank-note"); if (note) note.textContent = d.date ? `（${d.date}，單位：${isVal ? "億元" : "張"}）` : "";
+    // 三大法人約 16:00 後公布，後端會退回最近一個有資料的交易日 → 標「截至」講清楚是哪天，
+    // 沿用卡片既有的用語（balanceCard 的 .asof），不另發明一套說法。
+    const note = $("rank-note");
+    if (note) {
+      const stale = d.date && lastLatest && lastLatest.date && d.date !== lastLatest.date;
+      note.textContent = d.date
+        ? `（${stale ? "截至 " : ""}${d.date}，單位：${isVal ? "億元" : "張"}）`
+        : "";
+    }
     const row = (x) => `<div class="rank-row">${stockLink(x.code, x.name)}<span class="${x.net > 0 ? "up" : x.net < 0 ? "down" : ""}">${x.net > 0 ? "+" : ""}${fmt(x.net, isVal ? 2 : 0)}${isVal ? " 億" : ""}</span></div>`;
-    buyEl.innerHTML = d.buy && d.buy.length ? d.buy.map(row).join("") : '<div class="muted small">—</div>';
-    sellEl.innerHTML = d.sell && d.sell.length ? d.sell.map(row).join("") : '<div class="muted small">—</div>';
+    // 空榜要給方向而不是一個破折號：講出何時會有資料
+    const empty = '<div class="muted small">尚無資料，三大法人約 16:00 後公布</div>';
+    buyEl.innerHTML = d.buy && d.buy.length ? d.buy.map(row).join("") : empty;
+    sellEl.innerHTML = d.sell && d.sell.length ? d.sell.map(row).join("") : empty;
   } catch (e) { buyEl.innerHTML = '<div class="muted small">載入失敗</div>'; }
 }
 
@@ -1284,9 +1298,11 @@ const CHIP_PANES = [
   { key: "turnover", label: "成交金額", unit: "億", bar: true, series: (at) => [
       { name: "成交金額", type: "bar", data: at((r) => r.turnover), itemStyle: { color: SER.dealer, opacity: 0.55 } },
       { ...LP, name: "10日均量", symbolSize: 0, data: at((r) => r.turnover_ma10), lineStyle: { color: C.accent, width: 1.5 }, itemStyle: { color: C.accent } }] },
-  { key: "margin", label: "融資／融券", unit: "億", series: (at) => [
+  // 融資 ~5,000 億 vs 融券 ~200 億，量級差 25 倍——共用一條軸的話融券會被壓成貼底的
+  // 直線、完全讀不出轉折。故本窗格宣告第二條（右）軸，融券走 axis:1。
+  { key: "margin", label: "融資／融券", unit: "融資(億)", unit2: "融券(億)", series: (at) => [
       { ...LP, name: "融資金額", data: at((r) => r.margin_value), lineStyle: { color: C.up }, itemStyle: { color: C.up } },
-      { ...LP, name: "融券市值(估)", data: at((r) => r.short_mv), lineStyle: { color: C.down }, itemStyle: { color: C.down } }] },
+      { ...LP, name: "融券市值(估)", axis: 1, data: at((r) => r.short_mv), lineStyle: { color: C.down }, itemStyle: { color: C.down } }] },
   { key: "maint", label: "融資維持率", unit: "%", series: (at) => [
       { ...LP, name: "維持率(上市)", data: at((r) => r.margin_maintenance), lineStyle: { color: C.up }, itemStyle: { color: C.up } },
       { ...LP, name: "維持率(上櫃)", data: at((r) => r.otc_margin_maintenance), lineStyle: { color: SER.trust }, itemStyle: { color: SER.trust } }] },
@@ -1303,7 +1319,11 @@ const CHIP_PANES = [
       { ...LP, name: "微台散戶多空比", data: at((r) => pct100(r.retail_ls_tmf)), lineStyle: { color: SER.trust }, itemStyle: { color: SER.trust } }] },
 ];
 // 版面用 px 而非 %：窗格數會變，% 每次都要重算比例，px 直接相加。
-const KL_H = 300, PANE_H = 130, GAP = 30, TOP = 34, BOTTOM = 56;
+// 高度刻意不等分：K 線要看「形狀」（型態、均線關係）所以留最高；籌碼窗格只需看
+// 「方向與轉折點」——精確數值在上面的卡片已經有了，這裡不必讀刻度。
+// 勾 2 個＝28+210+2*(18+76)+44 = 470px（原本 710px，一個螢幕看不完）；
+// 勾滿 6 個＝846px（原本 1350px）。
+const KL_H = 210, PANE_H = 76, GAP = 18, TOP = 28, BOTTOM = 44;
 const comboHeight = (n) => TOP + KL_H + n * (GAP + PANE_H) + BOTTOM;
 
 function chipTrendOption(hist, kl, paneKeys) {
@@ -1336,14 +1356,26 @@ function chipTrendOption(hist, kl, paneKeys) {
     { name: "MA60", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: ma(closes, 60), smooth: true,
       showSymbol: false, lineStyle: { width: 1, color: MA_DEFS[2].color }, itemStyle: { color: MA_DEFS[2].color } },
   ];
+  // yAxes 與 grid 不再 1:1（宣告 unit2 的窗格有兩條軸），故逐窗格記下自己的軸 index
   panes.forEach((p, i) => {
     const gi = i + 1, last = i === panes.length - 1;
     grids.push({ left: 66, right: 66, top: TOP + KL_H + (i + 1) * GAP + i * PANE_H, height: PANE_H });
     xAxes.push({ type: "category", data: dates, gridIndex: gi, boundaryGap: true,
-      axisLabel: last ? { color: C.muted } : { show: false }, axisLine: { lineStyle: { color: C.border } } });
-    yAxes.push({ scale: !p.bar, gridIndex: gi, name: p.unit, nameTextStyle: { color: C.muted, fontSize: 11 },
-      axisLabel: { color: C.muted, fontSize: 11 }, splitLine: { lineStyle: { color: C.border, opacity: 0.5 } } });
-    p.series(at).forEach((s) => series.push({ ...s, xAxisIndex: gi, yAxisIndex: gi }));
+      axisLabel: last ? { color: C.muted, fontSize: 11 } : { show: false }, axisLine: { lineStyle: { color: C.border } } });
+    // 76px 高只放得下 2 段刻度，splitNumber 不設會擠成一團
+    const yBase = { scale: !p.bar, gridIndex: gi, splitNumber: 2,
+      nameTextStyle: { color: C.muted, fontSize: 10 }, axisLabel: { color: C.muted, fontSize: 10 },
+      splitLine: { lineStyle: { color: C.border, opacity: 0.5 } } };
+    const axisIdx = [yAxes.length];
+    yAxes.push({ ...yBase, name: p.unit });
+    if (p.unit2) {
+      axisIdx.push(yAxes.length);
+      yAxes.push({ ...yBase, name: p.unit2, position: "right", splitLine: { show: false } });
+    }
+    p.series(at).forEach((s) => {
+      const { axis, ...rest } = s;
+      series.push({ ...rest, xAxisIndex: gi, yAxisIndex: axisIdx[axis || 0] });
+    });
   });
 
   const allX = grids.map((_, i) => i);
@@ -1355,7 +1387,10 @@ function chipTrendOption(hist, kl, paneKeys) {
     tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
     // 十字線貫穿所有窗格——這張圖的重點就是同一天上下對齊
     axisPointer: { link: [{ xAxisIndex: "all" }], label: { backgroundColor: C.border } },
-    legend: { top: 0, textStyle: { color: C.label, fontSize: 11 }, itemGap: 10 },
+    // type:"scroll" 保證圖例永遠只佔一行——勾滿 6 個窗格有 13 條 series，
+    // 換行的圖例會把第一個 grid 往下推、蓋掉 K 線頂端（TOP 是固定值）。
+    legend: { type: "scroll", top: 2, textStyle: { color: C.label, fontSize: 11 }, itemGap: 10,
+      pageTextStyle: { color: C.muted }, pageIconColor: C.label, pageIconInactiveColor: C.border },
     grid: grids, xAxis: xAxes, yAxis: yAxes, series,
     dataZoom: [{ type: "inside", xAxisIndex: allX, start, end: 100 },
       { type: "slider", xAxisIndex: allX, start, end: 100, bottom: 6, height: 16,

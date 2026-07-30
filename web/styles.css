@@ -207,7 +207,11 @@ body[data-public] .status-bar { display: none; }
    故移除——階層改由上面那階承擔，這階只要能被認出是標題即可。 */
 .group-title { display: inline-block; font-size: var(--fs-md); color: var(--label); font-weight: 600; margin-bottom: var(--sp-2); border-left: 3px solid var(--border); padding: 0 2px 2px 8px; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: var(--sp-2); }
-.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r); padding: 10px 13px; }
+/* min-width:0 是必要的結構護欄：grid item 預設 min-width:auto（＝min-content），
+   所以卡片裡任何一行 nowrap 的長文字（.card-val/.card-note）都會把該欄撐得比
+   minmax(175px,1fr) 寬，整列欄寬就不齊了——症狀是「某一張卡變寬、其他卡跟著位移」。
+   有了 min-width:0，欄寬回歸 grid 控制，過長的內容改以溢出呈現（仍看得出來要修文案）。 */
+.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r); padding: 10px 13px; min-width: 0; }
 /* 有懸停說明的卡片：標籤加點狀底線當「這裡有解釋」的視覺提示 */
 .card[title] { cursor: help; }
 .card[title] .card-label { text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }

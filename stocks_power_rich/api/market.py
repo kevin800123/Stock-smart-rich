@@ -579,14 +579,26 @@ def inst_ranking(who: str = "foreign", date: str | None = None, top: int = 20, u
         who = "foreign"
     if unit not in ("shares", "value"):
         unit = "shares"
-    date = date or _latest_date(c)
+    # 呼叫端沒指定日期時，往回找到最近一個真的有 T86 的交易日。
+    # 三大法人約 16:00 後才公布，而 market_daily 當天早上就有列（指數盤中就有），
+    # 所以直接用最新日期會整張榜空白、標題卻寫著今天。上限 5 天，避免連假時掃一整週。
+    t, cand = None, []
+    if date:
+        cand = [date]
+    else:
+        cand = [r[0] for r in c.execute(
+            "SELECT date FROM market_daily ORDER BY date DESC LIMIT 5").fetchall()]
+    for ds in cand:
+        cached = get_ai_cache(c, f"t86:{ds}")
+        if cached is None:
+            cached = twse.fetch_t86(datetime.fromisoformat(ds).date())
+            if cached:
+                set_ai_cache(c, f"t86:{ds}", cached)
+        if cached:
+            t, date = cached, ds
+            break
     if not date:
         return {"date": None, "who": who, "unit": unit, "buy": [], "sell": []}
-    t = get_ai_cache(c, f"t86:{date}")
-    if t is None:
-        t = twse.fetch_t86(datetime.fromisoformat(date).date())
-        if t:
-            set_ai_cache(c, f"t86:{date}", t)
     prices = {}
     if unit == "value":
         prices = get_ai_cache(c, f"close:{date}")

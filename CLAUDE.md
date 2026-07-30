@@ -69,6 +69,9 @@ View-switching SPA + ECharts (local `web/vendor/echarts.min.js`, no CDN — CSP 
   - **X 軸是兩邊日期的聯集後排序**，不是拿 kline 的 `dates` 當主軸: 實測 production 上 `market_daily` 已有 2026-07-27 而 kline (TWSE 12 個月 fallback) 只到 07-24，以 kline 為主軸會把最新一天的籌碼吃掉。聯集三行就解決，且哪一邊超前都不漏。
   - **兩邊資料長度差很多是常態**: 日K 117–237 根、籌碼只有 ~47 列 (`market_daily` 本身就這麼短)。使用者選了保留完整 K 線，所以左側籌碼窗格是留白的，`dataZoom` 預設落在有籌碼的右側區段 (`start` 由籌碼第一天的 index 算)。前導 null 不會被 `connectNulls` 接成假的水平線 (只有中間的洞才會，這是既有 chip chart 就有的選擇)。
   - **版面用 px 不用 %**: 窗格數會變，% 每次都要重算比例。`comboHeight(n)` = `TOP + KL_H + n*(GAP+PANE_H) + BOTTOM`，順序必須是**先寫容器 inline height → `setOption` → `resize()`**；容器高度是動態的，寫在 `resize` 之後畫布會停在舊高度 (同下面那條 `echarts.init` 凍尺寸的教訓)。
+  - **高度刻意不等分**: `KL_H=210` vs `PANE_H=76`。K 線要看形狀 (型態、均線關係) 所以留最高；籌碼窗格只需看方向與轉折點，精確數值上面的卡片已經有了。初版用 300/130 導致勾 2 個就 710px、一個螢幕看不完 (使用者退回)；現在勾 2 個 470px、勾滿 6 個 846px。76px 高只放得下 2 段刻度，`splitNumber: 2` 不設會擠成一團。
+  - **一個窗格可以有兩條 y 軸** (`unit2` + series 的 `axis: 1`)，`yAxes` 因此與 grid 不再 1:1，組裝時要逐窗格記下自己的軸 index。融資／融券就必須這樣：實測融資 5,020–6,313 億 vs 融券 138–256 億，**量級差 24.7 倍**，共用一條軸時融券被壓成貼底的直線 (分軸後在 76px 窗格裡撐開 51px 的垂直範圍)。初版重構成 `CHIP_PANES` 時漏掉這件事，是把舊 chart 的雙軸設計弄丟的迴歸。
+  - **`legend` 必須 `type: "scroll"`**: 勾滿 6 個窗格有 15 條 series，換行的圖例會把第一個 grid 往下推、蓋掉 K 線頂端 (`TOP` 是固定值，不會讓位)。
   - 共用 X 軸三件套: 每個 grid 一個 `category` xAxis (`data` 相同、只有最後一個顯示 label)、`dataZoom` 的 `xAxisIndex` 帶上**全部** index、頂層 `axisPointer: { link: [{ xAxisIndex: "all" }] }` 讓十字線貫穿。
   - 全部取消勾選時**仍留 K 線窗格**，不要變成 0 grid 的破圖。加一個窗格＝`CHIP_PANES` 加一筆 (`gridIndex`/`xAxisIndex`/`yAxisIndex` 由組裝時統一補)。
   - 移除舊的 4 顆 `.ctf` 切換鈕與那個**全域** `.ctf` click handler 時要小心: `.ctf` 還被杯柄的兩顆按鈕與高價股的 `.rkp-tab` 用著，舊 handler 留著會誤傷它們並碰到已刪除的 `chipMetric`。
@@ -81,6 +84,10 @@ View-switching SPA + ECharts (local `web/vendor/echarts.min.js`, no CDN — CSP 
 **自選股「輸入預估」股價計算機** (2026-07): 財報狗風格的單季推導——填最近三個月營收/毛利率(估)/營業費用(估)/所得稅(估) → 算毛利/稅後淨利/本業EPS → ×4 年化 → 套本益比低/中/高算出價位區間，現價標在區間上。純算術放在 `analysis.estimate_price_range`（TDD、無 I/O，跟 `margin_maintenance` 同一套「算不出回 None」風格），不是前端專屬邏輯——理由同 Elliott wave 那條規矩：算式只能有一份權威版本。前端在打字時用同一條算式的 JS 副本即時預覽（`recalcEstPanel`；這裡允許重複，因為只影響「存檔前的預覽」，存檔值一律以後端算的為準，不會像 Elliott wave 那樣漂移）。`watchlist` 表新增 `WATCHLIST_COLS`（`est_revenue`/`est_gross_margin`/`est_opex`/`est_tax`/`est_pe_low`/`est_pe_mid`/`est_pe_high`，全 nullable，走既有的 lazy-migration `ALTER TABLE` 慣例）；股數用 `capital`（股本，億元）× 1e7 反推（面額 10 元的近似，不逐股查真實面額）。面板是每列一個 `.hidden` 展開列（`<tr colspan="13">`），不是 modal——這個 codebase 完全沒有 modal 元件，新功能沿用既有的 show/hide 慣例而不是另起一套。
 
 **「注意這格」只有一個語彙：琥珀外框** (`.card.alert` / `.ms-verdict.alert`). `--accent` was already spoken for ("you are here"), and 紅/綠 are locked to market direction, so the site had no way to say "look at this reading". Outline is a separate axis from fill, so it stacks on a 紅漲綠跌 card without competing — that is why it is an outline and not a fourth hue. Used in exactly two places; keep it that way.
+
+**`/api/inst-ranking` 沒指定日期時要往回找到「真的有 T86 的交易日」，不能直接用最新日期。** T86 約 16:00 後公布，而 `market_daily` 當天早上就有列（指數盤中就有），所以盤中直接拿最新日期會**整張榜空白、標題卻寫著今天**（實測 07-30 的 T86 是 0 列、07-29 有 13,527 列）。往回掃上限 5 天（連假時不要掃一整週），回傳實際採用的日期，前端在它不等於 `lastLatest.date` 時標「截至 MM-DD」——沿用 `balanceCard` 既有的 `.asof` 用語，不另發明說法。空榜的文案給方向而不是一個破折號：「尚無資料，三大法人約 16:00 後公布」。
+
+**`.card` 必須有 `min-width: 0`。** grid item 預設 `min-width: auto`（＝min-content），所以卡片裡任何一行 `nowrap` 的長文字都會把該欄撐得比 `minmax(175px, 1fr)` 寬，**整列欄寬就不齊**——症狀是「某一張卡變寬、其他卡跟著位移」。實測是融資餘額卡的 `.card-note`「金額 5,070.1 億　較昨 -385.2 億」在 12px 下約 190px 超過卡片內容寬。文案也一併壓短：**單位只講一次、方向用既有的 ▲▼ 字彙**（`金額 5,686.6 億　▼84`，比「較昨 -385.2 億」省 5 字）。這行**不著色**——紅綠在本站鎖給「行情漲跌」，融資餘額減少是籌碼清洗、不是下跌，著色會誤導。
 
 **卡片裡 `--fs-xl` 只給數字。** 修飾語走 `.card-qual`（小字、`--muted`、獨立一行）、單位走 `.card-unit`、補充資訊走 `.card-note`。原本 `oiCard` 把「淨空 75,198 口」整串塞進 `.card-val`，在 175px 寬的卡片裡放不下就把「口」擠到第二行；根因不是換行而是分層——修飾語只是標籤，真正的讀數是數字，兩者不該同一級。`.card-val` 另加 `white-space: nowrap`，讓放不下時先被發現而不是默默折行。
 
