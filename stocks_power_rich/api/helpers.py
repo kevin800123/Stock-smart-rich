@@ -484,9 +484,21 @@ def _daily_messages(c, full: bool, force: bool = False) -> tuple[list, dict | No
             cup = _cup_push_info(c)
         except Exception:  # noqa: BLE001
             cup = None
+        # 融資 16:00 還沒公布，但卡片兩則都要顯示 → 取「最近一筆有融資的交易日」與其前一日，
+        # 由 compose_daily_flex 判斷是否標「截至 MM-DD」（同網頁 balanceCard 的處理）
+        mrows = c.execute(
+            "SELECT * FROM market_daily WHERE margin_balance IS NOT NULL "
+            "ORDER BY date DESC LIMIT 1").fetchall()
+        margin_row = dict(mrows[0]) if mrows else None
+        margin_prev = None
+        if margin_row:
+            p = c.execute("SELECT * FROM market_daily WHERE date < ? ORDER BY date DESC LIMIT 1",
+                          (margin_row["date"],)).fetchall()
+            margin_prev = dict(p[0]) if p else None
         # AI 解讀改由卡片第二頁承載（使用者拍板：自選股/杯柄不放，改看 AI）→ 只回一則
         msgs = [line_push.compose_daily_flex(m, secs, watch, full=full, tsmc=tsmc,
-                                            prev=prev_row, cup=cup, ai_text=ai_text)]
+                                            prev=prev_row, cup=cup, ai_text=ai_text,
+                                            margin_row=margin_row, margin_prev=margin_prev)]
     except Exception as e:  # noqa: BLE001 — fatal 才記推播失敗（缺資料/非今日屬正常略過）
         return [], {"ok": False, "error": str(e), "fatal": True}
     return msgs, None

@@ -278,7 +278,7 @@ def _sect(msg, label):
     for bub in _bubbles(msg):
         for b in bub["body"]["contents"]:
             c = (b.get("contents") or [{}])[0]
-            if b.get("type") == "box" and c.get("text") == label:
+            if b.get("type") == "box" and str(c.get("text") or "").startswith(label):
                 return b
     return None
 
@@ -313,19 +313,53 @@ def test_compose_daily_flex_ratio_stays_uncoloured():
     """散戶多空比是反向指標，染紅綠會被讀成利多/利空——寧可留白也不給錯誤暗示。"""
     sect = _sect(line_push.compose_daily_flex(_ROW, [], []), "期貨籌碼")
     vals = [r["contents"][1] for r in sect["contents"][1:]]   # [標籤, 值, 昨值] 三欄平鋪
-    assert any("小台多空比" in str(r) for r in sect["contents"])
+    assert any("小台多空" in str(r) for r in sect["contents"])
     assert {v["color"] for v in vals} == {"#e6e6e6"}          # 一律主文色，不套漲跌色
 
 
-def test_compose_daily_flex_margin_only_in_full_version():
-    assert _sect(line_push.compose_daily_flex(_ROW, [], [], full=False), "融資券") is None
-    sect = _sect(line_push.compose_daily_flex(_ROW, [], [], full=True), "融資券")
-    assert "9,414,925張" in str(sect) and "165.2%" in str(sect)
+def test_compose_daily_flex_shows_margin_in_both_versions():
+    """融資 16:00 尚未公布，但使用者兩則推播都要看得到（取代原本的類股強弱），
+    所以不再用 full 開關；full 只多給融資金額/融券餘額兩項細節。"""
+    brief = _sect(line_push.compose_daily_flex(_ROW, [], [], full=False), "融資")
+    assert brief is not None and "9,414,925張" in str(brief) and "165.2%" in str(brief)
+    full = str(_sect(line_push.compose_daily_flex(_ROW, [], [], full=True), "融資"))
+    assert "融資金額" in full and "融券餘額" in full
+    assert "融資金額" not in str(brief)
+
+
+def test_compose_daily_flex_margin_falls_back_and_marks_as_of():
+    """今日尚無融資 → 用呼叫端給的最近一筆，並在小標標「截至 MM-DD」（同網頁 balanceCard）。"""
+    today = {"date": "2026-07-30", "taiex": 40039.18, "taiex_chg": -1564.18}
+    mrow = {"date": "2026-07-29", "margin_balance": 8764868, "margin_chg": -331145,
+            "margin_maintenance": 173.6}
+    sect = str(_sect(line_push.compose_daily_flex(
+        today, [], [], margin_row=mrow, margin_prev={"margin_maintenance": 174.9}), "融資"))
+    assert "截至 07-29" in sect and "8,764,868張" in sect
+    # 增減用 ▲▼、昨值用「昨X」——兩種意義不可共用寫法，否則 -331,145 會被讀成昨天的餘額
+    assert "▼331,145" in sect and "昨-331,145" not in sect
+    assert "昨174.9%" in sect
+
+
+def test_compose_daily_flex_sector_section_removed_from_card():
+    """類股強弱已從卡片移除（改放融資）；純文字 altText 仍保留，故 sectors 參數不能拿掉。"""
+    msg = line_push.compose_daily_flex(_ROW, _SECTORS, _WATCH, tsmc=_TSMC, prev=_PREV)
+    assert _sect(msg, "類股強弱") is None
+    # altText 被 LINE 切到 400 字，故直接驗純文字版仍完整保留類股
+    assert "【類股強弱】" in line_push.compose_daily_brief(_ROW, _SECTORS, _WATCH)
+
+
+def test_compose_daily_flex_stays_under_line_bubble_limit():
+    """放大字級＋換上融資後仍須守住 10 KB——超限 LINE 會整則退件、訊息無聲消失。"""
+    msg = line_push.compose_daily_flex(
+        _ROW, _SECTORS, _WATCH, full=True, tsmc=_TSMC, prev=_PREV,
+        ai_text="・國際：美股走弱。\n・大盤：指數重挫。\n・結論：留意支撐。")
+    for b in _bubbles(msg):
+        assert line_push._bubble_size(b) <= line_push._BUBBLE_MAX
 
 
 def test_compose_daily_flex_omits_empty_sections():
     bare = line_push.compose_daily_flex({"date": "2026-07-01", "taiex": 100.0}, [], [])
-    for label in ("三大法人買賣超（億）", "期貨籌碼", "類股強弱", "自選股", "國際行情"):
+    for label in ("三大法人買賣超（億）", "期貨籌碼", "融資", "自選股", "國際行情"):
         assert _sect(bare, label) is None
     assert _bubbles(bare)[0]["body"]["contents"]       # 但卡片本身仍成立，不是空殼
 
@@ -383,19 +417,19 @@ def test_compose_daily_flex_drops_watch_and_cup_shows_ai():
     assert "統一" in msg["altText"] or len(msg["altText"]) == 400
 
     assert _sect(msg, "自選股") is None
-    # 第一頁＝市場數據（含類股強弱、國際行情）；第二頁純 AI
+    # 第一頁＝市場數據（含融資、國際行情）；第二頁純 AI
     page1, page2 = str(bubbles[0]), str(bubbles[1])
-    assert "類股強弱" in page1 and "國際行情" in page1
+    assert "融資餘額" in page1 and "國際行情" in page1
     assert "AI 解讀" in str(bubbles[1]["header"])
     assert "外資翻多" in page2
-    assert "類股強弱" not in page2 and "國際行情" not in page2
+    assert "融資餘額" not in page2 and "國際行情" not in page2
 
 
 def test_compose_daily_flex_without_ai_key_still_valid():
-    """未設 GEMINI 金鑰（ai_text 空）→ AI 段整段省略，第二頁只剩類股強弱，卡片仍成立。"""
+    """未設 GEMINI 金鑰（ai_text 空）→ AI 段整段省略，只剩市場數據那頁，卡片仍成立。"""
     msg = line_push.compose_daily_flex(_ROW, _SECTORS, [], tsmc=_TSMC, prev=_PREV)
     assert _sect(msg, "AI 解讀") is None
-    assert _sect(msg, "類股強弱") is not None
+    assert _sect(msg, "融資") is not None
     for b in _bubbles(msg):
         assert b["body"]["contents"]          # LINE 不接受空 body
 
@@ -455,27 +489,27 @@ def test_compose_daily_flex_header_carries_tx_and_tsmc():
     assert "台指期" not in str(_bubbles(msg)[0]["body"])
 
 
-def test_compose_daily_flex_sectors_on_page1_ai_alone_on_page2():
-    """類股強弱回到第一頁；第二頁只放 AI 解讀，字級放大以利閱讀。"""
+def test_compose_daily_flex_market_on_page1_ai_alone_on_page2():
+    """市場數據都在第一頁；第二頁只放 AI 解讀，字級放大以利閱讀。"""
     msg = line_push.compose_daily_flex(_ROW, _SECTORS, [], tsmc=_TSMC, prev=_PREV,
                                        ai_text="・法人：外資翻多。")
     b1, b2 = _bubbles(msg)
-    assert "類股強弱" in str(b1["body"]) and "國際行情" in str(b1["body"])
-    # 第二頁只有 AI：沒有類股、沒有國際行情
+    assert "融資餘額" in str(b1["body"]) and "國際行情" in str(b1["body"])
+    # 第二頁只有 AI：沒有籌碼、沒有國際行情
     p2 = str(b2["body"])
     assert "外資翻多" in p2
-    assert "類股強弱" not in p2 and "國際行情" not in p2
+    assert "融資餘額" not in p2 and "國際行情" not in p2
     assert "AI 解讀" in str(b2["header"])
     label, body_text = b2["body"]["contents"][0]["contents"]
     assert label["text"] == "法人" and label["color"] == "#f0a500"
-    assert body_text["size"] == "sm"                # 正文比一般數據欄位大一級
+    assert body_text["size"] == "md"                # 正文放大（使用者反映原本看不清）
 
 
 def test_compose_daily_flex_single_bubble_when_no_ai():
     """沒有 AI（未設 GEMINI 金鑰）→ 不生出只有標題的空第二頁。"""
     msg = line_push.compose_daily_flex(_ROW, _SECTORS, [], tsmc=_TSMC, prev=_PREV)
     assert len(_bubbles(msg)) == 1
-    assert "類股強弱" in str(_bubbles(msg)[0]["body"])
+    assert "融資餘額" in str(_bubbles(msg)[0]["body"])
 
 
 def test_daily_flex_page1_fits_with_sectors_and_margin():
@@ -551,9 +585,8 @@ def test_daily_flex_full_version_keeps_international_section():
     """21:00 完整版（多了融資券）仍必須留得住國際行情——它排在最尾端，最先被裁掉。"""
     msg = line_push.compose_daily_flex(_ROW, _SECTORS, [], full=True, tsmc=_TSMC,
                                        prev=_PREV, ai_text="中文長文。" * 500)
-    assert _sect(msg, "融資券") is not None
+    assert _sect(msg, "融資") is not None
     assert _sect(msg, "國際行情") is not None
-    assert _sect(msg, "類股強弱") is not None
 
 
 # ===== AI 解讀頁：欄目拆開＋結論強調 =====
@@ -592,7 +625,7 @@ def test_ai_page_renders_labels_and_highlights_conclusion():
     assert first["layout"] == "vertical"
     assert first["contents"][0]["text"] == "國際"
     assert first["contents"][0]["color"] == "#f0a500" and first["contents"][0]["weight"] == "bold"
-    assert first["contents"][1]["size"] == "sm" and first["contents"][1]["wrap"] is True
+    assert first["contents"][1]["size"] == "md" and first["contents"][1]["wrap"] is True
 
     concl = body[3]                                        # 結論：水平＝左金條＋內容
     assert concl["layout"] == "horizontal"
@@ -601,7 +634,7 @@ def test_ai_page_renders_labels_and_highlights_conclusion():
     assert concl["contents"][1]["contents"][0]["text"] == "結論"
     assert "誘多警訊" in concl["contents"][1]["contents"][1]["text"]
 
-    assert body[4]["size"] == "xxs"                        # 免責行退到次要色階
+    assert body[4]["size"] == "xs"                         # 免責行退到次要色階
     assert body[4]["color"] == "#8a94a3"
 
 

@@ -380,17 +380,21 @@ def compose_rank_flex(data: dict) -> dict:
 def _eyebrow(text):
     """區塊小標。分區靠它加留白就夠——原本每個區塊之間還畫一條分隔線，那是多餘的配件，
     每條 55 B 也正是國際行情能不能維持兩欄的差別。"""
-    return {"type": "text", "text": text, "size": "xxs", "color": _C_MUTED, "margin": "xl"}
+    return {"type": "text", "text": text, "size": "sm", "color": _C_MUTED, "margin": "xl"}
 
 
 def _kv(label, value, color=_C_TEXT, note=""):
     """一列：左標籤、中數值、右灰色昨值。三欄直接用 flex 分配——包一層 box 再塞 filler
-    對齊效果一樣，但每列多花約 110 bytes，第一頁的 10 KB 額度禁不起這種浪費。"""
-    cells = [{"type": "text", "text": label, "size": "xs", "color": _C_MUTED, "flex": 5},
-             {"type": "text", "text": value, "size": "xs", "color": color,
+    對齊效果一樣，但每列多花約 110 bytes，第一頁的 10 KB 額度禁不起這種浪費。
+
+    字級 xs→md：手機上 13px 的數字在戶外幾乎看不見。放大後三欄會擠，所以標籤一併
+    縮短（「外資台指OI」→「外資OI」）——Flex 的 text 預設不換行只截斷，字大就得字少。
+    """
+    cells = [{"type": "text", "text": label, "size": "md", "color": _C_MUTED, "flex": 5},
+             {"type": "text", "text": value, "size": "md", "color": color,
               "align": "end", "flex": 5}]
     if note:
-        cells.append({"type": "text", "text": note, "size": "xxs", "color": _C_MUTED,
+        cells.append({"type": "text", "text": note, "size": "xs", "color": _C_MUTED,
                       "align": "end", "flex": 4})
     return {"type": "box", "layout": "horizontal", "margin": "sm", "contents": cells}
 
@@ -421,13 +425,21 @@ def _balance_bar(v, peak):
         half(pos, _C_UP, False)]}
 
 
+def _delta(v, d=2):
+    """與昨日的增減。刻意用 ▲▼ 而不是「昨±X」——卡片其他列的「昨X」是**昨天的值**
+    （昨-874.9＝外資昨天賣超 874.9 億），增減沿用同一種寫法會被讀成昨值。兩種意義兩種寫法。"""
+    return "" if v is None else f"{'▲' if v > 0 else '▼'}{_fmt(abs(v), d)}"
+
+
 def _pct_colour(v):
     return _C_MUTED if not v else (_C_UP if v > 0 else _C_DOWN)
 
 
 def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False,
                        tsmc: dict | None = None, prev: dict | None = None,
-                       cup: dict | None = None, ai_text: str = "") -> dict:
+                       cup: dict | None = None, ai_text: str = "",
+                       margin_row: dict | None = None,
+                       margin_prev: dict | None = None) -> dict:
     """盤後速報 → Flex 卡片（AI 解讀不放這裡，長散文另發一則純文字）。
 
     開場刻意不是「加權指數大數字」而是三大法人資金天平：指數使用者一天看好幾次早就知道，
@@ -437,6 +449,10 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
 
     watch/cup 只用於產生 altText（純文字版仍完整）：自選股與杯柄型態經使用者確認不放卡片，
     第二頁改放 AI 解讀。參數保留，未來要加回卡片不必重寫取數邏輯。
+    sectors 同理——類股強弱已從卡片移除（改放融資），但純文字 altText 仍完整保留。
+
+    margin_row/margin_prev：融資 16:00 尚未公布，故由呼叫端給「最近一筆有融資的交易日」
+    及其前一日；省略則退回 row/prev（既有呼叫端與測試不受影響）。
     """
     pv = prev or {}
     taiex, chg = row.get("taiex"), row.get("taiex_chg")
@@ -447,14 +463,14 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
     left = [{"type": "text", "text": _fmt(taiex), "size": "xxl", "weight": "bold",
              "color": _C_TEXT}]
     if chg is not None:
-        left.append({"type": "text", "margin": "xs", "size": "sm", "color": _pct_colour(chg),
+        left.append({"type": "text", "margin": "xs", "size": "lg", "color": _pct_colour(chg),
                      "text": f"{'▲' if chg > 0 else '▼'}{_fmt(abs(chg))}"
                              + (f"（{_signed(pct)}%）" if pct is not None else "")})
     if row.get("turnover") is not None:
         t = f"成交 {_fmt(row['turnover'], 0)}億"
         if pv.get("turnover") is not None:
             t += f"(昨{_fmt(pv['turnover'], 0)}億)"
-        left.append({"type": "text", "text": t, "size": "xxs",
+        left.append({"type": "text", "text": t, "size": "xs",
                      "color": _C_MUTED, "margin": "xs"})
     tx_pct = None
     if row.get("tx_price") and row.get("tx_chg") is not None:
@@ -466,17 +482,17 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
                                  (tsmc or {}).get("chg_pct"))):
         if value is not None:
             # 只有紅綠色卻沒有數字，看不出漲多少——色彩負責方向，數字負責幅度
-            right.append({"type": "text", "text": label, "size": "xxs", "color": _C_MUTED,
+            right.append({"type": "text", "text": label, "size": "xs", "color": _C_MUTED,
                           "align": "end", "margin": "sm" if right else "none"})
-            right.append({"type": "text", "text": _fmt(value, 0), "size": "sm",
+            right.append({"type": "text", "text": _fmt(value, 0), "size": "lg",
                           "weight": "bold", "color": _pct_colour(delta), "align": "end"})
             if delta is not None:
-                right.append({"type": "text", "text": f"{_signed(delta)}%", "size": "xxs",
+                right.append({"type": "text", "text": f"{_signed(delta)}%", "size": "xs",
                               "color": _pct_colour(delta), "align": "end"})
     head = [{"type": "box", "layout": "horizontal", "contents": [
         {"type": "text", "text": f"台股盤後{'總結' if full else '速報'}",
          "size": "sm", "weight": "bold", "color": _C_GOLD, "flex": 1},
-        {"type": "text", "text": str(row.get("date") or ""), "size": "xxs",
+        {"type": "text", "text": str(row.get("date") or ""), "size": "xs",
          "color": _C_MUTED, "align": "end", "flex": 0}]},
         {"type": "box", "layout": "horizontal", "margin": "sm", "contents": [
             {"type": "box", "layout": "vertical", "flex": 6, "contents": left},
@@ -491,74 +507,66 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
         rows = [_eyebrow("三大法人買賣超（億）")]
         for name, v, yv in inst:
             rows.append({"type": "box", "layout": "horizontal", "margin": "sm", "contents": [
-                {"type": "text", "text": name, "size": "xs", "color": _C_MUTED, "flex": 2,
+                {"type": "text", "text": name, "size": "md", "color": _C_MUTED, "flex": 2,
                  "gravity": "center"},
                 _balance_bar(v, peak),
                 {"type": "box", "layout": "vertical", "flex": 4, "contents": [
-                    {"type": "text", "text": _signed(v, 1), "size": "xs",
+                    {"type": "text", "text": _signed(v, 1), "size": "md",
                      "color": _pct_colour(v), "align": "end"},
                     {"type": "text", "text": "" if yv is None else f"昨{_signed(yv, 1)}",
-                     "size": "xxs", "color": _C_MUTED, "align": "end"}]}]})
+                     "size": "xs", "color": _C_MUTED, "align": "end"}]}]})
         market.append({"type": "box", "layout": "vertical", "contents": rows})
 
     fut = []
     if row.get("tx_foreign_oi") is not None:
-        fut.append(_kv("外資台指OI", f"{_fmt(row['tx_foreign_oi'], 0)}口",
+        fut.append(_kv("外資OI", f"{_fmt(row['tx_foreign_oi'], 0)}口",
                        note="" if pv.get("tx_foreign_oi") is None
                             else f"昨{_fmt(pv['tx_foreign_oi'], 0)}"))
-    for label, k in (("小台多空比", "retail_ls_mtx"), ("微台多空比", "retail_ls_tmf")):
+    for label, k in (("小台多空", "retail_ls_mtx"), ("微台多空", "retail_ls_tmf")):
         if row.get(k) is not None:
             fut.append(_kv(label, f"{_signed(row[k] * 100)}%",
                            note="" if pv.get(k) is None else f"昨{_signed(pv[k] * 100)}%"))
     if fut:
         market.append({"type": "box", "layout": "vertical", "contents": [_eyebrow("期貨籌碼")] + fut})
 
-    if full and any(row.get(k) is not None
-                    for k in ("margin_balance", "margin_value", "short_balance")):
-        mg = [_eyebrow("融資券")]
-        if row.get("margin_balance") is not None:
-            mg.append(_kv("融資餘額", f"{_fmt(row['margin_balance'], 0)}張",
-                          note=f"({_signed(row.get('margin_chg'), 0)})"))
-        if row.get("margin_value") is not None:
-            mg.append(_kv("融資金額", f"{_fmt(row['margin_value'], 1)}億",
-                          note=f"({_signed(row.get('margin_value_chg'), 1)})"))
-        if row.get("short_balance") is not None:
-            mg.append(_kv("融券餘額", f"{_fmt(row['short_balance'], 0)}張",
-                          note=f"({_signed(row.get('short_chg'), 0)})"))
-        if row.get("margin_maintenance") is not None:
-            mg.append(_kv("維持率", f"{_fmt(row['margin_maintenance'], 1)}%",
-                          note="" if pv.get("margin_maintenance") is None
-                               else f"昨{_fmt(pv['margin_maintenance'], 1)}%"))
+    # 融資：使用者要求取代原本的「類股強弱」（類股在網頁的族群輪動/熱力圖看得更清楚，
+    # LINE 這張卡的額度該留給只有盤後才知道的籌碼）。
+    # 不再用 full 開關：融資 16:00 還沒公布，但使用者兩則推播都要看得到，所以退到最近
+    # 一筆有值的交易日並在小標標「截至 MM-DD」——與網頁 balanceCard 同一套處理與用語。
+    mrow = margin_row if (margin_row and margin_row.get("margin_balance") is not None) else row
+    mprev = margin_prev if margin_row else pv
+    mprev = mprev or {}
+    if any(mrow.get(k) is not None for k in ("margin_balance", "margin_maintenance")):
+        stale = mrow.get("date") and row.get("date") and mrow["date"] != row["date"]
+        mg = [_eyebrow("融資" + (f"（截至 {str(mrow['date'])[5:]}）" if stale else ""))]
+        if mrow.get("margin_balance") is not None:
+            mg.append(_kv("融資餘額", f"{_fmt(mrow['margin_balance'], 0)}張",
+                          note=_delta(mrow.get("margin_chg"), 0)))
+        # 兩個市場的融資成數不同（60%/50%），兩平線 166.7% vs 200%，數字接近意義卻可能
+        # 相反，所以標清楚是哪個市場、不併成單一「大盤維持率」
+        for lb, k in (("維持率(上市)", "margin_maintenance"), ("維持率(上櫃)", "otc_margin_maintenance")):
+            if mrow.get(k) is not None:
+                mg.append(_kv(lb, f"{_fmt(mrow[k], 1)}%",
+                              note="" if mprev.get(k) is None else f"昨{_fmt(mprev[k], 1)}%"))
+        if full:      # 21:00 完整版才補這兩項細節，額度允許
+            if mrow.get("margin_value") is not None:
+                mg.append(_kv("融資金額", f"{_fmt(mrow['margin_value'], 1)}億",
+                              note=_delta(mrow.get("margin_value_chg"), 1)))
+            if mrow.get("short_balance") is not None:
+                mg.append(_kv("融券餘額", f"{_fmt(mrow['short_balance'], 0)}張",
+                              note=_delta(mrow.get("short_chg"), 0)))
         market.append({"type": "box", "layout": "vertical", "contents": mg})
-
-    ups = sorted([s for s in sectors if (s.get("chg_pct") or 0) > 0],
-                 key=lambda s: -s["chg_pct"])[:3]
-    downs = sorted([s for s in sectors if (s.get("chg_pct") or 0) < 0],
-                   key=lambda s: s["chg_pct"])[:3]
-    if ups or downs:
-        def col(title, group):
-            items = [{"type": "text", "text": title, "size": "xxs", "color": _C_MUTED}]
-            for s in group:
-                items.append({"type": "box", "layout": "horizontal", "margin": "sm", "contents": [
-                    {"type": "text", "text": s["name"], "size": "xs", "color": _C_TEXT, "flex": 7},
-                    {"type": "text", "text": f"{_signed(s['chg_pct'])}%", "size": "xxs",
-                     "color": _pct_colour(s["chg_pct"]), "align": "end", "flex": 4}]})
-            return {"type": "box", "layout": "vertical", "flex": 1, "contents": items}
-        market.append({"type": "box", "layout": "vertical", "contents": [
-            _eyebrow("類股強弱"),
-            {"type": "box", "layout": "horizontal", "margin": "sm", "spacing": "lg",
-             "contents": [col("領漲", ups), col("領跌", downs)]}]})
 
     for i, (label, body_text) in enumerate(split_ai_sections(ai_text)):
         if label is None:            # 免責等散句：退到次要色階，不跟正文搶
-            read.append({"type": "text", "text": body_text, "size": "xxs",
+            read.append({"type": "text", "text": body_text, "size": "xs",
                          "color": _C_MUTED, "wrap": True,
                          "margin": "lg" if i else "none"})
             continue
-        inner = [{"type": "text", "text": label, "size": "xs", "weight": "bold",
+        inner = [{"type": "text", "text": label, "size": "md", "weight": "bold",
                   "color": _C_GOLD}]
         if body_text:
-            inner.append({"type": "text", "text": body_text, "size": "sm",
+            inner.append({"type": "text", "text": body_text, "size": "md",
                           "color": _C_TEXT, "wrap": True, "margin": "xs"})
         if label == "結論":
             # 唯一會影響明天動作的段落，值得從文字流裡被提出來——左側金條，不是裝飾
@@ -584,15 +592,15 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
                          "contents": [
                              cell for lb, v, p, d in pair for cell in (
                                  {"type": "text", "text": f"{lb} {_fmt(v, d)}",
-                                  "size": "xxs", "color": _C_TEXT, "flex": 5},
-                                 {"type": "text", "size": "xxs", "flex": 3, "align": "end",
+                                  "size": "xs", "color": _C_TEXT, "flex": 5},
+                                 {"type": "text", "size": "xs", "flex": 3, "align": "end",
                                   "color": _pct_colour(p),
                                   "text": "" if p is None else f"{_signed(p)}%"})]})
         market.append({"type": "box", "layout": "vertical", "contents": rows})
 
     if not (market or read):   # 只有指數、其餘全空：LINE 不接受空 body，且空白畫面該說明下一步
         market.append({"type": "box", "layout": "vertical", "contents": [
-            {"type": "text", "size": "xs", "color": _C_MUTED, "wrap": True,
+            {"type": "text", "size": "md", "color": _C_MUTED, "wrap": True,
              "text": "盤後籌碼尚未發布，稍後的更新會自動補上"}]})
     # 市場數據與 AI 長文一顆 bubble 裝不下（超過 LINE 的 10 KB 上限）→ 拆成可滑動的兩頁。
     # 沒有 AI 時 read 為空，_carousel 會自動退回單顆 bubble，不生出只有標題的空頁。
