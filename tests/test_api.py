@@ -2186,3 +2186,25 @@ def test_osfut_retries_after_cooldown_expires(tmp_path, monkeypatch):
     assert calls["n"] == 1     # 冷卻早已過期，照常重試
 
 
+
+
+def test_rank_price_never_pairs_fallback_price_with_stale_change(tmp_path, monkeypatch):
+    """現價與漲跌必須同源。MIS 無報價時退回昨收，漲跌就要留白——不能顯示昨收卻配著
+    MIS 算出的漲跌，那正是「正常價格配 −100%」那個 bug 的成因。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc
+    from stocks_power_rich.sources import mis, twse, tpex
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    bulk_upsert_ohlc(c, "2026-07-29", {
+        "2059": {"open": 7100, "high": 7200, "low": 7000, "close": 7140.0}})
+    # MIS 回不出價（該檔被 parse_mis_rank 整筆略過）
+    monkeypatch.setattr(mis, "fetch_mis_rank", lambda tokens: {})
+    monkeypatch.setattr(twse, "fetch_stock_turnover", lambda date=None: {})
+    monkeypatch.setattr(tpex, "fetch_otc_turnover", lambda date=None: {})
+    it = {x["code"]: x for x in
+          TestClient(create_app()).get("/api/rank/price?market=twse&n=5").json()["items"]}
+    assert it["2059"]["price"] == 7140.0          # 退回昨收
+    assert it["2059"]["chg"] is None              # 漲跌留白，不沿用別處的數字
+    assert it["2059"]["chg_pct"] is None

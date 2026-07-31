@@ -92,7 +92,13 @@ def rank_price(market: str = "all", n: int = 30):
     items = []
     for code, close in pool:
         q = quotes.get(code) or {}
-        price = q.get("price") or close
+        # 現價與漲跌必須同源：MIS 有報價就整組用它，沒有就退回昨收並讓漲跌留白。
+        # 混用是這支曾出過的 bug 的成因——MIS 價為 0（委買首檔佔位 0.0000）時
+        # `price or close` 把 0 當假值換成昨收，卻留著 MIS 用 0 算出的 −100%，
+        # 畫面就成了「正常價格配假跌停」。缺價時寧可不顯示漲跌，也不要顯示錯的。
+        live = q.get("price")
+        price = live if live else close
+        chg, chg_pct = (q.get("chg"), q.get("chg_pct")) if live else (None, None)
         # 成交量：MIS 即時（張）優先，盤前/缺檔退回官方盤後
         vol = q.get("vol")
         if vol is None:
@@ -110,7 +116,7 @@ def rank_price(market: str = "all", n: int = 30):
             "code": code, "market": "otc" if code in otc else "twse",
             "name": q.get("name") or otc.get(code) or code,
             "price": price,
-            "chg": q.get("chg"), "chg_pct": q.get("chg_pct"),
+            "chg": chg, "chg_pct": chg_pct,
             "vol": vol, "amount": amount, "amount_est": est and amount is not None,
             "prev_amount": prev_amount,
             "amount_chg": chg_amt,

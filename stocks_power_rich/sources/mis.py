@@ -11,18 +11,32 @@ MIS_URL = "https://mis.twse.com.tw/stock/api/getStockInfo.jsp"
 CHUNK = 50  # 每請求最多查的檔數（保守，避免 URL 過長/被擋）
 
 
-def _price(m: dict):
-    """最新成交價 z；盤中無成交瞬間 z='-' → 退回最佳買價 b 的第一檔（保守估）。"""
-    z = str(m.get("z") or "")
+def _pos(s):
+    """字串 → 正數；非數字或 ≤0 一律回 None。價格沒有 0 這個合法值。"""
     try:
-        return float(z)
-    except ValueError:
-        pass
-    b = str(m.get("b") or "").split("_")[0]
-    try:
-        return float(b)
-    except ValueError:
+        v = float(s)
+    except (TypeError, ValueError):
         return None
+    return v if v > 0 else None
+
+
+def _price(m: dict):
+    """最新成交價 z；盤中無成交瞬間 z='-' → 退回最佳買價 b 的第一個「有效」檔。
+
+    b 是 '_' 分隔的五檔委買，**第一檔可能是佔位的 0.0000**，所以要往後找第一個正數，
+    不能盲取 index 0。實測 2026-07-30 09:43 川湖 b='0.0000_7850.0000_7845.0000...'：
+    舊碼取 0.0 當現價 → 漲跌算成 0−昨收＝−7,140、−100%，而 rank_price 的
+    `price or close` 又把 0 當假值退回昨收，畫面於是變成「正常價格配 −100%」。
+    完全無有效報價時回 None，讓呼叫端整檔略過（寧可不顯示，也不要顯示假跌停）。
+    """
+    p = _pos(m.get("z"))
+    if p is not None:
+        return p
+    for lv in str(m.get("b") or "").split("_"):
+        p = _pos(lv)
+        if p is not None:
+            return p
+    return None
 
 
 def parse_mis_quotes(payload: dict) -> dict:
