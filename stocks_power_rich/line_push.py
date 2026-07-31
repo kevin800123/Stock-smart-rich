@@ -302,7 +302,9 @@ def compose_rank_brief(data: dict) -> str:
 # Flex 版高價股用色。漲跌%沿台股慣例紅漲綠跌；「額增減」刻意換一組色系（金＝放量、
 # 灰＝縮量）——量能變化與股價方向是兩個維度，共用紅綠會被誤讀成漲跌。
 _C_BG, _C_HEAD, _C_TEXT, _C_MUTED = "#0f1419", "#1a2029", "#e6e6e6", "#8a94a3"
-_C_UP, _C_DOWN, _C_GOLD = "#e8404a", "#1f9e6e", "#f0a500"
+# 紅綠沿用網頁已驗證的那組：舊值 #e8404a 在標題帶 #1a2029 上實測只有 4.10，未過 AA
+# （漲跌與台指期/台積電%正好都在那條帶子上）；#f56069 為 5.27，本文區也從 4.64 升到 5.96。
+_C_UP, _C_DOWN, _C_GOLD = "#f56069", "#25b37d", "#f0a500"
 _RANK_COLS = (("股票", 5), ("成交價", 4), ("漲跌", 3), ("成交量", 4), ("額增減", 5))
 
 
@@ -377,10 +379,26 @@ def compose_rank_flex(data: dict) -> dict:
     return {"type": "flex", "altText": compose_rank_brief(data)[:400], "contents": build(rows)}
 
 
-def _eyebrow(text):
+# 區塊識別色。卡片很長、四個區塊長得一模一樣，滑過去分不出段落，所以讓小標自己帶顏色。
+# 選色是量出來的，不是挑順眼的——必須離「紅漲(hue 356)／綠跌(157)／金(41)」夠遠，
+# 否則會被讀成漲跌方向。實測 rose 只距紅 5°、teal 只距綠 15°，兩個都因此淘汰。
+# 下面四色與最近的鎖定色分別相距 53°／99°／64°／58°，在 #0f1419 上對比 8.61／6.01／
+# 7.52／7.22 全數通過 AA。藍與紫刻意沿用網頁 SER.trust／SER.dealer，跨介面同一套語彙。
+_C_SEC_INST = "#6cb6ff"    # 三大法人＝機構資金
+_C_SEC_FUT = "#a07cff"     # 期貨籌碼＝槓桿部位
+_C_SEC_MARGIN = "#e879f9"  # 融資＝散戶槓桿（Ss 方法論裡的反指標，值得一個顯眼的獨立色）
+_C_SEC_INTL = "#cfd6df"    # 國際行情＝外部脈絡：靠「亮度」而非色相當標題
+# 為什麼第四段沒有自己的色相：避開紅(356)/綠(157)/金(41)後，安全的色相弧只剩約
+# 195–300°，裡面塞得下三個「一眼分得出」的色（藍210/紫256/洋紅292）就滿了——
+# 硬擠第四個會與藍撞（青 198 距藍僅 12°）。既然國際行情本來就是脈絡而非主體，
+# 就讓它用亮度分層：#cfd6df 明顯亮於列標籤的 #8a94a3，讀得出是標題，又不搶色相。
+
+
+def _eyebrow(text, color=_C_SEC_INTL):
     """區塊小標。分區靠它加留白就夠——原本每個區塊之間還畫一條分隔線，那是多餘的配件，
-    每條 55 B 也正是國際行情能不能維持兩欄的差別。"""
-    return {"type": "text", "text": text, "size": "sm", "color": _C_MUTED, "margin": "xl"}
+    每條 55 B 也正是國際行情能不能維持兩欄的差別。顏色見上方 _C_SEC_*。"""
+    return {"type": "text", "text": text, "size": "sm", "weight": "bold",
+            "color": color, "margin": "xl"}
 
 
 def _kv(label, value, color=_C_TEXT, note=""):
@@ -504,7 +522,7 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
             (("外資", "inst_foreign"), ("投信", "inst_trust"), ("自營", "inst_dealer"))]
     if any(v is not None for _, v, _ in inst):
         peak = max((abs(v) for _, v, _ in inst if v is not None), default=0)
-        rows = [_eyebrow("三大法人買賣超（億）")]
+        rows = [_eyebrow("三大法人買賣超（億）", _C_SEC_INST)]
         for name, v, yv in inst:
             rows.append({"type": "box", "layout": "horizontal", "margin": "sm", "contents": [
                 {"type": "text", "text": name, "size": "md", "color": _C_MUTED, "flex": 2,
@@ -527,7 +545,8 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
             fut.append(_kv(label, f"{_signed(row[k] * 100)}%",
                            note="" if pv.get(k) is None else f"昨{_signed(pv[k] * 100)}%"))
     if fut:
-        market.append({"type": "box", "layout": "vertical", "contents": [_eyebrow("期貨籌碼")] + fut})
+        market.append({"type": "box", "layout": "vertical",
+                       "contents": [_eyebrow("期貨籌碼", _C_SEC_FUT)] + fut})
 
     # 融資：使用者要求取代原本的「類股強弱」（類股在網頁的族群輪動/熱力圖看得更清楚，
     # LINE 這張卡的額度該留給只有盤後才知道的籌碼）。
@@ -538,7 +557,8 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
     mprev = mprev or {}
     if any(mrow.get(k) is not None for k in ("margin_balance", "margin_maintenance")):
         stale = mrow.get("date") and row.get("date") and mrow["date"] != row["date"]
-        mg = [_eyebrow("融資" + (f"（截至 {str(mrow['date'])[5:]}）" if stale else ""))]
+        mg = [_eyebrow("融資" + (f"（截至 {str(mrow['date'])[5:]}）" if stale else ""),
+                       _C_SEC_MARGIN)]
         if mrow.get("margin_balance") is not None:
             mg.append(_kv("融資餘額", f"{_fmt(mrow['margin_balance'], 0)}張",
                           note=_delta(mrow.get("margin_chg"), 0)))
@@ -585,7 +605,7 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
     intl = [(lb, row.get(k), row.get(k + "_chg"), d) for k, lb, d in _INTL_FIELDS
             if row.get(k) is not None]
     if intl:
-        rows = [_eyebrow("國際行情")]
+        rows = [_eyebrow("國際行情", _C_SEC_INTL)]
         for i in range(0, len(intl), 2):
             pair = intl[i:i + 2]
             rows.append({"type": "box", "layout": "horizontal", "margin": "sm", "spacing": "lg",
