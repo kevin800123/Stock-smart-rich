@@ -17,7 +17,8 @@
       </div>
     </header>
 
-    <nav class="sidebar">
+    <aside class="sidebar">
+      <nav class="sidebar-nav" aria-label="主導覽">
       <div class="nav-group">
         <div class="nav-group-title">市場</div>
         <a class="nav active" data-view="overview"><span class="ico">📊</span><span class="lbl">總覽</span></a>
@@ -43,14 +44,15 @@
         <div class="nav-group-title">系統</div>
         <a class="nav" data-view="settings"><span class="ico">⚙️</span><span class="lbl">設定</span></a>
       </div>
-    </nav>
+      </nav>
+    </aside>
 
-    <main class="content">
+    <main class="content terminal-workspace">
       <div id="update-status" class="status-bar hidden"></div>
       <div id="stale-note" class="stale-note hidden"></div>
 
       <!-- ===== 總覽 ===== -->
-      <section id="view-overview" class="view active">
+      <section id="view-overview" class="view active dashboard-view">
         <!-- 市場內部：指數方向與內部廣度並列，一眼看出「指數漲但家數跌」這類背離 -->
         <div class="market-strip">
           <div class="ms-main">

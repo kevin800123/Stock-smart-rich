@@ -61,8 +61,57 @@ const C = {
   muted: CSS_VAR("--muted", "#8a94a3"),
   label: CSS_VAR("--label", "#cfd6df"),
   border: CSS_VAR("--border", "#2e3845"),
+  borderSubtle: CSS_VAR("--border-subtle", "#1b2a3d"),
+  borderDefault: CSS_VAR("--border-default", "#2b3e57"),
+  borderStrong: CSS_VAR("--border-strong", "#3a5270"),
+  gridline: CSS_VAR("--border-subtle", "#1b2a3d"),
+  panel: CSS_VAR("--bg-panel", "#0f1927"),
+  tooltip: CSS_VAR("--bg-card", "#142033"),
   bg: CSS_VAR("--bg", "#0f1419"),
 };
+const withAlpha = (hex, alpha) => {
+  const v = hex.replace("#", "");
+  const n = parseInt(v.length === 3 ? v.split("").map((x) => x + x).join("") : v, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+};
+// 所有圖表共用同一個深色終端主題；個別 option 仍可覆寫資料語意（例如 K 線
+// 台股紅漲綠跌），但不必每張圖重複設定軸、網格、浮窗的視覺基線。
+const ECHARTS_THEME = "spr-terminal";
+echarts.registerTheme(ECHARTS_THEME, {
+  color: [C.info, "#e0a23c", "#a07cff", "#5ad8a6", "#e8684a"],
+  backgroundColor: "transparent",
+  textStyle: { color: C.label, fontFamily: '"Num", "Huninn", "Microsoft JhengHei", sans-serif' },
+  legend: { textStyle: { color: C.label } },
+  tooltip: {
+    backgroundColor: C.tooltip, borderColor: C.borderDefault, borderWidth: 1,
+    textStyle: { color: C.text }, extraCssText: "box-shadow:0 12px 28px rgba(0,0,0,.38);border-radius:8px;",
+  },
+  categoryAxis: {
+    axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { lineStyle: { color: C.borderSubtle } },
+    axisLabel: { color: C.muted, fontSize: 11 }, splitLine: { show: false },
+  },
+  valueAxis: {
+    axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 11 },
+    splitLine: { lineStyle: { color: C.gridline, type: "dashed", opacity: 0.72 } },
+  },
+});
+const initChart = (el) => echarts.init(el, ECHARTS_THEME, { renderer: "canvas", useDirtyRect: true });
+const financeTooltip = (extra = {}) => ({
+  trigger: "axis", confine: true, padding: [10, 12], backgroundColor: C.tooltip,
+  borderColor: C.borderDefault, borderWidth: 1,
+  textStyle: { color: C.text, fontFamily: HM_FONT, fontSize: 12, lineHeight: 20 },
+  extraCssText: "box-shadow:0 12px 28px rgba(0,0,0,.38);border-radius:8px;",
+  ...extra,
+});
+const klineDataZoom = (xAxisIndex, start) => ([
+  { type: "inside", xAxisIndex, start, end: 100, filterMode: "none", throttle: 60,
+    zoomOnMouseWheel: true, moveOnMouseMove: true },
+  { type: "slider", xAxisIndex, start, end: 100, bottom: 8, height: 12, filterMode: "none",
+    showDetail: false, handleSize: 0, moveHandleSize: 0, borderColor: "transparent",
+    backgroundColor: C.panel, fillerColor: withAlpha(C.info, 0.18),
+    dataBackground: { lineStyle: { color: withAlpha(C.muted, 0.32) }, areaStyle: { color: withAlpha(C.muted, 0.08) } },
+    textStyle: { color: C.muted } },
+]);
 // 圖表系列固定色（三大法人等跨圖共用的角色色，非市場方向色）：
 // 外資琥珀刻意與 --accent 區隔（accent 專屬「目前選取」），投信沿用 info 藍。
 const SER = { foreign: "#e0a23c", trust: C.info, dealer: "#a07cff" };
@@ -84,7 +133,7 @@ function ma(values, n) {
 
 function candlestickOption(data, startPct, showW, pct) {
   const closes = data.candles.map((c) => c[1]);
-  const maSeries = MA_DEFS.map((m) => ({ name: "MA" + m.n, type: "line", data: ma(closes, m.n), smooth: true, showSymbol: false, lineStyle: { width: 1, color: m.color }, itemStyle: { color: m.color } }));
+  const maSeries = MA_DEFS.map((m) => ({ name: "MA" + m.n, type: "line", data: ma(closes, m.n), smooth: true, showSymbol: false, lineStyle: { width: 1.5, color: m.color }, itemStyle: { color: m.color } }));
   const candle = { name: "K線", type: "candlestick", data: data.candles, itemStyle: { color: C.up, color0: C.down, borderColor: C.up, borderColor0: C.down } };
   // 現價線：最後收盤的水平虛線（顏色跟最後一根方向），掃一眼就知道現價相對歷史的位置
   const last = data.candles[data.candles.length - 1];
@@ -110,34 +159,46 @@ function candlestickOption(data, startPct, showW, pct) {
       data: waves.map((w) => ({ value: w.label, coord: [data.dates[w.index], data.candles[w.index][3]], itemStyle: { color: /[ABC]/.test(w.label) ? C.info : C.accent } })),
     };
   }
+  const unit = ["taiex", "tx"].includes(data.symbol) ? "點" : "元";
+  const tipCell = (label, value) => `<span class="ec-tip-cell"><i>${label}</i><b>${fmt(value, 2)}<em>${unit}</em></b></span>`;
   return {
-    tooltip: {
-      trigger: "axis", axisPointer: { type: "cross" },
+    tooltip: financeTooltip({
+      axisPointer: {
+        type: "cross", lineStyle: { color: withAlpha(C.muted, 0.58), type: "dashed" },
+        label: { backgroundColor: C.panel, borderColor: C.borderDefault, borderWidth: 1, color: C.text },
+      },
       formatter: (ps) => {
         if (!ps || !ps.length) return "";
-        let html = ps[0].axisValue;
+        let html = `<div class="ec-tip-date">${esc(ps[0].axisValue)}</div><div class="ec-tip-grid">`;
         ps.forEach((p) => {
           const m = p.marker || "";
           if (p.seriesType === "candlestick") {
             const d = p.data, n = d.length;
             const o = d[n - 4], c = d[n - 3], l = d[n - 2], h = d[n - 1];  // [(idx,)open,close,low,high]
-            html += `<br/>${m}K線　開 ${fmt(o, 2)}　收 ${fmt(c, 2)}　低 ${fmt(l, 2)}　高 ${fmt(h, 2)}`;
+            html += `<span class="ec-tip-series">${m}K線</span><span class="ec-tip-ohlc">${tipCell("開", o)}${tipCell("高", h)}${tipCell("低", l)}${tipCell("收", c)}</span>`;
           } else if (p.seriesName === "量") {
-            if (p.value != null) html += `<br/>${m}量 ${fmt(p.value, 0)}`;
+            if (p.value != null) html += `<span class="ec-tip-series">${m}成交量</span><b class="ec-tip-v">${fmt(p.value, 0)}</b>`;
           } else if (p.value != null) {
-            html += `<br/>${m}${p.seriesName} ${fmt(p.value, 2)}`;
+            html += `<span class="ec-tip-series">${m}${esc(p.seriesName)}</span><b class="ec-tip-v">${fmt(p.value, 2)}<i>${unit}</i></b>`;
           }
         });
-        return html;
+        return html + "</div>";
       },
-    },
+    }),
+    backgroundColor: "transparent",
     textStyle: { fontFamily: HM_FONT },
     legend: { top: 0, data: ["K線", ...MA_DEFS.map((m) => "MA" + m.n)], textStyle: { color: C.label } },
-    grid: [{ left: 60, right: 20, top: 30, height: "60%" }, { left: 60, right: 20, top: "76%", height: "15%" }],
-    xAxis: [{ type: "category", data: data.dates, axisLabel: { color: C.muted } }, { type: "category", data: data.dates, gridIndex: 1, axisLabel: { show: false } }],
-    yAxis: [{ scale: true, axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.border } } }, { gridIndex: 1, axisLabel: { show: false }, splitLine: { show: false } }],
-    dataZoom: [{ type: "inside", xAxisIndex: [0, 1], start: startPct }, { type: "slider", xAxisIndex: [0, 1], start: startPct, bottom: 0, height: 16 }],
-    series: [candle, ...maSeries, { name: "量", type: "bar", xAxisIndex: 1, yAxisIndex: 1, itemStyle: { opacity: 0.55 }, data: volumes }],
+    grid: [{ left: 60, right: 20, top: 28, height: "59%" }, { left: 60, right: 20, top: "71%", height: "13%" }],
+    xAxis: [
+      { type: "category", data: data.dates, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 11 } },
+      { type: "category", data: data.dates, gridIndex: 1, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false }, axisLabel: { show: false } },
+    ],
+    yAxis: [
+      { scale: true, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 11, formatter: (v) => fmt(v, 0) }, splitLine: { lineStyle: { color: C.gridline, type: "dashed", opacity: 0.72 } } },
+      { gridIndex: 1, axisLabel: { show: false }, splitLine: { show: false } },
+    ],
+    dataZoom: klineDataZoom([0, 1], startPct),
+    series: [candle, ...maSeries, { name: "量", type: "bar", xAxisIndex: 1, yAxisIndex: 1, barWidth: 7, barCategoryGap: "32%", itemStyle: { opacity: 0.55 }, data: volumes }],
   };
 }
 
@@ -740,18 +801,18 @@ function cupChartOption(d, m) {
        { coord: [lastDate, m.stop_loss] }]);
   return {
     textStyle: { fontFamily: HM_FONT },
-    tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
+    tooltip: financeTooltip({ axisPointer: { type: "cross", lineStyle: { color: C.borderStrong, type: "dashed" } } }),
     legend: { top: 0, data: ["K線", ...MA_DEFS.map((x) => "MA" + x.n)], textStyle: { color: C.label } },
     grid: { left: 55, right: 30, top: 30, bottom: 50 },
     xAxis: { type: "category", data: d.dates, axisLabel: { color: C.muted } },
-    yAxis: { scale: true, axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.border } } },
-    dataZoom: [{ type: "inside", start: 35 }, { type: "slider", start: 35, bottom: 0, height: 16 }],
+    yAxis: { scale: true, axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.gridline, type: "dashed" } } },
+    dataZoom: klineDataZoom(0, 35),
     series: [candle, ...maSeries],
   };
 }
 async function drawCupChart(m) {
   const el = $("cup-chart"); if (!el) return;
-  if (!cupChart || cupChart.getDom() !== el) cupChart = echarts.init(el);
+  if (!cupChart || cupChart.getDom() !== el) cupChart = initChart(el);
   cupChart.showLoading();
   try {
     const d = await getJSON(`/api/stock/${encodeURIComponent(m.code)}/ohlc?bars=400`);
@@ -1044,7 +1105,7 @@ async function loadSectors() {
         })),
       };
     });
-    if (!sectorChart || sectorChart.getDom() !== el) sectorChart = echarts.init(el);
+    if (!sectorChart || sectorChart.getDom() !== el) sectorChart = initChart(el);
     sectorChart.setOption({
       tooltip: {
         formatter: (p) => {
@@ -1372,7 +1433,7 @@ const CHIP_PANES = [
 // 「方向與轉折點」——精確數值在上面的卡片已經有了，這裡不必讀刻度。
 // 勾 2 個＝28+210+2*(18+76)+44 = 470px（原本 710px，一個螢幕看不完）；
 // 勾滿 6 個＝846px（原本 1350px）。
-const KL_H = 210, PANE_H = 76, GAP = 18, TOP = 28, BOTTOM = 44;
+const KL_H = 210, PANE_H = 76, GAP = 10, TOP = 28, BOTTOM = 44;
 const comboHeight = (n) => TOP + KL_H + n * (GAP + PANE_H) + BOTTOM;
 
 function chipTrendOption(hist, kl, paneKeys) {
@@ -1393,28 +1454,31 @@ function chipTrendOption(hist, kl, paneKeys) {
 
   const panes = CHIP_PANES.filter((p) => paneKeys.has(p.key));
   const grids = [{ left: 66, right: 66, top: TOP, height: KL_H }];
-  const xAxes = [{ type: "category", data: dates, gridIndex: 0, boundaryGap: true, axisLabel: { show: false }, axisLine: { lineStyle: { color: C.border } } }];
-  const yAxes = [{ scale: true, gridIndex: 0, axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.border } } }];
+  const xAxes = [{ type: "category", data: dates, gridIndex: 0, boundaryGap: true,
+    axisLabel: { show: false }, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false } }];
+  const yAxes = [{ scale: true, gridIndex: 0, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false },
+    axisLabel: { color: C.muted, fontSize: 11, formatter: (v) => fmt(v, 0) }, splitLine: { lineStyle: { color: C.gridline, type: "dashed", opacity: 0.72 } } }];
   // 只認陣列：'-' 是字串、truthy，用 `c ? c[1] : null` 會取到 undefined 餵進 ma()
   const closes = candles.map((c) => (Array.isArray(c) ? c[1] : null));
   const series = [
     { name: "加權指數", type: "candlestick", xAxisIndex: 0, yAxisIndex: 0, data: candles,
       itemStyle: { color: C.up, color0: C.down, borderColor: C.up, borderColor0: C.down } },
     { name: "MA20", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: ma(closes, 20), smooth: true,
-      showSymbol: false, lineStyle: { width: 1, color: MA_DEFS[1].color }, itemStyle: { color: MA_DEFS[1].color } },
+      showSymbol: false, lineStyle: { width: 1.5, color: MA_DEFS[1].color }, itemStyle: { color: MA_DEFS[1].color } },
     { name: "MA60", type: "line", xAxisIndex: 0, yAxisIndex: 0, data: ma(closes, 60), smooth: true,
-      showSymbol: false, lineStyle: { width: 1, color: MA_DEFS[2].color }, itemStyle: { color: MA_DEFS[2].color } },
+      showSymbol: false, lineStyle: { width: 1.5, color: MA_DEFS[2].color }, itemStyle: { color: MA_DEFS[2].color } },
   ];
   // yAxes 與 grid 不再 1:1（宣告 unit2 的窗格有兩條軸），故逐窗格記下自己的軸 index
   panes.forEach((p, i) => {
     const gi = i + 1, last = i === panes.length - 1;
     grids.push({ left: 66, right: 66, top: TOP + KL_H + (i + 1) * GAP + i * PANE_H, height: PANE_H });
     xAxes.push({ type: "category", data: dates, gridIndex: gi, boundaryGap: true,
-      axisLabel: last ? { color: C.muted, fontSize: 11 } : { show: false }, axisLine: { lineStyle: { color: C.border } } });
+      axisLabel: last ? { color: C.muted, fontSize: 11 } : { show: false }, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false } });
     // 76px 高只放得下 2 段刻度，splitNumber 不設會擠成一團
     const yBase = { scale: !p.bar, gridIndex: gi, splitNumber: 2,
-      nameTextStyle: { color: C.muted, fontSize: 10 }, axisLabel: { color: C.muted, fontSize: 10 },
-      splitLine: { lineStyle: { color: C.border, opacity: 0.5 } } };
+      nameTextStyle: { color: C.muted, fontSize: 10 }, axisLabel: { color: C.muted, fontSize: 10, formatter: (v) => fmt(v, 0) },
+      axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false },
+      splitLine: { lineStyle: { color: C.gridline, type: "dashed", opacity: 0.55 } } };
     const axisIdx = [yAxes.length];
     yAxes.push({ ...yBase, name: p.unit });
     if (p.unit2) {
@@ -1423,7 +1487,8 @@ function chipTrendOption(hist, kl, paneKeys) {
     }
     p.series(at).forEach((s) => {
       const { axis, ...rest } = s;
-      series.push({ ...rest, xAxisIndex: gi, yAxisIndex: axisIdx[axis || 0] });
+      series.push({ ...rest, xAxisIndex: gi, yAxisIndex: axisIdx[axis || 0],
+        ...(rest.type === "bar" ? { barWidth: 7, barCategoryGap: "32%" } : {}) });
     });
   });
 
@@ -1432,18 +1497,18 @@ function chipTrendOption(hist, kl, paneKeys) {
   const firstChip = hist.length ? dates.indexOf(hist[0].date) : -1;
   const start = firstChip > 0 ? Math.max(0, (firstChip / dates.length) * 100 - 3) : 0;
   return {
+    backgroundColor: "transparent",
     textStyle: { fontFamily: HM_FONT },
-    tooltip: { trigger: "axis", axisPointer: { type: "cross" } },
+    tooltip: financeTooltip({ axisPointer: { type: "cross", lineStyle: { color: withAlpha(C.muted, 0.58), type: "dashed" },
+      label: { backgroundColor: C.panel, borderColor: C.borderDefault, borderWidth: 1, color: C.text } } }),
     // 十字線貫穿所有窗格——這張圖的重點就是同一天上下對齊
-    axisPointer: { link: [{ xAxisIndex: "all" }], label: { backgroundColor: C.border } },
+    axisPointer: { link: [{ xAxisIndex: "all" }], label: { backgroundColor: C.panel, borderColor: C.borderDefault, borderWidth: 1, color: C.text } },
     // type:"scroll" 保證圖例永遠只佔一行——勾滿 6 個窗格有 13 條 series，
     // 換行的圖例會把第一個 grid 往下推、蓋掉 K 線頂端（TOP 是固定值）。
     legend: { type: "scroll", top: 2, textStyle: { color: C.label, fontSize: 11 }, itemGap: 10,
       pageTextStyle: { color: C.muted }, pageIconColor: C.label, pageIconInactiveColor: C.border },
     grid: grids, xAxis: xAxes, yAxis: yAxes, series,
-    dataZoom: [{ type: "inside", xAxisIndex: allX, start, end: 100 },
-      { type: "slider", xAxisIndex: allX, start, end: 100, bottom: 6, height: 16,
-        borderColor: C.border, textStyle: { color: C.muted } }],
+    dataZoom: klineDataZoom(allX, start),
   };
 }
 // echarts.init 會把「當下」的容器尺寸記下來，之後不會自己重量。初次載入時若這行早於
@@ -1453,7 +1518,7 @@ function chipTrendOption(hist, kl, paneKeys) {
 async function loadChipTrend() {
   const el = $("chipchart");
   if (!el) return;
-  if (!chipChart) chipChart = echarts.init(el);
+  if (!chipChart) chipChart = initChart(el);
   if (!comboKline) {
     try { comboKline = await getJSON("/api/index/kline?symbol=taiex&interval=1d"); }
     catch (e) { comboKline = null; }
@@ -1479,7 +1544,7 @@ async function loadChipTrend() {
 function distBarColor(b) { return b > 0 ? C.up : b < 0 ? C.down : C.muted; }
 async function loadDistribution() {
   const el = $("dist-chart"); if (!el) return;
-  if (!distChart) distChart = echarts.init(el);
+  if (!distChart) distChart = initChart(el);
   try {
     const d = await getJSON("/api/breadth/distribution");
     const note = $("dist-note");
@@ -1516,7 +1581,7 @@ async function loadDistribution() {
 }
 
 async function loadIndexChart() {
-  if (!idxChart) idxChart = echarts.init($("idxchart"));
+  if (!idxChart) idxChart = initChart($("idxchart"));
   idxChart.showLoading();
   try {
     const d = await getJSON(`/api/index/kline?symbol=${idxSymbol}&interval=${idxInterval}`);
@@ -1556,7 +1621,7 @@ function txVolumeOption(d) {
 async function loadTxVolumeChart() {
   const el = $("tx-vol-chart");
   if (!el) return;
-  if (!txVolChart) txVolChart = echarts.init(el);
+  if (!txVolChart) txVolChart = initChart(el);
   try {
     const d = await getJSON("/api/tx/volume-sessions?days=60");
     if (!d.dates || !d.dates.length) { txVolChart.clear(); return; }
@@ -1745,7 +1810,7 @@ async function loadStockChips(code) {
   const wrap = $("stock-chips-wrap");
   if (!wrap) return;
   wrap.classList.remove("hidden");
-  if (!stockChipsChart) stockChipsChart = echarts.init($("stock-chips"));
+  if (!stockChipsChart) stockChipsChart = initChart($("stock-chips"));
   stockChipsChart.showLoading();
   const note = $("stock-chips-note");
   try {
@@ -1774,7 +1839,7 @@ async function loadStockCustody(code) {
   const wrap = $("stock-custody-wrap");
   if (!wrap) return;
   wrap.classList.remove("hidden");
-  if (!stockCustodyChart) stockCustodyChart = echarts.init($("stock-custody"));
+  if (!stockCustodyChart) stockCustodyChart = initChart($("stock-custody"));
   stockCustodyChart.showLoading();
   const note = $("stock-custody-note");
   try {
@@ -1810,7 +1875,7 @@ async function loadStock(code, name) {
   if (!code) return;
   if (!/\./.test(code)) code += ".TW";
   stockCode = code;
-  if (!stockChart) stockChart = echarts.init($("stock-chart"));
+  if (!stockChart) stockChart = initChart($("stock-chart"));
   $("stock-note").textContent = "載入中…";
   try { renderProfile(await getJSON(`/api/stock/${encodeURIComponent(code)}/profile`)); } catch (e) { $("stock-profile").innerHTML = ""; }
   loadStockChips(code);

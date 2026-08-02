@@ -31,23 +31,74 @@
 }
 
 :root {
-  /* 表面階梯：本站不用陰影，深度全靠這條階梯＋1px 邊框表現 */
-  --sunken: #12181f;
-  --bg: #0f1419;
-  --panel: #1a2029;
-  --card: #232b36;
-  --border: #2e3845;
-  --text: #e6e6e6;
-  --muted: #8a94a3;
-  --label: #cfd6df;
+  /* Design tokens — color */
+  --bg-primary: #070b12;
+  --bg-workspace: #0b121d;
+  --bg-panel: #0f1927;
+  --bg-card: #142033;
+  --bg-card-hover: #192941;
+  --bg-sunken: #050910;
+  --border-subtle: #1b2a3d;
+  --border-default: #2b3e57;
+  --border-strong: #3e5878;
+  --text-primary: #f2f6fb;
+  --text-secondary: #aab8ca;
+  --text-muted: #718198;
+  --text-disabled: #4d5b6e;
+  --color-up: #ff6375;
+  --up-soft: #3a1822;
+  --color-down: #32c98b;
+  --down-soft: #103126;
+  --color-flat: #8997a9;
+  --accent: #f5b544;
+  --info: #70b8ff;
+  --warning: #f2a64b;
+  --danger: #ff7a66;
+
+  /* Design tokens — compact spacing */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-2xl: 32px;
+
+  /* Design tokens — dense financial typography */
+  --font-size-xs: 11px;
+  --font-size-table: 12px;
+  --font-size-data: 13px;
+  --font-size-sm: 14px;
+  --font-size-base: 15px;
+  --font-size-md: 16px;
+  --font-size-lg: 20px;
+  --font-size-xl: 26px;
+  --font-size-hero: 40px;
+
+  /* Legacy aliases keep existing screens stable while the redesign rolls out. */
+  /* 表面階梯：背景 → 工作區 → 模組 → 數據卡。保留低飽和深藍黑，讓台股紅綠
+     成為唯一的行情訊號；陰影只用來分離平面，不製造額外的「意義色」。 */
+  --sunken: var(--bg-sunken);
+  --bg: var(--bg-primary);
+  --panel: var(--bg-panel);
+  --panel-raised: var(--bg-card);
+  --card: var(--bg-card);
+  --card-hover: var(--bg-card-hover);
+  --border: var(--border-default);
+  --gridline: rgba(115, 142, 176, 0.18);
+  --shadow-panel: 0 14px 34px rgba(0, 0, 0, 0.24), 0 2px 8px rgba(0, 0, 0, 0.18);
+  --shadow-card: 0 5px 15px rgba(0, 0, 0, 0.18);
+  --shadow-card-hover: 0 12px 24px rgba(0, 0, 0, 0.28);
+  --text: var(--text-primary);
+  --muted: var(--text-muted);
+  --label: var(--text-secondary);
   /* 市場方向：紅漲綠跌（台股慣例，與西方相反）。這組紅綠只代表市場方向，
      系統狀態訊息一律不得使用，否則「成功」會讀成「跌」。
      亮度下限由「小字對比」決定，不是由「好不好看」決定：--up/--down 會用在
      .card-chg(14px)、.rank-row(13px) 這類小字上，在 --card 底上必須 ≥ 4.5:1(WCAG AA)。
      舊值 #e8404a 只有 3.58、#1f9e6e 4.20，皆不合格；現值實測 4.60 / 5.32。
      再調暗就會掉出 AA——調整前請先量對比，別只看順不順眼。 */
-  --up: #f56069;
-  --down: #25b37d;
+  --up: var(--color-up);
+  --down: var(--color-down);
   /* 同一組紅綠有兩種用途，對比要求正好相反，一個 token 服務不了兩邊：
      --up/--down     ＝「深色底上的文字」，要夠亮才過 AA（見上）。
      --up-fill/--down-fill ＝「白字底下的色塊」（權值股卡、熱力圖，皆由 sectorColor 產生），
@@ -55,28 +106,26 @@
      用亮色當色塊會把白字壓到 3.11 / 2.68。無文字的填色（漲跌家數條、K 線）沿用亮色即可。 */
   --up-fill: #c62b38;
   --down-fill: #127a53;
-  --up-dim: #3a1717;
-  --down-dim: #14301f;
-  --flat: #4a5262;
+  --up-dim: var(--up-soft);
+  --down-dim: var(--down-soft);
+  --flat: var(--color-flat);
   /* 琥珀只有一個工作：目前選取／你在這裡 */
-  --accent: #f0a500;
-  --info: #6cb6ff;
   /* 字級：中文基準比一般拉丁介面高一階（方塊字筆畫密，需要更大級數）。
      xs=次要註記 data=密集數據列（排行/明細） sm=標籤 base=內文/表格 md=個股名稱
      lg=統計值 xl=卡片值 hero=大盤 */
-  --fs-xs: 12px;
-  --fs-data: 13px;
-  --fs-sm: 14px;
-  --fs-base: 15px;
-  --fs-md: 16px;
-  --fs-lg: 20px;
-  --fs-xl: 26px;
-  --fs-hero: 40px;
-  --sp-1: 4px;
-  --sp-2: 8px;
-  --sp-3: 12px;
-  --sp-4: 16px;
-  --sp-5: 24px;
+  --fs-xs: var(--font-size-xs);
+  --fs-data: var(--font-size-data);
+  --fs-sm: var(--font-size-sm);
+  --fs-base: var(--font-size-base);
+  --fs-md: var(--font-size-md);
+  --fs-lg: var(--font-size-lg);
+  --fs-xl: var(--font-size-xl);
+  --fs-hero: var(--font-size-hero);
+  --sp-1: var(--space-xs);
+  --sp-2: var(--space-sm);
+  --sp-3: var(--space-md);
+  --sp-4: var(--space-lg);
+  --sp-5: var(--space-xl);
   /* 圓角只有三級：r=一般元件 r-lg=大容器 r-pill=膠囊。全站走日式圓潤，基準 6px。 */
   --r: 6px;
   --r-lg: 8px;
@@ -89,7 +138,7 @@ body {
   font-family: "Num", "Huninn", "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
   font-size: var(--fs-base);
-  background: var(--bg);
+  background: radial-gradient(circle at 88% -10%, #142642 0, transparent 34%), var(--bg);
   color: var(--text);
 }
 /* 個股名稱是全站掃視最頻繁的字串，給它自己的一級 */
@@ -98,12 +147,19 @@ body {
 .num { text-align: right; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* ===== 版面骨架：頂列 + 左側欄 + 內容區，整頁不捲動 ===== */
-.app { display: grid; grid-template-columns: 190px 1fr; grid-template-rows: auto 1fr; height: 100vh; }
+/* ===== 全域版面：頂列 + 固定側欄 + 唯一主捲動區 ===== */
+.app {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
+}
 .topbar {
   grid-column: 1 / 3;
   display: flex; justify-content: space-between; align-items: center;
-  padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--border);
+  padding: 12px 24px; background: linear-gradient(100deg, var(--panel), var(--panel-raised));
+  border-bottom: 1px solid var(--border); box-shadow: 0 5px 18px rgba(0, 0, 0, 0.2); z-index: 2;
 }
 .topbar h1 { font-size: var(--fs-lg); margin: 0; letter-spacing: 1px; }
 .topbar h1 .zh { font-size: var(--fs-sm); color: var(--label); margin-left: 8px; }
@@ -119,18 +175,34 @@ body {
 .dot.orange { color: var(--accent); }
 .dot.blue { color: var(--info); }
 
-.sidebar { background: var(--panel); border-right: 1px solid var(--border); padding: 12px 8px; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
-.nav { display: flex; align-items: center; gap: 9px; padding: 11px 14px; border-radius: var(--r); color: var(--text); text-decoration: none; cursor: pointer; font-size: var(--fs-base); }
+.sidebar {
+  grid-column: 1; grid-row: 2;
+  min-height: 0; padding: var(--space-lg) var(--space-sm);
+  background: var(--bg-panel); border-right: 1px solid var(--border-subtle);
+  overflow: hidden; box-shadow: 8px 0 22px rgba(0, 0, 0, 0.14); z-index: 1;
+}
+.sidebar-nav { display: flex; flex-direction: column; gap: var(--space-xs); min-height: 100%; }
+.nav { display: flex; align-items: center; gap: 10px; padding: 11px 14px; border: 1px solid transparent; border-radius: var(--r); color: var(--text); text-decoration: none; cursor: pointer; font-size: var(--fs-base); transition: background .16s ease, border-color .16s ease, color .16s ease, box-shadow .16s ease; }
 .nav .ico { font-size: var(--fs-md); }
-.nav:hover { background: var(--card); }
-.nav.active { background: var(--accent); color: #1a1a1a; font-weight: 700; }
+.nav:hover { color: var(--text-primary); background: rgba(245, 181, 68, 0.08); border-color: rgba(245, 181, 68, 0.34); }
+.nav.active { color: var(--accent); background: rgba(245, 181, 68, 0.13); border-color: rgba(245, 181, 68, 0.48); font-weight: 700; box-shadow: inset 3px 0 0 var(--accent); }
 /* 導覽分組：每組帶小標題；系統組釘在側欄底部（如同看盤軟體把設定放最下） */
 .nav-group { display: flex; flex-direction: column; gap: 4px; }
 .nav-group + .nav-group { margin-top: var(--sp-3); }
 .sidebar .nav-group-sys { margin-top: auto; }   /* 特異度需勝過上面的相鄰選擇器，設定才會釘底 */
 .nav-group-title { font-size: var(--fs-xs); color: var(--muted); font-weight: 700; letter-spacing: 1px; padding: 4px 14px 2px; }
 
-.content { min-width: 0; min-height: 0; overflow: hidden; position: relative; display: flex; flex-direction: column; }
+.content {
+  grid-column: 2; grid-row: 2;
+  min-width: 0; min-height: 0; position: relative;
+  overflow-x: hidden; overflow-y: auto; scrollbar-gutter: stable;
+}
+.terminal-workspace {
+  background:
+    radial-gradient(circle at 86% -12%, rgba(38, 107, 176, 0.14), transparent 34rem),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.015), transparent 28%);
+}
+.dashboard-view { position: relative; }
 
 /* 公開模式（/public/overview）：只開放總覽。用隱藏而非移除 DOM——app.js 在模組層對
    各視圖元素綁事件，移除節點會讓綁定拋 TypeError 而整頁掛掉。 */
@@ -139,8 +211,8 @@ body[data-public] .nav-group-title { display: none; }             /* 只剩總�
 body[data-public] .nav-group + .nav-group { margin-top: 0; }        /* 空群組不留間距 */
 body[data-public] .status-bar { display: none; }
 
-/* ===== 視圖：只有 active 顯示，內部自行捲動 ===== */
-.view { display: none; flex: 1; min-height: 0; overflow: auto; padding: 16px 20px; flex-direction: column; gap: 12px; }
+/* 視圖內容交由右側 .content 統一捲動，避免多層垂直捲軸。 */
+.view { display: none; min-height: 100%; overflow: visible; padding: 22px 28px 32px; flex-direction: column; gap: 16px; }
 .view.active { display: flex; }
 
 /* 系統狀態訊息刻意避開紅綠軸：在紅漲綠跌的介面裡，綠色「成功」會被讀成「跌」。
@@ -157,8 +229,8 @@ body[data-public] .status-bar { display: none; }
 /* ===== 市場內部儀表：把「指數方向」與「內部廣度」「法人資金」放進同一個讀數。
    分開放在不同區塊時，剛好藏住「指數持平但下跌家數遠多於上漲」這種背離判讀。 ===== */
 .market-strip {
-  background: var(--panel); border: 1px solid var(--border); border-radius: var(--r);
-  padding: var(--sp-3) var(--sp-4); display: flex; align-items: center;
+  background: linear-gradient(120deg, var(--panel-raised), var(--panel)); border: 1px solid var(--border-strong); border-radius: var(--r-lg);
+  padding: 18px 20px; display: flex; align-items: center; box-shadow: var(--shadow-panel);
   gap: var(--sp-5); flex-wrap: wrap; flex: 0 0 auto;
 }
 .ms-main { flex: 1 1 400px; min-width: 0; }
@@ -205,30 +277,50 @@ body[data-public] .status-bar { display: none; }
 /* 區塊標題：左豎線分層。原本還有一條琥珀漸層底線，在只有單階標題時是好看的收尾，
    但補上 .section-head 後，8 條琥珀底線會與新的一階互相競爭、也稀釋琥珀的語意，
    故移除——階層改由上面那階承擔，這階只要能被認出是標題即可。 */
-.group-title { display: inline-block; font-size: var(--fs-md); color: var(--label); font-weight: 600; margin-bottom: var(--sp-2); border-left: 3px solid var(--border); padding: 0 2px 2px 8px; }
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(175px, 1fr)); gap: var(--sp-2); }
+.card-group { background: rgba(16, 26, 40, 0.72); border: 1px solid rgba(58, 82, 112, 0.7); border-radius: var(--r-lg); padding: 16px; box-shadow: var(--shadow-card); }
+.group-title { display: inline-block; font-size: var(--fs-md); color: var(--label); font-weight: 600; margin-bottom: var(--sp-3); border-left: 3px solid var(--info); padding: 0 2px 2px 9px; }
+.card-grid, .cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-md);
+}
 /* min-width:0 是必要的結構護欄：grid item 預設 min-width:auto（＝min-content），
    所以卡片裡任何一行 nowrap 的長文字（.card-val/.card-note）都會把該欄撐得比
    minmax(175px,1fr) 寬，整列欄寬就不齊了——症狀是「某一張卡變寬、其他卡跟著位移」。
    有了 min-width:0，欄寬回歸 grid 控制，過長的內容改以溢出呈現（仍看得出來要修文案）。 */
-.card { background: var(--card); border: 1px solid var(--border); border-radius: var(--r); padding: 10px 13px; min-width: 0; }
+.card {
+  display: flex; flex-direction: column;
+  min-width: 0; min-height: 136px; padding: var(--space-md) var(--space-lg);
+  background: var(--bg-card); border: 1px solid var(--border-default); border-radius: var(--r-lg);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), var(--shadow-card);
+  transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
+}
+.card:hover { transform: translateY(-2px); border-color: var(--border-strong); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), var(--shadow-card-hover); }
 /* 有懸停說明的卡片：標籤加點狀底線當「這裡有解釋」的視覺提示 */
 .card[title] { cursor: help; }
 .card[title] .card-label { text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
-.card-label { font-size: var(--fs-sm); color: var(--muted); }
+.card-label { order: 0; font-size: var(--font-size-sm); color: var(--text-secondary); }
 .card-label .asof { color: var(--muted); font-weight: 400; font-size: var(--fs-xs); }
 /* 26px 只留給數字。修飾語（淨多/淨空/散戶偏多）與單位降級後，「淨空 75,198 口」
    才不會在 175px 的卡片裡把「口」擠到第二行——而且真正的讀數本來就是數字，
    修飾語只是標籤，兩者同一級是排版上的誤植。 */
-.card-val { font-size: var(--fs-xl); font-weight: 700; margin-top: var(--sp-1); line-height: 1.15; white-space: nowrap; }
-.card-qual { font-size: var(--fs-sm); color: var(--muted); margin-top: var(--sp-1); line-height: 1.2; }
-.card-qual + .card-val { margin-top: 0; }
+.card-val { order: 2; color: var(--text-primary); font-size: var(--font-size-xl); font-weight: 700; margin: auto 0 var(--space-xs); line-height: 1.15; white-space: nowrap; }
+.card-qual { order: 1; font-size: var(--font-size-sm); color: var(--text-muted); margin-top: var(--space-xs); line-height: 1.2; }
+.card-qual + .card-val { margin-top: auto; }
 .card-unit { font-size: var(--fs-sm); font-weight: 400; margin-left: 3px; }
-.card-note { font-size: var(--fs-xs); color: var(--muted); margin-top: 3px; white-space: nowrap; }
-.card-chg { font-size: var(--fs-sm); margin-top: 3px; }
+.card-note { order: 3; font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 3px; white-space: nowrap; }
+.card-chg { order: 4; align-self: flex-end; font-size: var(--font-size-sm); margin-top: var(--space-xs); }
+.card-rail { order: 5; }
 .up { color: var(--up); }
 .down { color: var(--down); }
 .flat { color: var(--muted); }
+
+@media (max-width: 1240px) {
+  .card-grid, .cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 800px) {
+  .card-grid, .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 
 /* ===== 漲跌家數 ===== */
 .breadth-nums { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; font-size: var(--fs-sm); font-weight: 700; margin-bottom: 7px; }
@@ -303,12 +395,30 @@ body[data-public] .status-bar { display: none; }
 .cross-h { font-size: var(--fs-sm); margin-bottom: 3px; }
 .cross-stocks { font-size: var(--fs-data); line-height: 1.95; }
 
-/* ===== 法人買賣超排行 ===== */
-.rank-split { display: flex; gap: 12px; }
-.rank-col { flex: 1; min-width: 0; }
-.rank-h { font-weight: 700; font-size: var(--fs-data); margin-bottom: 4px; padding-left: 4px; }
-.rank-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--border); font-size: var(--fs-data); }
+/* ===== Phase 1 — institutional ranking / selection tables ===== */
+.rank-split { display: flex; gap: var(--space-md); }
+.rank-col {
+  flex: 1; min-width: 0; overflow: hidden;
+  background: var(--bg-sunken); border: 1px solid var(--border-default); border-radius: var(--r-lg);
+}
+.rank-h {
+  position: sticky; top: 0; z-index: 1;
+  margin: 0; padding: var(--space-sm) var(--space-md);
+  background: var(--bg-panel); border-bottom: 1px solid var(--border-strong);
+  font-weight: 700; font-size: var(--font-size-data);
+}
+.rank-row {
+  display: flex; justify-content: space-between; align-items: center; gap: var(--space-sm);
+  min-height: 31px; padding: var(--space-xs) var(--space-md);
+  border-bottom: 1px solid var(--border-subtle); font-size: var(--font-size-table);
+  transition: background-color .14s ease;
+}
+#rank-buy .rank-row:nth-child(even), #rank-sell .rank-row:nth-child(even) { background: rgba(112, 184, 255, 0.04); }
+.rank-row:hover { background: rgba(112, 184, 255, 0.10); }
 .rank-row span { font-weight: 700; white-space: nowrap; }
+.rank-row span.up, .rank-row span.down { padding: 2px 5px; border-radius: 3px; }
+.rank-row span.up { background: var(--up-soft); }
+.rank-row span.down { background: var(--down-soft); }
 /* 每日新聞沿用法人排行的欄位與列樣式，只把三市場改成等寬三欄；窄螢幕仍由下方
    .rank-split 的既有規則直排，讓標題不必壓成難讀的三小欄。 */
 .news-split .rank-row { align-items: flex-start; }
@@ -317,7 +427,7 @@ body[data-public] .status-bar { display: none; }
 .news-source { margin-left: auto; }
 
 /* ===== K 線區 ===== */
-.chart-row { display: flex; gap: 14px; }
+.chart-row { display: flex; gap: 16px; background: rgba(16, 26, 40, 0.72); border: 1px solid rgba(58, 82, 112, 0.7); border-radius: var(--r-lg); padding: 16px; box-shadow: var(--shadow-card); }
 .chart-side { flex: 0 0 110px; display: flex; flex-direction: column; gap: 8px; padding-top: 6px; }
 .chart-side-title { font-size: var(--fs-xs); color: var(--muted); }
 .chart-side label { font-size: var(--fs-sm); cursor: pointer; display: flex; align-items: center; gap: 6px; }
@@ -336,8 +446,20 @@ body[data-public] .status-bar { display: none; }
 .wave-toggle { font-size: var(--fs-data); color: var(--muted); display: flex; align-items: center; gap: 5px; cursor: pointer; margin-left: 6px; }
 .wave-pct { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--muted); }
 .wave-pct input[type=range] { width: 90px; accent-color: var(--accent); }
-.chart { width: 100%; height: 340px; }
-.chart-big { width: 100%; flex: 1; min-height: 380px; }
+.chart { width: 100%; height: 340px; background: linear-gradient(180deg, rgba(24, 38, 58, 0.55), rgba(11, 18, 29, 0.35)); border: 1px solid rgba(58, 82, 112, 0.62); border-radius: var(--r); }
+.chart-big { width: 100%; flex: 1; min-height: 380px; background: linear-gradient(180deg, rgba(24, 38, 58, 0.55), rgba(11, 18, 29, 0.35)); border: 1px solid rgba(58, 82, 112, 0.62); border-radius: var(--r); }
+/* ECharts 的 tooltip 由 JS 注入 body；用 grid 對齊「欄位／數字／單位」，比一整串
+   全形空白更穩定，縮放字體時也不會跑欄。 */
+.ec-tip-date { color: var(--label); font-weight: 700; padding-bottom: 5px; margin-bottom: 6px; border-bottom: 1px solid var(--border); }
+.ec-tip-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; min-width: 190px; }
+.ec-tip-series { grid-column: 1 / 2; color: var(--muted); white-space: nowrap; }
+.ec-tip-v { color: var(--text); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ec-tip-v i { color: var(--muted); font-size: var(--fs-xs); font-style: normal; font-weight: 400; margin-left: 3px; }
+.ec-tip-ohlc { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px 12px; }
+.ec-tip-cell { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: var(--fs-xs); }
+.ec-tip-cell i { font-style: normal; }
+.ec-tip-cell b { color: var(--text); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ec-tip-cell em { color: var(--muted); font-size: var(--fs-xs); font-style: normal; font-weight: 400; margin-left: 3px; }
 
 /* ===== AI 區 ===== */
 .ai-head { display: flex; align-items: center; justify-content: space-between; font-size: var(--fs-sm); color: var(--accent); font-weight: 700; }
@@ -373,16 +495,47 @@ button.file-label { font: inherit; }
 /* ===== 表格 ===== */
 /* flex-shrink:0：.view 是 flex column，頁面內容超高時未掛 .fill 的表格（交易帳本未平倉/已平倉）
    會被按比例壓成幾 px 高、只露半行。.fill 要佔滿剩餘空間，覆寫回可收縮。 */
-.table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: var(--r); flex-shrink: 0; }
+.table-wrap { overflow: auto; border: 1px solid var(--border-strong); border-radius: var(--r-lg); flex-shrink: 0; background: var(--sunken); box-shadow: var(--shadow-card); }
 .table-wrap.fill { flex: 1 1 0; min-height: 0; }
 .table-wrap.fill-half { max-height: 55vh; }
-table { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
-th, td { text-align: left; padding: 9px 11px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-th { position: sticky; top: 0; background: var(--card); color: var(--muted); font-weight: 600; z-index: 1; }
+table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--fs-base); }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid rgba(58, 82, 112, 0.52); white-space: nowrap; }
+tbody tr:nth-child(even) td { background: rgba(115, 142, 176, 0.055); }
+th { position: sticky; top: 0; background: #1b2a3f; color: var(--label); font-weight: 700; z-index: 1; box-shadow: inset 0 -1px 0 var(--border-strong), 0 4px 9px rgba(0, 0, 0, 0.16); }
 th.sortable { cursor: pointer; user-select: none; }
 th.sortable:hover { color: var(--accent); }
-tr:hover td { background: #20262f; }
+tbody tr:hover td { background: rgba(108, 182, 255, 0.12); box-shadow: inset 3px 0 0 var(--info); }
+tbody tr:last-child td { border-bottom: 0; }
 tr.clickrow { cursor: pointer; }
+
+/* 高密度選股清單：範圍只限 #daily / #industry，其他表格暫不改動。 */
+#daily table, #industry table { font-size: var(--font-size-table); }
+#daily th, #industry th {
+  position: sticky; top: 0; z-index: 2;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg-panel); border-bottom-color: var(--border-strong);
+  font-size: var(--font-size-data); letter-spacing: .01em;
+}
+#daily td, #industry td {
+  padding: 6px var(--space-md);
+  border-bottom-color: var(--border-subtle);
+  line-height: 1.35;
+}
+#daily tbody tr:nth-child(even) td, #industry tbody tr:nth-child(even) td { background: rgba(112, 184, 255, 0.04); }
+#daily tbody tr:hover td, #industry tbody tr:hover td {
+  background: rgba(112, 184, 255, 0.10); box-shadow: none;
+}
+#daily tbody tr:hover td:first-child, #industry tbody tr:hover td:first-child { box-shadow: inset 3px 0 0 var(--info); }
+
+/* 漲跌欄位優先保留台股語意；支援值直接放 td 或包在子元素兩種既有輸出。 */
+#daily td.up, #daily td.down, #daily td .up, #daily td .down {
+  border-radius: 3px; font-weight: 700;
+}
+#daily td.up, #daily td .up { background: var(--up-soft); }
+#daily td.down, #daily td .down { background: var(--down-soft); }
+#daily tbody tr:hover td.up, #daily tbody tr:hover td.down { background: inherit; }
+#daily tbody tr:hover td.up { background: var(--up-soft); }
+#daily tbody tr:hover td.down { background: var(--down-soft); }
 a.stock { color: var(--info); text-decoration: none; font-size: var(--fs-md); font-weight: 600; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45); }
 a.stock:hover { text-decoration: underline; }
 #sub-filter b { color: var(--accent); }
@@ -462,6 +615,7 @@ a.stock:hover { text-decoration: underline; }
     flex-direction: row; gap: 0; padding: 0; overflow: visible;
     background: var(--panel); border-right: none; border-top: 1px solid var(--border);
   }
+  .sidebar-nav { display: contents; }
   /* 群組容器 display:contents → 消失於版面，內部 nav 直接成為底部列的 flex 項目，
      沿用下方既有底部列 CSS 不必改；群組標題與釘底一併收起 */
   .nav-group { display: contents; }
@@ -477,7 +631,7 @@ a.stock:hover { text-decoration: underline; }
   .nav.active { background: transparent; color: var(--accent); font-weight: 700; }
 
   /* 卡片固定 2 欄；並排區塊一律直排 */
-  .cards { grid-template-columns: repeat(2, 1fr); gap: 7px; }
+  .card-grid, .cards { grid-template-columns: repeat(2, 1fr); gap: 7px; }
   .card-val { font-size: 19px; }
   .rank-split { flex-direction: column; gap: 4px; }
   .chart-side { gap: 12px; }
