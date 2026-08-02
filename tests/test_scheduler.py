@@ -30,6 +30,38 @@ def test_create_app_enables_scheduler(tmp_path, monkeypatch):
         app.state.scheduler.shutdown(wait=False)
 
 
+def test_news_jobs_require_both_telegram_token_and_chat_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "dummy-token")
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    from stocks_power_rich.main import create_app
+
+    app = create_app(enable_scheduler=True)
+    try:
+        assert all(app.state.scheduler.get_job(f"news_{slot}") is None
+                   for slot in ("morning", "afternoon", "evening"))
+    finally:
+        app.state.scheduler.shutdown(wait=False)
+
+
+def test_news_jobs_register_at_the_three_configured_slots(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "dummy-token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "dummy-chat")
+    from stocks_power_rich.main import create_app
+
+    app = create_app(enable_scheduler=True)
+    try:
+        for slot, hour, minute in (("morning", "7", "0"), ("afternoon", "17", "0"),
+                                   ("evening", "21", "10")):
+            job = app.state.scheduler.get_job(f"news_{slot}")
+            assert job is not None
+            fields = {f.name: str(f) for f in job.trigger.fields}
+            assert fields["hour"] == hour and fields["minute"] == minute
+    finally:
+        app.state.scheduler.shutdown(wait=False)
+
+
 def test_osfut_jobs_register_even_without_line_token(tmp_path, monkeypatch):
     """海期監控排程（07:30／21:30）與 LINE 是否設定無關——不歸在 line_token 判斷式內，
     否則沒設 LINE 的人（本機開發常態）永遠不會有 07:30/21:30 這兩次更新，
@@ -56,6 +88,8 @@ def test_create_app_with_line_token_registers_all_jobs(tmp_path, monkeypatch):
     這是雲端生產設定（Zeabur 皆設此變數）；曾因 job 函式定義順序問題整個 app 起不來。"""
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "dummy-token")
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
     monkeypatch.setenv("SPR_WEEKLY_PUSH_TIME", "18:30")   # 週報時間可由 config 調整（固定週六）
     from stocks_power_rich.main import create_app
 

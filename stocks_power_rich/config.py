@@ -29,6 +29,8 @@ class Config:
     line_secret: str = ""           # LINE Channel Secret（webhook 簽章驗證；未設定＝webhook 關閉）
     line_push_time: str = "16:00"   # 盤後速報推播時間（完整版跟隨 schedule_time）
     weekly_push_time: str = "17:00"  # 每週六籌碼週報推播時間（固定週六，僅時間可調）
+    telegram_token: str = ""        # 每日財經新聞 Telegram Bot Token
+    telegram_chat_id: str = ""      # 推播目標 chat id
     basic_user: str = ""            # HTTP Basic Auth 帳號（與密碼皆設定才啟用全站認證）
     basic_pass: str = ""            # HTTP Basic Auth 密碼
     backup_git_remote: str = ""     # offsite git backup remote URL
@@ -45,6 +47,8 @@ def load_config() -> Config:
         line_secret=os.getenv("LINE_CHANNEL_SECRET", "").strip(),
         line_push_time=os.getenv("SPR_LINE_PUSH_TIME", "16:00"),
         weekly_push_time=os.getenv("SPR_WEEKLY_PUSH_TIME", "17:00"),
+        telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
+        telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
         basic_user=os.getenv("SPR_BASIC_USER", "").strip(),
         basic_pass=os.getenv("SPR_BASIC_PASS", "").strip(),
         backup_git_remote=os.getenv("SPR_BACKUP_GIT_REMOTE", "").strip(),

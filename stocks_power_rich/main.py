@@ -16,7 +16,7 @@ from .db import (
     get_snapshot,
     backup_db,
 )
-from . import csv_import, line_push, updater
+from . import csv_import, line_push, telegram_push, updater
 from .api.deps import conn
 from .api.helpers import (
     _check_basic,
@@ -40,6 +40,7 @@ from .api.csv import router as csv_router
 from .api.public import router as public_router
 from .api.admin import router as admin_router
 from .api.line import router as line_router
+from .api.news import router as news_router, news_logic
 
 # 免帳密的前端靜態資產（精確比對）：/public/overview 與站內共用同一套前端，需能載入這些檔。
 # 僅限程式碼與樣式，不含 index.html（站內入口維持鎖住）。
@@ -93,6 +94,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     app.include_router(public_router)
     app.include_router(admin_router)
     app.include_router(line_router)
+    app.include_router(news_router)
 
     # 註冊排程 job
     def scheduled_job():
@@ -195,6 +197,19 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         except Exception:  # noqa: BLE001 — 推播失敗不影響其他排程
             pass
 
+    def news_job(slot: str):
+        """每日財經新聞：三時段各自的必含主題不同，快取鍵也各自獨立（見 news_logic），
+        所以每個時段是一個獨立的 job 而非同一支函式帶參數重複註冊。"""
+        def _run():
+            try:
+                payload = news_logic(conn(), slot=slot, refresh=1)
+                text = payload.get("summary")
+                if text:
+                    telegram_push.send_message(cfg.telegram_token, cfg.telegram_chat_id, text)
+            except Exception:  # noqa: BLE001 — 推播失敗不影響其他排程
+                pass
+        return _run
+
     if enable_scheduler:
         from .scheduler import build_trigger_kwargs, start_scheduler
 
@@ -204,6 +219,17 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             osfut_job, "cron", hour=7, minute=30, id="osfut_morning", replace_existing=True)
         app.state.scheduler.add_job(
             osfut_job, "cron", hour=21, minute=30, id="osfut_evening", replace_existing=True)
+        # token 與目標 chat 缺一不可。只檢查 token 會註冊三個永遠送不出去、又被
+        # job 內例外吞掉的工作，設定頁也會誤以為已啟用。
+        if cfg.telegram_token and cfg.telegram_chat_id:
+            # 07:00/17:00 對齊每日財經參考專案的原始三時段；21:00 那格改到 21:10——
+            # 預設 schedule_time 也是 21:00（daily_update），兩個 job 排在同一分鐘
+            # 雖不是致命錯誤（各自開自己的 sqlite3 連線），但同秒觸發純屬巧合式的資源
+            # 競爭，能在排程時就避開，不必等「觀察到延遲」再事後搬。
+            for hh, mm, slot in ((7, 0, "morning"), (17, 0, "afternoon"), (21, 10, "evening")):
+                app.state.scheduler.add_job(
+                    news_job(slot), "cron", hour=hh, minute=mm,
+                    id=f"news_{slot}", replace_existing=True)
         if cfg.line_token:
             app.state.scheduler.add_job(
                 line_brief_job, "cron", **build_trigger_kwargs(cfg.line_push_time),

@@ -309,6 +309,12 @@ body[data-public] .status-bar { display: none; }
 .rank-h { font-weight: 700; font-size: var(--fs-data); margin-bottom: 4px; padding-left: 4px; }
 .rank-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--border); font-size: var(--fs-data); }
 .rank-row span { font-weight: 700; white-space: nowrap; }
+/* 每日新聞沿用法人排行的欄位與列樣式，只把三市場改成等寬三欄；窄螢幕仍由下方
+   .rank-split 的既有規則直排，讓標題不必壓成難讀的三小欄。 */
+.news-split .rank-row { align-items: flex-start; }
+.news-split .rank-row a { color: var(--text); line-height: 1.5; text-decoration: none; }
+.news-split .rank-row a:hover { color: var(--info); text-decoration: underline; }
+.news-source { margin-left: auto; }
 
 /* ===== K 線區 ===== */
 .chart-row { display: flex; gap: 14px; }

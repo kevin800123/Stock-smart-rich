@@ -154,6 +154,7 @@ function showView(name) {
   if (name === "hiprice") { loadRankPrice(); startRankPolling(); } else stopRankPolling();
   if (name === "cup") { if (!cupLoaded) loadCupHandle(); else cupChart && cupChart.resize(); }
   if (name === "weekly") loadCsvSummary(false);  // 讀快取即回；匯入後才會重新生成
+  if (name === "news") loadNews();
   if (name === "watch") loadWatchlist();
   if (name === "trades") loadTrades();
   if (name === "traders") loadTraders();
@@ -290,6 +291,51 @@ function renderTraderSection(s) {
 
 // 「訊號追蹤」頁已收掉（signal_ledger 背景記錄照跑，見 CLAUDE.md ledger.py 條目）
 
+// ========== 每日財經新聞 ==========
+function safeNewsUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return (parsed.protocol === "https:" || parsed.protocol === "http:") ? parsed.href : "#";
+  } catch (_) { return "#"; }
+}
+
+function renderNewsRows(items) {
+  if (!items || !items.length) return '<div class="muted small">目前沒有可用新聞來源。</div>';
+  return items.map((item) => {
+    const url = esc(safeNewsUrl(item.url));
+    const title = esc(item.title || "（無標題）");
+    const source = esc(item.source || "來源未標示");
+    return `<div class="rank-row"><a href="${url}" target="_blank" rel="noopener">${title}</a><span class="muted small">${source}</span></div>`;
+  }).join("");
+}
+
+function renderNews(data) {
+  $("news-date").textContent = data.date ? `${data.date}・${data.slot || ""}` : "";
+  const jpFallback = data.fallback && data.fallback.jp;
+  $("news-source").textContent = jpFallback
+    ? "日股：Google 新聞（日經指數）備援"
+    : "日股：株探（kabutan.jp）";
+  const summary = $("news-summary");
+  summary.textContent = data.summary || "尚未設定 Gemini，或本次摘要暫時無法產生；下方仍提供原始新聞標題。";
+  summary.classList.toggle("disabled", !data.summary);
+  ["tw", "us", "jp"].forEach((market) => {
+    $("news-" + market).innerHTML = renderNewsRows(data.markets && data.markets[market]);
+  });
+}
+
+async function loadNews(refresh = false) {
+  const summary = $("news-summary");
+  if (!summary) return;
+  if (refresh) summary.textContent = "更新新聞與摘要中…";
+  try {
+    const data = await getJSON("/api/news" + (refresh ? "?refresh=1" : ""));
+    renderNews(data);
+  } catch (e) {
+    summary.textContent = "載入失敗：" + e.message;
+    summary.classList.add("disabled");
+  }
+}
+
 async function loadSettings() {
   try {
     const s = await getJSON("/api/settings");
@@ -306,6 +352,9 @@ async function loadSettings() {
         + (s.line_webhook_configured ? "・查詢 webhook ✓" : "・查詢 webhook 未設定")
       : "未設定";
     ln.className = "set-badge " + (s.line_configured ? "ok" : "no");
+    const tg = $("set-telegram");
+    tg.textContent = s.telegram_configured ? "已設定 ✓（每日 07:00／17:00／21:10）" : "未設定";
+    tg.className = "set-badge " + (s.telegram_configured ? "ok" : "no");
     $("set-picks-only").checked = !!s.intraday_picks_only;
     $("set-loss-tol").value = s.loss_tolerance || "";
     $("set-stats").innerHTML = [
@@ -1883,6 +1932,15 @@ $("btn-line-test").addEventListener("click", async () => {
     st.textContent = r.ok ? "已送出，看手機 ✓" : "失敗：" + (r.error || r.status);
   } catch (e) { st.textContent = "失敗：" + e.message; }
 });
+$('btn-telegram-test').addEventListener("click", async () => {
+  const st = $("set-telegram-status"); st.textContent = "產生摘要並推播中…";
+  try {
+    const r = await (await fetch("/api/news/test", { method: "POST" })).json();
+    const push = r.push || {};
+    st.textContent = push.ok ? "已送出，看手機 ✓" : "失敗：" + (push.error || push.status || "未知錯誤");
+  } catch (e) { st.textContent = "失敗：" + e.message; }
+});
+$("btn-news-refresh").addEventListener("click", () => loadNews(true));
 
 // 大盤圖控制
 document.querySelectorAll('input[name="idx"]').forEach((el) => el.addEventListener("change", (e) => { idxSymbol = e.target.value; loadIndexChart(); }));

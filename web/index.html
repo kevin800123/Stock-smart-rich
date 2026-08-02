@@ -21,6 +21,7 @@
       <div class="nav-group">
         <div class="nav-group-title">市場</div>
         <a class="nav active" data-view="overview"><span class="ico">📊</span><span class="lbl">總覽</span></a>
+        <a class="nav" data-view="news"><span class="ico">📰</span><span class="lbl">每日財經新聞</span></a>
         <a class="nav" data-view="rotation"><span class="ico">🔄</span><span class="lbl">族群輪動</span></a>
         <a class="nav" data-view="weekly"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
         <a class="nav" data-view="osfut"><span class="ico">🌏</span><span class="lbl">海期監控</span></a>
@@ -365,6 +366,22 @@
         <div id="csv-summary" class="ai-box">載入中…</div>
       </section>
 
+      <!-- ===== 每日財經新聞 ===== -->
+      <section id="view-news" class="view">
+        <div class="toolbar">
+          <span class="pane-title" style="margin:0">📰 每日財經新聞</span>
+          <button id="btn-news-refresh" class="file-label">🔄 更新摘要</button>
+          <span id="news-date" class="muted small"></span>
+        </div>
+        <div class="ai-head"><span>AI 財經摘要</span><span id="news-source" class="muted small"></span></div>
+        <div id="news-summary" class="ai-box">載入中…</div>
+        <div class="rank-split news-split">
+          <div class="rank-col"><div class="rank-h">台股新聞</div><div id="news-tw"></div></div>
+          <div class="rank-col"><div class="rank-h">美股新聞</div><div id="news-us"></div></div>
+          <div class="rank-col"><div class="rank-h">日股新聞</div><div id="news-jp"></div></div>
+        </div>
+      </section>
+
       <!-- ===== 設定 ===== -->
       <section id="view-settings" class="view">
         <div class="settings-grid">
@@ -372,6 +389,7 @@
           <div class="set-row"><label>「讀取最新檔」資料夾</label><input type="text" id="set-datadir" class="stock-input" placeholder="例如 Date 或完整路徑" /></div>
           <div class="set-row"><label>Gemini 金鑰</label><span id="set-gemini" class="set-badge"></span><span class="muted small">（金鑰只能透過 .env 設定，此處不顯示也不輸入）</span></div>
           <div class="set-row"><label>LINE 推播</label><span id="set-line" class="set-badge"></span><button id="btn-line-test" class="file-label">📱 測試推播</button><span id="set-line-status" class="muted small"></span></div>
+          <div class="set-row"><label>Telegram 財經新聞</label><span id="set-telegram" class="set-badge"></span><button id="btn-telegram-test" class="file-label">📱 測試推播</button><span id="set-telegram-status" class="muted small"></span></div>
           <div class="set-row"><label>盤中突破哨兵</label><label class="wave-toggle" style="margin:0"><input type="checkbox" id="set-picks-only" /> 只警示「同時符合籌碼/基本選股」的突破</label><span class="muted small">（未勾＝全部杯柄股都盯，交集股標 ⭐）</span></div>
           <div class="set-row"><label>單筆可容忍虧損（元）</label><input type="number" id="set-loss-tol" class="stock-input" min="0" step="1000" placeholder="例如 20000" /><span class="muted small">（杯柄頁自動算建議部位＝此金額 ÷ 每股風險；建議填總資金的 1–2%，清空＝不啟用）</span></div>
           <div class="set-row"><button id="btn-save-settings" class="file-label">💾 儲存設定</button><span id="set-saved" class="muted"></span></div>

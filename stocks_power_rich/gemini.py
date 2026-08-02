@@ -45,6 +45,49 @@ def summarize_market(data: dict, api_key: str) -> dict:
     return _run(prompt, api_key)
 
 
+_SLOT_MUST = {
+    # 每日財經專案踩過兩次的坑：必含主題放在被引用的檔案裡會被模型忽略，
+    # 連續兩次下午場完全跳過台股。改成放在 prompt 最前面、每次都送。
+    "morning": "本次摘要開頭第一則務必是「美股前一夜收盤」相關（標普／那斯達克／道瓊／費半），"
+               "即使亞股或台股新聞更聳動，也要先講美股收盤。",
+    "afternoon": "本次摘要開頭第一則務必是「台股當日收盤」相關——加權指數點數與漲跌、"
+                 "成交量、法人動向擇要提及，即使歐美新聞更聳動，台股這則也不可省略。",
+    "evening": "本次摘要開頭第一則務必是「美股盤前或當晚即將公布的重要數據／財報」相關，"
+               "即使有更聳動的國際新聞，也要先講這則。",
+}
+
+
+def summarize_news(payload: dict, api_key: str) -> dict:
+    """每日財經新聞 → 繁中摘要。payload＝{slot, snapshot(盤面), markets:{tw,us,jp:[{title,url,source}]}}。
+
+    設計依據每日財經專案（C:\\...\\每日財經）用血換來的三條規則：
+    1) 盤面數字由程式抓、原封不動照抄——他們實測模型把台股 −3.79% 寫成 +3.76%，方向全反。
+    2) 必含主題放 prompt 最前面（見 _SLOT_MUST），放在附件裡會被忽略。
+    3) 只能引用給定清單裡的新聞——清單本身已經是白名單過濾過的結果，
+       模型物理上拿不到清單外的來源，比對方案的「prompt 裡寫白名單」更可靠
+       （他們實測 6 次有 1 次還是引用了名單外網域）。
+    """
+    slot = payload.get("slot", "afternoon")
+    must = _SLOT_MUST.get(slot, _SLOT_MUST["afternoon"])
+    prompt = (
+        f"你是財經新聞編輯，為台灣讀者用繁體中文（台灣用語，不得出現任何簡體字）"
+        f"統整以下財經新聞為一則精簡摘要，直接顯示在 Telegram，純文字、不用 Markdown 符號。\n\n"
+        f"⚠️ {must}\n\n"
+        "【盤面】以下數字已由程式從官方來源取得，原封不動照抄，不得重新計算、"
+        "不得自行檢索、不得改動任何一個數字：\n"
+        + json.dumps(payload.get("snapshot", {}), ensure_ascii=False) + "\n\n"
+        "【新聞】只能從下面清單裡的標題挑選、統整，嚴禁引用清單以外的事件或數字："
+        "台股、美股、日股各挑 3～5 則有代表性的整合成摘要，每則用一句話講清楚"
+        "「發生什麼事」與「影響」；日股標題若為日文請翻成繁體中文再統整：\n"
+        + json.dumps(payload.get("markets", {}), ensure_ascii=False) + "\n\n"
+        "【格式】依序輸出「📈 盤面」「🌟 台股」「🌟 美股」「🌟 日股」「💡 短評」五段，"
+        "盤面段落把上方數字整理成條列；短評 2～3 句總結今日／今晚重點。"
+        "禁止任何投資勸誘用語（如「建議買進」「目標價」「建議關注」），"
+        "最後另起一行標「⚠️ 非投資建議」。"
+    )
+    return _run(prompt, api_key)
+
+
 def summarize_csv(daily_top: list, weekly: dict, industry: list, api_key: str) -> dict:
     prompt = (
         "你是籌碼分析師，依下列資料用繁體中文條列『本週大戶進、散戶退』的重點類股與個股，"
