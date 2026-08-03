@@ -198,6 +198,40 @@ def _fetch_google_news_query(query: str, n: int,
     return pick_top(whitelisted, n=n, now=now)
 
 
+# 株探 /news/marketnews/ 是一條「混合線路」：日本盤收盤後（台北 17:00 之後）版面
+# 由美股編制台的稿件主導。實測 2026-08-03 21:xx 抓到的 20 則裡有 9 則是美股，
+# 於是推播的「🇯🇵 日股與外匯」區塊出現泰森食品、ISM、NY 連銀——模型沒有幻覺，
+# 是清單本身就給錯了。株探沒有「只看日本」的分類參數（category 是 市況/材料/通貨
+# 這種主題分類，與市場無關），所以只能在內容層分流。
+#
+# 依據的是**株探自己的編輯慣例**而不是自創關鍵字：美股個股稿一律以「＝米国株」
+# 結尾、海外行事曆一律叫「海外イベント」；日本稿則慣用「本日の【…】」「明日の…」
+# 前綴與 日経／東証／上場来／銘柄／決算 等詞。為替（円）稿刻意算日本側——這個
+# 區塊的標題就是「日股與外匯」。
+_JP_FOREIGN_DESK = ("＝米国株", "＝欧州株", "米国株個別", "海外イベント")
+_JP_DOMESTIC = ("日経", "日本株", "東証", "東京市場", "上場来", "銘柄", "株主優待",
+                "決算", "ＪＰＸ", "日銀", "円", "為替", "外為", "本日の", "明日の")
+
+
+def jp_relevance(item: dict) -> int:
+    """0=美股編制台稿（沉底）、2=日本／外匯稿（浮頂）、1=其餘（全球總經）。
+
+    刻意用**排序**而非硬過濾：日本假日或清淡時段可能湊不滿 6 則，寧可讓全球總經
+    遞補，也不要交出一個只有 3 則的區塊（同 pick_top「缺欄位不整則丟」的取捨）。
+    """
+    title = item.get("title") or ""
+    if any(k in title for k in _JP_FOREIGN_DESK):
+        return 0
+    if any(k in title for k in _JP_DOMESTIC):
+        return 2
+    return 1
+
+
+def sort_jp_domestic_first(items: list) -> list:
+    """穩定排序，所以同一層內仍是 pick_top 排好的「新到舊」。"""
+    return sorted(items, key=lambda it: -jp_relevance(it))
+
+
 def fetch_kabutan(n: int = 20, now: datetime | None = None) -> list:
     """株探市場新聞，兩頁之間依 robots.txt 睡 Crawl-delay 秒。"""
     out = []
@@ -210,7 +244,7 @@ def fetch_kabutan(n: int = 20, now: datetime | None = None) -> list:
                 out.extend(parse_kabutan(r.text))
         except Exception:  # noqa: BLE001
             pass
-    return pick_top(out, n=n, now=now)
+    return sort_jp_domestic_first(pick_top(out, n=n, now=now))
 
 
 def fetch_market_news(market: str, n: int = 20,

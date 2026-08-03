@@ -392,9 +392,9 @@ function _renderNewsMarkdownV2(text) {
 function renderNewsMarkdown(text, slot = "afternoon") {
   const sections = { intro: [], tw: [], us: [], jp: [], tail: [] };
   const marketHeaders = {
-    tw: "🇹🇼 台股｜5 則精選",
-    us: "🇺🇸 美股｜5 則精選",
-    jp: "🇯🇵 日股｜5 則精選",
+    tw: "🇹🇼 台股｜6 則精選",
+    us: "🇺🇸 美股｜6 則精選",
+    jp: "🇯🇵 日股｜6 則精選",
   };
   let current = "intro", sawMarket = false;
   String(text || "").replace(/\r\n?/g, "\n").split("\n").forEach((line) => {
@@ -424,7 +424,7 @@ function renderNewsMarkdown(text, slot = "afternoon") {
     const available = sections[market].some((line) => line.trim());
     if (!available) return "";
     return `<details class="news-market-card" ${market === openMarket ? "open" : ""}>
-      <summary><span>${marketHeaders[market]}</span><span class="news-market-toggle">閱讀 5 則重點</span></summary>
+      <summary><span>${marketHeaders[market]}</span><span class="news-market-toggle">閱讀 6 則重點</span></summary>
       <div class="news-market-body">${toHtml(sections[market])}</div>
     </details>`;
   }).join("");
@@ -442,7 +442,7 @@ function renderNews(data) {
   summary.classList.toggle("disabled", !data.summary);
   if (data.summary) summary.innerHTML = renderNewsMarkdown(data.summary, data.slot);
   ["tw", "us", "jp"].forEach((market) => {
-    $("news-" + market).innerHTML = renderNewsRows((data.markets && data.markets[market] || []).slice(0, 5));
+    $("news-" + market).innerHTML = renderNewsRows((data.markets && data.markets[market] || []).slice(0, 6));
   });
 }
 

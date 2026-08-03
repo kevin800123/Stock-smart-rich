@@ -52,9 +52,9 @@ def test_news_summary_prompt_requires_structured_sourced_brief(monkeypatch):
 
     assert out["text"] == "ok"
     assert "2026-08-03 每日財經重點速覽" in captured["prompt"]
-    assert "🇹🇼 台股｜5 則精選" in captured["prompt"]
-    assert "🇺🇸 美股｜5 則精選" in captured["prompt"] and "🇯🇵 日股｜5 則精選" in captured["prompt"]
-    assert "每個市場都要恰好 5 則新聞" in captured["prompt"]
+    assert "🇹🇼 台股｜6 則精選" in captured["prompt"]
+    assert "🇺🇸 美股｜6 則精選" in captured["prompt"] and "🇯🇵 日股｜6 則精選" in captured["prompt"]
+    assert "每個市場都要恰好 6 則新聞" in captured["prompt"]
     assert "株探翻譯" in captured["prompt"] and "日股新聞必須先翻譯" in captured["prompt"]
     assert "🧾 **事件**" in captured["prompt"] and "🔢 **關鍵數據**" in captured["prompt"]
     assert "不得補造" in captured["prompt"] and "非投資建議" in captured["prompt"]

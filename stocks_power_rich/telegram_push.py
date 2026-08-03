@@ -24,6 +24,18 @@ def escape_mdv2(text: str) -> str:
     return _MDV2_ESCAPE_RE.sub(r"\\\1", text or "")
 
 
+def mdv2_link(label: str, url: str) -> str:
+    """MarkdownV2 行內連結：可見文字只有 label，長網址藏在後面。
+
+    Google 新聞的 `CBMi…` 轉址網址實測 174～354 字元且是 protobuf 編碼、**解不出原始
+    短網址**，所以「縮短連結」唯一可行的做法就是行內連結——讓讀者看到的是「🇹🇼 中央社」
+    這種短標籤。代價是網址仍計入 4096 上限，因此只放少數幾條。
+    label 要完整跳脫；url 依 Telegram 規定只需處理 `)` 與 `\\`（過度跳脫會把網址弄壞）。
+    """
+    safe_url = (url or "").replace("\\", "\\\\").replace(")", "\\)")
+    return f"[{escape_mdv2(label)}]({safe_url})"
+
+
 def utf16_len(text: str) -> int:
     """Telegram 用 UTF-16 code unit 計長度，不是 Python 的 len()。
 
@@ -71,6 +83,11 @@ def send_message(token: str, chat_id: str, text: str) -> dict:
 
     MarkdownV2 解析失敗時退純文字重送一次——同 Hermes adapter 的雙軌策略，避免
     一個沒跳脫乾淨的符號讓整則訊息完全送不出去。
+
+    回傳值帶 `parse_mode_used`（MarkdownV2／plain）。這個欄位存在的理由是實戰教訓：
+    退純文字這條路是**無聲**的——訊息照樣送達、看起來正常，只是粗體與行內連結全部
+    失效。先前每一則推播都含 `(8306)`、`3.5%` 這類未跳脫字元，等於長期都在走退路而
+    沒人發現。回報實際走哪條，才能在 /api/news/test 一眼看出跳脫有沒有做對。
     """
     if not token:
         return {"ok": False, "error": "未設定 TELEGRAM_BOT_TOKEN"}
@@ -80,6 +97,7 @@ def send_message(token: str, chat_id: str, text: str) -> dict:
         return {"ok": False, "error": "空訊息"}
     url = API_BASE.format(token=token)
     last = {"ok": False, "error": "未送出"}
+    used = set()
     for chunk in split_message(text):
         try:
             r = httpx.post(url, timeout=15,
@@ -90,11 +108,15 @@ def send_message(token: str, chat_id: str, text: str) -> dict:
                 r2 = httpx.post(url, timeout=15,
                                 json={"chat_id": chat_id, "text": chunk,
                                      "disable_web_page_preview": True})
+                used.add("plain")
                 last = {"ok": r2.status_code == 200, "status": r2.status_code}
                 if r2.status_code != 200:
                     last["error"] = r2.text[:200]
+                    last["markdown_error"] = r.text[:200]
             else:
+                used.add("MarkdownV2")
                 last = {"ok": True, "status": 200}
         except Exception as e:  # noqa: BLE001 — 推播失敗不影響主流程
             return {"ok": False, "error": str(e)}
+    last["parse_mode_used"] = "plain" if "plain" in used else "MarkdownV2"
     return last

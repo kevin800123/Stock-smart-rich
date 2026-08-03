@@ -201,3 +201,81 @@ def test_fetch_market_news_tw_us_never_fallback(monkeypatch):
     for market in ("tw", "us"):
         items, fallback = news.fetch_market_news(market, n=20, now=FIXTURE_NOW)
         assert fallback is False
+
+
+# 這 20 筆是 2026-08-03 21:xx 從株探實抓的標題（照原順序）。當天推播的
+# 「🇯🇵 日股與外匯」區塊混進泰森食品、ISM、NY 連銀三則美股新聞，就是因為
+# 這條線路在日本收盤後由美股編制台主導——20 則裡有 9 則是美股。
+_KABUTAN_REAL = [
+    "ＮＹ外為：円底堅い、日米さらなる協調介入も躊躇せず",
+    "タイソン・フーズ、決算受け時間外で下落＝米国株個別",
+    "ホライズン３．ａｉ社、２億５０００万ドルを調達",
+    "日経225先物：3日22時＝1220円安、6万2610円",
+    "このあと７月調査分のＩＳＭ製造業景気指数　前回からやや上昇が見込まれる",
+    "ダウ先物は大幅続伸　トランプ大統領の攻撃計画撤回で原油下落　半導体は軟調＝米国株",
+    "ブリストルが時間外で上昇＝米国株個別",
+    "スパーナスとインディビアが時間外で上昇＝米国株個別",
+    "サークル・インターネット、時間外で５％安＝米国株個別",
+    "ストラテジスト、今後は「クオリティ株」が相場をけん引と指摘",
+    "ダウ先物は続伸　半導体は時間外で鈍い動き＝米国株",
+    "ＮＹ連銀総裁、現在の金融政策は適切な水準",
+    "ビットコイン、６万２０００ドル台に下落　リスク回避後退も独自の売り材料",
+    "今夜の海外イベント・スケジュール(3日)",
+    "本日の【上場来高値更新】 高速、たけびしなど16銘柄",
+    "明日の経済スケジュール ─ マネタリーベースなど",
+    "【明日の好悪材料】を開示情報でチェック！ (8月3日発表分)",
+    "欧州為替：ドル・円は157円付近、クロス円は失速",
+    "本日の【株主優待】情報 (3日 発表分)",
+    "★本日の【イチオシ決算】 ＦＵＪＩ、塩野義、商船三井 (8月3日)",
+]
+
+
+def _items(titles):
+    return [{"title": t, "url": "https://kabutan.jp/x", "source": "株探"} for t in titles]
+
+
+def test_jp_sort_puts_us_desk_copy_behind_japanese_news():
+    """實測那天的前 6 則有 3 則是美股；排序後前 6 必須全是日本／外匯稿。"""
+    from stocks_power_rich.sources.news import sort_jp_domestic_first
+
+    top6 = [it["title"] for it in sort_jp_domestic_first(_items(_KABUTAN_REAL))[:6]]
+    for bad in ("タイソン", "ＩＳＭ", "ＮＹ連銀", "ホライズン"):
+        assert not any(bad in t for t in top6), bad
+    assert any("日経225先物" in t for t in top6)
+    assert any("上場来高値" in t for t in top6)
+    assert any("円" in t for t in top6)          # 外匯稿留在這一區（標題就是「日股與外匯」）
+
+
+def test_jp_sort_is_stable_so_recency_survives_within_a_tier():
+    """pick_top 已排好新到舊，分層不可打亂同層內的順序。"""
+    from stocks_power_rich.sources.news import sort_jp_domestic_first
+
+    out = [it["title"] for it in sort_jp_domestic_first(_items(_KABUTAN_REAL))]
+    jp = [t for t in out if t in _KABUTAN_REAL]
+    order = [_KABUTAN_REAL.index(t) for t in jp if _KABUTAN_REAL.index(t) in
+             (0, 3, 14, 15, 16, 17, 18, 19)]
+    assert order == sorted(order)
+
+
+def test_jp_sort_never_drops_items_only_reorders():
+    """排序不是過濾：日本假日可能湊不滿 6 則，全球總經要能遞補，
+    不可交出一個只有 3 則的區塊。"""
+    from stocks_power_rich.sources.news import sort_jp_domestic_first
+
+    src = _items(_KABUTAN_REAL)
+    out = sort_jp_domestic_first(src)
+    assert sorted(t["title"] for t in out) == sorted(t["title"] for t in src)
+
+    # 極端情形：整批都是美股稿 → 仍回傳全部，讓上層有東西可用
+    only_us = _items([t for t in _KABUTAN_REAL if "米国株" in t])
+    assert len(sort_jp_domestic_first(only_us)) == len(only_us)
+
+
+def test_jp_relevance_tiers_use_kabutan_own_conventions():
+    from stocks_power_rich.sources.news import jp_relevance
+
+    assert jp_relevance({"title": "ブリストルが時間外で上昇＝米国株個別"}) == 0
+    assert jp_relevance({"title": "今夜の海外イベント・スケジュール(3日)"}) == 0
+    assert jp_relevance({"title": "本日の【株主優待】情報"}) == 2
+    assert jp_relevance({"title": "欧州為替：ドル・円は157円付近"}) == 2
+    assert jp_relevance({"title": "ビットコイン、６万２０００ドル台に下落"}) == 1
