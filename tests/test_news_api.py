@@ -259,3 +259,61 @@ def test_push_prompt_forbids_label_prefixes_and_two_line_stories():
     assert "短標籤" in p and "不要寫「短標籤：」" in p     # 明確點名觀察到的失敗字樣
     assert "一則只佔一行" in p
     assert "不要自己再輸出一次標題行" in p.replace("**", "")
+
+
+def test_news_never_leaks_raw_gemini_error_when_main_call_fails(tmp_path, monkeypatch):
+    """實測發生過：Gemini 503 時 news_logic 把 gemini._run 的例外字串
+    （含原始 error dict）直接送進 Telegram 正文。summarize_news 失敗時必須
+    改用友善提示，不可把 "AI 摘要失敗：503 UNAVAILABLE. {'error': {...}}" 這種
+    內部訊息透出去。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.api import news as news_api
+    from stocks_power_rich.main import create_app
+
+    raw_error = ("（AI 摘要失敗：503 UNAVAILABLE. {'error': {'code': 503, 'message': "
+                 "'This model is currently experiencing high demand.', 'status': 'UNAVAILABLE'}})")
+    monkeypatch.setattr(news_api.news, "fetch_market_news", lambda *a, **k: ([], False))
+    monkeypatch.setattr(news_api.gemini, "summarize_news",
+                        lambda *a, **k: {"enabled": False, "text": raw_error})
+    called = {"push": False}
+
+    def fail_if_called(*a, **k):
+        called["push"] = True
+        return {"enabled": False, "text": raw_error}
+
+    monkeypatch.setattr(news_api.gemini, "summarize_news_push", fail_if_called)
+    client = TestClient(create_app())
+
+    body = client.get("/api/news?slot=afternoon").json()
+    assert called["push"] is False          # enabled=False 時本就不該再呼叫精簡版
+    assert "UNAVAILABLE" not in body["telegram_text"]
+    assert "503" not in body["telegram_text"]
+    assert "error" not in body["telegram_text"]
+    assert "暫時無法使用" in body["telegram_text"]
+    assert body["enabled"] is False
+
+
+def test_news_falls_back_to_digest_when_only_push_call_fails(tmp_path, monkeypatch):
+    """完整版成功、精簡版失敗時，必須退回用完整版摘要組的 digest，
+    而不是把精簡版的例外字串（同樣是 text 非空但 enabled=False）當內容送出。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.api import news as news_api
+    from stocks_power_rich.main import create_app
+
+    full_brief = (
+        "#### 🇹🇼 台股｜6 則精選\n"
+        "* 🔥 **台股收盤上漲**\n"
+        "  * 🔢 **關鍵數據**：加權指數上漲 100 點。\n"
+    )
+    monkeypatch.setattr(news_api.news, "fetch_market_news", lambda *a, **k: ([], False))
+    monkeypatch.setattr(news_api.gemini, "summarize_news",
+                        lambda *a, **k: {"enabled": True, "text": full_brief})
+    monkeypatch.setattr(news_api.gemini, "summarize_news_push",
+                        lambda *a, **k: {"enabled": False,
+                                         "text": "（AI 摘要失敗：503 UNAVAILABLE.）"})
+    client = TestClient(create_app())
+
+    body = client.get("/api/news?slot=afternoon").json()
+    assert "UNAVAILABLE" not in body["telegram_text"]
+    assert "台股收盤上漲" in body["telegram_text"]   # 退回 digest 解析出的內容
+    assert body["enabled"] is True                    # 完整版成功，JSON 仍標成功

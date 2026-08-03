@@ -134,6 +134,8 @@ Same flex container bites line-clamping: **`-webkit-line-clamp` does not work on
 3. **MarkdownV2 跳脫在 Python 統一做**。先前把 AI 純文字直接送出，內含 `(8306)`、`3.5%`、`48.93%。` 這些未跳脫的特殊字元，於是**每一則都 400 → 退純文字重送**：訊息照樣送達、看起來正常，只是多打一次 API 且行內連結／粗體永遠失效。這種失敗是**無聲的**，所以 `send_message` 現在回傳 `parse_mode_used`（MarkdownV2／plain），`POST /api/news/test` 一眼可驗。
 4. **連結用行內連結縮短可見長度**。Google 新聞的 `CBMi…` 轉址網址實測 174～354 字元、且是 protobuf 編碼**解不出原始短網址**（實測 4 則 decode 皆為 0），所以只能靠 `[🇹🇼 中央社](長網址)` 讓讀者看到短標籤。只放 3 條（每市場 1 條）避免逼近 4096；標題叫「延伸閱讀」而非「來源」——那是**餵給 AI 的輸入清單**首則，AI 是綜合改寫、無法逐條回溯，標成「來源」會誤導。
 
+**Gemini 失敗的降級文字只能給網頁看，絕不能流進 Telegram 正文。** `gemini._run` 失敗時回傳 `{"enabled": False, "text": "（AI 摘要失敗：503 UNAVAILABLE. {...}）"}`——這段話是給 `/api/news` 的 `summary` 欄位在網頁上顯示用的（同 `summarize_market` 既有慣例）。`news_logic` 曾經只看 `text` 是否非空、沒看 `enabled`：`summarize_news` 失敗時 `telegram_digest(summary,...)` 解析不到 `####` 標題，直接 `return summary`，把整段 Python 例外字串（含原始 `error` dict）跳脫後送進使用者 Telegram；`summarize_news_push` 單獨失敗時同樣的 `push_result.get("text") or ...` 也會直接把它的錯誤字串當內容用。兩條路徑修法一致：**任何要進 Telegram 正文的字串，都要先確認呼叫的 `enabled` 是 `True`，不能只看 `text` 是否為真值**——`summarize_news` 失敗給 `_AI_UNAVAILABLE_NOTE` 這種友善提示，`summarize_news_push` 單獨失敗則退回用 `summarize_news` 已成功的完整版摘要跑 `telegram_digest`，都不是重跑失敗那次呼叫的錯誤文字。
+
 **改完推播一定要實跑一次 `/api/news?slot=…&refresh=1`，把 `telegram_text` 寫到 UTF-8 檔案再讀**（`refresh=1` 是必要的，否則吃到 `news:v6:` 快取）。單元測試全綠但實跑輸出仍有四個缺陷的情況已經發生過：盤面整段三個「—」（`market_daily` 當天早上就建列、指數收盤才寫入，取最新日期必然全 NULL → 改成往回找第一筆 `taiex IS NOT NULL`）、每則被冠上字面的「短標籤：」前綴（模型把 prompt 模板的佔位字當內容照抄）、一則被拆成兩行、以及上面那條日股混美股。**這四個沒有一個是純函式測得出來的**——前三個要有真的 Gemini 回應、第四個要有真的株探清單。
 
 ### 高價股監控（`GET /api/rank/price`，2026-08 改版）

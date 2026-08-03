@@ -28,6 +28,13 @@ _PUSH_PLAN = {
 }
 _DETAIL_LABELS = {"事件摘要", "事件", "市場影響", "影響", "後續指標", "關注", "關鍵數據"}
 
+# gemini._run 失敗時回傳 {"enabled": False, "text": "（AI 摘要失敗：503 UNAVAILABLE...）"}——
+# 這段文字是給網頁顯示用的降級提示，**不是新聞內容**。news_logic 曾經只看 text 是否為真值
+# 就把它當內容送進 telegram_digest／直接當 raw_push，於是 Gemini 503 時 Python 例外字串
+# （含原始錯誤 dict）整段被跳脫後推播到使用者的 Telegram。任何要進 Telegram 正文的字串
+# 都必須先確認來源呼叫的 enabled 是 True，不能只看 text 是否非空。
+_AI_UNAVAILABLE_NOTE = "AI 新聞摘要暫時無法使用（模型忙碌或逾時），本次僅提供盤面數字，詳情請見下方延伸閱讀。"
+
 # 投資建議阻擋（第二層）。第一層是 prompt 禁令，但參考專案的實測教訓是 prompt 層一定
 # 會漏（他們的來源白名單 6 次漏 1 次），所以這裡再擋一次。實際發生過的漏網句：
 # 「法人分析台股8月可能在39000至45000點區間震盪，建議在半年線附近謹慎布局。」
@@ -282,7 +289,14 @@ def news_logic(c, slot: str | None = None, refresh: int = 0) -> dict:
     summary = result.get("text", "")
     push_result = (gemini.summarize_news_push(request_payload, summary, cfg.gemini_api_key)
                    if result.get("enabled") else {})
-    raw_push = push_result.get("text") or telegram_digest(summary, slot, today)
+    if push_result.get("enabled") and push_result.get("text"):
+        raw_push = push_result["text"]
+    elif result.get("enabled"):
+        # 精簡版呼叫失敗但完整版成功——退回用完整版的結構化 markdown 摘要,
+        # 而不是完整版失敗時那段給網頁看的降級提示文字。
+        raw_push = telegram_digest(summary, slot, today)
+    else:
+        raw_push = _AI_UNAVAILABLE_NOTE
     telegram_text = compose_push_message(raw_push, snapshot, markets, slot, today)
     payload = {"date": today, "slot": slot, "summary": summary,
               "telegram_text": telegram_text,
