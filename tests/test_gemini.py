@@ -32,6 +32,32 @@ def test_degrades_without_key():
     assert "未啟用" in out["text"]
 
 
+def test_news_summary_prompt_requires_structured_sourced_brief(monkeypatch):
+    captured = {}
+
+    def fake_run(prompt, api_key):
+        captured["prompt"] = prompt
+        return {"enabled": True, "text": "ok"}
+
+    monkeypatch.setattr(gemini, "_run", fake_run)
+    out = gemini.summarize_news(
+        {
+            "slot": "afternoon",
+            "report_date": "2026-08-03",
+            "snapshot": {"taiex": 24000},
+            "markets": {"tw": [{"title": "台股標題", "source": "Example"}]},
+        },
+        api_key="k",
+    )
+
+    assert out["text"] == "ok"
+    assert "2026-08-03 每日財經重點速覽" in captured["prompt"]
+    assert "今日市場總覽（Top Stories）" in captured["prompt"]
+    assert "事件摘要" in captured["prompt"] and "市場影響" in captured["prompt"]
+    assert "後續指標" in captured["prompt"] and "關鍵總經數據與焦點" in captured["prompt"]
+    assert "不得補造" in captured["prompt"] and "非投資建議" in captured["prompt"]
+
+
 def test_uses_model_when_key(monkeypatch):
     class FakeResp:
         text = "盤勢偏多"

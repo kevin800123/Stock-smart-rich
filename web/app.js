@@ -41,10 +41,7 @@ let stockChipsChart = null, stockCustodyChart = null;
 let sectorChart = null, heatmapMarket = "tse", heatmapTop = 5, lastHeatmapData = null;
 let cupChart = null, cupMatches = [], cupLoaded = false;
 let rankWho = "foreign", rankUnit = "shares";
-const MA_DEFS = [
-  { n: 5, color: "#5b8ff9" }, { n: 20, color: "#5ad8a6" },
-  { n: 60, color: "#f6bd16" }, { n: 120, color: "#e8684a" },
-];
+let MA_DEFS;
 
 // ECharts 只吃色字串，無法用 var(--x)，所以圖表色一律由此處從 CSS token 讀出——
 // 讓 :root 成為單一真相來源，改 token 時圖表不會悄悄失同步。
@@ -57,6 +54,9 @@ const C = {
   downFill: CSS_VAR("--down-fill", "#127a53"),
   accent: CSS_VAR("--accent", "#f0a500"),
   info: CSS_VAR("--info", "#6cb6ff"),
+  chartForeign: CSS_VAR("--chart-foreign", "#57c7ff"),
+  chartTrust: CSS_VAR("--chart-trust", "#a78bfa"),
+  chartDealer: CSS_VAR("--chart-dealer", "#f4b860"),
   text: CSS_VAR("--text", "#e6e6e6"),
   muted: CSS_VAR("--muted", "#8a94a3"),
   label: CSS_VAR("--label", "#cfd6df"),
@@ -69,6 +69,12 @@ const C = {
   tooltip: CSS_VAR("--bg-card", "#142033"),
   bg: CSS_VAR("--bg", "#0f1419"),
 };
+MA_DEFS = [
+  { n: 5, color: CSS_VAR("--chart-ma-short", "#7bc5ff") },
+  { n: 20, color: CSS_VAR("--chart-ma-mid", "#52dbc2") },
+  { n: 60, color: CSS_VAR("--chart-ma-long", "#f4c761") },
+  { n: 120, color: CSS_VAR("--chart-ma-major", "#c494ff") },
+];
 const withAlpha = (hex, alpha) => {
   const v = hex.replace("#", "");
   const n = parseInt(v.length === 3 ? v.split("").map((x) => x + x).join("") : v, 16);
@@ -78,7 +84,7 @@ const withAlpha = (hex, alpha) => {
 // 台股紅漲綠跌），但不必每張圖重複設定軸、網格、浮窗的視覺基線。
 const ECHARTS_THEME = "spr-terminal";
 echarts.registerTheme(ECHARTS_THEME, {
-  color: [C.info, "#e0a23c", "#a07cff", "#5ad8a6", "#e8684a"],
+  color: [C.chartForeign, C.chartTrust, C.chartDealer, C.info, C.accent],
   backgroundColor: "transparent",
   textStyle: { color: C.label, fontFamily: '"Num", "Huninn", "Microsoft JhengHei", sans-serif' },
   legend: { textStyle: { color: C.label } },
@@ -113,8 +119,8 @@ const klineDataZoom = (xAxisIndex, start) => ([
     textStyle: { color: C.muted } },
 ]);
 // 圖表系列固定色（三大法人等跨圖共用的角色色，非市場方向色）：
-// 外資琥珀刻意與 --accent 區隔（accent 專屬「目前選取」），投信沿用 info 藍。
-const SER = { foreign: "#e0a23c", trust: C.info, dealer: "#a07cff" };
+// 法人系列採冰藍／霓虹紫／琥珀金；--accent 仍只保留給目前選取狀態。
+const SER = { foreign: C.chartForeign, trust: C.chartTrust, dealer: C.chartDealer };
 // 圖表字型：熱力圖的量測(canvas)與繪製(ECharts)必須用同一組，否則量得下卻被截；
 // K線等其他圖表也套同一組讓全站字型一致。須與 styles.css 的 body 堆疊同步（數字→Num、中文→粉圓）。
 const HM_FONT = '"Num", "Huninn", "Microsoft JhengHei", "PingFang TC", sans-serif';
@@ -366,7 +372,20 @@ function renderNewsRows(items) {
     const url = esc(safeNewsUrl(item.url));
     const title = esc(item.title || "（無標題）");
     const source = esc(item.source || "來源未標示");
-    return `<div class="rank-row"><a href="${url}" target="_blank" rel="noopener">${title}</a><span class="muted small">${source}</span></div>`;
+    return `<div class="rank-row"><a href="${url}" target="_blank" rel="noopener">${title}</a><span class="muted small news-item-source">${source}</span></div>`;
+  }).join("");
+}
+
+// The API returns editor-controlled Markdown. Escape first, then support only the
+// small, deliberate subset used by the daily brief so fetched text stays safe.
+function renderNewsMarkdown(text) {
+  const inline = (value) => esc(value).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  return String(text || "").replace(/\r\n?/g, "\n").split("\n").map((line) => {
+    if (/^###\s+/.test(line)) return `<h3 class="news-md-title">${inline(line.replace(/^###\s+/, ""))}</h3>`;
+    if (/^####\s+/.test(line)) return `<h4 class="news-md-heading">${inline(line.replace(/^####\s+/, ""))}</h4>`;
+    if (/^\s*[*-]\s+/.test(line)) return `<div class="news-md-item">${inline(line.replace(/^\s*[*-]\s+/, ""))}</div>`;
+    if (!line.trim()) return '<div class="news-md-gap"></div>';
+    return `<p class="news-md-text">${inline(line)}</p>`;
   }).join("");
 }
 
@@ -379,6 +398,7 @@ function renderNews(data) {
   const summary = $("news-summary");
   summary.textContent = data.summary || "尚未設定 Gemini，或本次摘要暫時無法產生；下方仍提供原始新聞標題。";
   summary.classList.toggle("disabled", !data.summary);
+  if (data.summary) summary.innerHTML = renderNewsMarkdown(data.summary);
   ["tw", "us", "jp"].forEach((market) => {
     $("news-" + market).innerHTML = renderNewsRows(data.markets && data.markets[market]);
   });
@@ -1400,7 +1420,33 @@ async function loadCross() {
 const LP = { type: "line", smooth: 0.15, showSymbol: true, symbolSize: 4, connectNulls: true };
 const pct100 = (v) => (v == null ? null : v * 100);
 const zeroMark = () => ({ silent: true, symbol: "none", data: [{ yAxis: 0 }],
-  lineStyle: { color: C.border, type: "dashed" } });
+  lineStyle: { color: C.borderSubtle, type: "dashed" } });
+const techArea = (color) => ({
+  color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+    { offset: 0, color: withAlpha(color, 0.26) },
+    { offset: 1, color: withAlpha(color, 0.015) },
+  ]),
+});
+const techBar = (color) => ({
+  color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+    { offset: 0, color: withAlpha(color, 0.96) },
+    { offset: 1, color: withAlpha(color, 0.36) },
+  ]),
+  borderRadius: [2, 2, 0, 0], shadowBlur: 7, shadowColor: withAlpha(color, 0.26),
+});
+const extremaMark = (color) => ({
+  silent: true, symbol: "circle", symbolSize: 7,
+  itemStyle: { color, borderColor: C.panel, borderWidth: 2, shadowBlur: 8, shadowColor: withAlpha(color, 0.6) },
+  label: {
+    show: true, color: C.text, fontSize: 10, fontWeight: 700,
+    backgroundColor: C.panel, borderColor: withAlpha(color, 0.65), borderWidth: 1,
+    borderRadius: 3, padding: [2, 4], formatter: (p) => `${p.name === "最高" ? "高" : "低"} ${fmt(p.value, 0)}`,
+  },
+  data: [
+    { type: "max", name: "最高", label: { position: "top" } },
+    { type: "min", name: "最低", label: { position: "bottom" } },
+  ],
+});
 // 籌碼窗格定義表：加一個窗格＝加一筆。series() 拿對齊後的列陣列（缺該日則為 null），
 // 回傳該窗格的 series（gridIndex/xAxisIndex/yAxisIndex 由 option 組裝時統一補上）。
 // 成交量刻意用 turnover（億）而非 K 線的 volumes（股數），單位才與其他窗格一致。
@@ -1411,15 +1457,17 @@ const CHIP_PANES = [
   // 融資 ~5,000 億 vs 融券 ~200 億，量級差 25 倍——共用一條軸的話融券會被壓成貼底的
   // 直線、完全讀不出轉折。故本窗格宣告第二條（右）軸，融券走 axis:1。
   { key: "margin", label: "融資／融券", unit: "融資(億)", unit2: "融券(億)", series: (at) => [
-      { ...LP, name: "融資金額", data: at((r) => r.margin_value), lineStyle: { color: C.up }, itemStyle: { color: C.up } },
-      { ...LP, name: "融券市值(估)", axis: 1, data: at((r) => r.short_mv), lineStyle: { color: C.down }, itemStyle: { color: C.down } }] },
+      { ...LP, name: "融資金額", data: at((r) => r.margin_value), lineStyle: { color: C.up, width: 2.2, shadowBlur: 8, shadowColor: withAlpha(C.up, 0.42) },
+        itemStyle: { color: C.up, borderColor: C.panel, borderWidth: 1 }, areaStyle: techArea(C.up), markPoint: extremaMark(C.up) },
+      { ...LP, name: "融券市值(估)", axis: 1, data: at((r) => r.short_mv), lineStyle: { color: C.down, width: 2.2, shadowBlur: 8, shadowColor: withAlpha(C.down, 0.42) },
+        itemStyle: { color: C.down, borderColor: C.panel, borderWidth: 1 }, areaStyle: techArea(C.down), markPoint: extremaMark(C.down) }] },
   { key: "maint", label: "融資維持率", unit: "%", series: (at) => [
       { ...LP, name: "維持率(上市)", data: at((r) => r.margin_maintenance), lineStyle: { color: C.up }, itemStyle: { color: C.up } },
       { ...LP, name: "維持率(上櫃)", data: at((r) => r.otc_margin_maintenance), lineStyle: { color: SER.trust }, itemStyle: { color: SER.trust } }] },
   { key: "inst", label: "三大法人", unit: "億", bar: true, series: (at) => [
-      { name: "外資", type: "bar", data: at((r) => r.inst_foreign), itemStyle: { color: SER.foreign } },
-      { name: "投信", type: "bar", data: at((r) => r.inst_trust), itemStyle: { color: SER.trust } },
-      { name: "自營", type: "bar", data: at((r) => r.inst_dealer), itemStyle: { color: SER.dealer } }] },
+      { name: "外資", type: "bar", data: at((r) => r.inst_foreign), itemStyle: techBar(SER.foreign) },
+      { name: "投信", type: "bar", data: at((r) => r.inst_trust), itemStyle: techBar(SER.trust) },
+      { name: "自營", type: "bar", data: at((r) => r.inst_dealer), itemStyle: techBar(SER.dealer) }] },
   { key: "oi", label: "外資台指未平倉", unit: "口", series: (at) => [
       { ...LP, name: "外資台指淨未平倉", data: at((r) => r.tx_foreign_oi), areaStyle: { opacity: 0.08 },
         lineStyle: { color: SER.foreign }, itemStyle: { color: SER.foreign }, markLine: zeroMark() }] },
@@ -1488,7 +1536,7 @@ function chipTrendOption(hist, kl, paneKeys) {
     p.series(at).forEach((s) => {
       const { axis, ...rest } = s;
       series.push({ ...rest, xAxisIndex: gi, yAxisIndex: axisIdx[axis || 0],
-        ...(rest.type === "bar" ? { barWidth: 7, barCategoryGap: "32%" } : {}) });
+        ...(rest.type === "bar" ? { barWidth: 7, barGap: "14%", barCategoryGap: "38%" } : {}) });
     });
   });
 
@@ -1567,12 +1615,16 @@ async function loadDistribution() {
             : `${b}% ~ ${b + 1}%`;
           return `${range}<br/>${fmt(ps[0].data.value, 0)} 檔`;
         } },
-      grid: { left: 44, right: 16, top: 16, bottom: 26 },
+      grid: { left: 44, right: 16, top: 30, bottom: 26 },
       xAxis: { type: "category", data: d.buckets.map((x) => label(x.bucket)),
         axisLabel: { color: "#999", fontSize: 11, interval: 1 },
         axisTick: { alignWithLabel: true } },
       yAxis: { type: "value", name: "家數", axisLabel: { color: "#999" }, splitLine: { lineStyle: { color: "#222" } } },
       series: [{ type: "bar", barWidth: "88%",
+        label: {
+          show: true, position: "top", distance: 4, color: C.label, fontSize: 11, fontWeight: 700,
+          textShadowColor: C.bg, textShadowBlur: 3, formatter: (p) => fmt(p.value, 0),
+        },
         data: d.buckets.map((x) => ({ value: x.count, bucket: x.bucket,
           itemStyle: { color: distBarColor(x.bucket) } })) }],
     }, true);

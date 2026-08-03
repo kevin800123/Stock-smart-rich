@@ -53,7 +53,8 @@ def news_logic(c, slot: str | None = None, refresh: int = 0) -> dict:
     """
     slot = slot or _current_slot()
     today = datetime.now(_TAIPEI).strftime("%Y-%m-%d")
-    key = f"news:{today}:{slot}"
+    # Prompt v2 changes the report contract; do not serve a prior-format cache.
+    key = f"news:v2:{today}:{slot}"
     cached = get_ai_cache(c, key)
     if cached and not refresh:
         return cached
@@ -68,7 +69,8 @@ def news_logic(c, slot: str | None = None, refresh: int = 0) -> dict:
     cfg = load_config()
     snapshot = _snapshot_from_market_daily(c)
     result = gemini.summarize_news(
-        {"slot": slot, "snapshot": snapshot, "markets": markets}, cfg.gemini_api_key)
+        {"slot": slot, "report_date": today, "snapshot": snapshot, "markets": markets},
+        cfg.gemini_api_key)
     payload = {"date": today, "slot": slot, "summary": result.get("text", ""),
               "enabled": result.get("enabled", False),
               "fallback": fallback_flags, "markets": markets}
