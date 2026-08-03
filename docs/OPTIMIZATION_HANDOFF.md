@@ -1,4 +1,7 @@
-# 優化任務交接單（給 AI agent 執行）
+# 優化任務交接單（歷史文件）
+
+> **請勿以本文件判斷目前狀態。** 此為 2026-07-13 的歷史規劃，文內多數任務已完成或已改變。
+> 接手請優先閱讀 [CODEX_HANDOFF_2026-08-03.md](CODEX_HANDOFF_2026-08-03.md)，再讀專案根目錄的 `AGENTS.md`。
 
 專案：STOCKS POWER RICH（股力智富）。FastAPI + vanilla JS + SQLite，單一服務。
 先讀 `CLAUDE.md` 了解「單一資料日期 D」核心設計與兩條不可回歸的 invariant。
