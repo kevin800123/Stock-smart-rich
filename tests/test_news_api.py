@@ -41,6 +41,50 @@ def test_news_endpoint_caches_enabled_summary_and_hides_telegram_secrets(tmp_pat
     assert "secret" not in str(settings)
 
 
+def _test_telegram_digest_v1_uses_market_mix_and_five_headlines():
+    from stocks_power_rich.api.news import telegram_digest
+
+    summary = """### 📅 2026-08-03 每日財經重點速覽
+#### 🇹🇼 台股｜5 則精選
+* 🔥 **台一**
+  * 🧾 **事件**：x
+* 🔥 **台二**
+* 🔥 **台三**
+#### 🇺🇸 美股｜5 則精選
+* 🔥 **美一**
+* 🔥 **美二**
+* 🔥 **美三**
+#### 🇯🇵 日股｜5 則精選
+* 🔥 **日一**
+* 🔥 **日二**
+"""
+    out = telegram_digest(summary, "morning", "2026-08-03")
+    assert "🌅 07:00 盤前早報" in out
+    assert all(title in out for title in ("美一", "美二", "日一", "台一", "台二"))
+    assert "美三" not in out and "台三" not in out
+    assert "**事件**" not in out
+
+
+def test_telegram_digest_has_five_translated_items_per_market_with_data():
+    from stocks_power_rich.api.news import telegram_digest
+
+    lines = []
+    for flag, market, prefix in (("🇹🇼", "台股", "台"), ("🇯🇵", "日股", "日"), ("🇺🇸", "美股", "美")):
+        lines.append(f"#### {flag} {market}｜5 則精選")
+        for n in range(1, 6):
+            lines.extend([
+                f"* 🔥 **{prefix}股重點{n}**",
+                f"  * 🔢 **關鍵數據**：{n * 100} 點",
+            ])
+    out = telegram_digest("\n".join(lines), "midday", "2026-08-03")
+
+    assert "☀️ 12:00 午間快訊" in out
+    for prefix in ("台", "日", "美"):
+        assert f"{prefix}股｜5/5 則" in out
+        assert all(f"{prefix}股重點{n}" in out for n in range(1, 6))
+    assert "🔢 100 點" in out
+
+
 def test_news_test_endpoint_uses_telegram_wrapper(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich import telegram_push

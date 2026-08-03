@@ -203,7 +203,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         def _run():
             try:
                 payload = news_logic(conn(), slot=slot, refresh=1)
-                text = payload.get("summary")
+                text = payload.get("telegram_text") or payload.get("summary")
                 if text:
                     telegram_push.send_message(cfg.telegram_token, cfg.telegram_chat_id, text)
             except Exception:  # noqa: BLE001 — 推播失敗不影響其他排程
@@ -226,7 +226,8 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             # 預設 schedule_time 也是 21:00（daily_update），兩個 job 排在同一分鐘
             # 雖不是致命錯誤（各自開自己的 sqlite3 連線），但同秒觸發純屬巧合式的資源
             # 競爭，能在排程時就避開，不必等「觀察到延遲」再事後搬。
-            for hh, mm, slot in ((7, 0, "morning"), (17, 0, "afternoon"), (21, 10, "evening")):
+            for hh, mm, slot in ((7, 0, "morning"), (12, 0, "midday"),
+                                 (17, 0, "afternoon"), (21, 10, "evening")):
                 app.state.scheduler.add_job(
                     news_job(slot), "cron", hour=hh, minute=mm,
                     id=f"news_{slot}", replace_existing=True)

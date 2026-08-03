@@ -503,6 +503,31 @@ body[data-public] .status-bar { display: none; }
 .news-split .rank-row { min-height: 56px; padding: var(--space-sm) var(--space-lg); gap: var(--space-md); }
 .news-split .rank-row a { flex: 1; font-size: var(--font-size-sm); font-weight: 650; line-height: 1.6; }
 .news-split .news-item-source { align-self: center; color: var(--text-secondary); font-size: var(--font-size-xs); font-weight: 600; }
+.news-market-card {
+  display: block; margin: var(--space-md) 0; overflow: hidden;
+  background: rgba(5, 9, 16, .58); border: 1px solid var(--border-subtle); border-radius: var(--r-lg);
+}
+.news-market-card summary {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-md);
+  padding: var(--space-md) var(--space-lg); color: var(--text-primary); font-size: var(--font-size-md); font-weight: 800;
+  cursor: pointer; list-style: none; background: rgba(20, 32, 51, .58);
+}
+.news-market-card summary::-webkit-details-marker { display: none; }
+.news-market-card summary::after { content: "＋"; color: var(--accent); font-size: var(--font-size-lg); line-height: 1; }
+.news-market-card[open] summary { border-bottom: 1px solid var(--border-subtle); }
+.news-market-card[open] summary::after { content: "−"; }
+.news-market-toggle { margin-left: auto; color: var(--text-muted); font-size: var(--font-size-xs); font-weight: 600; }
+.news-market-body { padding: var(--space-sm) var(--space-md) var(--space-md); }
+.news-market-body .news-md-gap { height: var(--space-xs); }
+.news-market-body .news-story-title {
+  margin-top: var(--space-sm); padding: var(--space-sm) var(--space-md);
+  border: 1px solid rgba(112, 184, 255, .18); border-radius: var(--r);
+  background: rgba(112, 184, 255, .055); font-size: var(--font-size-sm); font-weight: 700;
+}
+.news-market-body .news-story-title::before { display: none; }
+.news-market-body .news-story-detail { padding: 2px var(--space-md) 2px 28px; color: var(--text-secondary); font-size: var(--font-size-data); line-height: 1.65; }
+.news-market-body .news-story-detail::before { left: var(--space-md); width: 5px; height: 5px; background: var(--text-muted); box-shadow: none; }
+.news-market-body .news-story-detail strong { color: var(--info); }
 
 @media (max-width: 760px) {
   #news-summary { padding: var(--space-lg); font-size: var(--font-size-sm); }

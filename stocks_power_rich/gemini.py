@@ -88,10 +88,15 @@ def _summarize_news_legacy(payload: dict, api_key: str) -> dict:
     return _run(prompt, api_key)
 
 
-def summarize_news(payload: dict, api_key: str) -> dict:
+def _summarize_news_v2(payload: dict, api_key: str) -> dict:
     """Turn the freshly fetched market headlines into a concise, sourced daily brief."""
     slot = payload.get("slot", "afternoon")
-    must = _SLOT_MUST.get(slot, _SLOT_MUST["afternoon"])
+    must = {
+        "morning": "先交代美股收盤、日股開盤與台股盤前外溢影響。",
+        "midday": "先交代台股與日股盤中結構、量能、匯率與午盤風險。",
+        "afternoon": "先交代台股收盤、法人與台指期，並連結日美股外部風險。",
+        "evening": "先交代日股收盤、美股盤前、利率與全球風險事件。",
+    }.get(slot, "先交代台股、日股與美股的最新市場連動。")
     report_date = payload.get("report_date") or payload.get("snapshot", {}).get("日期") or "最新資料日"
     prompt = (
         "你是專業、客觀的財經編輯。請只根據下方『系統剛取得的市場快照與新聞清單』，"
@@ -116,6 +121,89 @@ def summarize_news(payload: dict, api_key: str) -> dict:
         "#### 三、 💡 專業分析師短評\n"
         "- 寫 1 至 2 段宏觀觀察，連結台股、亞股或全球風險情緒，但不可給出交易指令。\n"
         "- **非投資建議**：市場有風險，資訊僅供研究參考。\n\n"
+        "市場快照：\n"
+        + json.dumps(payload.get("snapshot", {}), ensure_ascii=False)
+        + "\n\n新聞清單：\n"
+        + json.dumps(payload.get("markets", {}), ensure_ascii=False)
+    )
+    return _run(prompt, api_key)
+
+
+def _summarize_news_v3(payload: dict, api_key: str) -> dict:
+    """Create an icon-led five-story brief for Taiwan, US, and Japan markets."""
+    slot = payload.get("slot", "afternoon")
+    must = _SLOT_MUST.get(slot, _SLOT_MUST["afternoon"])
+    report_date = payload.get("report_date") or payload.get("snapshot", {}).get("日期") or "最新資料日"
+    prompt = (
+        "你是專業、客觀的財經編輯。只可依據下方系統剛取得的市場快照與新聞清單，"
+        "以繁體中文寫每日財經速覽。不得補造未提供的數字、漲跌、引述、政策內容或事件細節；"
+        "資料不足時須明寫『資料待後續驗證』。不寫八卦、傳言、炒作或買賣建議。\n\n"
+        "本次是網頁完整版：台股、美股、日股三個市場必須各自獨立成段，且每一市場精選恰好 5 則"
+        "不重複的新聞。每則只能取自對應市場的新聞清單；若該清單少於 5 則，列出全部可用項目並明確說明不足，"
+        "不可用其他市場或想像內容補足。\n"
+        "每則須精簡：標題不超過 28 個中文字；事件、影響、關注各一行，每行不超過 48 個中文字。\n"
+        f"當前時段的閱讀重點：{must}\n\n"
+        "嚴格使用以下 Markdown 與 icon 結構，不要使用程式碼區塊、表格、開場白或其他標題：\n"
+        f"### 📅 {report_date} 每日財經重點速覽\n"
+        "#### 🇹🇼 台股｜5 則精選\n"
+        "* 🔥 **[台股新聞標題]**\n"
+        "  * 🧾 **事件**：核心事實。\n"
+        "  * 📈 **影響**：可能影響的台股、產業或情緒。\n"
+        "  * 👀 **關注**：後續數據、政策、財報或價格反應。\n"
+        "（共 5 則）\n\n"
+        "#### 🇺🇸 美股｜5 則精選\n（沿用完全相同的 5 則格式）\n\n"
+        "#### 🇯🇵 日股｜5 則精選\n（沿用完全相同的 5 則格式）\n\n"
+        "#### 📊 今日宏觀焦點\n"
+        "* 🗓️ 列 3 點近期值得追蹤的經濟數據、央行、匯率、加密資產或地緣風險；沒有確定日期不可杜撰。\n\n"
+        "#### 💡 客觀短評\n"
+        "* 🧭 用 2 點連結台股、亞股與全球風險情緒，不得給交易指令。\n"
+        "* ⚠️ **非投資建議**：市場有風險，資訊僅供研究參考。\n\n"
+        "市場快照：\n"
+        + json.dumps(payload.get("snapshot", {}), ensure_ascii=False)
+        + "\n\n新聞清單：\n"
+        + json.dumps(payload.get("markets", {}), ensure_ascii=False)
+    )
+    return _run(prompt, api_key)
+
+
+def summarize_news(payload: dict, api_key: str) -> dict:
+    """Create a translated 15-story brief with five fact-backed items per market."""
+    slot = payload.get("slot", "afternoon")
+    must = {
+        "morning": "先交代美股收盤、日股開盤與台股盤前外溢影響。",
+        "midday": "先交代台股與日股盤中結構、量能、匯率與午盤風險。",
+        "afternoon": "先交代台股收盤、法人與台指期，並連結日美股外部風險。",
+        "evening": "先交代日股收盤、美股盤前、利率與全球風險事件。",
+    }.get(slot, "先交代台股、日股與美股的最新市場連動。")
+    report_date = payload.get("report_date") or payload.get("snapshot", {}).get("日期") or "最新資料日"
+    prompt = (
+        "你是專業、客觀的財經編輯。僅能依下方系統剛取得的市場快照與新聞清單寫作；"
+        "不得補造數字、漲跌、引述、政策內容或事件細節。若來源沒有可驗證數據，必須寫『來源未提供可驗證數據』。"
+        "不寫八卦、傳言、炒作或買賣建議。\n\n"
+        "輸出為繁體中文。日股新聞必須先翻譯成自然、精確的繁體中文，再輸出；保留日本公司名稱、股票代碼與數字的原貌。"
+        "日股只可取自 jp 新聞清單（其正常來源為株探）；不可用其他市場或想像內容補足。\n\n"
+        "本報告的每個市場都要恰好 5 則新聞：🇹🇼 台股 5 則、🇯🇵 日股 5 則、🇺🇸 美股 5 則。"
+        "每則僅能使用對應市場清單的內容；若該市場少於 5 則，列出全部可用項目並註明來源不足，絕不可湊數。"
+        "標題不超過 28 個中文字；事件、關鍵數據、影響、關注各一行且不超過 48 個中文字。\n"
+        f"不同時段的閱讀焦點：{must}\n\n"
+        "請嚴格輸出下列 Markdown 與 icon 結構，不要使用程式碼區塊、表格、開場白或其他標題：\n"
+        f"### 📅 {report_date} 每日財經重點速覽\n"
+        "#### 🇹🇼 台股｜5 則精選\n"
+        "* 🔥 **[台股新聞標題]**\n"
+        "  * 🧾 **事件**：來源可支持的核心事實。\n"
+        "  * 🔢 **關鍵數據**：僅填市場快照或標題中可驗證的數字；沒有則寫『來源未提供可驗證數據』。\n"
+        "  * 📈 **影響**：可能影響的市場、產業或情緒。\n"
+        "  * 👀 **關注**：後續數據、政策、財報或價格反應。\n"
+        "（共 5 則）\n\n"
+        "#### 🇯🇵 日股｜5 則精選（株探翻譯）\n"
+        "（沿用完全相同的 5 則格式；每個日文標題先翻成繁體中文）\n\n"
+        "#### 🇺🇸 美股｜5 則精選\n"
+        "（沿用完全相同的 5 則格式）\n\n"
+        "#### 📊 今日宏觀焦點\n"
+        "* 🗓️ 列 3 點近期值得追蹤的經濟數據、央行、匯率、加密資產或地緣風險；沒有確定日期不可杜撰。\n\n"
+        "#### 💡 客觀短評\n"
+        "* 🧭 用 2 點連結台股、日股與美股的風險情緒，不得給交易指令。\n"
+        "* ⚠️ **非投資建議**：市場有風險，資訊僅供研究參考。\n\n"
         "市場快照：\n"
         + json.dumps(payload.get("snapshot", {}), ensure_ascii=False)
         + "\n\n新聞清單：\n"

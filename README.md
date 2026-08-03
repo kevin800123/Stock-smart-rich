@@ -186,7 +186,7 @@ LINE Notify 已停服，改走你自己的 LINE 官方帳號（LINE@）Messaging
 5. 設定頁有「📱 測試推播」按鈕可立即驗證。免費方案每月 200 則，每日 2～3 則綽綽有餘。
 
 ### Telegram 每日財經新聞（選用）
-設定 `TELEGRAM_BOT_TOKEN` 與 `TELEGRAM_CHAT_ID` 後，排程會在每日 07:00、17:00、21:10
+設定 `TELEGRAM_BOT_TOKEN` 與 `TELEGRAM_CHAT_ID` 後，排程會在每日 07:00、12:00、17:00、21:10
 推送台股／美股／日股新聞摘要；21:10 刻意避開既有 21:00 的每日資料更新。台、美新聞取
 Google 新聞 RSS 的來源白名單；日股優先取株探 `kabutan.jp` 的市場新聞（遵守其 3 秒
 `Crawl-delay`），版面改動解析不到時才退回 Google「日經指數」新聞，頁面會明確標示備援。

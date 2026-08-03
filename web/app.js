@@ -378,7 +378,7 @@ function renderNewsRows(items) {
 
 // The API returns editor-controlled Markdown. Escape first, then support only the
 // small, deliberate subset used by the daily brief so fetched text stays safe.
-function renderNewsMarkdown(text) {
+function _renderNewsMarkdownV2(text) {
   const inline = (value) => esc(value).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   return String(text || "").replace(/\r\n?/g, "\n").split("\n").map((line) => {
     if (/^###\s+/.test(line)) return `<h3 class="news-md-title">${inline(line.replace(/^###\s+/, ""))}</h3>`;
@@ -387,6 +387,48 @@ function renderNewsMarkdown(text) {
     if (!line.trim()) return '<div class="news-md-gap"></div>';
     return `<p class="news-md-text">${inline(line)}</p>`;
   }).join("");
+}
+
+function renderNewsMarkdown(text, slot = "afternoon") {
+  const sections = { intro: [], tw: [], us: [], jp: [], tail: [] };
+  const marketHeaders = {
+    tw: "🇹🇼 台股｜5 則精選",
+    us: "🇺🇸 美股｜5 則精選",
+    jp: "🇯🇵 日股｜5 則精選",
+  };
+  let current = "intro", sawMarket = false;
+  String(text || "").replace(/\r\n?/g, "\n").split("\n").forEach((line) => {
+    if (/^####\s+/.test(line)) {
+      const market = line.includes("🇹🇼") || line.includes("台股") ? "tw"
+        : line.includes("🇺🇸") || line.includes("美股") ? "us"
+          : line.includes("🇯🇵") || line.includes("日股") ? "jp" : null;
+      if (market) { current = market; sawMarket = true; return; }
+      if (sawMarket) current = "tail";
+    }
+    sections[current].push(line);
+  });
+  const inline = (value) => esc(value).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  const toHtml = (lines) => lines.map((line) => {
+    if (/^###\s+/.test(line)) return `<h3 class="news-md-title">${inline(line.replace(/^###\s+/, ""))}</h3>`;
+    if (/^####\s+/.test(line)) return `<h4 class="news-md-heading">${inline(line.replace(/^####\s+/, ""))}</h4>`;
+    if (/^\s*[*-]\s+/.test(line)) {
+      const value = line.replace(/^\s*[*-]\s+/, "");
+      const cls = value.includes("🔥") ? "news-md-item news-story-title" : "news-md-item news-story-detail";
+      return `<div class="${cls}">${inline(value)}</div>`;
+    }
+    if (!line.trim()) return '<div class="news-md-gap"></div>';
+    return `<p class="news-md-text">${inline(line)}</p>`;
+  }).join("");
+  const openMarket = { morning: "us", midday: "tw", afternoon: "tw", evening: "jp" }[slot] || "tw";
+  const cards = ["tw", "us", "jp"].map((market) => {
+    const available = sections[market].some((line) => line.trim());
+    if (!available) return "";
+    return `<details class="news-market-card" ${market === openMarket ? "open" : ""}>
+      <summary><span>${marketHeaders[market]}</span><span class="news-market-toggle">閱讀 5 則重點</span></summary>
+      <div class="news-market-body">${toHtml(sections[market])}</div>
+    </details>`;
+  }).join("");
+  return `${toHtml(sections.intro)}${cards}${toHtml(sections.tail)}`;
 }
 
 function renderNews(data) {
@@ -398,9 +440,9 @@ function renderNews(data) {
   const summary = $("news-summary");
   summary.textContent = data.summary || "尚未設定 Gemini，或本次摘要暫時無法產生；下方仍提供原始新聞標題。";
   summary.classList.toggle("disabled", !data.summary);
-  if (data.summary) summary.innerHTML = renderNewsMarkdown(data.summary);
+  if (data.summary) summary.innerHTML = renderNewsMarkdown(data.summary, data.slot);
   ["tw", "us", "jp"].forEach((market) => {
-    $("news-" + market).innerHTML = renderNewsRows(data.markets && data.markets[market]);
+    $("news-" + market).innerHTML = renderNewsRows((data.markets && data.markets[market] || []).slice(0, 5));
   });
 }
 
@@ -434,7 +476,7 @@ async function loadSettings() {
       : "未設定";
     ln.className = "set-badge " + (s.line_configured ? "ok" : "no");
     const tg = $("set-telegram");
-    tg.textContent = s.telegram_configured ? "已設定 ✓（每日 07:00／17:00／21:10）" : "未設定";
+    tg.textContent = s.telegram_configured ? "已設定 ✓（每日 07:00／12:00／17:00／21:10）" : "未設定";
     tg.className = "set-badge " + (s.telegram_configured ? "ok" : "no");
     $("set-picks-only").checked = !!s.intraday_picks_only;
     $("set-loss-tol").value = s.loss_tolerance || "";
