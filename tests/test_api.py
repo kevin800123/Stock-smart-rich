@@ -1288,10 +1288,14 @@ def _no_turnover(monkeypatch):
     from stocks_power_rich.sources import twse, tpex
     monkeypatch.setattr(twse, "fetch_stock_turnover", lambda date=None: {})
     monkeypatch.setattr(tpex, "fetch_otc_turnover", lambda date=None: {})
+    monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {})
+    monkeypatch.setattr(tpex, "fetch_otc_industry", lambda: {})
+    monkeypatch.setattr(twse, "fetch_t86", lambda date=None: {})
+    monkeypatch.setattr(tpex, "fetch_tpex_insti", lambda date=None: {})
 
 
-def test_rank_price_turnover_official_estimate_and_prev_day_change(tmp_path, monkeypatch):
-    """/api/rank/price 量額：官方值優先、盤中退回 量×現價 估算，並與前一交易日官方成交額比增減。"""
+def test_rank_price_turnover_official_estimate_and_10day_amount_change(tmp_path, monkeypatch):
+    """/api/rank/price 量額：官方值優先、盤中退回估算，並比較前十日均額。"""
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc, set_ai_cache
     from stocks_power_rich.sources import mis, twse, tpex
@@ -1323,30 +1327,30 @@ def test_rank_price_turnover_official_estimate_and_prev_day_change(tmp_path, mon
     monkeypatch.setattr(twse, "fetch_stock_turnover",
                         lambda date=None: by_date.get(date.strftime("%Y-%m-%d"), {}))
     monkeypatch.setattr(tpex, "fetch_otc_turnover", lambda date=None: {})
+    monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {
+        "2330": {"shares": 30_000_000_000},
+        "3008": {"shares": 2_000_000_000},
+        "2454": {"shares": 1_000_000_000},
+    })
+    monkeypatch.setattr(tpex, "fetch_otc_industry", lambda: {})
     app = create_app()
     client = TestClient(app)
     r = client.get("/api/rank/price?market=twse&n=10").json()
-    assert r["prev_date"] == "2026-07-17"
     it = {i["code"]: i for i in r["items"]}
-    # 官方值存在 → 精確、不標估算；與前一日 60 億 → +13 億 / +21.7%
+    # 官方值存在 → 精確、不標估算；與近十日均額 60 億 → +13 億 / +21.7%
     assert it["2330"]["amount"] == 73_000_000_000.0 and it["2330"]["amount_est"] is False
     assert it["2330"]["vol"] == 30000
-    assert it["2330"]["amount_chg"] == 13_000_000_000.0
-    assert it["2330"]["amount_chg_pct"] == 21.7
     assert it["2330"]["amount_avg_10"] == 60_000_000_000.0
+    assert it["2330"]["amount_vs_avg_10"] == 13_000_000_000.0
     assert it["2330"]["amount_vs_avg_10_pct"] == 21.7
+    assert it["2330"]["turnover_pct"] == 0.1
     # 官方缺 → 估算 1000 張 × 1000 股 × 1800 元 = 18 億，標記 amount_est
     assert it["3008"]["amount"] == 1_800_000_000 and it["3008"]["amount_est"] is True
-    assert it["3008"]["amount_chg"] == 200_000_000 and it["3008"]["amount_chg_pct"] == 12.5
-    # 前一日無官方值 → 增減兩欄皆 None（不拿估算值硬湊基準）
-    assert it["2454"]["prev_amount"] is None
-    assert it["2454"]["amount_chg"] is None and it["2454"]["amount_chg_pct"] is None
-    # 成交量增減：今日 30000 張 vs 前一日 25000 張 → +5000（+20%）
-    assert it["2330"]["vol_chg"] == 5000 and it["2330"]["vol_chg_pct"] == 20.0
-    assert it["3008"]["vol_chg"] == 100 and it["3008"]["vol_chg_pct"] == 11.1
-    # 前一日無量 → 增減兩欄皆 None
-    assert it["2454"]["prev_vol"] is None
-    assert it["2454"]["vol_chg"] is None and it["2454"]["vol_chg_pct"] is None
+    assert it["3008"]["amount_vs_avg_10"] == 200_000_000
+    assert it["3008"]["amount_vs_avg_10_pct"] == 12.5
+    # 無歷史成交額的個股不硬湊比較值。
+    assert it["2454"]["amount_avg_10"] is None
+    assert it["2454"]["amount_vs_avg_10"] is None
 
 
 def test_rank_price_uses_prior_ten_published_sessions_for_amount_average(tmp_path, monkeypatch):
@@ -1373,6 +1377,42 @@ def test_rank_price_uses_prior_ten_published_sessions_for_amount_average(tmp_pat
     averages, sessions = _avg_turnover_10(c, today.isoformat(), ["2330"])
     assert sessions == 10
     assert averages["2330"] == 14_500_000_000.0
+
+
+def test_rank_price_loads_same_day_institutional_lots_after_close(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db
+    from stocks_power_rich.api.market import _stock_institutional_for
+    from stocks_power_rich.sources import twse, tpex
+    from datetime import date
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    day = date(2026, 7, 31)
+    monkeypatch.setattr(twse, "fetch_t86", lambda d: {
+        "2330": {"foreign": 4_000, "trust": 800, "dealer": 200, "total": 5_000},
+    })
+    monkeypatch.setattr(tpex, "fetch_tpex_insti", lambda d: {
+        "6415": {"foreign": -100, "trust": 50, "dealer": 20, "total": -30},
+    })
+
+    tse, otc = _stock_institutional_for(c, day)
+    assert tse["2330"]["total"] == 5_000
+    assert otc["6415"]["total"] == -30
+    # A second call reads the daily cache instead of fetching the sources again.
+    monkeypatch.setattr(twse, "fetch_t86", lambda d: (_ for _ in ()).throw(AssertionError("not cached")))
+    assert _stock_institutional_for(c, day)[0]["2330"]["foreign"] == 4_000
+
+
+def test_rank_price_capital_signal_uses_only_observable_inputs():
+    from stocks_power_rich.api.market import _capital_signal
+
+    assert _capital_signal(12.5, 80.0, 1.2)["label"] == "法人承接"
+    assert _capital_signal(-8.0, 120.0, 1.5)["label"] == "放量分歧"
+    assert _capital_signal(2.0, 5.0, 1.0)["label"] == "低周轉偏多"
+    assert _capital_signal(None, 8.0, 5.5)["label"] == "高周轉觀察"
+    assert _capital_signal(None, 45.0, None)["label"] == "放量觀察"
+    assert _capital_signal(None, None, None) is None
 
 
 def test_rank_price_endpoint_markets_and_live_quotes(tmp_path, monkeypatch):

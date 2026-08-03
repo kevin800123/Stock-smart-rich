@@ -1001,41 +1001,43 @@ async function loadRankPrice() {
     const note = $("rankprice-note");
     if (note) {
       const anyLive = (d.items || []).some((i) => i.time);
-      const base = d.prev_date ? `　量額比較基準 ${d.prev_date}` : "";
       const avgBase = d.avg_sessions ? `　近 ${d.avg_sessions} 日均額（不含今日）` : "";
-      note.textContent = (anyLive ? `（證交所即時，${d.fetched_at ? d.fetched_at.slice(11, 16) : ""} 更新` : "（收盤價") + base + avgBase + "）";
+      note.textContent = (anyLive ? `（證交所即時，${d.fetched_at ? d.fetched_at.slice(11, 16) : ""} 更新` : "（收盤價") + avgBase + "）";
     }
     if (!d.items || !d.items.length) { el.innerHTML = '<div class="muted">尚無資料（需先跑過 OHLC 回補）</div>'; return; }
-    const head = "<tr><th>#</th><th>股票</th><th class=\"num\">成交價</th><th class=\"num\">漲跌</th>" +
-      "<th class=\"num\">漲跌%</th><th class=\"num\">成交量(張)</th><th class=\"num\">成交量增減(張)</th>" +
-      "<th class=\"num\">成交額(億)</th><th class=\"num\">近10日均成交額</th><th class=\"num\">成交額增減</th><th class=\"num\">時間</th></tr>";
+    const head = "<tr><th>#</th><th>股票</th><th class=\"num\">股價／漲跌</th>" +
+      "<th class=\"num\">成交量(張)</th><th class=\"num\">成交額(億)</th>" +
+      "<th class=\"num\">成交額較10日均</th><th class=\"num\">周轉率</th>" +
+      "<th class=\"num\" title=\"官方公布法人淨買賣股數，以現價換算；非成交金額原始值\">法人淨額(億)</th>" +
+      "<th title=\"依法人淨額、成交額較10日均與周轉率分類；非投資建議\">資金訊號</th></tr>";
     const body = d.items.map((it, i) => {
       const cls = it.chg > 0 ? "up" : it.chg < 0 ? "down" : "flat";
       // 盤中官方成交金額尚未發布 → 後端用 量×現價 估算，標「~」並在 tooltip 說明
       const amt = it.amount == null ? "—"
         : yi(it.amount) + (it.amount_est ? '<span class="muted" title="盤中估算：成交量×現價（官方成交金額收盤後才發布）">~</span>' : "");
-      const acls = it.amount_chg > 0 ? "up" : it.amount_chg < 0 ? "down" : "flat";
-      const ach = it.amount_chg == null ? "—"
-        : `${it.amount_chg > 0 ? "+" : ""}${yi(it.amount_chg)} 億` +
-          (it.amount_chg_pct == null ? "" : `（${it.amount_chg_pct > 0 ? "+" : ""}${fmt(it.amount_chg_pct, 1)}%）`);
       const avgCls = it.amount_vs_avg_10_pct > 0 ? "up" : it.amount_vs_avg_10_pct < 0 ? "down" : "flat";
-      const avg = it.amount_avg_10 == null ? "—"
-        : `${yi(it.amount_avg_10)} 億` +
-          (it.amount_vs_avg_10_pct == null ? "" : ` <span class="rank-avg-pct ${avgCls}">當日${it.amount_vs_avg_10_pct > 0 ? "+" : ""}${fmt(it.amount_vs_avg_10_pct, 1)}%</span>`);
-      const vcls = it.vol_chg > 0 ? "up" : it.vol_chg < 0 ? "down" : "flat";
-      const vch = it.vol_chg == null ? "—"
-        : `${it.vol_chg > 0 ? "+" : ""}${fmt(it.vol_chg, 0)}` +
-          (it.vol_chg_pct == null ? "" : `（${it.vol_chg_pct > 0 ? "+" : ""}${fmt(it.vol_chg_pct, 1)}%）`);
+      const surge = it.amount_vs_avg_10_pct >= 100;
+      const avgDelta = it.amount_vs_avg_10 == null ? "—"
+        : `${surge ? '<span class="rank-surge" title="成交額較近 10 日均額放大逾一倍">🔥</span>' : ""}` +
+          `${it.amount_vs_avg_10 > 0 ? "+" : ""}${yi(it.amount_vs_avg_10)} 億` +
+          `（${it.amount_vs_avg_10_pct > 0 ? "+" : ""}${fmt(it.amount_vs_avg_10_pct, 1)}%）`;
+      const quote = `<strong>${fmt(it.price, 2)}</strong>` +
+        (it.chg == null ? "" : ` <span class="${cls}">${it.chg > 0 ? "+" : ""}${fmt(it.chg, 2)} (${it.chg_pct > 0 ? "+" : ""}${fmt(it.chg_pct, 2)}%)</span>`);
+      const instCls = it.inst_amount > 0 ? "up" : it.inst_amount < 0 ? "down" : "flat";
+      const instTitle = `外資 ${fmt(it.inst_foreign_lots, 0)} 張／投信 ${fmt(it.inst_trust_lots, 0)} 張／自營 ${fmt(it.inst_dealer_lots, 0)} 張`;
+      const inst = it.inst_amount == null ? "—"
+        : `<span class="rank-inst ${instCls}" title="${instTitle}">~${it.inst_amount > 0 ? "+" : ""}${fmt(it.inst_amount, 1)}</span>`;
+      const signal = it.capital_signal
+        ? `<span class="capital-signal ${esc(it.capital_signal.tone)}">${esc(it.capital_signal.label)}</span>`
+        : '<span class="muted">—</span>';
       return `<tr><td>${i + 1}</td><td>${stockLink(it.code, it.name)}</td>` +
-        `<td class="num">${fmt(it.price, 2)}</td>` +
-        `<td class="num ${cls}">${it.chg == null ? "—" : (it.chg > 0 ? "+" : "") + fmt(it.chg, 2)}</td>` +
-        `<td class="num ${cls}">${it.chg_pct == null ? "—" : (it.chg_pct > 0 ? "+" : "") + fmt(it.chg_pct, 2) + "%"}</td>` +
+        `<td class="num rank-quote">${quote}</td>` +
         `<td class="num">${it.vol == null ? "—" : fmt(it.vol, 0)}</td>` +
-        `<td class="num ${vcls}">${vch}</td>` +
         `<td class="num">${amt}</td>` +
-        `<td class="num rank-avg">${avg}</td>` +
-        `<td class="num ${acls}">${ach}</td>` +
-        `<td class="num">${it.time ? esc(it.time) : "收盤"}</td></tr>`;
+        `<td class="num rank-amount-delta ${avgCls}">${avgDelta}</td>` +
+        `<td class="num">${it.turnover_pct == null ? "—" : fmt(it.turnover_pct, 2) + "%"}</td>` +
+        `<td class="num">${inst}</td>` +
+        `<td>${signal}</td></tr>`;
     }).join("");
     el.innerHTML = `<table>${head}${body}</table>`;
   } catch (e) { el.innerHTML = '<div class="muted">載入失敗：' + esc(e.message) + "</div>"; }

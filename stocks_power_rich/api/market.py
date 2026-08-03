@@ -16,7 +16,7 @@ from .helpers import (
     _os_futures,
     _turnover_for,
 )
-from ..sources import twse, taifex, mis
+from ..sources import twse, taifex, mis, tpex
 from .. import analysis, gemini, ss_trader, traders
 from ..config import load_config
 
@@ -28,25 +28,6 @@ def os_futures(refresh: int = 0):
     # 429 限流的主因）。現在資料只由 main.py 的排程 job（每日 07:30／21:30）主動更新，
     # 這裡永遠是讀快取；refresh=1 供「更新報價」手動按鈕做一次性強制重抓。
     return _os_futures(refresh=bool(refresh))
-
-
-def _prev_turnover(c, today: str) -> tuple[dict, str | None]:
-    """前一個「拿得到官方成交量額」的交易日資料與日期（成交額增減的比較基準）。
-
-    交易日候選取自 stock_ohlc；最多試 2 天就放棄——連假期間再往回抓只是多打幾次無用請求，
-    寧可讓前端顯示「—」也不拖慢每 10 秒一次的排行輪詢。
-    """
-    for (d,) in c.execute(
-            "SELECT DISTINCT date FROM stock_ohlc WHERE date < ? ORDER BY date DESC LIMIT 2",
-            (today,)).fetchall():
-        try:
-            day = datetime.strptime(d, "%Y-%m-%d").date()
-        except ValueError:
-            continue
-        t = _turnover_for(c, day)
-        if t:
-            return t, d
-    return {}, None
 
 
 def _avg_turnover_10(c, today: str, codes: list[str]) -> tuple[dict[str, float], int]:
@@ -77,6 +58,49 @@ def _avg_turnover_10(c, today: str, codes: list[str]) -> tuple[dict[str, float],
         if sessions == 10:
             break
     return {code: totals[code] / counts[code] for code in codes if counts[code]}, sessions
+
+
+def _stock_institutional_for(c, day) -> tuple[dict, dict]:
+    """Published per-stock institutional net lots for one date, cached by market.
+
+    Both official feeds publish after the close.  During market hours return an
+    empty result instead of retrying two remote endpoints on every rank refresh.
+    """
+    now = datetime.now()
+    if day == now.date() and now.weekday() < 5 and (now.hour, now.minute) < (14, 0):
+        return {}, {}
+    ds = day.strftime("%Y-%m-%d")
+    parts = []
+    for market, fetch in (("tse", twse.fetch_t86), ("otc", tpex.fetch_tpex_insti)):
+        key = f"stockinst:{market}:{ds}"
+        data = get_ai_cache(c, key)
+        if data is None:
+            try:
+                data = fetch(day)
+            except Exception:  # noqa: BLE001
+                data = {}
+            if data:
+                set_ai_cache(c, key, data)
+        parts.append(data or {})
+    return parts[0], parts[1]
+
+
+def _capital_signal(inst_amount, amount_vs_avg_pct, turnover_pct) -> dict | None:
+    """Classify observable flow only; deliberately does not infer investor identity."""
+    boosted = amount_vs_avg_pct is not None and amount_vs_avg_pct >= 30
+    hot_turnover = turnover_pct is not None and turnover_pct >= 5
+    quiet_turnover = turnover_pct is not None and turnover_pct <= 2
+    if inst_amount is not None and inst_amount > 0 and boosted and quiet_turnover:
+        return {"label": "法人承接", "tone": "up"}
+    if inst_amount is not None and inst_amount < 0 and boosted:
+        return {"label": "放量分歧", "tone": "warn"}
+    if inst_amount is not None and inst_amount > 0 and quiet_turnover:
+        return {"label": "低周轉偏多", "tone": "up"}
+    if hot_turnover:
+        return {"label": "高周轉觀察", "tone": "caution"}
+    if boosted:
+        return {"label": "放量觀察", "tone": "neutral"}
+    return None
 
 
 def _rank_ttl() -> int:
@@ -118,10 +142,12 @@ def rank_price(market: str = "all", n: int = 30):
     quotes = mis.fetch_mis_rank(tokens) if tokens else {}
     today = datetime.now().date()
     t_today = _turnover_for(c, today)          # 盤中通常為空 → 成交額退回估算
-    t_prev, prev_date = _prev_turnover(c, today.strftime("%Y-%m-%d"))
     avg_amounts, avg_sessions = _avg_turnover_10(
         c, today.strftime("%Y-%m-%d"), [code for code, _ in pool]
     )
+    listed_info = _industry_map(c)
+    otc_info = _otc_industry(c)
+    tse_inst, otc_inst = _stock_institutional_for(c, today)
     items = []
     for code, close in pool:
         q = quotes.get(code) or {}
@@ -141,33 +167,37 @@ def rank_price(market: str = "all", n: int = 30):
         est = amount is None
         if est:
             amount = round(vol * 1000 * price) if (vol is not None and price) else None
-        prev_amount = (t_prev.get(code) or {}).get("amount")
-        chg_amt = amount - prev_amount if (amount is not None and prev_amount) else None
         avg_amount_10 = avg_amounts.get(code)
-        prev_vol = (t_prev.get(code) or {}).get("vol")
-        chg_vol = vol - prev_vol if (vol is not None and prev_vol) else None
+        shares = (otc_info if code in otc else listed_info).get(code, {}).get("shares")
+        turnover_pct = round(vol * 1000 / shares * 100, 2) if vol is not None and shares else None
+        inst = (otc_inst if code in otc else tse_inst).get(code) or {}
+        inst_lots = inst.get("total")
+        # Official feeds publish net lots, not net money; convert at the current
+        # price and mark it as an estimate in the frontend.
+        inst_amount = round(inst_lots * price * 1000 / 1e8, 1) if inst_lots is not None and price else None
+        amount_vs_avg_pct = (
+            round((amount / avg_amount_10 - 1) * 100, 1)
+            if amount is not None and avg_amount_10 else None
+        )
         items.append({
             "code": code, "market": "otc" if code in otc else "twse",
             "name": q.get("name") or otc.get(code) or code,
             "price": price,
             "chg": chg, "chg_pct": chg_pct,
             "vol": vol, "amount": amount, "amount_est": est and amount is not None,
-            "prev_amount": prev_amount,
-            "amount_chg": chg_amt,
-            "amount_chg_pct": round(chg_amt / prev_amount * 100, 1) if chg_amt is not None else None,
             "amount_avg_10": avg_amount_10,
-            "amount_vs_avg_10_pct": (
-                round((amount / avg_amount_10 - 1) * 100, 1)
-                if amount is not None and avg_amount_10 else None
-            ),
-            "prev_vol": prev_vol,
-            "vol_chg": chg_vol,
-            "vol_chg_pct": round(chg_vol / prev_vol * 100, 1) if chg_vol is not None else None,
+            "amount_vs_avg_10": amount - avg_amount_10 if amount is not None and avg_amount_10 else None,
+            "amount_vs_avg_10_pct": amount_vs_avg_pct,
+            "turnover_pct": turnover_pct,
+            "inst_amount": inst_amount,
+            "inst_foreign_lots": inst.get("foreign"),
+            "inst_trust_lots": inst.get("trust"),
+            "inst_dealer_lots": inst.get("dealer"),
+            "capital_signal": _capital_signal(inst_amount, amount_vs_avg_pct, turnover_pct),
             "time": q.get("time"),
         })
     items.sort(key=lambda i: -(i["price"] or 0))
-    result = {"market": market, "items": items[:n], "prev_date": prev_date,
-              "avg_sessions": avg_sessions,
+    result = {"market": market, "items": items[:n], "avg_sessions": avg_sessions,
               "fetched_at": datetime.now().isoformat()}
     if items:
         set_ai_cache(c, key, result)
