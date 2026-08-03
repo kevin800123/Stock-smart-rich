@@ -569,6 +569,8 @@ th.sortable:hover { color: var(--accent); }
 tbody tr:hover td { background: rgba(108, 182, 255, 0.12); box-shadow: inset 3px 0 0 var(--info); }
 tbody tr:last-child td { border-bottom: 0; }
 tr.clickrow { cursor: pointer; }
+.rank-avg { min-width: 156px; }
+.rank-avg-pct { margin-left: 4px; font-size: var(--font-size-xs); font-weight: 700; }
 
 /* 高密度選股清單：範圍只限 #daily / #industry，其他表格暫不改動。 */
 #daily table, #industry table { font-size: var(--font-size-table); }

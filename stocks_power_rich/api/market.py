@@ -49,6 +49,36 @@ def _prev_turnover(c, today: str) -> tuple[dict, str | None]:
     return {}, None
 
 
+def _avg_turnover_10(c, today: str, codes: list[str]) -> tuple[dict[str, float], int]:
+    """Average each stock's turnover across the prior 10 published sessions."""
+    totals = {code: 0.0 for code in codes}
+    counts = {code: 0 for code in codes}
+    sessions = 0
+    # Some recent OHLC dates can still lack official turnover, so only count
+    # dates with published turnover and look farther back when needed.
+    rows = c.execute(
+        "SELECT DISTINCT date FROM stock_ohlc WHERE date < ? ORDER BY date DESC LIMIT 35",
+        (today,),
+    ).fetchall()
+    for (d,) in rows:
+        try:
+            day = datetime.strptime(d, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        turnover = _turnover_for(c, day)
+        if not turnover:
+            continue
+        sessions += 1
+        for code in codes:
+            amount = (turnover.get(code) or {}).get("amount")
+            if amount is not None:
+                totals[code] += amount
+                counts[code] += 1
+        if sessions == 10:
+            break
+    return {code: totals[code] / counts[code] for code in codes if counts[code]}, sessions
+
+
 def _rank_ttl() -> int:
     """盤中 8 秒（前端 10 秒輪詢下 MIS 實際頻率安全）；非盤中 300 秒（只剩靜態收盤值）。"""
     now = datetime.now()
@@ -89,6 +119,9 @@ def rank_price(market: str = "all", n: int = 30):
     today = datetime.now().date()
     t_today = _turnover_for(c, today)          # 盤中通常為空 → 成交額退回估算
     t_prev, prev_date = _prev_turnover(c, today.strftime("%Y-%m-%d"))
+    avg_amounts, avg_sessions = _avg_turnover_10(
+        c, today.strftime("%Y-%m-%d"), [code for code, _ in pool]
+    )
     items = []
     for code, close in pool:
         q = quotes.get(code) or {}
@@ -110,6 +143,7 @@ def rank_price(market: str = "all", n: int = 30):
             amount = round(vol * 1000 * price) if (vol is not None and price) else None
         prev_amount = (t_prev.get(code) or {}).get("amount")
         chg_amt = amount - prev_amount if (amount is not None and prev_amount) else None
+        avg_amount_10 = avg_amounts.get(code)
         prev_vol = (t_prev.get(code) or {}).get("vol")
         chg_vol = vol - prev_vol if (vol is not None and prev_vol) else None
         items.append({
@@ -121,6 +155,11 @@ def rank_price(market: str = "all", n: int = 30):
             "prev_amount": prev_amount,
             "amount_chg": chg_amt,
             "amount_chg_pct": round(chg_amt / prev_amount * 100, 1) if chg_amt is not None else None,
+            "amount_avg_10": avg_amount_10,
+            "amount_vs_avg_10_pct": (
+                round((amount / avg_amount_10 - 1) * 100, 1)
+                if amount is not None and avg_amount_10 else None
+            ),
             "prev_vol": prev_vol,
             "vol_chg": chg_vol,
             "vol_chg_pct": round(chg_vol / prev_vol * 100, 1) if chg_vol is not None else None,
@@ -128,6 +167,7 @@ def rank_price(market: str = "all", n: int = 30):
         })
     items.sort(key=lambda i: -(i["price"] or 0))
     result = {"market": market, "items": items[:n], "prev_date": prev_date,
+              "avg_sessions": avg_sessions,
               "fetched_at": datetime.now().isoformat()}
     if items:
         set_ai_cache(c, key, result)

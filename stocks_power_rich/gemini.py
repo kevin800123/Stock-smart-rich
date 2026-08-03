@@ -212,6 +212,41 @@ def summarize_news(payload: dict, api_key: str) -> dict:
     return _run(prompt, api_key)
 
 
+def summarize_news_push(payload: dict, full_brief: str, api_key: str) -> dict:
+    """Produce a compact Telegram-only brief from the same verified source set."""
+    slot = payload.get("slot", "afternoon")
+    report_date = payload.get("report_date", "最新資料日")
+    plan = {
+        "morning": ("🌅 07:00 盤前早報", "美股 6、日股 6、台股 6", "先寫美股收盤，再連結日股與台股盤前"),
+        "midday": ("☀️ 12:00 午間財經快訊", "台股 6、日股 6、美股 6", "先寫台股與日股盤中結構"),
+        "afternoon": ("🏁 17:00 收盤快訊", "台股 6、日股 6、美股 6", "先寫台股收盤與法人、期貨"),
+        "evening": ("🌙 21:10 晚間全球焦點", "美股 6、日股 6、台股 6", "先寫美股盤前與日股收盤"),
+    }.get(slot, ("📊 財經快訊", "台股 6、日股 6、美股 6", "優先寫市場連動"))
+    prompt = (
+        "你是 Telegram 財經快訊編輯。只可依下方完整報告與來源資料寫作，不得補造任何數字或事件。"
+        "輸出繁體中文；日股項目必須翻譯日文株探標題，保留公司名、代號和數字。\n\n"
+        "這是短訊，不是完整報告。嚴禁出現『來源未提供可驗證數據』、資料不足、系統提示、重複標題，"
+        "也不得逐條重寫事件摘要。只挑選真正有資訊增量的重點；可驗證數字直接自然寫入句中，"
+        "沒有新增數據價值時就不寫數字。\n\n"
+        f"本次標題：{plan[0]} ｜ {report_date}\n"
+        f"數量：{plan[1]}。焦點：{plan[2]}。\n"
+        "使用下列純文字格式；不要 Markdown 的 **、不要編號、不要『關鍵數據』標籤、不要額外段落：\n\n"
+        f"{plan[0]} ｜ {report_date}\n\n"
+        "🇹🇼 台股｜重點掃描\n"
+        "• 短標籤：一句有資訊增量的市場重點。\n\n"
+        "🇯🇵 日股與外匯\n"
+        "• 短標籤：一句翻譯後的市場或個股重點。\n\n"
+        "🇺🇸 美股趨勢\n"
+        "• 短標籤：一句科技、利率、財報或宏觀重點。\n\n"
+        "⚠️ 非投資建議，資訊僅供研究參考\n\n"
+        "完整報告：\n"
+        + (full_brief or "")
+        + "\n\n市場快照與原始新聞：\n"
+        + json.dumps({"snapshot": payload.get("snapshot", {}), "markets": payload.get("markets", {})}, ensure_ascii=False)
+    )
+    return _run(prompt, api_key)
+
+
 def summarize_csv(daily_top: list, weekly: dict, industry: list, api_key: str) -> dict:
     prompt = (
         "你是籌碼分析師，依下列資料用繁體中文條列『本週大戶進、散戶退』的重點類股與個股，"

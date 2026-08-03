@@ -22,11 +22,14 @@ def test_news_endpoint_caches_enabled_summary_and_hides_telegram_secrets(tmp_pat
 
     monkeypatch.setattr(news_api.news, "fetch_market_news", fake_fetch)
     monkeypatch.setattr(news_api.gemini, "summarize_news", fake_summary)
+    monkeypatch.setattr(news_api.gemini, "summarize_news_push",
+                        lambda *args, **kwargs: {"enabled": True, "text": "Telegram 摘要"})
     client = TestClient(create_app())
 
     first = client.get("/api/news?slot=afternoon")
     assert first.status_code == 200
     body = first.json()
+    assert body["telegram_text"] == "Telegram 摘要"
     assert body["summary"] == "AI 摘要"
     assert body["fallback"] == {"tw": False, "us": False, "jp": True}
     assert body["markets"]["tw"][0]["title"] == "tw title"
@@ -65,7 +68,7 @@ def _test_telegram_digest_v1_uses_market_mix_and_five_headlines():
     assert "**事件**" not in out
 
 
-def test_telegram_digest_has_five_translated_items_per_market_with_data():
+def _test_telegram_digest_v2_has_five_translated_items_per_market_with_data():
     from stocks_power_rich.api.news import telegram_digest
 
     lines = []
@@ -85,6 +88,13 @@ def test_telegram_digest_has_five_translated_items_per_market_with_data():
     assert "🔢 100 點" in out
 
 
+def test_all_telegram_slots_request_six_items_per_market():
+    from stocks_power_rich.api.news import _PUSH_PLAN
+
+    for _, (_, plan) in _PUSH_PLAN.items():
+        assert dict(plan) == {"tw": 6, "jp": 6, "us": 6}
+
+
 def test_news_test_endpoint_uses_telegram_wrapper(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich import telegram_push
@@ -94,6 +104,8 @@ def test_news_test_endpoint_uses_telegram_wrapper(tmp_path, monkeypatch):
     monkeypatch.setattr(news_api.news, "fetch_market_news", lambda *args, **kwargs: ([], False))
     monkeypatch.setattr(news_api.gemini, "summarize_news",
                         lambda *args, **kwargs: {"enabled": True, "text": "test summary"})
+    monkeypatch.setattr(news_api.gemini, "summarize_news_push",
+                        lambda *args, **kwargs: {"enabled": True, "text": "test push"})
     sent = {}
     monkeypatch.setattr(telegram_push, "send_message",
                         lambda token, chat_id, text: sent.update(token=token, chat_id=chat_id, text=text)
@@ -103,4 +115,4 @@ def test_news_test_endpoint_uses_telegram_wrapper(tmp_path, monkeypatch):
     response = client.post("/api/news/test")
     assert response.status_code == 200
     assert response.json()["push"]["ok"] is True
-    assert sent["text"] == "test summary"
+    assert sent["text"] == "test push"

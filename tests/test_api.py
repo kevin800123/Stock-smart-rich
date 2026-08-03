@@ -1333,6 +1333,8 @@ def test_rank_price_turnover_official_estimate_and_prev_day_change(tmp_path, mon
     assert it["2330"]["vol"] == 30000
     assert it["2330"]["amount_chg"] == 13_000_000_000.0
     assert it["2330"]["amount_chg_pct"] == 21.7
+    assert it["2330"]["amount_avg_10"] == 60_000_000_000.0
+    assert it["2330"]["amount_vs_avg_10_pct"] == 21.7
     # 官方缺 → 估算 1000 張 × 1000 股 × 1800 元 = 18 億，標記 amount_est
     assert it["3008"]["amount"] == 1_800_000_000 and it["3008"]["amount_est"] is True
     assert it["3008"]["amount_chg"] == 200_000_000 and it["3008"]["amount_chg_pct"] == 12.5
@@ -1345,6 +1347,32 @@ def test_rank_price_turnover_official_estimate_and_prev_day_change(tmp_path, mon
     # 前一日無量 → 增減兩欄皆 None
     assert it["2454"]["prev_vol"] is None
     assert it["2454"]["vol_chg"] is None and it["2454"]["vol_chg_pct"] is None
+
+
+def test_rank_price_uses_prior_ten_published_sessions_for_amount_average(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc
+    from stocks_power_rich.api.market import _avg_turnover_10
+    from stocks_power_rich.sources import twse, tpex
+    from datetime import date, timedelta
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    today = date.today()
+    days = [(today - timedelta(days=i)).isoformat() for i in range(1, 11)]
+    for i, day in enumerate(days):
+        bulk_upsert_ohlc(c, day, {
+            "2330": {"open": 100, "high": 101, "low": 99, "close": 100.0},
+        })
+    amounts = {day: (10 + i) * 1_000_000_000.0 for i, day in enumerate(days)}
+    monkeypatch.setattr(twse, "fetch_stock_turnover", lambda date=None: {
+        "2330": {"amount": amounts[date.strftime("%Y-%m-%d")]}
+    })
+    monkeypatch.setattr(tpex, "fetch_otc_turnover", lambda date=None: {})
+
+    averages, sessions = _avg_turnover_10(c, today.isoformat(), ["2330"])
+    assert sessions == 10
+    assert averages["2330"] == 14_500_000_000.0
 
 
 def test_rank_price_endpoint_markets_and_live_quotes(tmp_path, monkeypatch):

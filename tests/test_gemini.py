@@ -60,6 +60,26 @@ def test_news_summary_prompt_requires_structured_sourced_brief(monkeypatch):
     assert "不得補造" in captured["prompt"] and "非投資建議" in captured["prompt"]
 
 
+def test_news_push_prompt_uses_compact_midday_template(monkeypatch):
+    captured = {}
+
+    def fake_run(prompt, api_key):
+        captured["prompt"] = prompt
+        return {"enabled": True, "text": "ok"}
+
+    monkeypatch.setattr(gemini, "_run", fake_run)
+    out = gemini.summarize_news_push(
+        {"slot": "midday", "report_date": "2026-08-03", "snapshot": {}, "markets": {}},
+        full_brief="完整報告",
+        api_key="k",
+    )
+
+    assert out["text"] == "ok"
+    assert "台股 6、日股 6、美股 6" in captured["prompt"]
+    assert "來源未提供可驗證數據" in captured["prompt"]
+    assert "日股項目必須翻譯日文株探標題" in captured["prompt"]
+
+
 def test_uses_model_when_key(monkeypatch):
     class FakeResp:
         text = "盤勢偏多"
