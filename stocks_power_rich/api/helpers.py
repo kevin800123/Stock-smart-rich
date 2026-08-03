@@ -668,9 +668,19 @@ def _check_update_result_and_alert(c, result: dict) -> None:
         except Exception:  # noqa: BLE001
             pass
 
-    if failed or lagging:
+    # These sources are published later than the 21:00 Taiwan close workflow
+    # (or on the next overseas-market close).  Keep them in the update result
+    # for the UI/backfill, but do not turn expected timing into a LINE alarm.
+    def expected_later(f: dict) -> bool:
+        name, error = f.get("name") or "", f.get("error") or ""
+        if name in ("margin_maintenance", "otc_margin_maintenance"):
+            return "尚未" in error or "稍後回補" in error
+        return name == "intl" and ("尚未取得" in error or "自動回補" in error)
+
+    alertable = [f for f in failed if not expected_later(f)]
+    if alertable or lagging:
         failed_sources = []
-        for f in failed:
+        for f in alertable:
             err_str = f.get("error") or ""
             if len(err_str) > 30:
                 err_str = err_str[:27] + "..."
@@ -684,7 +694,7 @@ def _check_update_result_and_alert(c, result: dict) -> None:
             f"資料日期：{res_date_str or '未知'}{lag_msg}"
         )
 
-        failed_names = sorted(list({f.get("name") for f in failed if f.get("name")}))
+        failed_names = sorted(list({f.get("name") for f in alertable if f.get("name")}))
         alert_key = f"{res_date_str}|{','.join(failed_names)}"
 
         last_alert = get_setting(c, "last_alert_key")

@@ -161,7 +161,6 @@ python -m venv .venv
 | `GEMINI_API_KEY` | Gemini 金鑰（空＝停用 AI 摘要） | （空） |
 | `LINE_CHANNEL_ACCESS_TOKEN` | LINE 官方帳號 Messaging API token（空＝停用推播） | （空） |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | 每日財經新聞 Telegram bot 與推播目標（兩者皆填才啟用） | （空） |
-| `SPR_LINE_PUSH_TIME` | 平日盤後速報推播時間 HH:MM | 16:00 |
 | `SPR_SCHEDULE_TIME` | 每日排程時間 HH:MM | 21:00 |
 | `SPR_DB_PATH` | SQLite 路徑 | data/spr.sqlite |
 | `SPR_DATA_DIR` | 「讀取最新檔」的資料夾 | Date |
@@ -179,7 +178,6 @@ LINE Notify 已停服，改走你自己的 LINE 官方帳號（LINE@）Messaging
    - **平日 09:00–13:35 每 5 分鐘**：盤中突破哨兵掃描杯柄訊號股，現價通過「壓力線 + 0.3×ATR」
      門檻且連續兩輪站穩才推播（避免開盤瞬間插針、微幅探頭洗版）；可在設定頁切換只警示
      「同時符合籌碼/基本選股」的交集股。
-   - **平日 16:00**：推「盤後速報」（大盤/國際/法人/期貨/類股/自選股/杯柄新符合＋AI 解讀）。
    - **21:00** 更新完推「完整版」（加融資券，含**融資維持率**）。
    - 假日或資料未更新自動不推；推播失敗會自動重試一次，仍失敗則於下次成功推播時在
      訊息頂部標註提醒（不會靜默漏推而不自知）。

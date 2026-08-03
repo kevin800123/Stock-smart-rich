@@ -27,7 +27,6 @@ class Config:
     intl_tickers: dict = field(default_factory=lambda: dict(INTL_TICKERS))
     line_token: str = ""            # LINE 官方帳號 Messaging API Channel Access Token
     line_secret: str = ""           # LINE Channel Secret（webhook 簽章驗證；未設定＝webhook 關閉）
-    line_push_time: str = "16:00"   # 盤後速報推播時間（完整版跟隨 schedule_time）
     weekly_push_time: str = "17:00"  # 每週六籌碼週報推播時間（固定週六，僅時間可調）
     telegram_token: str = ""        # 每日財經新聞 Telegram Bot Token
     telegram_chat_id: str = ""      # 推播目標 chat id
@@ -45,7 +44,6 @@ def load_config() -> Config:
         data_dir=os.getenv("SPR_DATA_DIR", "Date"),
         line_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip(),
         line_secret=os.getenv("LINE_CHANNEL_SECRET", "").strip(),
-        line_push_time=os.getenv("SPR_LINE_PUSH_TIME", "16:00"),
         weekly_push_time=os.getenv("SPR_WEEKLY_PUSH_TIME", "17:00"),
         telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),

@@ -84,7 +84,7 @@ def test_osfut_jobs_register_even_without_line_token(tmp_path, monkeypatch):
 
 
 def test_create_app_with_line_token_registers_all_jobs(tmp_path, monkeypatch):
-    """設 LINE_CHANNEL_ACCESS_TOKEN 才會觸發 line_brief/intraday_watch 的註冊分支——
+    """設 LINE_CHANNEL_ACCESS_TOKEN 才會觸發盤中警示／週報的註冊分支——
     這是雲端生產設定（Zeabur 皆設此變數）；曾因 job 函式定義順序問題整個 app 起不來。"""
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "dummy-token")
@@ -97,7 +97,7 @@ def test_create_app_with_line_token_registers_all_jobs(tmp_path, monkeypatch):
     try:
         ids = {j.id for j in app.state.scheduler.get_jobs()}
         assert ids == {"daily_update", "osfut_morning", "osfut_evening",
-                       "line_brief", "intraday_watch", "weekly_line"}
+                       "intraday_watch", "weekly_line"}
         # 籌碼週報固定週六，時間讀 cfg.weekly_push_time（Asia/Taipei，scheduler 時區已設）
         wk = app.state.scheduler.get_job("weekly_line")
         fields = {f.name: str(f) for f in wk.trigger.fields}

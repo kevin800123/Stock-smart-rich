@@ -200,7 +200,6 @@ def get_settings(request: Request):
         "line_webhook_configured": bool(cfg.line_secret),   # 只回布林，絕不外洩 secret
         "telegram_configured": bool(cfg.telegram_token and cfg.telegram_chat_id),
         "offsite_backup_configured": bool(cfg.backup_git_remote),
-        "line_push_time": cfg.line_push_time,
         "weekly_push_time": cfg.weekly_push_time,
         "schedule_time": effective_schedule(c),
         "scheduler_running": bool(getattr(request.app.state, "scheduler", None)),
