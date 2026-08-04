@@ -460,3 +460,24 @@ def test_successful_ai_calls_are_counted_for_the_free_tier_ceiling(tmp_path, mon
     assert client.get("/api/settings").json()["gemini_calls_today"] == 1
     client.get("/api/news?slot=afternoon")            # 走快取，不該再計一次
     assert client.get("/api/settings").json()["gemini_calls_today"] == 1
+
+
+def test_news_test_endpoint_accepts_an_explicit_slot(tmp_path, monkeypatch):
+    """要補發某一場（例如中午那場沒發成）時得指定 slot，否則只能等到那個時段才測得到。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich import telegram_push
+    from stocks_power_rich.api import news as news_api
+    from stocks_power_rich.main import create_app
+
+    brief = "#### 🇹🇼 台股｜6 則精選\n* 🔥 **台股收盤上漲**\n"
+    monkeypatch.setattr(news_api.news, "fetch_market_news", lambda *a, **k: ([], False))
+    monkeypatch.setattr(news_api.gemini, "summarize_news",
+                        lambda *a, **k: {"enabled": True, "text": brief})
+    sent = {}
+    monkeypatch.setattr(telegram_push, "send_message",
+                        lambda token, chat_id, text: sent.update(text=text) or {"ok": True})
+    client = TestClient(create_app())
+
+    body = client.post("/api/news/test?slot=midday").json()
+    assert body["news"]["slot"] == "midday"
+    assert sent["text"].startswith("☀️ 12:00 午間財經快訊")

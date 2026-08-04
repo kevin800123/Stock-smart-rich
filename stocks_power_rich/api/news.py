@@ -372,15 +372,19 @@ def get_news(slot: str | None = None, refresh: int = 0):
 
 
 @router.post("/news/test")
-def test_news_push():
+def test_news_push(slot: str | None = None):
     """手動觸發一次新聞摘要＋Telegram 推播（比照 POST /api/line/test）。
+
+    `slot` 可指定 morning／midday／afternoon／evening；不帶就依當下台北時間推斷。
+    要補發某一場（例如中午那場沒發成）時就用得到，否則只能等到那個時段才測得到。
+    **這支會真的送出 Telegram，且 refresh=1 會實扣一次 Gemini 配額**（免費層一天 20 次）。
 
     回傳的 push.parse_mode_used 會告訴你這次是走 MarkdownV2 還是退回純文字——
     退純文字是無聲的（訊息照送、只是連結失效），不看這欄位不會發現。
     """
     c = conn()
     cfg = load_config()
-    payload = news_logic(c, refresh=1)
+    payload = news_logic(c, slot=slot, refresh=1)
     text = payload.get("telegram_text") or payload.get("summary") or "（本次無法產生摘要）"
     push = telegram_push.send_message(cfg.telegram_token, cfg.telegram_chat_id, text)
     return {"news": payload, "push": push}
