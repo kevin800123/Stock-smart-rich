@@ -10,15 +10,49 @@ def genai_client(api_key: str):
     return genai.Client(api_key=api_key)
 
 
-def _run(prompt: str, api_key: str) -> dict:
+def _thinking_config(thinking: bool):
+    """thinking=False → thinking_budget=0（關閉思考）。
+
+    gemini-2.5-flash **預設開啟動態思考**，而思考 token 是以「輸出」計價（實測牌價
+    輸出約為輸入的 8 倍），所以它往往才是帳單的大頭，而不是我們一直在減的輸入。
+    新聞那三支是**機械性工作**（讀標題 → 照格式吐條列 → 翻譯），推理密度低，
+    關掉思考省下的錢遠多於品質損失；`summarize_market` 例外——它要判斷背離／誘多
+    這類跨指標的因果，且一天只跑一次，成本可以忽略，所以保留思考。
+    """
+    if thinking:
+        return None
+    from google.genai import types
+
+    return types.GenerateContentConfig(thinking_config=types.ThinkingConfig(thinking_budget=0))
+
+
+def _run(prompt: str, api_key: str, *, thinking: bool = True) -> dict:
     if not api_key:
         return {"enabled": False, "text": "（未啟用 AI 摘要：未設定 GEMINI_API_KEY）"}
     try:
         client = genai_client(api_key)
-        resp = client.models.generate_content(model=MODEL, contents=prompt)
+        resp = client.models.generate_content(
+            model=MODEL, contents=prompt, config=_thinking_config(thinking))
+        _log_usage(resp, thinking)
         return {"enabled": True, "text": resp.text}
     except Exception as e:  # noqa: BLE001 — 失敗即降級，不影響數據功能
         return {"enabled": False, "text": f"（AI 摘要失敗：{e}）"}
+
+
+def _log_usage(resp, thinking: bool) -> None:
+    """把每次呼叫的 token 用量印到 stdout（Zeabur 會收）。
+
+    這次「月額度用盡」是**完全無聲**地發生的——撞上限前沒有任何跡象可查。
+    一行用量日誌不影響功能，但下次可以直接從日誌回推是誰在燒額度。
+    """
+    try:
+        u = resp.usage_metadata
+        print(f"[gemini] thinking={'on' if thinking else 'off'} "
+              f"in={u.prompt_token_count} out={u.candidates_token_count} "
+              f"thoughts={getattr(u, 'thoughts_token_count', None)} "
+              f"total={u.total_token_count}", flush=True)
+    except Exception:  # noqa: BLE001 — 記帳失敗不能影響摘要本身
+        pass
 
 
 def summarize_market(data: dict, api_key: str) -> dict:
@@ -102,7 +136,7 @@ def summarize_news(payload: dict, api_key: str) -> dict:
         + "\n\n新聞清單：\n"
         + json.dumps(slim_markets(payload.get("markets", {})), ensure_ascii=False)
     )
-    return _run(prompt, api_key)
+    return _run(prompt, api_key, thinking=False)
 
 
 def summarize_news_push(payload: dict, full_brief: str, api_key: str) -> dict:
@@ -151,7 +185,7 @@ def summarize_news_push(payload: dict, full_brief: str, api_key: str) -> dict:
         + json.dumps({"snapshot": payload.get("snapshot", {}),
                       "markets": slim_markets(payload.get("markets", {}))}, ensure_ascii=False)
     )
-    return _run(prompt, api_key)
+    return _run(prompt, api_key, thinking=False)
 
 
 def summarize_csv(daily_top: list, weekly: dict, industry: list, api_key: str) -> dict:

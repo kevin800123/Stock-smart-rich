@@ -35,7 +35,7 @@ def test_degrades_without_key():
 def test_news_summary_prompt_requires_structured_sourced_brief(monkeypatch):
     captured = {}
 
-    def fake_run(prompt, api_key):
+    def fake_run(prompt, api_key, **kw):
         captured["prompt"] = prompt
         return {"enabled": True, "text": "ok"}
 
@@ -63,7 +63,7 @@ def test_news_summary_prompt_requires_structured_sourced_brief(monkeypatch):
 def test_news_push_prompt_uses_compact_midday_template(monkeypatch):
     captured = {}
 
-    def fake_run(prompt, api_key):
+    def fake_run(prompt, api_key, **kw):
         captured["prompt"] = prompt
         return {"enabled": True, "text": "ok"}
 
@@ -85,7 +85,7 @@ def test_uses_model_when_key(monkeypatch):
         text = "盤勢偏多"
 
     class FakeModels:
-        def generate_content(self, model, contents):
+        def generate_content(self, model, contents, config=None):
             return FakeResp()
 
     class FakeClient:
@@ -111,7 +111,7 @@ def test_news_prompts_never_carry_the_long_google_news_urls():
                "snapshot": {"加權指數": 43386.0}, "markets": markets}
 
     seen = []
-    gemini._run = lambda prompt, api_key: seen.append(prompt) or {"enabled": True, "text": "x"}
+    gemini._run = lambda prompt, api_key, **kw: seen.append(prompt) or {"enabled": True, "text": "x"}
     gemini.summarize_news(payload, "k")
     gemini.summarize_news_push(payload, "full brief", "k")
 
@@ -134,3 +134,56 @@ def test_slim_markets_is_pure_and_handles_empty():
     src = {"tw": [{"title": "t", "url": "u", "source": "s"}]}
     assert slim_markets(src) == {"tw": [{"title": "t", "source": "s"}]}
     assert "url" in src["tw"][0]
+
+
+def test_thinking_is_off_for_mechanical_news_calls_and_on_for_market_judgement():
+    """gemini-2.5-flash 預設開啟動態思考，而思考 token 以「輸出」計價（牌價約為
+    輸入的 8 倍），往往才是帳單大頭。新聞那兩支是機械性工作（讀標題→照格式吐條列
+    →翻譯），一天跑 8 次，關掉思考；summarize_market 要判斷背離／誘多這類跨指標
+    因果、且一天只跑一次，保留思考。"""
+    from stocks_power_rich import gemini
+
+    seen = {}
+    gemini._run = lambda prompt, api_key, thinking=True: seen.__setitem__(
+        len(seen), thinking) or {"enabled": True, "text": "x"}
+
+    payload = {"slot": "afternoon", "report_date": "2026-08-04",
+               "snapshot": {}, "markets": {"tw": [{"title": "t", "source": "s"}]}}
+    gemini.summarize_news(payload, "k")
+    gemini.summarize_news_push(payload, "brief", "k")
+    gemini.summarize_market({}, "k")
+
+    assert seen[0] is False, "summarize_news 應關閉思考"
+    assert seen[1] is False, "summarize_news_push 應關閉思考"
+    assert seen[2] is True, "summarize_market 是判讀型，保留思考"
+
+
+def test_thinking_config_builds_zero_budget_only_when_disabled():
+    from stocks_power_rich.gemini import _thinking_config
+
+    assert _thinking_config(True) is None          # None = 用模型預設（開啟思考）
+    cfg = _thinking_config(False)
+    assert cfg.thinking_config.thinking_budget == 0
+
+
+def test_usage_logging_never_breaks_the_summary(capsys):
+    """記帳失敗不能影響摘要本身；成功時要印出一行可回推額度的用量。"""
+    from stocks_power_rich.gemini import _log_usage
+
+    class U:
+        prompt_token_count, candidates_token_count = 6710, 2800
+        thoughts_token_count, total_token_count = 0, 9510
+
+    class R:
+        usage_metadata = U()
+
+    _log_usage(R(), False)
+    out = capsys.readouterr().out
+    assert "in=6710" in out and "out=2800" in out and "thinking=off" in out
+
+    class Broken:
+        @property
+        def usage_metadata(self):
+            raise RuntimeError("no metadata")
+
+    _log_usage(Broken(), True)      # 不可拋出

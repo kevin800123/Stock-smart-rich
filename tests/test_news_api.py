@@ -251,7 +251,7 @@ def test_push_prompt_forbids_label_prefixes_and_two_line_stories():
     from stocks_power_rich import gemini
 
     captured = {}
-    gemini._run = lambda prompt, api_key: captured.setdefault("prompt", prompt) or {"enabled": True, "text": ""}
+    gemini._run = lambda prompt, api_key, **kw: captured.setdefault("prompt", prompt) or {"enabled": True, "text": ""}
     gemini.summarize_news_push({"slot": "afternoon", "report_date": "2026-08-03",
                                 "snapshot": {}, "markets": {}}, "brief", "key")
     p = captured["prompt"]
