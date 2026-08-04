@@ -181,6 +181,28 @@ def compose_push_message(ai_text: str, snapshot: dict, markets: dict,
     return "\n\n".join(parts)
 
 
+_NUM = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def useful_data(title: str, data: str) -> str:
+    """關鍵數據只有在「標題沒講過」時才值得附上，否則就是噪音。
+
+    實跑輸出才看得出來的問題：新模型把「關鍵數據」寫成**光禿禿的數字**而不是句子
+    （舊模型寫的是「加權指數收盤 43386.41 點，上漲 266.66 點。」），於是條列變成
+    「台股開盤下跌293點早盤震盪　293.92點」「油價大跌逾6%緩解通膨擔憂　6％」這種
+    同一個數字講兩次。判斷方式是比**數字**而不是比字串：取小數點前的整數部分，
+    只要每一個數字都已出現在標題裡就整段丟掉；有任何一個是新的就保留
+    （例如「日經指數續跌…　255日圓」的 255 標題沒提過，那是真的增量）。
+    """
+    if not data or "來源未提供" in data:
+        return ""
+    nums = [n.split(".")[0].replace(",", "") for n in _NUM.findall(data)]
+    if not nums:
+        return ""                      # 沒有數字的「關鍵數據」多半是複述，不值得占版面
+    bare = title.replace(",", "")
+    return "" if all(n in bare for n in nums) else data
+
+
 def telegram_digest(summary: str, slot: str, report_date: str = "") -> str:
     """把完整版摘要（markdown）在 Python 端壓成推播用的條列，**不再多打一次 Gemini**。
 
@@ -229,10 +251,8 @@ def telegram_digest(summary: str, slot: str, report_date: str = "") -> str:
         flag, name = _MARKET_META[market]
         lines = [f"{flag} {name}｜重點掃描"]
         for item in chosen:
-            data = item["data"]
-            # 「來源未提供可驗證數據」是完整版的佔位語，對推播沒有資訊量
-            extra = f"　{data}" if data and "來源未提供" not in data else ""
-            lines.append(f"• {item['title']}{extra}")
+            data = useful_data(item["title"], item["data"])
+            lines.append(f"• {item['title']}" + (f"　{data}" if data else ""))
         blocks.append("\n".join(lines))
     blocks.append("⚠️ 非投資建議，資訊僅供研究參考")
     return "\n\n".join(blocks)

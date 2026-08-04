@@ -138,12 +138,24 @@ def test_thinking_is_off_for_mechanical_news_calls_and_on_for_market_judgement(m
     assert seen[1] is True, "summarize_market 是判讀型，保留思考"
 
 
-def test_thinking_config_builds_zero_budget_only_when_disabled():
+def test_thinking_config_uses_minimal_level_not_the_rejected_zero_budget():
+    """Gemini 3.x 對 thinking_budget=0 直接回 400（實測 3.6-flash／flash-latest／
+    3.5-flash-lite 皆然），必須用 thinking_level='minimal'。"""
     from stocks_power_rich.gemini import _thinking_config
 
     assert _thinking_config(True) is None          # None = 用模型預設（開啟思考）
     cfg = _thinking_config(False)
-    assert cfg.thinking_config.thinking_budget == 0
+    # SDK 會把字串收斂成 ThinkingLevel enum（值是大寫 'MINIMAL'），比對用 .value
+    assert cfg.thinking_config.thinking_level.value.lower() == "minimal"
+    assert cfg.thinking_config.thinking_budget is None
+
+
+def test_model_is_pinned_to_an_explicit_version_not_a_latest_alias():
+    """釘版本壞掉是 404、看得見、好修；別名會某天無聲換模型讓輸出漂移。"""
+    from stocks_power_rich import gemini
+
+    assert "latest" not in gemini.MODEL
+    assert gemini.MODEL != "gemini-2.5-flash", "2.5-flash 已不開放新專案，會 404"
 
 
 def test_usage_logging_never_breaks_the_summary(capsys):

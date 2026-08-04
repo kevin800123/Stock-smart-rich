@@ -342,3 +342,38 @@ def test_digest_keeps_slot_specific_market_order():
     afternoon = telegram_digest(brief, "afternoon", "2026-08-04")
     assert morning.index("美股第一則") < morning.index("台股第一則")
     assert afternoon.index("台股第一則") < afternoon.index("美股第一則")
+
+
+def test_useful_data_drops_figures_the_title_already_states():
+    """全部取自 2026-08-04 的實跑輸出。新模型把「關鍵數據」寫成光禿禿的數字，
+    常常只是把標題裡的數字再講一次——那是噪音，不是增量。"""
+    from stocks_power_rich.api.news import useful_data
+
+    # 冗餘：數字標題已經有了
+    for title, data in [
+        ("台股開盤下跌293點早盤震盪", "293.92點"),
+        ("8月88家上市公司法說會接力登場", "88家"),
+        ("油價大跌逾6%緩解通膨擔憂", "6％"),
+        ("Sweetgreen因環孢子蟲病疫情挫逾8%", "8%"),
+        ("亞馬遜市值突破3兆美元大關", "3兆美元"),
+        ("摩根大通看好標普500目標8200點", "8200點"),
+        ("日圓大幅貶值一度來到157.65水位", "157.65日圓"),
+    ]:
+        assert useful_data(title, data) == "", (title, data)
+
+    # 增量：標題沒提過這個數字
+    assert useful_data("日經指數續跌愛德萬測試單一拖累大盤", "255日圓") == "255日圓"
+    assert useful_data("台積電下挫帶動台股早盤下殺", "55元、500點") == "55元、500點"
+
+    # 佔位語與無數字的複述一律不附
+    assert useful_data("台股處置新規預計下周一上路", "來源未提供可驗證數據") == ""
+    assert useful_data("某標題", "市場氣氛偏向保守") == ""
+    assert useful_data("某標題", "") == ""
+
+
+def test_useful_data_ignores_thousands_separators():
+    """標題寫 43,386 而數據寫 43386（或反之）仍算同一個數字。"""
+    from stocks_power_rich.api.news import useful_data
+
+    assert useful_data("加權指數收在 43,386 點", "43386點") == ""
+    assert useful_data("加權指數收在 43386 點", "43,386點") == ""

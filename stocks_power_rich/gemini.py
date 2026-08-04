@@ -1,7 +1,13 @@
 """Gemini 統整：CSV 籌碼洞察與大盤盤勢摘要。無金鑰或呼叫失敗時自動降級。"""
 import json
 
-MODEL = "gemini-2.5-flash"
+# 2026-08 從 gemini-2.5-flash 換過來：2.5-flash 已「不再開放給新使用者」，換到新的
+# Google 專案後直接 404（`models.list()` 還列得出來，但 generateContent 就是不給用），
+# 所以**不能靠 list 判斷可用性**。刻意釘明確版本而不是用 `gemini-flash-latest` 別名：
+# 釘版本壞掉是 404、吵、看得見、好修（就像這次）；別名則會在某天無聲換模型，
+# 輸出格式與品質跟著漂移而沒有任何錯誤——與本專案「寧可大聲壞掉，也不要安靜地錯」
+# 的一貫取捨一致（同 資料日 D／快取守衛 那幾條）。
+MODEL = "gemini-3.6-flash"
 
 
 def genai_client(api_key: str):
@@ -11,7 +17,12 @@ def genai_client(api_key: str):
 
 
 def _thinking_config(thinking: bool):
-    """thinking=False → thinking_budget=0（關閉思考）。
+    """thinking=False → `thinking_level="minimal"`（關閉思考）。
+
+    **Gemini 3.x 不吃 `thinking_budget=0`**，會直接 400 INVALID_ARGUMENT（實測
+    3.6-flash／flash-latest／3.5-flash-lite 皆然，只有 3.5-flash 還收）。改用
+    `thinking_level="minimal"`，實測 3.6-flash 與 3.5-flash 都回 `thoughts=None`。
+    （`"off"` 不是合法值。）
 
     gemini-2.5-flash **預設開啟動態思考**，而思考 token 是以「輸出」計價（實測牌價
     輸出約為輸入的 8 倍），所以它往往才是帳單的大頭，而不是我們一直在減的輸入。
@@ -23,7 +34,8 @@ def _thinking_config(thinking: bool):
         return None
     from google.genai import types
 
-    return types.GenerateContentConfig(thinking_config=types.ThinkingConfig(thinking_budget=0))
+    return types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(thinking_level="minimal"))
 
 
 def _run(prompt: str, api_key: str, *, thinking: bool = True) -> dict:
