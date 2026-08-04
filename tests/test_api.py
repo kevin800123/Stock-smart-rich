@@ -2276,3 +2276,61 @@ def test_rank_price_never_pairs_fallback_price_with_stale_change(tmp_path, monke
     assert it["2059"]["price"] == 7140.0          # 退回昨收
     assert it["2059"]["chg"] is None              # 漲跌留白，不沿用別處的數字
     assert it["2059"]["chg_pct"] is None
+
+
+def test_kline_stock_ohlc_fallback_respects_the_requested_period(tmp_path, monkeypatch):
+    """雲端 yfinance 被擋 → 走 stock_ohlc 後備，但這條路徑原本把該股**整張表**倒出來。
+
+    stock_ohlc 的覆蓋度取決於 /api/ohlc/backfill 跑到哪，很容易稀疏。實測 2615 在
+    雲端畫出來的 X 軸橫跨 2017→2026，相鄰刻度的實際間隔從 1 天到 6 年都有，
+    圖形完全失去意義。「近一年日K」就該只有近一年。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import datetime, timedelta
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc
+    from stocks_power_rich.sources import kline as kline_src
+    from stocks_power_rich.main import create_app
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    today = datetime.now()
+    stale = (today - timedelta(days=3000)).strftime("%Y-%m-%d")      # 8 年前的孤兒列
+    bulk_upsert_ohlc(c, stale, {"2615": {"open": 19.5, "high": 19.6, "low": 19.4, "close": 19.5}})
+    for i in range(12, 0, -1):
+        d = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+        bulk_upsert_ohlc(c, d, {"2615": {"open": 85.0, "high": 86.0, "low": 84.0, "close": 85.5}})
+
+    # 模擬雲端：yfinance 回空
+    monkeypatch.setattr(kline_src, "fetch_kline",
+                        lambda *a, **k: {"code": "2615", "dates": [], "candles": [],
+                                         "volumes": [], "waves": {}})
+    client = TestClient(create_app())
+
+    body = client.get("/api/stock/2615/kline?interval=1d").json()
+    assert body["source"] == "stock_ohlc"
+    assert stale not in body["dates"], "8 年前的孤兒列不該出現在『近一年』的日K裡"
+    assert len(body["dates"]) == 12
+    span = (datetime.strptime(body["dates"][-1], "%Y-%m-%d")
+            - datetime.strptime(body["dates"][0], "%Y-%m-%d")).days
+    assert span < 400, f"X 軸跨度 {span} 天，遠超過 period=1y"
+
+
+def test_kline_fallback_returns_empty_rather_than_a_misleading_chart(tmp_path, monkeypatch):
+    """窗內完全沒有資料時回空，讓前端顯示「尚無資料」——不要畫一張看起來像 K 線、
+    尺度卻錯亂的圖。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import datetime, timedelta
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc
+    from stocks_power_rich.sources import kline as kline_src
+    from stocks_power_rich.main import create_app
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    old = (datetime.now() - timedelta(days=3000)).strftime("%Y-%m-%d")
+    bulk_upsert_ohlc(c, old, {"2615": {"open": 19.5, "high": 19.6, "low": 19.4, "close": 19.5}})
+    monkeypatch.setattr(kline_src, "fetch_kline",
+                        lambda *a, **k: {"code": "2615", "dates": [], "candles": [],
+                                         "volumes": [], "waves": {}})
+    client = TestClient(create_app())
+
+    assert client.get("/api/stock/2615/kline?interval=1d").json()["candles"] == []

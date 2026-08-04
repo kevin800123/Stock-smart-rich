@@ -1,6 +1,6 @@
 import threading
 from fastapi import APIRouter, Body
-from datetime import datetime
+from datetime import datetime, timedelta
 from .deps import conn
 from .helpers import (
     _latest_date,
@@ -39,6 +39,11 @@ def stock_ohlc(code: str, bars: int = 400):
     return {"code": pure, "dates": [r["date"] for r in rows],
             "candles": [[r["open"], r["close"], r["low"], r["high"]] for r in rows]}
 
+# 後備資料的時間窗。yfinance 自己會依 period 截斷，stock_ohlc 不會——它是逐日累積
+# 的整張表，`get_ohlc_history` 一次回傳該股**所有**歷史列。
+_PERIOD_DAYS = {"6mo": 183, "1y": 365, "2y": 730, "5y": 1825}
+
+
 @router.get("/stock/{code}/kline")
 def stock_kline(code: str, interval: str = "1d", period: str | None = None):
     if period is None:
@@ -48,6 +53,14 @@ def stock_kline(code: str, interval: str = "1d", period: str | None = None):
     # TWSE/TPEx OHLC，雲端抓得到）：日K直接組、週/月K聚合；1h 無官方日內源，維持回空。
     if not out.get("candles") and interval != "1h":
         rows = get_ohlc_history(conn(), code.split(".")[0])
+        # **必須自己套 period**：這條路徑原本把整張表倒出來，於是「近一年日K」會把
+        # 幾年前的零星列一起畫進去。stock_ohlc 的覆蓋度取決於 /api/ohlc/backfill 跑到
+        # 哪，很容易出現「2017 一列 + 2026 幾列」這種稀疏分布；不截窗的話 X 軸就會
+        # 橫跨數年、相鄰兩個刻度之間的實際間隔從 1 天到 6 年都有，圖形完全失去意義
+        # （實測 2615 在雲端就是這樣）。截窗後若窗內沒有資料，寧可回空讓前端顯示
+        # 「尚無資料」，也不要畫一張看起來像 K 線、實際上尺度錯亂的圖。
+        cutoff = (datetime.now() - timedelta(days=_PERIOD_DAYS.get(period, 365))).strftime("%Y-%m-%d")
+        rows = [r for r in rows if r["date"] >= cutoff]
         if rows:
             out = {"code": code, "source": "stock_ohlc", **kline.ohlc_candles(rows, interval)}
     return out
