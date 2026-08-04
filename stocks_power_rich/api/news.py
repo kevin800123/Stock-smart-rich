@@ -184,17 +184,33 @@ def compose_push_message(ai_text: str, snapshot: dict, markets: dict,
 _NUM = re.compile(r"\d+(?:[.,]\d+)*")
 
 
-def useful_data(title: str, data: str) -> str:
-    """關鍵數據只有在「標題沒講過」時才值得附上，否則就是噪音。
+# 這些讀數 📈 盤面 那一段已經用**程式算出來的**數字講過了，內文再講一次就是重複，
+# 而且是「同一個數字兩個來源」——盤面來自 market_daily，這裡來自 LLM 轉述，一旦有出入
+# 就會在同一則訊息裡自相矛盾。原本 summarize_news_push 的 prompt 有一條「不得複述指數
+# 數字」，但那支已經移除；完整版 prompt 沒有這條（網頁版沒有盤面區塊，本來就該寫），
+# 所以改由組裝端負責剃掉。
+_SNAPSHOT_TERMS = ("加權指數", "加權漲跌", "成交金額", "成交值", "台指期",
+                   "日經225", "日經指數", "費半", "費城半導體", "VIX")
 
-    實跑輸出才看得出來的問題：新模型把「關鍵數據」寫成**光禿禿的數字**而不是句子
-    （舊模型寫的是「加權指數收盤 43386.41 點，上漲 266.66 點。」），於是條列變成
-    「台股開盤下跌293點早盤震盪　293.92點」「油價大跌逾6%緩解通膨擔憂　6％」這種
-    同一個數字講兩次。判斷方式是比**數字**而不是比字串：取小數點前的整數部分，
-    只要每一個數字都已出現在標題裡就整段丟掉；有任何一個是新的就保留
-    （例如「日經指數續跌…　255日圓」的 255 標題沒提過，那是真的增量）。
+
+def useful_data(title: str, data: str) -> str:
+    """關鍵數據只有在「標題與盤面都沒講過」時才值得附上，否則就是噪音。
+
+    兩層處理：
+    1. **剃掉複述盤面的子句**（見 `_SNAPSHOT_TERMS`）。實跑輸出過
+       「…　加權指數 43386.41 點、加權漲跌 266.66 點、成交金額 8855.1 億元。」——
+       這三個數字上方 📈 盤面 已經講過，是移除第二支 LLM 呼叫後跑掉的規則。
+       以「、」逐句剃而不是整段丟，因為同一串常混著真的增量
+       （「外資期貨空單突破 9 萬口、台指期 43230 點」只有後半要剃）。
+    2. 剩下的再比**數字**而不是比字串：取小數點前的整數部分，全部都已出現在標題裡
+       就丟掉；有任何一個是新的就保留（「日經指數續跌…　255 日圓」的 255 是增量）。
     """
     if not data or "來源未提供" in data:
+        return ""
+    kept = [seg for seg in data.split("、")
+            if seg.strip() and not any(t in seg for t in _SNAPSHOT_TERMS)]
+    data = "、".join(kept).strip(" 、。")
+    if not data:
         return ""
     nums = [n.split(".")[0].replace(",", "") for n in _NUM.findall(data)]
     if not nums:
@@ -229,7 +245,11 @@ def telegram_digest(summary: str, slot: str, report_date: str = "") -> str:
         match = re.search(r"\*\*([^*]+)\*\*", raw)
         if not match:
             continue
-        bold = match.group(1).strip()
+        # 冒號可能落在粗體**裡面**（`**關鍵數據：**`）也可能在外面（`**關鍵數據**：`），
+        # 模型兩種都寫得出來。不正規化的話「關鍵數據：」不等於 _DETAIL_LABELS 裡的
+        # 「關鍵數據」，就會被當成一則新聞的標題，推播因此多出一行空的「• 關鍵數據：」
+        # （實跑輸出過）。
+        bold = match.group(1).strip().rstrip("：:").strip()
         if bold == "關鍵數據" and stories[market]:
             data = raw.split("：", 1)[-1].strip()
             data = re.sub(r"\*\*([^*]+)\*\*", r"\1", data)

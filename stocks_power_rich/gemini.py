@@ -7,7 +7,12 @@ import json
 # 釘版本壞掉是 404、吵、看得見、好修（就像這次）；別名則會在某天無聲換模型，
 # 輸出格式與品質跟著漂移而沒有任何錯誤——與本專案「寧可大聲壞掉，也不要安靜地錯」
 # 的一貫取捨一致（同 資料日 D／快取守衛 那幾條）。
-MODEL = "gemini-3.6-flash"
+# 免費層的請求上限是 **每日、每專案、每模型**（`GenerateRequestsPerDayPerProjectPerModel`），
+# 3.6-flash 實測只有 **20 次/天**。本專案正常一天只用 ~6 次（4 場新聞＋1 次盤勢＋零星），
+# 20 次原本夠用，但幾乎沒有容錯——換模型時做幾輪比較測試就會把當天額度吃光。
+# 換到 3.5-flash 取得獨立額度；它也是唯一同時接受 thinking_budget=0 與 thinking_level 的，
+# 對設定比較寬容。**額度是分模型計的，所以要壓測請換一個不在正式路徑上的模型。**
+MODEL = "gemini-3.5-flash"
 
 
 def genai_client(api_key: str):

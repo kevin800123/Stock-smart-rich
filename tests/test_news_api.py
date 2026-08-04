@@ -61,7 +61,7 @@ def test_news_test_endpoint_uses_telegram_wrapper(tmp_path, monkeypatch):
     monkeypatch.setattr(news_api.news, "fetch_market_news", lambda *args, **kwargs: ([], False))
     brief = ("#### 🇹🇼 台股｜6 則精選\n"
              "* 🔥 **台股收盤上漲**\n"
-             "  * 🔢 **關鍵數據**：加權指數上漲 100 點。\n")
+             "  * 🔢 **關鍵數據**：外資買超 120 億元。\n")
     monkeypatch.setattr(news_api.gemini, "summarize_news",
                         lambda *args, **kwargs: {"enabled": True, "text": brief})
     sent = {}
@@ -279,7 +279,7 @@ def test_push_text_is_digested_from_full_brief_without_a_second_llm_call(tmp_pat
     full_brief = (
         "#### 🇹🇼 台股｜6 則精選\n"
         "* 🔥 **台股收盤上漲**\n"
-        "  * 🔢 **關鍵數據**：加權指數上漲 100 點。\n"
+        "  * 🔢 **關鍵數據**：外資買超 120 億元。\n"
     )
     monkeypatch.setattr(news_api.news, "fetch_market_news", lambda *a, **k: ([], False))
     monkeypatch.setattr(news_api.gemini, "summarize_news",
@@ -290,7 +290,7 @@ def test_push_text_is_digested_from_full_brief_without_a_second_llm_call(tmp_pat
     body = client.get("/api/news?slot=afternoon").json()
     text = body["telegram_text"]
     assert "台股收盤上漲" in text                      # digest 解析出的標題
-    assert "加權指數上漲 100 點" in text                # 關鍵數據併進同一行
+    assert "外資買超 120 億元" in text                  # 關鍵數據併進同一行
     assert "🔥 台股收盤上漲" in text                    # 首則標 🔥（靠 • 開頭才認得出來）
     assert "####" not in text and "**" not in text      # 不可把 markdown 原樣倒出去
     assert body["enabled"] is True
@@ -306,7 +306,7 @@ def test_digest_output_still_feeds_the_advice_filter():
              "* 🔥 **分析師建議逢低承接半導體權值股**\n"
              "  * 🔢 **關鍵數據**：目標價 1200 元。\n"
              "* 🔥 **台股收盤上漲**\n"
-             "  * 🔢 **關鍵數據**：加權指數上漲 100 點。\n")
+             "  * 🔢 **關鍵數據**：外資買超 120 億元。\n")
     digest = telegram_digest(brief, "afternoon", "2026-08-04")
 
     for line in digest.splitlines():
@@ -377,3 +377,39 @@ def test_useful_data_ignores_thousands_separators():
 
     assert useful_data("加權指數收在 43,386 點", "43386點") == ""
     assert useful_data("加權指數收在 43386 點", "43,386點") == ""
+
+
+def test_useful_data_strips_clauses_that_restate_the_snapshot_block():
+    """📈 盤面 已經用程式算出來的數字講過加權／成交／台指期，內文再講一次就是重複——
+    而且是「同一個數字兩個來源」，一有出入就在同一則訊息裡自相矛盾。實跑輸出過
+    「…　加權指數 43386.41 點、加權漲跌 266.66 點、成交金額 8855.1 億元。」"""
+    from stocks_power_rich.api.news import useful_data
+
+    shipped = "加權指數 43386.41 點、加權漲跌 266.66 點、成交金額 8855.1 億元。"
+    assert useful_data("台股開盤權值股反彈續航弱，月線反壓下再啟4萬3攻防戰", shipped) == ""
+
+    # 混著真增量時只剃盤面那半，不整段丟
+    mixed = "外資期貨空單突破 9 萬口、台指期 43230.0 點。"
+    assert useful_data("處置股大改制，台股震盪引發0050買氣", mixed) == "外資期貨空單突破 9 萬口"
+
+    # 與盤面無關的數據完全不受影響
+    # 與盤面無關的數據完全不受影響（尾端的句號會一併整理掉）
+    assert useful_data("某日股標題", "營業利益增長 5 割（50%）。") == "營業利益增長 5 割（50%）"
+
+
+def test_digest_ignores_colon_inside_the_bold_label():
+    """模型會寫 `**關鍵數據：**`（冒號在粗體裡）也會寫 `**關鍵數據**：`。
+    不正規化就會把「關鍵數據：」當成一則新聞標題，推播多出一行空的「• 關鍵數據：」
+    （實跑輸出過）。"""
+    from stocks_power_rich.api.news import telegram_digest
+
+    brief = ("#### 🇯🇵 日股｜6 則精選\n"
+             "* 🔥 **Lasertec 漲勢凌厲**\n"
+             "  * 🔢 **關鍵數據：** 日經225指數 63754.9 點。\n"
+             "* 🔥 **JUKI 攻上漲停板**\n"
+             "  * 🔢 **關鍵數據**：營業利益增逾 5 成。\n")
+    out = telegram_digest(brief, "afternoon", "2026-08-04")
+
+    assert "• 關鍵數據" not in out and "🔥 關鍵數據" not in out
+    assert "Lasertec" in out and "JUKI" in out
+    assert len([ln for ln in out.splitlines() if ln.startswith(("•", "🔥"))]) == 2
