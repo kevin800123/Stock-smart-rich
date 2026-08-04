@@ -45,6 +45,20 @@ def summarize_market(data: dict, api_key: str) -> dict:
     return _run(prompt, api_key)
 
 
+def slim_markets(markets: dict) -> dict:
+    """丟掉餵給模型的新聞網址，只留 title/source。
+
+    模型從來不需要網址：它是綜合改寫、無法逐條回溯，推播底部的「延伸閱讀」是
+    `api/news.py::build_reading_links` 在 Python 端從同一份 markets 取的，跟 prompt 無關。
+    而 Google 新聞的 `CBMi…` 轉址網址實測每則 250～350 字元（base64 protobuf），
+    60 則、又在 summarize_news 與 summarize_news_push **各帶一次**，實測占了
+    整個輸入的 **~55%**（每場 15,813 → 7,083 est tokens）。純浪費且會吃掉月額度。
+    回新的 dict，不可就地改動呼叫端的 markets（`build_reading_links` 還要用網址）。
+    """
+    return {m: [{"title": it.get("title"), "source": it.get("source")} for it in (items or [])]
+            for m, items in (markets or {}).items()}
+
+
 def summarize_news(payload: dict, api_key: str) -> dict:
     """Create a translated 15-story brief with five fact-backed items per market."""
     slot = payload.get("slot", "afternoon")
@@ -86,7 +100,7 @@ def summarize_news(payload: dict, api_key: str) -> dict:
         "市場快照：\n"
         + json.dumps(payload.get("snapshot", {}), ensure_ascii=False)
         + "\n\n新聞清單：\n"
-        + json.dumps(payload.get("markets", {}), ensure_ascii=False)
+        + json.dumps(slim_markets(payload.get("markets", {})), ensure_ascii=False)
     )
     return _run(prompt, api_key)
 
@@ -134,7 +148,8 @@ def summarize_news_push(payload: dict, full_brief: str, api_key: str) -> dict:
         "完整報告：\n"
         + (full_brief or "")
         + "\n\n市場快照與原始新聞：\n"
-        + json.dumps({"snapshot": payload.get("snapshot", {}), "markets": payload.get("markets", {})}, ensure_ascii=False)
+        + json.dumps({"snapshot": payload.get("snapshot", {}),
+                      "markets": slim_markets(payload.get("markets", {}))}, ensure_ascii=False)
     )
     return _run(prompt, api_key)
 

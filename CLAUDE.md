@@ -129,6 +129,7 @@ Same flex container bites line-clamping: **`-webkit-line-clamp` does not work on
 - **時效窗 36 小時而非 24**：07:00 那場要涵蓋前一晚美股收盤，24 小時在週一早上會把週五晚間的新聞整批濾掉。
 - **四個時段** 07:00 `morning`／12:00 `midday`／17:00 `afternoon`／**21:10** `evening`。21:10 不是 21:00 是刻意的——預設 `schedule_time` 也是 21:00（`daily_update`），排同一分鐘等於在單 worker ＋ SQLite 上製造巧合式競爭。**四個 job 都要 `TELEGRAM_BOT_TOKEN` 與 `TELEGRAM_CHAT_ID` 皆設定才註冊**。
 - **每市場 6 則**。網頁全文版（`summarize_news`）與 Telegram 精簡版（`summarize_news_push` / `_PUSH_PLAN`）曾經一個 5、一個 6 且各有測試鎖住自己的數字，2026-08 統一為 6（連帶 `web/app.js` 的 `marketHeaders` 字串與 `.slice(0, 6)`）。**改則數要同時改這四處**，否則前端靠 `#### 🇹🇼 台股｜6 則精選` 字串比對切分市場卡片會失效。
+- **餵給模型的 markets 一律過 `gemini.slim_markets()` 拿掉 `url`**。模型不需要網址（它是綜合改寫、無法逐條回溯），推播底部的「延伸閱讀」是 `build_reading_links` 在 Python 端從**同一份未精簡的 markets** 取的，跟 prompt 無關。Google 新聞的 `CBMi…` 轉址網址實測每則 250～350 字元、60 則、又在 `summarize_news` 與 `summarize_news_push` **各帶一次**，實測占整個輸入的 **58%**（每場 15,813 → 6,710 est tokens，每月 190 萬 → 81 萬）。`slim_markets` 必須回新 dict、不可就地改動呼叫端的 markets，否則延伸閱讀會沒有網址可用。
 - **快取鍵 `news:v6:{date}:{slot}`**。含 slot 是因為四個時段的必含主題不同；**版號在推播格式改版時要進版**，否則舊格式的快取會被當成今天的結果送出（同 `dist:` 快取那次的教訓）。只有 Gemini 成功（`enabled`）才寫快取。
 
 **推播訊息由程式組裝，不是把 Gemini 輸出原樣送出**（`api/news.py::compose_push_message`）。順序：標題（程式）→ 📈 盤面（程式）→ 新聞（AI，過濾後）→ 🔗 延伸閱讀（程式）。四條規則都是實際踩過的：

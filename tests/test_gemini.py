@@ -96,3 +96,41 @@ def test_uses_model_when_key(monkeypatch):
     out = gemini.summarize_market({"taiex": 23000}, api_key="k")
     assert out["enabled"] is True
     assert out["text"] == "盤勢偏多"
+
+
+def test_news_prompts_never_carry_the_long_google_news_urls():
+    """網址是純浪費：模型不需要（延伸閱讀是 Python 端從同一份 markets 組的），
+    但 Google 新聞的轉址網址每則 250~350 字元、60 則、兩支 prompt 各帶一次，
+    實測占輸入 ~55%。月額度是有限的，不該花在這上面。"""
+    from stocks_power_rich import gemini
+
+    long_url = "https://news.google.com/rss/articles/CBMi" + "A" * 250
+    markets = {m: [{"title": f"{m} 標題", "url": long_url, "source": "經濟日報"}]
+               for m in ("tw", "us", "jp")}
+    payload = {"slot": "afternoon", "report_date": "2026-08-04",
+               "snapshot": {"加權指數": 43386.0}, "markets": markets}
+
+    seen = []
+    gemini._run = lambda prompt, api_key: seen.append(prompt) or {"enabled": True, "text": "x"}
+    gemini.summarize_news(payload, "k")
+    gemini.summarize_news_push(payload, "full brief", "k")
+
+    assert len(seen) == 2
+    for prompt in seen:
+        assert long_url not in prompt
+        assert "CBMi" not in prompt
+        assert "tw 標題" in prompt          # 標題仍要餵進去
+        assert "經濟日報" in prompt          # 來源保留（模型會提到株探/中央社）
+
+    # 不可就地改壞呼叫端的 markets——build_reading_links 還要用網址組延伸閱讀
+    assert markets["tw"][0]["url"] == long_url
+
+
+def test_slim_markets_is_pure_and_handles_empty():
+    from stocks_power_rich.gemini import slim_markets
+
+    assert slim_markets({}) == {}
+    assert slim_markets({"tw": []}) == {"tw": []}
+    src = {"tw": [{"title": "t", "url": "u", "source": "s"}]}
+    assert slim_markets(src) == {"tw": [{"title": "t", "source": "s"}]}
+    assert "url" in src["tw"][0]
