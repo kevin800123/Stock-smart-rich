@@ -376,20 +376,28 @@ function renderNewsRows(items) {
   }).join("");
 }
 
-// The API returns editor-controlled Markdown. Escape first, then support only the
-// small, deliberate subset used by the daily brief so fetched text stays safe.
-function _renderNewsMarkdownV2(text) {
-  const inline = (value) => esc(value).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  return String(text || "").replace(/\r\n?/g, "\n").split("\n").map((line) => {
-    if (/^###\s+/.test(line)) return `<h3 class="news-md-title">${inline(line.replace(/^###\s+/, ""))}</h3>`;
-    if (/^####\s+/.test(line)) return `<h4 class="news-md-heading">${inline(line.replace(/^####\s+/, ""))}</h4>`;
-    if (/^\s*[*-]\s+/.test(line)) return `<div class="news-md-item">${inline(line.replace(/^\s*[*-]\s+/, ""))}</div>`;
-    if (!line.trim()) return '<div class="news-md-gap"></div>';
-    return `<p class="news-md-text">${inline(line)}</p>`;
-  }).join("");
+// 段落內的空行處理：前後空行整段丟掉、中間連續空行併成一個。
+// Gemini 的排版習慣每次都不同（同一支 prompt 有時吐 1 行空行、有時 3~4 行），
+// 直接照著渲染會在市場標題與第一則之間開出一大塊空白——市場卡片的段落邊界
+// 已經由卡片外框表達，不需要再靠空行分段。
+function trimBlankLines(lines) {
+  const out = [];
+  let pendingGap = false;
+  for (const line of lines) {
+    if (!line.trim()) {
+      if (out.length) pendingGap = true;      // 前導空行直接丟棄
+      continue;
+    }
+    if (pendingGap) out.push("");
+    pendingGap = false;                        // 尾端空行永遠不會被 push
+    out.push(line);
+  }
+  return out;
 }
 
-function renderNewsMarkdown(text, slot = "afternoon") {
+// The API returns editor-controlled Markdown. Escape first, then support only the
+// small, deliberate subset used by the daily brief so fetched text stays safe.
+function renderNewsMarkdown(text) {
   const sections = { intro: [], tw: [], us: [], jp: [], tail: [] };
   const marketHeaders = {
     tw: "🇹🇼 台股｜6 則精選",
@@ -419,16 +427,18 @@ function renderNewsMarkdown(text, slot = "afternoon") {
     if (!line.trim()) return '<div class="news-md-gap"></div>';
     return `<p class="news-md-text">${inline(line)}</p>`;
   }).join("");
-  const openMarket = { morning: "us", midday: "tw", afternoon: "tw", evening: "jp" }[slot] || "tw";
+  // 三個市場一律全開。原本是 <details> 只展開當下時段那一個，但這一頁本來就是
+  // 「一次讀完今天三個市場」，每次進來都要再點兩下才看得到另外兩市，收合反而礙事。
+  // 沒有收合行為就不需要 summary 的展開提示（「閱讀 6 則重點」只是在廣告被藏起來的內容）。
   const cards = ["tw", "us", "jp"].map((market) => {
-    const available = sections[market].some((line) => line.trim());
-    if (!available) return "";
-    return `<details class="news-market-card" ${market === openMarket ? "open" : ""}>
-      <summary><span>${marketHeaders[market]}</span><span class="news-market-toggle">閱讀 6 則重點</span></summary>
-      <div class="news-market-body">${toHtml(sections[market])}</div>
-    </details>`;
+    const body = trimBlankLines(sections[market]);
+    if (!body.length) return "";
+    return `<section class="news-market-card">
+      <div class="news-market-head">${marketHeaders[market]}</div>
+      <div class="news-market-body">${toHtml(body)}</div>
+    </section>`;
   }).join("");
-  return `${toHtml(sections.intro)}${cards}${toHtml(sections.tail)}`;
+  return `${toHtml(trimBlankLines(sections.intro))}${cards}${toHtml(trimBlankLines(sections.tail))}`;
 }
 
 function renderNews(data) {
@@ -440,7 +450,10 @@ function renderNews(data) {
   const summary = $("news-summary");
   summary.textContent = data.summary || "尚未設定 Gemini，或本次摘要暫時無法產生；下方仍提供原始新聞標題。";
   summary.classList.toggle("disabled", !data.summary);
-  if (data.summary) summary.innerHTML = renderNewsMarkdown(data.summary, data.slot);
+  // .ai-box 預設 white-space: pre-wrap（純文字降級訊息要保留換行）；注入結構化 HTML 時
+  // 必須切成 normal，否則模板字串的縮排與換行會被當成真的空行算進版面。
+  summary.classList.toggle("md", !!data.summary);
+  if (data.summary) summary.innerHTML = renderNewsMarkdown(data.summary);
   ["tw", "us", "jp"].forEach((market) => {
     $("news-" + market).innerHTML = renderNewsRows((data.markets && data.markets[market] || []).slice(0, 6));
   });

@@ -102,6 +102,10 @@ Fills with no text on them (漲跌家數條, K 線) keep the bright pair. `C.up`
 
 **Layout quirk**: `.view` is `display: flex; flex-direction: column;` so content-heavy pages (e.g., trading journal with 未平倉+已平倉 tables) can be compressed by flex-shrink. **Solution**: `.table-wrap` has `flex-shrink: 0` by default; `.table-wrap.fill` overrides to `flex-shrink: 1; flex: 1 1 0; min-height: 0` for tables that should occupy remaining space. Add `flex-shrink: 0` to any new table that must maintain readable height regardless of page overflow.
 
+**`.ai-box` 是 `white-space: pre-wrap`，往裡面塞 HTML 之前一定要先加 `.md`（切回 `normal`）。** pre-wrap 是給**純文字** AI 摘要用的（保留模型自己的換行）；每日財經新聞那一格改成注入**結構化 HTML** 後，模板字串裡標籤之間的 `"\n      "` 縮排就全部被當成真的內容——實測市場標題上下各多出 **58px**（兩個 28.8px 行框），三張卡片憑空長高 200 px。症狀看起來完全像「間距沒調好」，於是很容易往 padding/margin 去調，但那些值全都是對的，多出來的高度來自空白字元。`renderNews` 現在 `classList.toggle("md", !!data.summary)`，**降級的純文字訊息維持 pre-wrap**（錯誤訊息的換行還是要保留）。判斷法：量到的間距不等於任何一個 CSS 值、且是行高的整數倍時，先懷疑 `white-space` 而不是盒模型。
+
+新聞市場卡是 `<section>` 不是 `<details>`：三個市場一律全開（使用者要求「不要還需展開，直接打開一次看」），所以也沒有「閱讀 6 則重點」那種展開提示——那句話只是在廣告被藏起來的內容。Gemini 每次吐的空行數不固定（同一支 prompt 有時 1 行、有時 4 行），所以 `trimBlankLines` 會丟掉段落前後空行、把中間連續空行併成一個；段落邊界已經由卡片外框表達，不需要再靠空行分段。
+
 Same flex container bites line-clamping: **`-webkit-line-clamp` does not work on a direct child of `.view`** — flex items get their `display` blockified, so `-webkit-box` becomes `flow-root` and the clamp silently does nothing (the collapsed AI 摘要 measured 25.6px = padding only). `.ai-box.clamp` uses `max-height: calc(3 * 1.75em + 24px)` instead. The AI 盤勢摘要 now sits directly under `.market-strip` rather than at the bottom of the scroll — it is the page's only conclusion, and the LINE 速報 card had already made the same call.
 
 ### Other backend pieces
