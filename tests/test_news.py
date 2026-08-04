@@ -279,3 +279,76 @@ def test_jp_relevance_tiers_use_kabutan_own_conventions():
     assert jp_relevance({"title": "本日の【株主優待】情報"}) == 2
     assert jp_relevance({"title": "欧州為替：ドル・円は157円付近"}) == 2
     assert jp_relevance({"title": "ビットコイン、６万２０００ドル台に下落"}) == 1
+
+
+# 2026-08-04 12:xx 從 Google 新聞實抓的台股 20 則（照原順序）。當天推播的台股區塊
+# 有四則在講同一個早盤，而處置新規、88 家法說會、外資期貨空單這些有資訊量的全被擠掉。
+_TW_REAL = [
+    "8月台股 ETF 配息一次看 00878、00929、00891等配息飆新高",
+    "台股跌勢收斂，台幣早盤轉升0.8分",
+    "台股ETF受益人數達1854萬人創高7月增124萬人| 證券",
+    "〈台股開盤〉權值股反彈續航弱 月線反壓下4萬3再啟攻防戰",
+    "台股早盤開低震盪 一度跌破43000點",
+    "台股開盤跌293.92點",
+    "台股早盤下殺近500點台積電跌55元記憶體被動元件續強- 財經",
+    "台股7月暴跌又暴漲！股民逢低布局清單曝：0050、0056、正二都上榜",
+    "美伊和談帶動美股大漲法人：台股留意月線反壓| 證券",
+    "台股3大處置新規下周一上路！「關禁閉」時間砍半、聯發科條款鬆綁",
+    "還在期待台股大V轉？蔡明彰潑冷水：全因這件事截然不同",
+    "〈台股盤前要聞〉處置股大改制、外資期貨空單突破9萬口、台股震盪瘋買0050",
+    "台股去槓桿暫告段落聚焦美利率決策- 日報",
+    "台股8月88家公司法說連發鴻海、富邦金等重量級公司接力法人看好多頭可期- 日報",
+    "郭哲榮：台股破4萬點 我大買1億的0050",
+    "台股將打第二隻腳　破4萬嗎？",
+    "【量大強漲股整理】台股連二日反彈，下一波主流，沒上車的看過來!",
+    "台股「關禁閉」規定鬆綁 提升流動性三變革 新制10日上路",
+    "〈台股盤後〉亞股一枝獨秀 受制月線反壓 漲點收斂至266點收43386點",
+    "夜盤驚魂千點！台股意外翻紅誰在硬拉？「專家欽點2大族群率先低接」",
+]
+
+
+def _zh_items(titles):
+    return [{"title": t, "url": "https://example.com/x", "source": "s"} for t in titles]
+
+
+def test_zh_ranking_pushes_event_news_above_intraday_snapshots():
+    """實測那天的前 6 則有 4 則在講同一個早盤；排序後前 6 必須全是有後果的事件。"""
+    from stocks_power_rich.sources.news import dedupe_and_rank_zh
+
+    top6 = [it["title"] for it in dedupe_and_rank_zh(_zh_items(_TW_REAL))[:6]]
+    for must in ("處置新規", "法說連發", "受益人數", "配息"):
+        assert any(must in t for t in top6), must
+    # 同一個早盤最多只留一則
+    same_session = [t for t in top6 if "開盤跌293" in t or "早盤開低" in t or "早盤下殺" in t]
+    assert len(same_session) <= 1
+
+
+def test_zh_ranking_keeps_exactly_one_snapshot_not_zero():
+    """「今天盤勢如何」仍有敘述價值，只是不需要五遍——留一則，不是全砍。"""
+    from stocks_power_rich.sources.news import dedupe_and_rank_zh, zh_relevance
+
+    out = dedupe_and_rank_zh(_zh_items(_TW_REAL))
+    assert sum(1 for it in out if zh_relevance(it) == 0) == 1
+    # 實測這 20 則裡有 7 則是盤中快照（含〈台股盤後〉與夜盤），砍成 1 則
+    snaps = sum(1 for t in _TW_REAL if zh_relevance({"title": t}) == 0)
+    assert snaps == 7
+    assert len(out) == len(_TW_REAL) - (snaps - 1)
+
+
+def test_zh_ranking_never_starves_a_quiet_session():
+    """全是快照的清淡時段：仍要留下東西可用，不能回空。"""
+    from stocks_power_rich.sources.news import dedupe_and_rank_zh
+
+    only_snap = _zh_items([t for t in _TW_REAL if "早盤" in t or "開盤" in t])
+    out = dedupe_and_rank_zh(only_snap, max_snapshots=3)
+    assert len(out) == 3
+
+
+def test_zh_relevance_tiers():
+    from stocks_power_rich.sources.news import zh_relevance
+
+    assert zh_relevance({"title": "台股開盤跌293.92點"}) == 0
+    assert zh_relevance({"title": "台股8月88家公司法說連發"}) == 2
+    assert zh_relevance({"title": "台股將打第二隻腳　破4萬嗎？"}) == 1
+    # 事件優先於快照：盤前要聞裡講處置股與外資期貨，算事件不算快照
+    assert zh_relevance({"title": "〈台股盤前要聞〉處置股大改制、外資期貨空單突破9萬口"}) == 2

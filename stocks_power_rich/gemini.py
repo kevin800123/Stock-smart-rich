@@ -43,6 +43,28 @@ def _thinking_config(thinking: bool):
         thinking_config=types.ThinkingConfig(thinking_level="minimal"))
 
 
+def friendly_error(exc) -> str:
+    """把 SDK 的例外壓成一句人看得懂的話。
+
+    原本是直接把 `str(e)` 放進 `text`，而 SDK 的 429 例外是一整包巢狀 JSON（配額
+    metric、quotaId、violations、retryDelay、兩條說明連結…），實測在網頁上佔掉半個
+    畫面、且對使用者沒有任何可行動的資訊。完整內容仍會印到 stdout（Zeabur 收得到），
+    要診斷去看日誌；畫面上只留「怎麼了、什麼時候會好」。
+    """
+    s = str(exc)
+    if "RESOURCE_EXHAUSTED" in s or "429" in s:
+        if "PerDay" in s or "free_tier" in s:
+            return "（AI 摘要暫停：已用完今日免費額度，明日自動恢復；盤面數字不受影響）"
+        return "（AI 摘要暫停：呼叫過於頻繁，稍後自動重試）"
+    if "NOT_FOUND" in s or "404" in s:
+        return f"（AI 摘要失敗：模型 {MODEL} 目前無法使用，請確認模型名稱）"
+    if "PERMISSION_DENIED" in s or "API_KEY" in s.upper():
+        return "（AI 摘要失敗：金鑰無效或未授權）"
+    if "UNAVAILABLE" in s or "503" in s:
+        return "（AI 摘要暫停：模型忙碌中，稍後自動重試）"
+    return f"（AI 摘要失敗：{s.splitlines()[0][:120]}）"
+
+
 def _run(prompt: str, api_key: str, *, thinking: bool = True) -> dict:
     if not api_key:
         return {"enabled": False, "text": "（未啟用 AI 摘要：未設定 GEMINI_API_KEY）"}
@@ -53,7 +75,9 @@ def _run(prompt: str, api_key: str, *, thinking: bool = True) -> dict:
         _log_usage(resp, thinking)
         return {"enabled": True, "text": resp.text}
     except Exception as e:  # noqa: BLE001 — 失敗即降級，不影響數據功能
-        return {"enabled": False, "text": f"（AI 摘要失敗：{e}）"}
+        # 完整例外只進日誌；畫面上給一句人看得懂的話（見 friendly_error）
+        print(f"[gemini] ERROR {type(e).__name__}: {e}", flush=True)
+        return {"enabled": False, "text": friendly_error(e)}
 
 
 def _log_usage(resp, thinking: bool) -> None:
@@ -126,6 +150,14 @@ def summarize_news(payload: dict, api_key: str) -> dict:
         "不寫八卦、傳言、炒作或買賣建議。\n\n"
         "輸出為繁體中文。日股新聞必須先翻譯成自然、精確的繁體中文，再輸出；保留日本公司名稱、股票代碼與數字的原貌。"
         "日股只可取自 jp 新聞清單（其正常來源為株探）；不可用其他市場或想像內容補足。\n\n"
+        "【選材優先序】6 則必須是**六件不同的事**。同一段行情（開盤跌幾點、盤中跌破某關卡、"
+        "早盤下殺、收盤收在幾點）**最多只能佔 1 則**——那是同一件事的不同寫法，而且指數點位"
+        "已由程式在訊息最上方列出，重複沒有資訊量。優先選有後續影響的事件：法規與制度變動、"
+        "財報與法說會、除權息、法人與期貨部位、產業與個股重大消息、利率與關稅。"
+        "『某某老師看盤』『沒上車的看過來』這類個人觀點或招攬性內容一律不選。\n"
+        "【每則要能回答「所以呢」】不要只複述標題。事件寫發生什麼，影響寫**對誰**造成什麼，"
+        "關注寫**具體**的下一個觀察點（日期、數字、事件），不要寫「後續量能變化」"
+        "「市場情緒」這種放諸四海皆準的空話。\n\n"
         "本報告的每個市場都要恰好 6 則新聞：🇹🇼 台股 6 則、🇯🇵 日股 6 則、🇺🇸 美股 6 則。"
         "每則僅能使用對應市場清單的內容；若該市場少於 6 則，列出全部可用項目並註明來源不足，絕不可湊數。"
         "標題不超過 28 個中文字；事件、關鍵數據、影響、關注各一行且不超過 48 個中文字。\n"

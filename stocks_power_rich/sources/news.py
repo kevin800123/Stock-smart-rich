@@ -176,13 +176,58 @@ def pick_top(items: list, n: int = 20, hours: int = 36,
     return out
 
 
+# 「盤中快照」類標題：每一家媒體每天都會寫一則，於是同一段行情會用五種寫法塞滿清單。
+# 實測 2026-08-04 台股 20 則裡有 5 則是同一個早盤（〈台股開盤〉／早盤開低震盪／開盤跌
+# 293.92 點／早盤下殺近 500 點／台幣早盤轉升），推播因此四則都在講同一件事，而處置新規
+# 上路、88 家法說會、外資期貨空單破 9 萬口這些真正有資訊量的全被擠掉。
+# 這些快照的數字 📈 盤面 那一段已經用**官方數據**講過了，留一則敘述就夠。
+_SNAPSHOT_HINT = ("開盤", "早盤", "盤中", "收盤", "盤後", "午盤", "尾盤", "夜盤")
+_SNAPSHOT_MOVE = ("漲", "跌", "紅", "黑", "震盪", "攻防", "翻", "殺", "彈")
+# 有時效與後果的事件：政策法規、財報法說、除權息、法人動向、併購增資、利率關稅。
+_EVENT_HINT = ("法說", "財報", "營收", "除息", "除權", "配息", "新制", "法規", "處置",
+               "金管會", "證交所", "櫃買", "併購", "收購", "增資", "減資", "受益人數",
+               "利率", "關稅", "政策", "外資期貨", "未平倉", "上市", "上櫃", "IPO",
+               "解禁", "禁令", "調升", "調降", "財測", "認購", "庫藏股")
+
+
+def zh_relevance(item: dict) -> int:
+    """0=盤中快照（沉底）、2=有後果的事件（浮頂）、1=其餘（評論／觀點）。
+
+    只用於中文的 Google 新聞清單（台股／美股）；日股走株探，另有 `jp_relevance`。
+    """
+    title = item.get("title") or ""
+    if any(k in title for k in _EVENT_HINT):
+        return 2
+    if any(h in title for h in _SNAPSHOT_HINT) and any(m in title for m in _SNAPSHOT_MOVE):
+        return 0
+    return 1
+
+
+def dedupe_and_rank_zh(items: list, max_snapshots: int = 1) -> list:
+    """事件優先排序，並把「盤中快照」壓到最多 `max_snapshots` 則。
+
+    **刪除多餘快照而不是只排序**：同一段行情的五種寫法彼此不是重複標題（`pick_top`
+    的前綴去重抓不到），但對讀者就是同一件事，留著只會佔滿 6 則的名額。留一則是因為
+    「今天盤勢如何」仍有敘述價值，只是不需要五遍。其餘照舊用**穩定排序**分層，
+    所以同層內仍是新到舊，且清淡時段仍有評論類可遞補、不會湊不滿。
+    """
+    kept, snapshots = [], 0
+    for it in items:
+        if zh_relevance(it) == 0:
+            snapshots += 1
+            if snapshots > max_snapshots:
+                continue
+        kept.append(it)
+    return sorted(kept, key=lambda it: -zh_relevance(it))
+
+
 def fetch_google_news(market: str, n: int = 20,
                       now: datetime | None = None) -> list:
     """market ∈ NEWS_QUERIES → 白名單過濾後的新聞清單（新到舊，至多 n 則）。"""
     query = NEWS_QUERIES.get(market)
     if not query:
         return []
-    return _fetch_google_news_query(query, n, now=now)
+    return dedupe_and_rank_zh(_fetch_google_news_query(query, n, now=now))
 
 
 def _fetch_google_news_query(query: str, n: int,

@@ -179,3 +179,53 @@ def test_usage_logging_never_breaks_the_summary(capsys):
             raise RuntimeError("no metadata")
 
     _log_usage(Broken(), True)      # 不可拋出
+
+
+def test_friendly_error_never_dumps_the_raw_quota_json_to_the_page():
+    """SDK 的 429 例外是一整包巢狀 JSON（quotaMetric／violations／retryDelay／兩條連結），
+    原樣放進 text 會在網頁上佔掉半個畫面，而且對使用者沒有可行動資訊。"""
+    from stocks_power_rich.gemini import friendly_error
+
+    raw = ("429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': 'You exceeded your "
+           "current quota... Quota exceeded for metric: generativelanguage.googleapis.com/"
+           "generate_content_free_tier_requests, limit: 20, model: gemini-3.5-flash', "
+           "'status': 'RESOURCE_EXHAUSTED', 'details': [{'@type': 'type.googleapis.com/"
+           "google.rpc.QuotaFailure', 'violations': [{'quotaId': "
+           "'GenerateRequestsPerDayPerProjectPerModel-FreeTier'}]}]}}")
+    msg = friendly_error(Exception(raw))
+
+    assert len(msg) < 60
+    for noise in ("quotaMetric", "violations", "@type", "googleapis", "retryDelay", "{"):
+        assert noise not in msg, noise
+    assert "今日免費額度" in msg and "明日" in msg      # 說明何時會好
+    assert "盤面數字不受影響" in msg                    # 說明還有什麼可用
+
+
+def test_friendly_error_distinguishes_the_failure_kinds():
+    from stocks_power_rich.gemini import friendly_error
+
+    # 每分鐘限流（非每日額度）→ 說「稍後自動重試」而不是「明日恢復」
+    rpm = friendly_error(Exception("429 RESOURCE_EXHAUSTED quota per minute"))
+    assert "稍後" in rpm and "明日" not in rpm
+
+    assert "模型" in friendly_error(Exception("404 NOT_FOUND. model not available"))
+    assert "金鑰" in friendly_error(Exception("403 PERMISSION_DENIED"))
+    assert "忙碌" in friendly_error(Exception("503 UNAVAILABLE"))
+    # 未知錯誤：只取第一行且截斷，不整包倒出來
+    long = friendly_error(Exception("Weird failure\n" + "x" * 500))
+    assert len(long) < 140 and "\n" not in long
+
+
+def test_run_logs_the_full_error_but_returns_only_the_short_one(monkeypatch, capsys):
+    """診斷資訊不能消失——完整例外要進 stdout（Zeabur 收得到）。"""
+    from stocks_power_rich import gemini
+
+    def boom(api_key):
+        raise RuntimeError("429 RESOURCE_EXHAUSTED free_tier PerDay limit: 20")
+
+    monkeypatch.setattr(gemini, "genai_client", boom)
+    out = gemini._run("p", "k")
+    assert out["enabled"] is False
+    assert "今日免費額度" in out["text"]
+    logged = capsys.readouterr().out
+    assert "RESOURCE_EXHAUSTED" in logged and "PerDay" in logged
