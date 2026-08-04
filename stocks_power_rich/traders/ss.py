@@ -2,11 +2,9 @@
 
 質化方法論全文見 .claude/skills/ss-trader/SKILL.md；本檔只負責取數 + 組裝通用區塊。
 """
-from datetime import date
-
 from .. import ss_trader
-from ..db import get_ai_cache, get_snapshot_dates, get_snapshot
-from ..api.helpers import _ohlc_names
+from ..db import get_snapshot_dates, get_snapshot
+from ..api.helpers import _ohlc_names, checklist_inputs
 
 META = {
     "id": "ss",
@@ -33,11 +31,7 @@ def analyze(conn) -> dict:
     c = conn
     rows = [dict(r) for r in c.execute(
         "SELECT * FROM market_daily ORDER BY date DESC LIMIT 60").fetchall()][::-1]
-    tx = c.execute("SELECT volume, night_volume FROM tx_history ORDER BY date DESC LIMIT 1").fetchone()
-    night_ratio = (tx["night_volume"] / tx["volume"]) if tx and tx["night_volume"] and tx["volume"] else None
-    checklist = ss_trader.market_checklist(
-        rows, osfut=get_ai_cache(c, "osfut:current"), night_ratio=night_ratio,
-        settlement_week=ss_trader.is_settlement_week(date.today()))
+    checklist = ss_trader.market_checklist(rows, **checklist_inputs(c))
 
     snap_dates = get_snapshot_dates(c)
     picks = ss_trader.qoq_rising_picks(get_snapshot(c, snap_dates[-1]))[:15] if snap_dates else []

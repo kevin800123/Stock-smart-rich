@@ -194,6 +194,89 @@ def market_checklist(rows: list[dict], osfut: dict | None = None,
     return out
 
 
+# 總覽頁「市場儀表板」半圓錶的分數化。刻意重用 market_checklist() 既有的
+# status 語意，不另外發明一套規則——bull/bear/warn/neutral/na 的定義只能有一份，
+# 否則儀表板判讀會跟「操盤手」頁的檢核清單本身不一致（同艾略特波浪只准一份實作
+# 的理由）。
+_PULSE_POINTS = {"bull": 100.0, "neutral": 50.0, "warn": 35.0, "bear": 0.0}
+# 檢核清單固定約 9 項，用不了 RAIL_MIN_N=15 那種百日序列的樣本量；門檻改成
+# 「至少要有這清單一半以上可用」，單一項 na 不該讓整張錶罷工，但只剩兩三項
+# 就不該裝出精準到小數點的分數。
+PULSE_MIN_ITEMS = 4
+
+
+def _pulse_band(value: float | None, lo: float, hi: float, labels: tuple[str, str, str]) -> str | None:
+    if value is None:
+        return None
+    if value <= lo:
+        return labels[0]
+    if value >= hi:
+        return labels[2]
+    return labels[1]
+
+
+def market_pulse(checklist: list[dict]) -> dict:
+    """把 market_checklist() 的清單濃縮成儀表板的 1 個總分 + 4 個分項。
+
+    四個分項刻意各自量測不同的東西，不是同一數字的四種寫法：
+    - **市場健康**：加權平均分（bull=100/neutral=50/warn=35/bear=0），是唯一同時
+      吃到「方向」與「幅度」的分項。
+    - **正面因素**：純粹數 bull 項的占比，不看 warn/bear 的差別——用來跟「市場健康」
+      對照，兩者落差很大時代表「方向不差，但普遍缺乏積極訊號」這種情況。
+    - **風險溫度**：warn 項占比。warn 在 market_checklist() 裡的既有定義是「需留意
+      的中性警示」（見該函式開頭註解），不是空方訊號，所以風險溫度高不代表看空，
+      只代表「有東西該留意」——這也是為什麼它在總分裡只溫和扣分而非直接拉低。
+    - **資料完整度**：非 na 項的占比，這是本次新增的分項，讓「費半／日經今天沒
+      有值」這類缺口從總覽的「—」變成看得到的數字。
+
+    總分＝0.5×健康 + 0.3×正面因素 + 0.2×(100−風險溫度)：健康度是主要依據（唯一
+    同時反映方向與幅度者），正面因素數作為佐證；風險溫度只溫和扣分，因為 warn
+    本身不是方向性訊號，不該像 bear 一樣主導總分。資料完整度**不進總分**——
+    資料品質是後設資訊，不該讓「今天缺兩項資料」看起來像「行情轉弱」，這也是
+    CLAUDE.md 對本頁「不做成進出訊號」的取捨。
+
+    採計項數（非 na）低於 `PULSE_MIN_ITEMS` 時，總分與市場健康／正面因素／風險
+    溫度一律回 None（前端顯示「資料不足」而非硬湊出的 0 分）；資料完整度本身
+    不受此限——它的定義就是「有幾項能算」，樣本再少也算得出來、且正是這種時候
+    最需要被看見。
+    """
+    total = len(checklist)
+    scored = [it for it in checklist if it.get("status") in _PULSE_POINTS]
+    n = len(scored)
+    completeness = round(n / total * 100, 1) if total else None
+
+    if n < PULSE_MIN_ITEMS:
+        return {
+            "overall": None, "health": None, "positive": None, "risk": None,
+            "completeness": completeness,
+            "sample_n": n, "sample_total": total,
+            "label": None,
+            "items": checklist,
+        }
+
+    health = sum(_PULSE_POINTS[it["status"]] for it in scored) / n
+    positive = sum(1 for it in scored if it["status"] == "bull") / n * 100
+    risk = sum(1 for it in scored if it["status"] == "warn") / n * 100
+    overall = 0.5 * health + 0.3 * positive + 0.2 * (100 - risk)
+
+    return {
+        "overall": round(overall, 1),
+        "health": round(health, 1),
+        "positive": round(positive, 1),
+        "risk": round(risk, 1),
+        "completeness": completeness,
+        "sample_n": n, "sample_total": total,
+        "label": {
+            "overall": _pulse_band(overall, 40, 60, ("偏弱", "中性", "偏強")),
+            "health": _pulse_band(health, 40, 60, ("偏弱", "中性", "偏強")),
+            "positive": _pulse_band(positive, 25, 50, ("少", "普通", "多")),
+            "risk": _pulse_band(risk, 20, 40, ("低", "中等", "高")),
+            "completeness": _pulse_band(completeness, 50, 90, ("資料不足", "部分資料", "完整")),
+        },
+        "items": checklist,
+    }
+
+
 def _fund_flow(osfut: dict | None) -> dict:
     items = []
     for g in (osfut or {}).get("categories", []):

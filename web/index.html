@@ -53,25 +53,46 @@
 
       <!-- ===== 總覽 ===== -->
       <section id="view-overview" class="view active dashboard-view">
-        <!-- 市場內部：指數方向與內部廣度並列，一眼看出「指數漲但家數跌」這類背離 -->
-        <div class="market-strip">
-          <div class="ms-main">
-            <div id="ms-index" class="ms-index"></div>
-            <div id="breadth"></div>
-            <div id="ms-verdict" class="ms-verdict"></div>
+        <div class="overview-top">
+          <!-- 市場儀表板：把 ss_trader.market_checklist() 濃縮成一個總分＋四個分項，
+               放在總覽最上方當主角（使用者要求，參考另一 App 的市場脈搏總覽）。
+               展開後看到的是 Ss 方法論的檢核清單，帶免責聲明——與「操盤手」頁同一份文字。 -->
+          <div class="pulse-card">
+            <div class="pulse-head">
+              <span class="pulse-title">市場儀表板</span>
+              <button id="pulse-expand" class="help-link" type="button">展開組成 ▾</button>
+            </div>
+            <div id="pulse-gauge" class="pulse-gauge-chart"></div>
+            <div id="pulse-grid" class="pulse-grid"></div>
+            <div id="pulse-compose" class="pulse-compose hidden"></div>
           </div>
-          <div id="ms-inst" class="ms-inst"></div>
+          <!-- 市場內部：指數方向與內部廣度並列，一眼看出「指數漲但家數跌」這類背離 -->
+          <div class="market-strip">
+            <div class="ms-main">
+              <div id="ms-index" class="ms-index"></div>
+              <div id="breadth"></div>
+              <div id="ms-verdict" class="ms-verdict"></div>
+            </div>
+            <div id="ms-inst" class="ms-inst"></div>
+          </div>
         </div>
+        <!-- 置頂 KPI 條：position:sticky，捲過頁面上半段後仍貼在頂端。刻意放在這裡
+             （而非用 IntersectionObserver 控制顯示）——頁面在頂端時它跟上面的詳細版
+             重疊一行，代價很小；一旦超出視窗，sticky 自然貼頂，不必額外判斷可見性。 -->
+        <div id="kpi-sticky" class="kpi-sticky"></div>
         <!-- 兩階層：section-head（這一段回答什麼問題）＞ group-title（單一區塊）。
              分組照本站自己的世界觀：籌碼解釋行情，所以「誰在動錢」與「價格長什麼樣」
              各成一段，而不是把 8 個同權重的區塊平鋪。 -->
         <div class="section-head">
           <span class="sh-title">籌碼</span><span class="sh-desc">誰在買、買了多少</span>
         </div>
-        <div class="card-group"><div class="group-title">台股大盤 <span id="breadth-note" class="muted small"></span></div><div id="cards-tw" class="cards"></div></div>
-        <div class="card-group"><div class="group-title">期貨籌碼</div><div id="cards-fut" class="cards"></div></div>
-        <div class="card-group"><div class="group-title">期權情緒・大額交易人 <span id="opt-note" class="muted small"></span></div><div id="cards-opt" class="cards"></div></div>
-        <div class="card-group">
+        <!-- 台股大盤 span-full：8 張指標卡是這幾組裡最多的，塞進窄欄會被壓成 2 欄、
+             內部多出一倍列數，反而更高（實測 352→670px）；期貨籌碼／期權情緒卡數較少
+             (6／4)，兩兩相鄰時交給下面 auto-flow 的網格自然併成一列，不必手動排版。 -->
+        <div class="card-group span-full" data-key="tw"><div class="group-title">台股大盤 <span id="breadth-note" class="muted small"></span></div><div id="cards-tw" class="cards"></div></div>
+        <div class="card-group" data-key="fut"><div class="group-title">期貨籌碼</div><div id="cards-fut" class="cards"></div></div>
+        <div class="card-group" data-key="opt"><div class="group-title">期權情緒・大額交易人 <span id="opt-note" class="muted small"></span></div><div id="cards-opt" class="cards"></div></div>
+        <div class="card-group span-full" data-key="rank">
           <div class="group-title">法人買賣超排行 <span id="rank-note" class="muted small"></span></div>
           <div class="chart-toolbar">
             <button class="rkf active" data-who="foreign">外資</button>
@@ -86,7 +107,7 @@
             <div class="rank-col"><div class="rank-h down">賣超 Top</div><div id="rank-sell"></div></div>
           </div>
         </div>
-        <div class="card-group">
+        <div class="card-group span-full" data-key="combo">
           <div class="group-title">大盤 × 籌碼對照 <span id="combo-note" class="muted small"></span></div>
           <!-- 勾幾個就畫幾個窗格，共用一條 X 軸；圖高跟著窗格數算（見 app.js CHIP_PANES） -->
           <div class="chart-toolbar">
@@ -103,17 +124,26 @@
         <div class="section-head">
           <span class="sh-title">行情</span><span class="sh-desc">漲跌集中在哪裡、外盤怎麼走</span>
         </div>
-        <div class="card-group"><div class="group-title">全市場漲跌幅分布 <span id="dist-note" class="muted small"></span></div><div id="dist-chart" class="chart" style="height:240px"></div></div>
-        <div class="card-group"><div class="group-title">權值股貢獻大盤點數 <span id="movers-note" class="muted small"></span></div><div id="movers" class="mv-grid"></div></div>
-        <div class="card-group"><div class="group-title">個股熱力圖
+        <!-- 全市場漲跌幅分布／國際市場相鄰：兩者窄欄下的自然高度相近（實測都約 500px），
+             並排不會被彼此拉高。權值股貢獻大盤點數改 span-full：18 格 mv-grid 塞進窄欄
+             會多出一倍列數（實測 309→552px），比多留一欄空白更划不來。 -->
+        <div class="card-group" data-key="dist"><div class="group-title">全市場漲跌幅分布 <span id="dist-note" class="muted small"></span></div><div id="dist-chart" class="chart" style="height:240px"></div></div>
+        <div class="card-group" data-key="intl"><div class="group-title">國際市場</div><div id="cards-intl" class="cards"></div></div>
+        <div class="card-group span-full" data-key="movers"><div class="group-title">權值股貢獻大盤點數 <span id="movers-note" class="muted small"></span></div><div id="movers" class="mv-grid"></div></div>
+        <!-- 熱力圖預設只顯示緊湊的「產業強弱」橫條（最大單一區塊 820px 的主因），
+             展開後才畫完整 treemap——兩者共用同一份 avg 計算（見 app.js loadSectors），
+             不是兩份各自算一次，否則哪天改了口徑（例如市值加權方式）很容易只改到一邊。 -->
+        <div class="card-group span-full" data-key="sectors"><div class="group-title">個股熱力圖
           <span class="hm-tabs">
             <button class="tf hm-tab active" data-market="tse">上市</button><button class="tf hm-tab" data-market="otc">上櫃</button><button class="tf hm-tab" data-market="all">全部</button>
           </span>
           <span class="hm-tabs">
             <button class="tf hm-top active" data-top="5">每類股 5 檔</button><button class="tf hm-top" data-top="10">10 檔</button>
           </span>
-          <span id="sectors-note" class="muted small"></span></div><div id="sectors" class="sectors"></div></div>
-        <div class="card-group"><div class="group-title">國際市場</div><div id="cards-intl" class="cards"></div></div>
+          <span class="hm-tabs">
+            <button id="hm-detail-toggle" class="tf" type="button">展開完整熱力圖 ▾</button>
+          </span>
+          <span id="sectors-note" class="muted small"></span></div><div id="sectors-compact" class="sectors-compact"></div><div id="sectors" class="sectors hidden"></div></div>
 
         <div class="chart-row">
           <div class="chart-side">

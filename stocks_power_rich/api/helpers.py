@@ -5,8 +5,9 @@ import secrets
 import threading
 import tempfile
 import time
-from datetime import datetime
+from datetime import date, datetime
 
+from .. import ss_trader
 from ..config import load_config
 from ..db import (
     get_connection,
@@ -229,6 +230,20 @@ def _attach_size(c, date: str, secs: list) -> None:
         name = s.get("name")
         s["mcap"] = mmap.get(name)
         s["turnover"] = None if name in _TURNOVER_EXCLUDE else tmap.get(twse.norm_sector_name(name))
+
+
+def checklist_inputs(c) -> dict:
+    """`ss_trader.market_checklist()` 的三個動態輸入，供總覽儀表板與「操盤手」頁共用
+    一份組裝邏輯——兩邊各自組一次容易在夜盤量比或結算週判定上悄悄漂移（同 CLAUDE.md
+    對 Elliott wave／估價公式「只能有一份權威版本」的規矩）。"""
+    tx = c.execute(
+        "SELECT volume, night_volume FROM tx_history ORDER BY date DESC LIMIT 1").fetchone()
+    night_ratio = (tx["night_volume"] / tx["volume"]) if tx and tx["night_volume"] and tx["volume"] else None
+    return {
+        "osfut": get_ai_cache(c, "osfut:current"),
+        "night_ratio": night_ratio,
+        "settlement_week": ss_trader.is_settlement_week(date.today()),
+    }
 
 
 def _ohlc_names(c) -> dict:

@@ -18,6 +18,7 @@ from .helpers import (
     ai_cooling_down,
     note_ai_failure,
     bump_ai_calls,
+    checklist_inputs,
 )
 from ..sources import twse, taifex, mis, tpex
 from .. import analysis, gemini, ss_trader, traders
@@ -247,6 +248,13 @@ def dashboard():
     latest = rows[0] if rows else {}      # 與 asc[-1] 是同一個 dict，均量自動帶到
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
+    # 市場儀表板的半圓錶。checklist 用同一份 asc（舊→新），與 traders/ss.py 共用
+    # checklist_inputs()，避免兩邊各自組一次夜盤量比／結算週判定而漂移。
+    checklist = ss_trader.market_checklist(asc, **checklist_inputs(c))
+    pulse = ss_trader.market_pulse(checklist)
+    # 展開組成後看到的是 Ss 方法論的檢核清單，同一份免責聲明必須跟著出現——
+    # 借用「操盤手」頁既有那句，不新造第二份文字。
+    pulse["disclaimer"] = traders.ss._DISCLAIMER
     return {
         "latest": latest,
         "history": asc,
@@ -256,6 +264,7 @@ def dashboard():
         # 同一組數字有兩份實作就會漂移（艾略特波浪已經吃過這個虧）。ss_trader 是
         # 這些門檻的唯一出處，「操盤手」頁與總覽卡片共用同一份。
         "bands": _BANDS,
+        "pulse": pulse,
     }
 
 # 只列「跨過就值得看一眼」的欄位；沒有公認門檻的欄位不硬編，交給位階條處理。

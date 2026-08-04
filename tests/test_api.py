@@ -159,6 +159,57 @@ def test_dashboard_bands_come_from_ss_trader(tmp_path, monkeypatch):
     assert client.get("/public/api/dashboard").json()["bands"] == bands
 
 
+def test_dashboard_pulse_is_none_without_enough_market_data(tmp_path, monkeypatch):
+    """沒有 market_daily 資料時，儀表板半圓錶要顯示「資料不足」而不是硬湊出的分數。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich import ss_trader as ss_trader_module
+
+    app = create_app()
+    client = TestClient(app)
+    pulse = client.get("/api/dashboard").json()["pulse"]
+    assert pulse["overall"] is None
+    # 「結算週」一項不吃 market_daily（用系統日期算），永遠不是 na，所以完全無
+    # 資料時 sample_n 是 1 不是 0；重點是它仍低於 PULSE_MIN_ITEMS，總分才因此是 None。
+    assert pulse["sample_n"] < ss_trader_module.PULSE_MIN_ITEMS
+
+
+def test_dashboard_pulse_scores_from_real_checklist_inputs(tmp_path, monkeypatch):
+    """儀表板半圓錶與「操盤手」頁必須讀同一份 market_checklist()——這裡直接比對兩者，
+    確認 checklist_inputs() 真的被兩邊共用而不是各自組一份夜盤量比／結算週判定。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich import ss_trader
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    for i, taiex in enumerate([100.0 + i for i in range(10)]):
+        upsert_market_daily(c, {
+            "date": f"2026-07-{10 + i:02d}", "taiex": taiex,
+            "margin_maintenance": 180.1, "otc_margin_maintenance": 166.8,
+            "vix": 16.0, "margin_balance": 5000.0 - i, "turnover": 3000.0,
+        })
+
+    app = create_app()
+    client = TestClient(app)
+    body = client.get("/api/dashboard").json()
+    pulse = body["pulse"]
+
+    assert pulse["overall"] is not None
+    assert pulse["sample_total"] == len(pulse["items"])
+    # na 不進分母：完整度必須等於「非 na 項 / 總項」
+    non_na = [it for it in pulse["items"] if it["status"] != "na"]
+    assert pulse["completeness"] == round(len(non_na) / len(pulse["items"]) * 100, 1)
+    assert set(pulse["label"].keys()) == {"overall", "health", "positive", "risk", "completeness"}
+
+    # checklist_inputs() 真的被兩邊共用，而不是各自組一份夜盤量比／結算週判定
+    from stocks_power_rich.api.helpers import checklist_inputs
+    rows = [dict(r) for r in c.execute(
+        "SELECT * FROM market_daily ORDER BY date DESC LIMIT 150").fetchall()][::-1]
+    expected = ss_trader.market_checklist(rows, **checklist_inputs(c))
+    assert pulse["items"] == expected
+
+
 def test_inst_ranking_falls_back_to_last_date_with_data(tmp_path, monkeypatch):
     """T86 約 16:00 後才公布，但 market_daily 當天早上就有列（指數是盤中就有的）。
 

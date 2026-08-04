@@ -35,10 +35,14 @@ let chipPanes = new Set(["margin", "inst"]), comboKline = null;
 // 兩處呼叫點都是 loadDashboard 先 await、loadBreadth 後跑，故此處存下最新一列即可。
 let lastLatest = null, lastBands = {};
 let txVolChart = null, distChart = null;
+let pulseChart = null, lastPulse = null, pulseExpanded = false;
 let stockChipsChart = null, stockCustodyChart = null;
 // heatmapTop 預設 5：實測 1267px 寬下，5 檔比 6 檔「顯示更多可讀標籤」(110 vs 108) 且字更大、
 // 留白更少——格數少 → 格子大 → 過得了 11px 中文可讀下限的格子反而變多。
 let sectorChart = null, heatmapMarket = "tse", heatmapTop = 5, lastHeatmapData = null;
+// 熱力圖預設只顯示緊湊橫條，展開完整 treemap 是使用者主動要的（單一最大區塊 820px
+// 的主因）。false＝只算資料、不畫 treemap，省下 setOption／fitHeatmapFonts 的成本。
+let hmDetailExpanded = false;
 let cupChart = null, cupMatches = [], cupLoaded = false;
 let rankWho = "foreign", rankUnit = "shares";
 let MA_DEFS;
@@ -756,6 +760,37 @@ function renderVerdict() {
   el.className = "ms-verdict" + (diverge ? " alert" : "");
 }
 
+// ===== 置頂 KPI 條：捲到頁面任何位置都還看得到主指標。=====
+// 刻意不用 IntersectionObserver 做「捲過才顯示」——這一列直接放在 .overview-top
+// 後面、section-head「籌碼」之前，頁面在頂端時它照樣顯示一次（跟上面詳細版資訊
+// 重疊一行，代價很小），position:sticky 本身在捲動超過這個位置後自然貼頂，
+// 不需要額外 JS 判斷可見性。
+// 資料來自三個既有的模組層變數（lastLatest／lastBreadth／lastPulse），三者由不同
+// API 各自到位，所以三個載入點都呼叫本函式一次（同 renderVerdict 的既有作法），
+// 缺哪一塊就讓那一格顯示「—」，不等全部到齊。
+let lastDataStale = false;
+function renderKpiSticky() {
+  const el = $("kpi-sticky"); if (!el) return;
+  const m = lastLatest;
+  if (!m || !m.date) { el.innerHTML = ""; return; }
+  const idxPct = pctOf(m.taiex, m.taiex_chg);
+  const b = lastBreadth;
+  const total3 = [m.inst_foreign, m.inst_trust, m.inst_dealer].every((x) => x != null)
+    ? m.inst_foreign + m.inst_trust + m.inst_dealer : null;
+  const pulse = lastPulse;
+  const items = [
+    ["加權指數", `<span class="${chgClass(m.taiex_chg)}">${fmt(m.taiex)} ${chgText(m.taiex_chg)}${pctTag(idxPct)}</span>`],
+    ["成交金額", m.turnover == null ? "—" : fmt(m.turnover, 0) + " 億"],
+    ["漲跌家數", (b && (b.up != null || b.down != null))
+      ? `<span class="up">▲${fmt(b.up || 0, 0)}</span> <span class="down">▼${fmt(b.down || 0, 0)}</span>` : "—"],
+    ["三大法人", total3 == null ? "—" : `<span class="${chgClass(total3)}">${fmt(total3)} 億</span>`],
+    ["綜合分數", (pulse && pulse.overall != null)
+      ? `${fmt(pulse.overall, 1)} <span class="muted small">${esc((pulse.label || {}).overall || "")}</span>` : "—"],
+    ["資料狀態", lastDataStale ? '<span style="color:var(--accent)">尚未更新</span>' : "已更新"],
+  ];
+  el.innerHTML = items.map(([k, v]) => `<div class="kpi-item"><span class="kpi-k">${k}</span><span class="kpi-v">${v}</span></div>`).join("");
+}
+
 // 某欄位在近 N 日的百分位。位階條只在樣本夠時才畫得有意義——n<15 的欄位（如目前
 // 只有 7 筆有值的融資維持率）畫出來是雜訊，寧可不畫，改由固定門檻判定。
 const RAIL_MIN_N = 15;
@@ -836,14 +871,94 @@ function renderStale(d) {
   }
 }
 
+// ===== 市場儀表板：半圓錶 + 四個分項（見 stocks_power_rich/ss_trader.py::market_pulse） =====
+// 刻意不用紅／綠：那兩色在本站鎖給「行情漲跌」，且台股慣例紅漲綠跌——拿綠色表示
+// 「健康／強」恰好會撞上本站「綠＝跌」的既有語意。改用單一色相（C.info 藍）貫穿
+// 指針與強調色，強弱程度交給文字判讀（label），顏色只負責「這是這張卡的視覺重心」。
+function pulseGaugeOption(overall, label) {
+  const has = overall != null;
+  return {
+    series: [{
+      type: "gauge", startAngle: 200, endAngle: -20, min: 0, max: 100,
+      radius: "92%", center: ["50%", "68%"],
+      progress: { show: has, width: 10, itemStyle: { color: C.info } },
+      axisLine: { lineStyle: { width: 10, color: [[1, C.borderStrong]] } },
+      pointer: { show: has, length: "55%", width: 4, itemStyle: { color: C.info } },
+      axisTick: { show: false }, splitLine: { show: false }, axisLabel: { show: false },
+      anchor: { show: has, size: 7, itemStyle: { color: C.info, borderColor: C.info } },
+      title: { show: false },
+      detail: {
+        valueAnimation: true,
+        offsetCenter: [0, "6%"],
+        formatter: () => has
+          ? `{val|${fmt(overall, 1)}}\n{lbl|${label || ""}}`
+          : "{val|—}\n{lbl|資料不足}",
+        rich: {
+          val: { fontSize: 26, fontWeight: 700, color: has ? C.text : C.muted, lineHeight: 30 },
+          lbl: { fontSize: 12, color: C.label, lineHeight: 16 },
+        },
+      },
+      data: [{ value: has ? overall : 0 }],
+    }],
+  };
+}
+
+const PULSE_ITEM_LABEL = { health: "市場健康", risk: "風險溫度", positive: "正面因素", completeness: "資料完整度" };
+
+function renderPulseGrid(pulse) {
+  const el = $("pulse-grid"); if (!el) return;
+  el.innerHTML = ["health", "risk", "positive", "completeness"].map((k) => {
+    const v = pulse[k];
+    const lbl = pulse.label ? pulse.label[k] : null;
+    const cls = v == null ? "pulse-item na" : "pulse-item";
+    return `<div class="${cls}"><span class="pulse-item-k">${PULSE_ITEM_LABEL[k]}</span>` +
+      `<span class="pulse-item-v">${v == null ? "—" : fmt(v, 1)}</span>` +
+      (lbl ? `<span class="pulse-item-label">${esc(lbl)}</span>` : "") + `</div>`;
+  }).join("");
+}
+
+// 展開組成＝直接列出 market_checklist() 的每一項，跟「操盤手」頁的檢核表同一套
+// 判定色與免責聲明（見 TRADER_MARK／api/market.py 的 pulse.disclaimer）——同一份
+// 資料只能有一種呈現語彙，不要為了放在總覽就另外發明一套用詞。
+function renderPulseCompose(pulse) {
+  const el = $("pulse-compose"); if (!el) return;
+  if (!pulse || !pulse.items || !pulse.items.length) { el.innerHTML = '<div class="muted small">尚無資料</div>'; return; }
+  const rows = pulse.items.map((it) => {
+    const [label, color] = TRADER_MARK[it.status] || TRADER_MARK.na;
+    return `<tr><td>${esc(it.name)}</td><td style="color:${color};white-space:nowrap"><b>${label}</b></td>` +
+      `<td>${esc(it.value == null ? "—" : String(it.value))}</td><td class="muted">${esc(it.note || "")}</td></tr>`;
+  }).join("");
+  const shortSample = pulse.overall == null
+    ? `　資料不足，總分暫不顯示` : "";
+  const sample = `<div class="muted small">採計 ${pulse.sample_n} / ${pulse.sample_total} 項${shortSample}</div>`;
+  const disclaimer = pulse.disclaimer ? `<div class="muted small" style="margin-top:6px">⚠️ ${esc(pulse.disclaimer)}</div>` : "";
+  el.innerHTML = sample +
+    `<div class="table-wrap"><table><thead><tr><th>檢核項</th><th>判定</th><th>數值</th><th>說明</th></tr></thead><tbody>${rows}</tbody></table></div>` +
+    disclaimer;
+}
+
+function renderPulse(pulse) {
+  lastPulse = pulse || null;
+  const el = $("pulse-gauge"); if (!el) return;
+  if (!pulseChart) pulseChart = initChart(el);
+  const label = pulse && pulse.label ? pulse.label.overall : null;
+  pulseChart.setOption(pulseGaugeOption(pulse ? pulse.overall : null, label), true);
+  pulseChart.resize();      // 同 loadChipTrend：不依賴 init 當下的容器尺寸
+  renderPulseGrid(pulse || {});
+  if (pulseExpanded) renderPulseCompose(lastPulse);
+}
+
 async function loadDashboard() {
   const d = await getJSON("/api/dashboard");
   const hist = d.history || [];
   const prev = hist.length >= 2 ? hist[hist.length - 2] : {};
   // lastBands 供 renderCards 判定「異常讀數」，必須在它之前設好
   lastHistory = hist; lastLatest = d.latest || null; lastBands = d.bands || {};
+  lastDataStale = !!d.data_stale;
   renderCards(d.latest, prev, hist);
+  renderPulse(d.pulse || null);
   renderVerdict();               // 家數尚未載入時會自行留白，loadBreadth 完再補畫一次
+  renderKpiSticky();              // 同樣家數尚未到齊時會自行留白，loadBreadth 完再補畫一次
   loadChipTrend();
   renderStale(d);
   if (d.latest && d.latest.updated_at) $("last-updated").textContent = "更新：" + d.latest.updated_at.replace("T", " ").slice(0, 19);
@@ -871,8 +986,8 @@ async function loadBreadth() {
   const note = $("breadth-note");
   try {
     const d = await getJSON("/api/breadth");
-    if (d.up == null && d.down == null) { el.innerHTML = ""; if (note) note.textContent = ""; lastBreadth = null; renderVerdict(); return; }
-    lastBreadth = d; renderVerdict();
+    if (d.up == null && d.down == null) { el.innerHTML = ""; if (note) note.textContent = ""; lastBreadth = null; renderVerdict(); renderKpiSticky(); return; }
+    lastBreadth = d; renderVerdict(); renderKpiSticky();
     const up = d.up || 0, flat = d.flat || 0, down = d.down || 0, tot = up + flat + down || 1;
     const w = (n) => (n / tot * 100).toFixed(1) + "%";
     if (note) note.textContent = `（${d.date}）`;
@@ -889,7 +1004,7 @@ async function loadBreadth() {
         <div class="seg flat" style="width:${w(flat)}" title="平盤 ${fmt(flat, 0)}"></div>
         <div class="seg down" style="width:${w(down)}" title="下跌 ${fmt(down, 0)}"></div>
       </div>`;
-  } catch (e) { el.innerHTML = ""; lastBreadth = null; renderVerdict(); }
+  } catch (e) { el.innerHTML = ""; lastBreadth = null; renderVerdict(); renderKpiSticky(); }
 }
 
 // 亞當杯柄型態選股：清單 + K 線疊「趨勢線(左緣→右緣)＋壓力線(右緣水平)」
@@ -1208,8 +1323,30 @@ function fitHeatmapFonts(data) {
   sectorChart.setOption({ series: [{ data: data2 }] });  // 值不變→排版一致，僅套用調好的字級
 }
 
+// 產業強弱橫條：熱力圖的緊湊預設檢視。只挑「動最多的」8 個產業（依 |avg| 排序取前 8，
+// 再依 avg 由大到小排序顯示），不是全部 32 個都列——32 個排成直向清單一列 ~26px
+// 也要 800px+，跟展開版一樣高，緊湊版就沒有意義了。條長固定用 ±5% 當滿刻度：
+// 產業平均單日很少超過這個範圍，固定刻度讓「今天跟昨天比誰動得多」是可比的，
+// 不會因為今天剛好有一根特別長就把其他根全部相對壓扁。
+const HM_BAR_SCALE = 5;
+function renderHeatmapCompact(data) {
+  const el = $("sectors-compact"); if (!el) return;
+  const top = [...data].sort((a, b) => Math.abs(b.avg) - Math.abs(a.avg)).slice(0, 8)
+    .sort((a, b) => b.avg - a.avg);
+  el.innerHTML = top.map((g) => {
+    const cls = g.avg > 0 ? "up" : g.avg < 0 ? "down" : "flat";
+    const w = Math.min(Math.abs(g.avg), HM_BAR_SCALE) / HM_BAR_SCALE * 100;
+    const sign = g.avg >= 0 ? "+" : "";
+    return `<div class="hm-bar-row">
+      <span class="hm-bar-name" title="${esc(g.name)}">${esc(g.name)}</span>
+      <span class="hm-bar-track"><span class="hm-bar-fill ${cls}" style="width:${w.toFixed(1)}%"></span></span>
+      <span class="hm-bar-val ${cls}">${sign}${fmt(g.avg, 2)}%</span>
+    </div>`;
+  }).join("");
+}
+
 async function loadSectors() {
-  const el = $("sectors");
+  const el = $("sectors"), compactEl = $("sectors-compact");
   if (!el) return;
   const note = $("sectors-note");
   try {
@@ -1218,22 +1355,23 @@ async function loadSectors() {
     if (!groups.length) {
       el.classList.add("sectors");
       const hint = heatmapMarket === "otc" ? "尚無上櫃資料（櫃買報價待回補）" : "尚無個股資料";
-      el.innerHTML = `<div class="muted small">${hint}</div>`; if (note) note.textContent = ""; return;
+      el.innerHTML = `<div class="muted small">${hint}</div>`;
+      if (compactEl) compactEl.innerHTML = "";
+      if (note) note.textContent = ""; return;
     }
     // 每個產業只留市值前 N 大（後端已依市值排序）。格數越少＝格子越大＝名稱字級越大，
-    // 這是熱力圖可讀性最有效的槓桿；要密度可用「每類股檔數」切換。
+    // 這是熱力圖可讀性最有效的槓桿；要密度可用「每類股檔數」切換。緊湊橫條的 avg
+    // 也是從這個「前 N 大」算出來——兩種檢視共用同一份數字，不是各自算一次
+    // （同一個口徑只能有一份權威版本，否則哪天改了市值加權方式很容易只改到一邊）。
     const TOP_PER_SECTOR = heatmapTop;
     const shownGroups = groups.map((g) => ({ ...g, stocks: g.stocks.slice(0, TOP_PER_SECTOR) }));
     const shownStocks = shownGroups.flatMap((g) => g.stocks);
     const up = shownStocks.filter((s) => s.chg_pct > 0).length;
     const down = shownStocks.filter((s) => s.chg_pct < 0).length;
     if (note) note.textContent = `（${d.date}　各產業市值前 ${TOP_PER_SECTOR} 大　面積＝市值、顏色＝漲跌幅，點格看 K 線）`;
-    // 兩層 treemap：產業為群組（顯示產業名 + 平均漲跌），個股為色塊
     // 面積用市值平方根：台積電市值佔全市場逾四成，直接用市值會獨大到吃掉整張圖，
     // 平方根壓縮動態範圍後仍保留「大小＝市值高低」的順序，畫面才讀得清（tooltip 仍給真實市值）
     const area = (mc) => Math.sqrt(mc);
-    el.classList.remove("sectors");
-    el.style.height = "720px";   // 夠高，讓被擠到下方的小型類股格子也放得下名稱
     const data = shownGroups.map((g) => {
       const w = g.stocks.reduce((a, s) => a + s.mcap, 0) || 1;
       const avg = g.stocks.reduce((a, s) => a + (s.chg_pct || 0) * s.mcap, 0) / w;  // 市值加權平均漲跌
@@ -1246,64 +1384,83 @@ async function loadSectors() {
         })),
       };
     });
-    if (!sectorChart || sectorChart.getDom() !== el) sectorChart = initChart(el);
-    sectorChart.setOption({
-      tooltip: {
+    lastHeatmapData = data;
+    renderHeatmapCompact(data);
+    if (hmDetailExpanded) renderHeatmapDetail(data);
+    else {
+      // 收合時完全不建 treemap：省下 setOption／fitHeatmapFonts 的成本，
+      // 這是緊湊模式除了版面矮之外的另一個好處。
+      el.classList.add("hidden");
+      if (compactEl) compactEl.classList.remove("hidden");
+    }
+  } catch (e) { el.classList.add("sectors"); el.innerHTML = '<div class="muted small">熱力圖載入失敗</div>'; }
+}
+
+// 完整 treemap，只在使用者按「展開完整熱力圖」時才畫。抽成獨立函式是為了讓切換
+// 顯示模式（緊湊 ↔ 完整）能直接用 lastHeatmapData 重畫，不必為了「只是換個檢視方式」
+// 再打一次 /api/heatmap——data 沒變，變的只是要不要花這筆 setOption 的成本。
+function renderHeatmapDetail(data) {
+  const el = $("sectors"), compactEl = $("sectors-compact");
+  if (!el) return;
+  el.classList.remove("hidden", "sectors");
+  if (compactEl) compactEl.classList.add("hidden");
+  el.style.height = "720px";   // 夠高，讓被擠到下方的小型類股格子也放得下名稱
+  if (!sectorChart || sectorChart.getDom() !== el) sectorChart = initChart(el);
+  sectorChart.setOption({
+    tooltip: {
+      formatter: (p) => {
+        if (p.data.code == null) {  // 產業群組
+          const sign = p.data.avg >= 0 ? "+" : "";
+          return `${esc(p.name)}<br/>市值加權漲跌 <b>${sign}${fmt(p.data.avg, 2)}%</b><br/>總市值 ${fmt(p.data.mcap, 0)} 億`;
+        }
+        const sign = p.data.chg >= 0 ? "+" : "";
+        return `${esc(p.data.code)} ${esc(p.name)}<br/>漲跌 <b>${sign}${fmt(p.data.chg, 2)}%</b>`
+          + `<br/>市值 ${fmt(p.data.mcap, 0)} 億　${esc(p.data.sector)}<br/><span style="color:#8a94a3">點擊看 K 線</span>`;
+      },
+    },
+    series: [{
+      type: "treemap", roam: false, nodeClick: false, animationDuration: 300,
+      breadcrumb: { show: false },
+      left: 1, right: 1, top: 1, bottom: 1,
+      squareRatio: 1,           // 盡量讓格子接近正方形（而非瘦長條），名稱才放得下
+      visibleMin: 8,            // 面積過小的個股併入群組留白，避免碎到看不清
+      childrenVisibleMin: 60,
+      // 父節點（產業）頂部標籤帶：須設在 series 層級才會套用到非葉節點
+      upperLabel: {
+        show: true, height: 22, color: C.label, fontSize: 14, fontWeight: 700, fontFamily: HM_FONT,
+        formatter: (p) => `${esc(p.name)}　${p.data.avg >= 0 ? "+" : ""}${fmt(p.data.avg, 1)}%`,
+      },
+      levels: [
+        {  // 產業群組：深色邊框，父層 itemStyle 是標籤帶底色
+          itemStyle: { borderColor: "#0b0e13", borderWidth: 3, gapWidth: 3, color: "#171c24" },
+        },
+        {  // 個股色塊
+          itemStyle: { borderColor: "#0f1419", borderWidth: 1, gapWidth: 1 },
+        },
+      ],
+      // 字級由各節點自帶（label.fontSize，隨面積縮放）；此處只定共用樣式與文字。
+      // fontFamily 必須明示：ECharts 預設用 sans-serif，會與 fitHeatmapFonts 的量測字型不一致，
+      // 導致「量得下、畫出來卻被截」（曾把台達電漲跌截成「+0....」）。
+      label: {
+        show: true, overflow: "truncate", color: "#fff", fontWeight: 700, fontFamily: HM_FONT,
+        textShadowColor: "rgba(0,0,0,0.55)", textShadowBlur: 3, textShadowOffsetY: 1,  // 白字浮起、更清楚
         formatter: (p) => {
-          if (p.data.code == null) {  // 產業群組
-            const sign = p.data.avg >= 0 ? "+" : "";
-            return `${esc(p.name)}<br/>市值加權漲跌 <b>${sign}${fmt(p.data.avg, 2)}%</b><br/>總市值 ${fmt(p.data.mcap, 0)} 億`;
-          }
+          if (p.data.code == null) return "";  // 產業群組用 upperLabel，不在中間標字
           const sign = p.data.chg >= 0 ? "+" : "";
-          return `${esc(p.data.code)} ${esc(p.name)}<br/>漲跌 <b>${sign}${fmt(p.data.chg, 2)}%</b>`
-            + `<br/>市值 ${fmt(p.data.mcap, 0)} 億　${esc(p.data.sector)}<br/><span style="color:#8a94a3">點擊看 K 線</span>`;
+          return `${esc(p.name)}\n${sign}${fmt(p.data.chg, 1)}%`;
         },
       },
-      series: [{
-        type: "treemap", roam: false, nodeClick: false, animationDuration: 300,
-        breadcrumb: { show: false },
-        left: 1, right: 1, top: 1, bottom: 1,
-        squareRatio: 1,           // 盡量讓格子接近正方形（而非瘦長條），名稱才放得下
-        visibleMin: 8,            // 面積過小的個股併入群組留白，避免碎到看不清
-        childrenVisibleMin: 60,
-        // 父節點（產業）頂部標籤帶：須設在 series 層級才會套用到非葉節點
-        upperLabel: {
-          show: true, height: 22, color: C.label, fontSize: 14, fontWeight: 700, fontFamily: HM_FONT,
-          formatter: (p) => `${esc(p.name)}　${p.data.avg >= 0 ? "+" : ""}${fmt(p.data.avg, 1)}%`,
-        },
-        levels: [
-          {  // 產業群組：深色邊框，父層 itemStyle 是標籤帶底色
-            itemStyle: { borderColor: "#0b0e13", borderWidth: 3, gapWidth: 3, color: "#171c24" },
-          },
-          {  // 個股色塊
-            itemStyle: { borderColor: "#0f1419", borderWidth: 1, gapWidth: 1 },
-          },
-        ],
-        // 字級由各節點自帶（label.fontSize，隨面積縮放）；此處只定共用樣式與文字。
-        // fontFamily 必須明示：ECharts 預設用 sans-serif，會與 fitHeatmapFonts 的量測字型不一致，
-        // 導致「量得下、畫出來卻被截」（曾把台達電漲跌截成「+0....」）。
-        label: {
-          show: true, overflow: "truncate", color: "#fff", fontWeight: 700, fontFamily: HM_FONT,
-          textShadowColor: "rgba(0,0,0,0.55)", textShadowBlur: 3, textShadowOffsetY: 1,  // 白字浮起、更清楚
-          formatter: (p) => {
-            if (p.data.code == null) return "";  // 產業群組用 upperLabel，不在中間標字
-            const sign = p.data.chg >= 0 ? "+" : "";
-            return `${esc(p.name)}\n${sign}${fmt(p.data.chg, 1)}%`;
-          },
-        },
-        data,
-      }],
-    }, true);
-    sectorChart.off("click");
-    sectorChart.on("click", (p) => {
-      if (p && p.data && p.data.code) { showView("stock"); $("stock-input").value = p.data.code; loadStock(p.data.code, p.data.name); }
-    });
-    sectorChart.resize();
-    // 第二遍：依實際格子尺寸把字級調到剛好放得下。ECharts 排版在 setOption/resize 後同步就緒，
-    // 直接同步呼叫（勿用 rAF——背景分頁不觸發，會停在未調字級的狀態）
-    lastHeatmapData = data;
-    fitHeatmapFonts(data);
-  } catch (e) { el.classList.add("sectors"); el.innerHTML = '<div class="muted small">熱力圖載入失敗</div>'; }
+      data,
+    }],
+  }, true);
+  sectorChart.off("click");
+  sectorChart.on("click", (p) => {
+    if (p && p.data && p.data.code) { showView("stock"); $("stock-input").value = p.data.code; loadStock(p.data.code, p.data.name); }
+  });
+  sectorChart.resize();
+  // 第二遍：依實際格子尺寸把字級調到剛好放得下。ECharts 排版在 setOption/resize 後同步就緒，
+  // 直接同步呼叫（勿用 rAF——背景分頁不觸發，會停在未調字級的狀態）
+  fitHeatmapFonts(data);
 }
 
 // ========== 期權情緒・大額交易人 ==========
@@ -2121,6 +2278,17 @@ document.querySelectorAll(".hm-top").forEach((b) => b.addEventListener("click", 
   document.querySelectorAll(".hm-top").forEach((x) => x.classList.toggle("active", x === b));
   loadSectors();
 }));
+$("hm-detail-toggle").addEventListener("click", () => {
+  hmDetailExpanded = !hmDetailExpanded;
+  $("hm-detail-toggle").textContent = hmDetailExpanded ? "收合為緊湊檢視 ▴" : "展開完整熱力圖 ▾";
+  if (!lastHeatmapData) { loadSectors(); return; }   // 頁面剛載入就先點展開：還沒抓過資料
+  if (hmDetailExpanded) {
+    renderHeatmapDetail(lastHeatmapData);            // 資料沒變，直接用快取重畫，不必再打一次 API
+  } else {
+    $("sectors").classList.add("hidden");
+    $("sectors-compact").classList.remove("hidden");
+  }
+});
 $("btn-cup-refresh").addEventListener("click", loadCupHandle);
 document.querySelectorAll(".cup-r-tab").forEach((b) => b.addEventListener("click", () => {
   const r = Number(b.dataset.r);
@@ -2186,6 +2354,44 @@ document.querySelectorAll("#view-overview .tf").forEach((btn) => btn.addEventLis
   document.querySelectorAll("#view-overview .tf").forEach((b) => b.classList.remove("active"));
   btn.classList.add("active"); idxInterval = btn.dataset.iv; loadIndexChart();
 }));
+$("pulse-expand").addEventListener("click", () => {
+  pulseExpanded = !pulseExpanded;
+  $("pulse-expand").textContent = pulseExpanded ? "收合組成 ▴" : "展開組成 ▾";
+  $("pulse-compose").classList.toggle("hidden", !pulseExpanded);
+  if (pulseExpanded) renderPulseCompose(lastPulse);
+});
+
+// ===== 總覽區塊可收合，狀態存 localStorage =====（對應「有些功能不常用」的痛點；
+// 不刪功能，版面交給使用者自己決定）。.card-group 是靜態存在於 index.html 的節點
+// （內容之後才由各 load* 函式填入），所以收合狀態可以在腳本一載入就套用，不必等
+// 任何 API 資料回來。
+const COLLAPSE_KEY = (key) => `spr:collapse:${key}`;
+function initCollapsibleGroups() {
+  document.querySelectorAll("#view-overview .card-group[data-key]").forEach((g) => {
+    if (localStorage.getItem(COLLAPSE_KEY(g.dataset.key)) === "1") g.classList.add("collapsed");
+  });
+}
+$("view-overview").addEventListener("click", (e) => {
+  const title = e.target.closest(".group-title");
+  if (!title) return;
+  // 標題列裡可能嵌著真正的控制項（熱力圖的上市／上櫃分頁、每類股檔數切換），
+  // 點在那些控制項上要維持原本的功能，不能被這裡攔截去觸發收合。
+  if (e.target.closest("button, input, a, label")) return;
+  const group = title.closest(".card-group[data-key]");
+  if (!group) return;
+  const collapsed = group.classList.toggle("collapsed");
+  localStorage.setItem(COLLAPSE_KEY(group.dataset.key), collapsed ? "1" : "0");
+  if (!collapsed) {
+    // echarts.init 記住的是「當下」的容器尺寸，收合期間 display:none 會讓它記成 0；
+    // 展開後必須 resize() 讀回真實尺寸，否則圖表維持凍結的舊尺寸（同 CLAUDE.md
+    // 記載的既有教訓：任何容器寬度會變的圖表，改變後都要補一次 resize()）。
+    group.querySelectorAll(".chart, .pulse-gauge-chart").forEach((el) => {
+      const inst = echarts.getInstanceByDom(el);
+      if (inst) inst.resize();
+    });
+  }
+});
+initCollapsibleGroups();
 $("wave-help-toggle").addEventListener("click", (e) => { e.preventDefault(); $("wave-help").classList.toggle("hidden"); });
 $("wave-chk").addEventListener("change", (e) => { overviewWaves = e.target.checked; if (idxChart && lastIndexData) idxChart.setOption(candlestickOption(lastIndexData, lastIndexData.candles.length > 120 ? 70 : 0, overviewWaves, wavePct), true); });
 $("wave-pct").addEventListener("input", (e) => {

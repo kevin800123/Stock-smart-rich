@@ -155,6 +155,21 @@ Same flex container bites line-clamping: **`-webkit-line-clamp` does not work on
 
 **改完推播一定要實跑一次 `/api/news?slot=…&refresh=1`，把 `telegram_text` 寫到 UTF-8 檔案再讀**（`refresh=1` 是必要的，否則吃到 `news:v6:` 快取）。單元測試全綠但實跑輸出仍有四個缺陷的情況已經發生過：盤面整段三個「—」（`market_daily` 當天早上就建列、指數收盤才寫入，取最新日期必然全 NULL → 改成往回找第一筆 `taiex IS NOT NULL`）、每則被冠上字面的「短標籤：」前綴（模型把 prompt 模板的佔位字當內容照抄）、一則被拆成兩行、以及上面那條日股混美股。**這四個沒有一個是純函式測得出來的**——前三個要有真的 Gemini 回應、第四個要有真的株探清單。
 
+### 總覽版面改版（2026-08）：多欄網格、市場儀表板、置頂 KPI、可收合、熱力圖瘦身
+
+使用者痛點：總覽要一直下拉才看得到資訊（實測 5,158px＝7.2 個螢幕，viewport 720px）、左側導覽不夠精準。根因是 `.view` 是 `flex-direction:column`，每個 `.card-group` 都是整列、永遠不可能並排。
+
+**多欄網格只在 `#view-overview` 生效**（`#view-overview.active { display:grid; grid-template-columns: repeat(auto-fit, minmax(360px,1fr)); }`，用 ID 疊過 `.view.active{display:flex}` 的 specificity），其他視圖仍是既有 flex column——`.table-wrap.fill`／交易帳本頁的版面依賴那個語意。圖表與本身已寬的區塊（法人排行、大盤×籌碼對照、個股熱力圖、K線、AI 摘要）標 `.span-full` 佔滿整列。
+
+**卡片密度是這次最大的意外**：`.cards`/`.card-grid` 原本固定 `repeat(4,...)` 配合兩個**視窗寬度**斷點（1240px→3欄、800px→2欄）——這在群組變窄後完全失效，因為斷點依據的是視窗而非容器，1280px 視窗下這裡仍套 4 欄，實測卡片被壓到 102px、文字溢出。改成 `repeat(auto-fit, minmax(150px,1fr))` 後 auto-fit 天生吃容器自己的寬度，兩個視窗斷點因此整組移除（不移除會跟 auto-fit 打架）。**但這連帶暴露了一個更深的問題：把卡片多的區塊（台股大盤 8 張、期貨籌碼 6 張）硬塞進窄欄，欄數少了、內部改成更多列，實測反而更高**（352→670px）——squeezing 不是免費的。最終解法不是靠 CSS 硬凑，而是**逐一實測每個區塊在「窄欄」與「整列」下的真實高度，用實測數字決定誰該 `span-full`、誰該窄欄配對**（不是憑直覺猜）：卡片多的（台股大盤）獨立 span-full；卡片少的（期貨籌碼 6、期權情緒 4）相鄰配對讓 auto-flow 自然併列；18 格的 `mv-grid`（權值股貢獻大盤點數）窄欄下多一倍列數（309→552px），也改 span-full。**這件事沒有通用公式，只能實測**——同一個「auto-fit 網格」放不同密度的內容，窄欄可能省高度也可能賠高度，兩者都合理，差別在內容本身的密度。
+
+實測最終結果 **5,158→4,597px（7.2→6.4 screens）**，是這五項改動加總後的數字，比原先樂觀估計的「~3 screens」保守得多——`min-width:0` 那套護欄與粗體/nowrap 卡片文字（見上面「`.card` 必須有 `min-width:0`」那條）限制了卡片能縮多窄，市場儀表板／置頂 KPI 條又新增了內容而非省版面。**不要在沒有實測的情況下承諾一個縮減比例**，這次的教訓正是「聽起來合理的網格設計，實測常常不如預期」。
+
+- **市場儀表板**（半圓錶＋四分項，`ss_trader.market_pulse(checklist)` → `/api/dashboard` 的 `pulse` 鍵）：把 `market_checklist()` 的清單濃縮成一個總分。四個分項刻意各量測不同的東西（見 `ss_trader.py::market_pulse` 的完整說明）：市場健康＝加權分（bull=100/neutral=50/warn=35/bear=0）、正面因素＝純 bull 占比、風險溫度＝warn 占比（warn 是「需留意的中性警示」，不是空方訊號，故總分只溫和扣分）、資料完整度＝非 na 占比**不進總分**（資料品質是後設資訊，不該讓「今天缺兩項」看起來像「行情轉弱」）。**採計項數低於 `PULSE_MIN_ITEMS`(4) 時全部分項回 `None`**，前端顯示「資料不足」而非硬湊的 0 分。**刻意不用紅／綠**：那兩色鎖給行情漲跌，且台股慣例紅漲綠跌，若拿綠表示「健康／強」恰好撞上「綠＝跌」的既有語意；改用單一色相（`C.info` 藍）貫穿指針與強調色，強弱交給文字判讀。`checklist_inputs(c)`（`api/helpers.py`）把夜盤量比／結算週判定抽成共用函式，避免 `/api/dashboard` 與 `traders/ss.py` 各自組一份而漂移（同 Elliott wave 的規矩）。展開組成沿用「操盤手」頁同一份 `TRADER_MARK` 判定色與免責聲明字串（`api/market.py` 直接取 `traders.ss._DISCLAIMER`，不新造第二份文字）。
+- **置頂 KPI 條**（`#kpi-sticky`，`position:sticky`）：**sticky 的定位基準是最近的捲動祖先**，本站是 `.content`（`overflow-y:auto`），不是 `.view`（`.view` 是 `overflow:visible`，捲動一律交給 `.content`）。**`getBoundingClientRect().top` 量出來的「卡住」位置不是 0，是 `.content` 自己在視窗裡的偏移量**（本站 `.topbar` 高 52px，卡住時測得 52px）——這不是 bug，是把「sticky 的 `top:0`」與「viewport 座標」搞混，找 sticky 問題時先量 `.content` 的 `getBoundingClientRect().top` 再下結論。刻意不用 IntersectionObserver 控制顯示：直接放在 `.overview-top` 後面，頁面在頂端時跟上面的詳細版重疊一行（代價很小），捲過之後 sticky 自然貼頂。三個資料來源（`lastLatest`／`lastBreadth`／`lastPulse`）各自非同步到位，故 `loadDashboard`／`loadBreadth` 兩個載入點都呼叫 `renderKpiSticky()`（同 `renderVerdict` 既有作法），缺哪塊就那格顯示「—」。
+- **區塊可收合**（`.card-group[data-key]`，`localStorage` 記狀態）：CSS 只認「標題以外的所有直接子項」`display:none`，不管區塊內部長什麼樣，不必為每種內容各寫一條規則。**收合的觸發是點擊 `.group-title` 整列**，但標題列裡可能嵌著真正的控制項（熱力圖的上市/上櫃分頁），點擊委派要用 `e.target.closest("button, input, a, label")` 排除，否則點分頁按鈕會連帶觸發收合。**展開後含 `.chart` 的區塊要手動 `resize()`**——收合期間 `display:none` 讓 echarts 記住尺寸為 0（同 `echarts.init` 凍結尺寸的既有教訓），展開後不 resize 圖表會維持空白。
+- **熱力圖預設緊湊、按需展開**（`#sectors-compact` / `#sectors`，`hmDetailExpanded` 狀態）：原本單一最大區塊（820px）。緊湊版只列**動最多的 8 個產業**（依 `|avg|` 排序取前 8 再依 avg 排序），不是全部 32 個——32 個排成直向清單一列 ~26px 也要 800px+，跟展開版一樣高就沒意義了。**緊湊橫條與完整 treemap 共用同一份 `avg` 計算**（`loadSectors()` 算一次 `data`，`renderHeatmapCompact`／`renderHeatmapDetail` 各自只管畫），不是兩份各自算一次——否則哪天改了市值加權方式很容易只改到一邊。**切換顯示模式不重新打 API**：`renderHeatmapDetail(lastHeatmapData)` 直接用快取重畫，只有從未抓過資料時才落回 `loadSectors()`；實測驗證這件事時攔截 `window.fetch` 統計呼叫次數，比只看畫面對不對更可靠。收合時完全不建 treemap（省下 `setOption`／`fitHeatmapFonts` 的成本），這是緊湊模式除了版面矮之外的另一個好處。
+
 ### 高價股監控（`GET /api/rank/price`，2026-08 改版）
 
 欄位：股票／股價漲跌／成交量／成交額／**成交額較 10 日均**／**周轉率**／**法人淨額**／**資金訊號**。已移除成交量增減、獨立 10 日均額、時間欄（表格過寬）。

@@ -141,3 +141,62 @@ def test_market_checklist_lists_both_margin_markets():
     assert items["margin_maint"]["value"] == 180.1
     assert items["margin_maint_otc"]["value"] == 166.8
     assert "上市" in items["margin_maint"]["name"] and "上櫃" in items["margin_maint_otc"]["name"]
+
+
+def _item(status, key="k"):
+    return {"key": key, "name": key, "status": status, "value": None, "note": ""}
+
+
+def test_market_pulse_insufficient_sample_returns_no_score_not_zero():
+    """採計項數低於 PULSE_MIN_ITEMS 時，總分／健康／正面因素／風險溫度一律回 None，
+    不可硬湊出一個看似精準的 0 分——那會被誤讀成「市場很差」而不是「資料不夠」。"""
+    checklist = [_item("bull"), _item("na"), _item("na")]
+    pulse = ss_trader.market_pulse(checklist)
+    assert pulse["overall"] is None
+    assert pulse["health"] is None
+    assert pulse["positive"] is None
+    assert pulse["risk"] is None
+    assert pulse["sample_n"] == 1
+    assert pulse["sample_total"] == 3
+    # 資料完整度不受樣本門檻限制——它的定義就是「有幾項能算」，樣本再少也算得出來，
+    # 而且正是這種時候最需要被看見。
+    assert pulse["completeness"] == round(1 / 3 * 100, 1)
+
+
+def test_market_pulse_na_items_never_enter_any_denominator():
+    """na 項不可拉低任何分項的分數——它代表「不知道」，不是「利空」。"""
+    all_bull = [_item("bull") for _ in range(4)]
+    with_na = all_bull + [_item("na") for _ in range(4)]
+    p1 = ss_trader.market_pulse(all_bull)
+    p2 = ss_trader.market_pulse(with_na)
+    assert p1["health"] == p2["health"] == 100.0
+    assert p1["positive"] == p2["positive"] == 100.0
+    assert p1["risk"] == p2["risk"] == 0.0
+    assert p1["overall"] == p2["overall"]
+    # 但完整度要反映出差異——這是「na 不進分子分母」與「完整度看得到缺口」不矛盾的地方
+    assert p2["completeness"] < p1["completeness"]
+
+
+def test_market_pulse_components_measure_different_things():
+    """市場健康（加權分）與正面因素（純 bull 占比）刻意可以不同：
+    全部 warn 時健康是 35 分（warn 的權重），但正面因素是 0（沒有任何 bull）。"""
+    checklist = [_item("warn") for _ in range(4)]
+    pulse = ss_trader.market_pulse(checklist)
+    assert pulse["health"] == 35.0
+    assert pulse["positive"] == 0.0
+    assert pulse["risk"] == 100.0       # 風險溫度＝warn 占比，全 warn 就是 100
+
+
+def test_market_pulse_overall_formula_and_bands():
+    """總分＝0.5×健康 + 0.3×正面因素 + 0.2×(100−風險)。混合訊號時三個分項互相拉扯，
+    用具體數字鎖住公式，不是只驗證「有算出東西」。"""
+    checklist = [_item("bull"), _item("bull"), _item("warn"), _item("neutral")]
+    pulse = ss_trader.market_pulse(checklist)
+    # health = (100+100+35+50)/4 = 71.25; positive = 2/4*100 = 50; risk = 1/4*100 = 25
+    assert pulse["health"] == 71.2 or pulse["health"] == 71.3   # 四捨五入邊界，容忍一格
+    assert pulse["positive"] == 50.0
+    assert pulse["risk"] == 25.0
+    expected = round(0.5 * pulse["health"] + 0.3 * 50.0 + 0.2 * 75.0, 1)
+    assert pulse["overall"] == expected
+    assert pulse["label"]["overall"] in ("偏弱", "中性", "偏強")
+    assert pulse["label"]["risk"] == "中等"          # 25 落在 (20, 40) 之間
