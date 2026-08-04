@@ -291,7 +291,7 @@ def test_push_text_is_digested_from_full_brief_without_a_second_llm_call(tmp_pat
     body = client.get("/api/news?slot=afternoon").json()
     text = body["telegram_text"]
     assert "台股收盤上漲" in text                      # digest 解析出的標題
-    assert "__外資買超__ *120 億元*" in text            # 關鍵數據併進同一行，並加上強調
+    assert "外資買超 *120 億元*" in text                # 關鍵數據併進同一行，數字加粗
     assert "🔥 台股收盤上漲" in text                    # 首則標 🔥（靠 • 開頭才認得出來）
     assert "####" not in text and "**" not in text      # 不可把 markdown 原樣倒出去
     assert body["enabled"] is True
@@ -516,12 +516,12 @@ def test_push_body_emphasises_numbers_bold_and_keywords_underline():
     """Telegram 端與網頁同一套分工：數字粗體、關鍵詞底線（兩個不同的軸）。"""
     from stocks_power_rich.api.news import compose_push_message
 
-    body = "🇹🇼 台股｜重點掃描\n🔥 外資買超 252 億元，處置新制 8 月 10 日上路"
+    body = "🇹🇼 台股｜重點掃描\n🔥 台積電拆股 252 億元，處置新制 8 月 10 日上路"
     out = compose_push_message(body, {}, {}, "afternoon", "2026-08-04")
 
     assert "*252 億元*" in out          # 數字粗體，單位一起
-    assert "__外資買超__" in out      # 相鄰關鍵詞併成一段，避免 ____ 破壞解析
-    assert "__處置新制__" in out
+    assert "__拆股__" in out
+    assert "__處置新制__" in out     # 相鄰關鍵詞併成一段，避免 ____ 破壞解析
     assert "*8 月*" in out and "*10 日*" in out
     # 哨兵字元不可外洩到訊息裡
     for ch in ("\x01", "\x02", "\x03", "\x04"):
@@ -537,7 +537,7 @@ def test_push_emphasis_survives_markdownv2_escaping():
     out = compose_push_message(body, {}, {}, "afternoon", "2026-08-04")
 
     assert "*1\.09%*" in out          # 粗體包住已跳脫的小數
-    assert "__創新高__" in out and "__聯準會降息__" in out   # 相鄰的併成一段
+    assert "__創新高__" in out and "__降息__" in out
     # 括號等特殊字元仍然要跳脫，否則整則會被 Telegram 退件
     assert "\(" in out and "\)" in out
 
@@ -558,10 +558,10 @@ def test_adjacent_keywords_merge_into_one_span():
     配對，整則退回純文字，而且是**無聲**的（訊息照送、只是格式全失效）。"""
     from stocks_power_rich.api.news import compose_push_message
 
-    out = compose_push_message("🇺🇸 美股｜重點掃描\n🔥 聯準會降息機率升高", {}, {},
+    out = compose_push_message("🇯🇵 日股｜重點掃描\n🔥 豐田上修財測並宣布拆股", {}, {},
                                "afternoon", "2026-08-04")
     assert "____" not in out
-    assert "__聯準會降息__" in out
+    assert "__上修財測__" in out      # 相鄰的兩個關鍵詞併成一段
     assert out.count("__") % 2 == 0, "底線符號必須成對"
 
 
@@ -623,3 +623,34 @@ def test_push_bold_is_reserved_for_numbers_that_carry_a_unit():
     assert "H2O" in out and "*2*" not in out          # 名稱裡的數字不動
     assert "標普 500 指數" in out and "*500*" not in out
     assert "*8200 點*" in out and "*237 日圓*" in out  # 帶單位的量測值才粗體
+
+
+def test_keyword_list_excludes_routine_vocabulary():
+    """使用者回報「底線都劃在不關鍵的文字」。問題不是標太多（實測 18 條裡最高的
+    「財報」也只有 11%），而是這些詞在財經句子裡無所不在——它們描述每天都在發生的事，
+    不是這一則的重點。只收「改變狀態」的詞。"""
+    from stocks_power_rich.api.news import _TG_KEY
+
+    routine = ["財報", "配息", "法說", "外資", "投信", "法人", "買超", "賣超",
+               "空單", "融資", "利率", "通膨", "上路", "營收", "除息"]
+    for w in routine:
+        assert not _TG_KEY.search(w), f"{w} 是例行活動的名稱，不該當關鍵詞"
+
+    state_change = ["處置", "新制", "鬆綁", "併購", "增資", "拆股", "財測",
+                    "上修", "下修", "創新高", "漲停", "降息", "關稅"]
+    for w in state_change:
+        assert _TG_KEY.search(w), f"{w} 會改變接下來的狀態，應該標"
+
+
+def test_keyword_never_marks_a_substring_of_a_longer_word():
+    """實跑輸出過「油價與美債殖利率下行」——`利率` 被標進「殖利率」裡面。
+    每個關鍵詞都要確認不是別的常見詞的一部分。"""
+    from stocks_power_rich.api.news import compose_push_message, _TG_KEY
+
+    body = "🇺🇸 美股｜重點掃描\n🔥 油價與美債殖利率下行支撐CPO與算力股"
+    out = compose_push_message(body, {}, {}, "afternoon", "2026-08-04")
+    assert "__" not in out, "殖利率不該被切開"
+
+    # 其餘每個詞也不可出現在這些常見長詞裡
+    for longer in ("殖利率", "匯率", "獲利率", "毛利率", "周轉率", "營益率"):
+        assert not _TG_KEY.search(longer), longer
