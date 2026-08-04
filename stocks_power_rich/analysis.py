@@ -55,6 +55,27 @@ def change_histogram(pcts: list[float], lo: int = -10, hi: int = 10) -> dict:
     }
 
 
+def top_movers(rows: list[dict], n: int = 8) -> dict:
+    """漲幅／跌幅排行。rows＝[{code, name, chg_pct}] → {"up": [...], "down": [...], "n": 採計檔數}。
+
+    **過濾寫在這裡而不是呼叫端**，因為「只取 4 碼普通股」正是這份排行的定義的一部分：
+    原始報價快取約 14k 筆、6 碼權證佔絕大多數且天天漲跌停，不濾的話整個榜都是權證
+    （與 change_histogram 同一條規則、同一個宇宙）。放在純函式裡才測得到。
+
+    漲幅由高到低、跌幅由低到高；同漲跌幅時以代號排序，讓結果穩定不隨 dict 順序抖動。
+    """
+    ok = [r for r in rows
+          if str(r.get("code", "")).isdigit() and len(str(r.get("code"))) == 4
+          and r.get("chg_pct") is not None]
+    # 漲幅榜只收真的上漲的、跌幅榜只收真的下跌的。**寧可少幾列，也不要湊滿**——
+    # 全面下殺那天若把 −4% 的股票排進「漲幅排行」，那一列就是在說謊。
+    up = sorted([r for r in ok if r["chg_pct"] > 0], key=lambda r: (-r["chg_pct"], r["code"]))
+    down = sorted([r for r in ok if r["chg_pct"] < 0], key=lambda r: (r["chg_pct"], r["code"]))
+    trim = lambda xs: [{"code": r["code"], "name": r.get("name") or r["code"],
+                        "chg_pct": round(r["chg_pct"], 2)} for r in xs[:n]]
+    return {"up": trim(up), "down": trim(down), "n": len(ok)}
+
+
 def _num(v):
     return v if isinstance(v, (int, float)) and v is not None else 0.0
 

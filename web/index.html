@@ -90,8 +90,10 @@
              內部多出一倍列數，反而更高（實測 352→670px）；期貨籌碼／期權情緒卡數較少
              (6／4)，兩兩相鄰時交給下面 auto-flow 的網格自然併成一列，不必手動排版。 -->
         <div class="card-group span-full" data-key="tw"><div class="group-title">台股大盤 <span id="breadth-note" class="muted small"></span></div><div id="cards-tw" class="cards"></div></div>
-        <div class="card-group" data-key="fut"><div class="group-title">期貨籌碼</div><div id="cards-fut" class="cards"></div></div>
-        <div class="card-group" data-key="opt"><div class="group-title">期權情緒・大額交易人 <span id="opt-note" class="muted small"></span></div><div id="cards-opt" class="cards"></div></div>
+        <!-- 7 ＋ 5 ＝ 12：期貨籌碼 6 張、期權情緒 4 張，這個比例讓兩邊都排成 2 列卡片，
+             高度自然齊平。等寬(6/6)的話期權情緒只有 1 列多、會被拉高留下近 200px 空白。 -->
+        <div class="card-group span-7" data-key="fut"><div class="group-title">期貨籌碼</div><div id="cards-fut" class="cards"></div></div>
+        <div class="card-group span-5" data-key="opt"><div class="group-title">期權情緒・大額交易人 <span id="opt-note" class="muted small"></span></div><div id="cards-opt" class="cards"></div></div>
         <div class="card-group span-full" data-key="rank">
           <div class="group-title">法人買賣超排行 <span id="rank-note" class="muted small"></span></div>
           <div class="chart-toolbar">
@@ -117,6 +119,7 @@
             <label class="wave-toggle"><input type="checkbox" class="cpn" data-pane="inst" checked /> 三大法人</label>
             <label class="wave-toggle"><input type="checkbox" class="cpn" data-pane="oi" /> 外資台指未平倉</label>
             <label class="wave-toggle"><input type="checkbox" class="cpn" data-pane="ls" /> 散戶多空比</label>
+            <label class="wave-toggle"><input type="checkbox" class="cpn" data-pane="txvol" /> 台指期日／夜量能</label>
           </div>
           <div id="chipchart" class="chart"></div>
         </div>
@@ -124,11 +127,13 @@
         <div class="section-head">
           <span class="sh-title">行情</span><span class="sh-desc">漲跌集中在哪裡、外盤怎麼走</span>
         </div>
-        <!-- 全市場漲跌幅分布／國際市場相鄰：兩者窄欄下的自然高度相近（實測都約 500px），
-             並排不會被彼此拉高。權值股貢獻大盤點數改 span-full：18 格 mv-grid 塞進窄欄
-             會多出一倍列數（實測 309→552px），比多留一欄空白更划不來。 -->
-        <div class="card-group" data-key="dist"><div class="group-title">全市場漲跌幅分布 <span id="dist-note" class="muted small"></span></div><div id="dist-chart" class="chart" style="height:240px"></div></div>
-        <div class="card-group" data-key="intl"><div class="group-title">國際市場</div><div id="cards-intl" class="cards"></div></div>
+        <!-- 6 ＋ 3 ＋ 3 ＝ 12。分布圖回答「跌得廣還是跌得深」，兩個榜單回答「是誰」——
+             同一個問題的兩種解析度，放同一列才讀得起來。榜單只有兩欄文字，3 欄就夠寬。 -->
+        <div class="card-group span-6" data-key="dist"><div class="group-title">全市場漲跌幅分布 <span id="dist-note" class="muted small"></span></div><div id="dist-chart" class="chart" style="height:240px"></div></div>
+        <div class="card-group span-3" data-key="gainers"><div class="group-title">漲幅排行 <span id="movers-rank-note" class="muted small"></span></div><div id="rank-gainers" class="mover-list"></div></div>
+        <div class="card-group span-3" data-key="losers"><div class="group-title">跌幅排行</div><div id="rank-losers" class="mover-list"></div></div>
+        <!-- 國際市場改整列：6 張卡一次排開成一列（約 150px 高），比窄欄下的 3 列矮得多。 -->
+        <div class="card-group span-full" data-key="intl"><div class="group-title">國際市場</div><div id="cards-intl" class="cards"></div></div>
         <div class="card-group span-full" data-key="movers"><div class="group-title">權值股貢獻大盤點數 <span id="movers-note" class="muted small"></span></div><div id="movers" class="mv-grid"></div></div>
         <!-- 熱力圖預設只顯示緊湊的「產業強弱」橫條（最大單一區塊 820px 的主因），
              展開後才畫完整 treemap——兩者共用同一份 avg 計算（見 app.js loadSectors），
@@ -144,44 +149,6 @@
             <button id="hm-detail-toggle" class="tf" type="button">展開完整熱力圖 ▾</button>
           </span>
           <span id="sectors-note" class="muted small"></span></div><div id="sectors-compact" class="sectors-compact"></div><div id="sectors" class="sectors hidden"></div></div>
-
-        <div class="chart-row">
-          <div class="chart-side">
-            <div class="chart-side-title">商品</div>
-            <label><input type="radio" name="idx" value="taiex" checked /> 加權指數</label>
-            <label><input type="radio" name="idx" value="tx" /> 台指期</label>
-          </div>
-          <div class="chart-main">
-            <div class="chart-toolbar">
-              <button class="tf" data-iv="1h">1小時K</button>
-              <button class="tf active" data-iv="1d">日K</button>
-              <button class="tf" data-iv="1wk">週K</button>
-              <button class="tf" data-iv="1mo">月K</button>
-              <label class="wave-toggle"><input type="checkbox" id="wave-chk" /> 艾略特波浪</label>
-              <span class="wave-pct"><input type="range" id="wave-pct" min="2" max="15" step="1" value="5" /><span id="wave-pct-val">轉折 5%</span></span>
-              <a href="#" id="wave-help-toggle" class="help-link">ⓘ 波浪說明</a>
-              <span id="idx-note" class="muted"></span>
-            </div>
-            <div id="wave-help" class="wave-help hidden">
-              <b>艾略特波浪</b>：一個趨勢通常「上漲 5 浪、下跌 3 浪」。
-              <span class="dot orange">●</span><b>1–5（橘）</b>＝推動浪（順勢）；
-              <span class="dot blue">●</span><b>A–B–C（藍）</b>＝修正浪（逆勢回檔）。<br />
-              <b>轉折%（靈敏度）</b>：判定「一個轉折」所需的最小漲跌幅。<b>調小</b>→連小波動都算轉折、波浪更多更敏感；<b>調大</b>→只認大波段、波浪更少更乾淨。指數平緩看不到浪時就調小，波動大時調大較準。<br />
-              <b>怎麼判斷的</b>：先用轉折% 抓出高低轉折點，取最近一段，<b>三大鐵律全部符合才標</b>：① 第2浪不跌破第1浪起點　② 第3浪不是最短　③ 第4浪不重疊第1浪價格區。其後若接合法的逆勢三波，再加標 A–B–C。不符合就不標（不硬湊）。
-            </div>
-            <div id="idxchart" class="chart"></div>
-          </div>
-        </div>
-
-        <div id="tx-vol-panel" class="chart-row hidden">
-          <div class="chart-main">
-            <div class="chart-toolbar">
-              <b>台指期 日盤／夜盤量能比較</b>
-              <span class="muted small">（夜盤 15:00～次日05:00 收盤依規則計入次一營業日，故同列夜盤量為「前一晚」夜盤）</span>
-            </div>
-            <div id="tx-vol-chart" class="chart" style="height:220px"></div>
-          </div>
-        </div>
 
         <!-- AI 摘要收在頁尾：看完籌碼與行情之後才讀的總結，全文直接攤開不收合 -->
         <div class="ai-head"><span>AI 盤勢摘要 <span class="muted small">（每日數據到齊後自動生成）</span></span></div>
@@ -231,7 +198,18 @@
             <button class="ktf" data-iv="1mo">月</button>
           </div>
           <label class="wave-toggle"><input type="checkbox" id="stock-wave-chk" /> 艾略特波浪</label>
+          <!-- 轉折% 滑桿原本只在總覽的 K 線列裡，但 wavePct 是全站共用的變數、個股波浪
+               也吃它——總覽那列刪掉後若不搬過來，個股的波浪靈敏度就永遠卡在預設 5%。 -->
+          <span class="wave-pct"><input type="range" id="wave-pct" min="2" max="15" step="1" value="5" /><span id="wave-pct-val">轉折 5%</span></span>
+          <a href="#" id="wave-help-toggle" class="help-link">ⓘ 波浪說明</a>
           <span id="stock-note" class="muted"></span>
+        </div>
+        <div id="wave-help" class="wave-help hidden">
+          <b>艾略特波浪</b>：一個趨勢通常「上漲 5 浪、下跌 3 浪」。
+          <span class="dot orange">●</span><b>1–5（橘）</b>＝推動浪（順勢）；
+          <span class="dot blue">●</span><b>A–B–C（藍）</b>＝修正浪（逆勢回檔）。<br />
+          <b>轉折%（靈敏度）</b>：判定「一個轉折」所需的最小漲跌幅。<b>調小</b>→連小波動都算轉折、波浪更多更敏感；<b>調大</b>→只認大波段、波浪更少更乾淨。走勢平緩看不到浪時就調小，波動大時調大較準。<br />
+          <b>怎麼判斷的</b>：先用轉折% 抓出高低轉折點，取最近一段，<b>三大鐵律全部符合才標</b>：① 第2浪不跌破第1浪起點　② 第3浪不是最短　③ 第4浪不重疊第1浪價格區。其後若接合法的逆勢三波，再加標 A–B–C。不符合就不標（不硬湊）。
         </div>
         <div id="stock-profile" class="kline-profile"></div>
         <!-- K 線排在籌碼之上：查個股時先看價格走勢，再看誰在買賣（使用者要求）。

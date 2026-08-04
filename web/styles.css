@@ -349,11 +349,30 @@ body[data-public] .status-bar { display: none; }
    只在 #view-overview 生效，用 ID 疊過 `.view.active{display:flex}` 的 specificity（
    兩者都是 2 個 class 選擇器的權重，ID 保證贏，不必依賴誰寫在檔案後面）——其他視圖
    仍是既有的 flex column，`.table-wrap.fill`／交易帳本頁的版面設計依賴那個語意，
-   不能全站改。auto-fit 讓欄數依可用寬度自動變化，不寫死 2 或 3 欄。 */
+   不能全站改。
+
+   **2026-08 第二輪改用 12 欄固定格線，不再用 auto-fit。** auto-fit 只會生出「等寬的
+   N 欄」，於是每個區塊只能佔 1 欄或整列——**沒有辦法佔 2 欄**。實測 1560px 視窗下
+   內容區 1305px、auto-fit 給 3 欄各 406px，一列放 2 個區塊就必然剩下 477px 空著
+   （期貨籌碼／期權情緒、分布圖／國際市場兩列都是），這正是使用者說的「太多空白」。
+   改成 12 欄之後每個區塊自己宣告 span，同一列的 span 相加剛好 12，空白就消失；
+   span 還依「該區塊有幾張卡」挑，讓同列的卡片列數一致 → 高度自然齊平 →
+   短區塊被拉高的內部留白（實測 186/189px）同時解決。 */
 #view-overview.active {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  grid-template-columns: repeat(12, minmax(0, 1fr));
   align-content: start;
+}
+/* span 是內容決定的，不是好看決定的：卡片多的給多一點欄寬，讓它跟同列的鄰居
+   排出一樣多的卡片列數。改動任一區塊的卡片數時，這裡的 span 要跟著重算。 */
+#view-overview.active .span-7 { grid-column: span 7; }
+#view-overview.active .span-6 { grid-column: span 6; }
+#view-overview.active .span-5 { grid-column: span 5; }
+#view-overview.active .span-3 { grid-column: span 3; }
+/* 窄視窗：12 欄切不出有意義的區塊寬度（每欄只剩 ~50px），全部改為單欄堆疊。
+   斷點取 1180px——低於此值內容區約 900px，12 欄的 span-3 會窄到放不下一列榜單。 */
+@media (max-width: 1180px) {
+  #view-overview.active > * { grid-column: 1 / -1 !important; }
 }
 /* 圖表類與本身已經很寬的區塊（法人排行的雙欄榜單、大盤×籌碼對照、個股熱力圖、K線、
    AI 摘要）標 .span-full 佔滿整列寬度；section-head／chart-row／ai-head 用元素選擇器
@@ -393,8 +412,13 @@ body[data-public] .status-bar { display: none; }
    只會跟 auto-fit 打架，不是互補。（`.cards` 目前只有總覽這四張卡在用，改動範圍可控。） */
 .card-grid, .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: var(--space-md);
+  /* 138px＋10px 間距是量出來的，不是估的：台股大盤那組有 8 張卡、佔滿整列時容器內寬
+     1217px，要讓 auto-fit 排得下 8 欄需要 8×138+7×10=1174 ≤ 1217。維持 150px/16px 只排得下
+     7 欄，第 8 張會單獨掉到第二列變成孤兒。反過來也不能再壓：實測 8 欄搭 16px 間距時
+     卡片只剩 138px，`自營買賣超 -194.29 億` 這種數值就會被 .card-val 的 nowrap 擠出格子
+     （現在 143px 剛好放得下）。窄容器仍由 auto-fit 自然降成 4/3 欄，不必寫斷點。 */
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  gap: 10px;
 }
 /* min-width:0 是必要的結構護欄：grid item 預設 min-width:auto（＝min-content），
    所以卡片裡任何一行 nowrap 的長文字（.card-val/.card-note）都會把該欄撐得比
@@ -402,7 +426,11 @@ body[data-public] .status-bar { display: none; }
    有了 min-width:0，欄寬回歸 grid 控制，過長的內容改以溢出呈現（仍看得出來要修文案）。 */
 .card {
   display: flex; flex-direction: column;
-  min-width: 0; min-height: 136px; padding: var(--space-md) var(--space-lg);
+  /* min-height 從 136px 降到 104px：實測卡片內容最矮 49px、最高 103px，加上 24px 內距
+     最高也只需 127px，所以「高卡片」不受這個下限影響（它們本來就靠內容自己撐開）；
+     被墊高的是佔多數的矮卡片——實測內容 67px 的卡片被撐成 146px，等於每張白白空 55px，
+     24 張就是整頁看起來很空的主因。降到 104px 只砍掉純空白，不動任何一張卡的內容。 */
+  min-width: 0; min-height: 104px; padding: 10px var(--space-md);
   background: var(--bg-card); border: 1px solid var(--border-default); border-radius: var(--r-lg);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), var(--shadow-card);
   transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
@@ -416,7 +444,10 @@ body[data-public] .status-bar { display: none; }
 /* 26px 只留給數字。修飾語（淨多/淨空/散戶偏多）與單位降級後，「淨空 75,198 口」
    才不會在 175px 的卡片裡把「口」擠到第二行——而且真正的讀數本來就是數字，
    修飾語只是標籤，兩者同一級是排版上的誤植。 */
-.card-val { order: 2; color: var(--text-primary); font-size: var(--font-size-xl); font-weight: 700; margin: auto 0 var(--space-xs); line-height: 1.15; white-space: nowrap; }
+/* 23px 而非 --fs-xl(26px)：卡片變窄（台股大盤一列 8 張、每張約 150px）之後 26px 在
+   格子裡偏「喊」，參考的儀表板類介面數值多在 20–22px。這只是觀感刻度，**不動
+   「卡片裡最大的字只給數字」那條分層規則**——修飾語仍走 .card-qual、單位走 .card-unit。 */
+.card-val { order: 2; color: var(--text-primary); font-size: 23px; font-weight: 700; margin: auto 0 var(--space-xs); line-height: 1.15; white-space: nowrap; }
 .card-qual { order: 1; font-size: var(--font-size-sm); color: var(--text-muted); margin-top: var(--space-xs); line-height: 1.2; }
 .card-qual + .card-val { margin-top: auto; }
 .card-unit { font-size: var(--fs-sm); font-weight: 400; margin-left: 3px; }
@@ -455,6 +486,18 @@ body[data-public] .status-bar { display: none; }
 .cup-chip.active.pick::before { color: #1a5c2f; }
 
 /* ===== 權值股貢獻（色階卡片，供海期監控共用） ===== */
+/* 漲跌幅排行榜：三欄的緊湊清單（代號／名稱／漲跌%）。名稱用 min-width:0 + ellipsis，
+   長名稱（如「聯華電子」以上）才不會把漲跌% 擠出格子——同 .card 那條 grid item 預設
+   min-width:auto 會被內容撐開的教訓。整列可點，跳到個股查詢。 */
+.mover-list { display: flex; flex-direction: column; gap: 1px; }
+.mover-row { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 8px;
+  align-items: baseline; padding: 5px 6px; border-radius: var(--r);
+  color: inherit; text-decoration: none; font-size: var(--fs-data); }
+.mover-row:hover { background: var(--bg-card-hover); }
+.mover-code { color: var(--muted); font-size: var(--fs-xs); }
+.mover-name { color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mover-pct { font-weight: 650; font-variant-numeric: tabular-nums; }
+.mover-empty { padding: 10px 6px; }
 .mv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(122px, 1fr)); gap: 6px; }
 .mv-card { border: 1px solid var(--border); border-radius: var(--r); padding: 8px 10px; color: #fff; overflow: hidden; }
 /* 權值股卡的個股名在紅/綠底色上，陰影讓白字浮起、更清楚有層次 */

@@ -27,7 +27,14 @@ def _sanitize_series(dates: list, candles: list, volumes: list) -> tuple:
     last = None
     for i, c in enumerate(candles):
         o, cl, lo, hi = c
-        if None in c or o <= 0 or cl <= 0 or lo <= 0 or hi <= 0 or hi < lo:
+        # **NaN 必須明確擋掉，不能只靠 `None in c` 與大小比較**：NaN 不是 None，而且
+        # 所有跟 NaN 的比較都回 False（`nan <= 0`、`hi < lo`、跳動門檻全部不成立），
+        # 於是壞列一路通過所有守衛，直到 FastAPI 序列化才炸成
+        # `ValueError: Out of range float values are not JSON compliant: nan` → 整個
+        # 端點 500、該股 K 線完全打不開。實測 yfinance 偶爾會給出這種未完成的 bar
+        # （同一支股票早上正常、下午就 500），屬於間歇性故障，很難事後重現。
+        # `v != v` 是 NaN 的標準判定，不必 import math 也不挑型別。
+        if any(v is None or v != v for v in c) or o <= 0 or cl <= 0 or lo <= 0 or hi <= 0 or hi < lo:
             continue
         if last is not None and last > 0 and abs(cl / last - 1) > _MAX_DOD_JUMP:
             continue

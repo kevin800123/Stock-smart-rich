@@ -2385,3 +2385,55 @@ def test_kline_fallback_returns_empty_rather_than_a_misleading_chart(tmp_path, m
     client = TestClient(create_app())
 
     assert client.get("/api/stock/2615/kline?interval=1d").json()["candles"] == []
+
+
+def test_rank_movers_endpoint_merges_both_markets_and_names_them(tmp_path, monkeypatch):
+    """排行榜與漲跌幅分布同源（_quotes_for／_otc_quotes_for），上市＋上櫃合併。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.api import market as market_api
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.main import create_app
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-08-04", "taiex": 43000.0})
+
+    monkeypatch.setattr(market_api, "_quotes_for", lambda c, d: {
+        "2330": {"chg_pct": 3.2}, "2615": {"chg_pct": -7.5},
+        "031234": {"chg_pct": 10.0},          # 權證，不該進榜
+    })
+    monkeypatch.setattr(market_api, "_otc_quotes_for", lambda c, d: {
+        "6488": {"chg_pct": 9.1}, "3105": {"chg_pct": -4.0},
+    })
+    monkeypatch.setattr(market_api, "_ohlc_names",
+                        lambda c: {"2330": "台積電", "2615": "萬海", "6488": "環球晶"})
+    client = TestClient(create_app())
+
+    body = client.get("/api/rank/movers?n=3").json()
+    assert body["date"] == "2026-08-04"
+    assert [r["code"] for r in body["up"]] == ["6488", "2330"]      # 上櫃也要進榜
+    assert body["up"][0]["name"] == "環球晶"
+    assert [r["code"] for r in body["down"]] == ["2615", "3105"]
+    assert len(body["up"]) == 2      # 只有兩檔真的上漲，不湊滿 n=3
+    assert body["down"][0]["name"] == "萬海"
+    assert "031234" not in str(body)
+    # 查無名稱時退回代號，不可顯示 null
+    assert body["down"][1]["name"] == "3105"
+
+
+def test_rank_movers_clamps_n_and_survives_empty_quotes(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.api import market as market_api
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.main import create_app
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-08-04", "taiex": 43000.0})
+    monkeypatch.setattr(market_api, "_quotes_for", lambda c, d: {})
+    monkeypatch.setattr(market_api, "_otc_quotes_for", lambda c, d: {})
+    monkeypatch.setattr(market_api, "_ohlc_names", lambda c: {})
+    client = TestClient(create_app())
+
+    body = client.get("/api/rank/movers?n=999").json()      # 上限夾到 20，不可炸
+    assert body["up"] == [] and body["down"] == [] and body["n"] == 0

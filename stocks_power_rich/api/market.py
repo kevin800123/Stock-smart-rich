@@ -10,6 +10,7 @@ from .helpers import (
     _otc_industry,
     _otc_quotes_for,
     _otc_names,
+    _ohlc_names,
     _attach_size,
     get_ai_cache,
     set_ai_cache,
@@ -561,6 +562,27 @@ def _distribution(date: str | None = None):
 @router.get("/breadth/distribution")
 def breadth_distribution(date: str | None = None):
     return _distribution(date)
+
+def _movers(date: str | None = None, n: int = 8):
+    """漲幅／跌幅排行。與分布直方圖同一份報價來源、同一條 4 碼普通股規則。
+
+    **刻意不另外加一層快取**：`_quotes_for`／`_otc_quotes_for` 本身已經逐日快取，
+    這裡只是把它們排個序，成本極低。多開一個無 TTL 的快取鍵只會多一個「失敗值被
+    永久化」的面——本專案已經在 os-futures、turnover、dist 上各踩過一次。
+    """
+    c = conn()
+    date = date or _latest_date(c)
+    if not date:
+        return {"date": None, "up": [], "down": [], "n": 0}
+    names = _ohlc_names(c)
+    rows = [{"code": code, "name": names.get(code), "chg_pct": q.get("chg_pct")}
+            for src in (_quotes_for(c, date), _otc_quotes_for(c, date))
+            for code, q in src.items()]
+    return {"date": date, **analysis.top_movers(rows, n=n)}
+
+@router.get("/rank/movers")
+def rank_movers(date: str | None = None, n: int = 8):
+    return _movers(date, n=max(3, min(n, 20)))
 
 def market_summary_logic(c, refresh: int = 0):
     cfg = load_config()

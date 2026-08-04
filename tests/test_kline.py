@@ -103,3 +103,32 @@ def test_kline_waves_precomputed(monkeypatch):
     for i in range(2, 16):
         assert str(i) in out["waves"]
         assert isinstance(out["waves"][str(i)], list)
+
+
+def test_sanitize_drops_nan_rows_so_the_response_stays_json_encodable():
+    """NaN 會通過所有既有守衛：它不是 None，而且所有與 NaN 的比較都回 False
+    （nan<=0、hi<lo、跳動門檻全部不成立）。壞列因此一路走到 FastAPI 序列化才炸成
+    `Out of range float values are not JSON compliant: nan`，整個端點 500、該股 K 線
+    完全打不開。實測 yfinance 偶爾會給這種未完成的 bar（同一支股票早上好、下午 500）。"""
+    import json
+    from stocks_power_rich.sources.kline import _sanitize_series
+
+    nan = float("nan")
+    dates = ["2026-08-01", "2026-08-02", "2026-08-03"]
+    candles = [[10.0, 10.5, 9.8, 10.6], [nan, nan, nan, nan], [10.5, 10.7, 10.4, 10.8]]
+    volumes = [100, 200, 300]
+
+    d, c, v = _sanitize_series(dates, candles, volumes)
+    assert d == ["2026-08-01", "2026-08-03"]
+    assert len(c) == 2 and len(v) == 2
+    json.dumps({"dates": d, "candles": c, "volumes": v})   # 不可拋 ValueError
+
+
+def test_sanitize_drops_a_partially_nan_row():
+    """只有一欄是 NaN 也要整列丟掉——半筆 OHLC 畫不出 K 棒。"""
+    from stocks_power_rich.sources.kline import _sanitize_series
+
+    nan = float("nan")
+    d, c, _ = _sanitize_series(
+        ["d1", "d2"], [[10.0, 10.5, 9.8, 10.6], [10.0, nan, 9.9, 10.2]], [1, 2])
+    assert d == ["d1"] and len(c) == 1

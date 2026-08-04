@@ -21,11 +21,10 @@ async function getJSON(url) {
 }
 
 // ========== 圖表共用 ==========
-let idxChart, stockChart;
-let idxSymbol = "taiex", idxInterval = "1d", overviewWaves = false;
+let stockChart;
 let stockCode = "", stockInterval = "1d", stockWaves = false;
 let wavePct = 0.05;
-let lastIndexData = null, lastStockData = null;
+let lastStockData = null;
 let chipChart = null, lastHistory = [];
 // 大盤×籌碼對照圖：勾選了哪些籌碼窗格（與 index.html 的 .cpn checkbox 同步）。
 // comboKline 是這張圖自己抓的日K，刻意不共用 lastIndexData——後者會隨 K 線區塊的
@@ -34,7 +33,7 @@ let chipPanes = new Set(["margin", "inst"]), comboKline = null;
 // 判讀句需要「指數方向」(dashboard) ＋「漲跌家數」(breadth) 兩支 API 的值，但兩者分開載入。
 // 兩處呼叫點都是 loadDashboard 先 await、loadBreadth 後跑，故此處存下最新一列即可。
 let lastLatest = null, lastBands = {};
-let txVolChart = null, distChart = null;
+let distChart = null;
 let pulseChart = null, lastPulse = null, pulseExpanded = false;
 let stockChipsChart = null, stockCustodyChart = null;
 // heatmapTop 預設 5：實測 1267px 寬下，5 檔比 6 檔「顯示更多可讀標籤」(110 vs 108) 且字更大、
@@ -216,7 +215,7 @@ function candlestickOption(data, startPct, showW, pct) {
 function showView(name) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + name));
   document.querySelectorAll(".nav").forEach((n) => n.classList.toggle("active", n.dataset.view === name));
-  if (name === "overview") { idxChart && idxChart.resize(); chipChart && chipChart.resize(); sectorChart && sectorChart.resize(); txVolChart && txVolChart.resize(); distChart && distChart.resize(); }
+  if (name === "overview") { chipChart && chipChart.resize(); sectorChart && sectorChart.resize(); distChart && distChart.resize(); }
   if (name === "stock") { stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize(); }
   if (name === "rotation") { loadRotation(); loadCross(); }
   // 高價股監控輪詢：進入才啟動、切走即停——控制請求量。海期監控 2026-07 起改排程
@@ -1753,6 +1752,16 @@ const CHIP_PANES = [
       // retail_ls_mtx/tmf 是比率（如 0.139）→ ×100 以百分比呈現，與卡片一致
       { ...LP, name: "小台散戶多空比", data: at((r) => pct100(r.retail_ls_mtx)), lineStyle: { color: SER.foreign }, itemStyle: { color: SER.foreign }, markLine: zeroMark() },
       { ...LP, name: "微台散戶多空比", data: at((r) => pct100(r.retail_ls_tmf)), lineStyle: { color: SER.trust }, itemStyle: { color: SER.trust } }] },
+  // 台指期日盤／夜盤量能。原本是總覽底部一個獨立面板（只在選「台指期」時出現），
+  // 隨 K 線區塊一起收進來變成可勾選窗格。夜盤（15:00～次日 05:00）依期交所規則計入
+  // 次一營業日，所以同一列的夜盤量是「前一晚」的——與當日日盤同列正好可對照隔日情緒。
+  // 資料來自 /api/tx/volume-sessions（另一個端點），由 mergeTxVolume() 併進 lastHistory
+  // 的同日列，所以這裡跟其他窗格一樣只是讀 r.xxx，不必動 chipTrendOption 的日期聯集。
+  { key: "txvol", label: "台指期日／夜量能", unit: "口", unit2: "夜/日比", bar: true, series: (at) => [
+      { name: "日盤量", type: "bar", data: at((r) => r.tx_day_vol), itemStyle: techBar(SER.trust) },
+      { name: "夜盤量", type: "bar", data: at((r) => r.tx_night_vol), itemStyle: techBar(SER.dealer) },
+      { ...LP, name: "夜/日比", axis: 1, data: at((r) => pct100(r.tx_night_ratio)),
+        lineStyle: { color: C.accent }, itemStyle: { color: C.accent } }] },
 ];
 // 版面用 px 而非 %：窗格數會變，% 每次都要重算比例，px 直接相加。
 // 高度刻意不等分：K 線要看「形狀」（型態、均線關係）所以留最高；籌碼窗格只需看
@@ -1841,6 +1850,36 @@ function chipTrendOption(hist, kl, paneKeys) {
 // 版面完成，寬度就被記成 0，畫布維持 0px 直到有人縮視窗或切分頁才復原（間歇性、
 // 重整幾次才遇得到一次）。這裡容器高度還是動態的（窗格數會變），所以順序是
 // 先寫 inline height、再 setOption、最後 resize()——寫在 resize 之後畫布會停在舊高度。
+// 把台指期日／夜量能併進 lastHistory 的同日列。**刻意用「併進既有列」而不是把它變成
+// 日期聯集的第三方來源**：chipTrendOption 的 X 軸已經是「K線 ∪ 籌碼」兩方聯集，再加一方
+// 會讓那段本來就踩過雷的邏輯更難驗（CLAUDE.md：本機日期剛好對齊就驗不到空洞）。
+// 併進列之後這個窗格跟其他窗格完全一樣——某日沒資料就是 null，走既有且已驗證的路徑。
+// **快取的是「日期→量能」的對照表，不是「已經併好的 rows」**，而且每次畫圖都重新套用。
+// 第一版寫成「只併一次」的旗標，實測整個窗格全是 null：loadDashboard 會跑不只一次
+// （開頁一次、autoUpdate 之後再一次），每次都把 lastHistory 換成**全新的物件**，於是
+// 第一次併進去的欄位隨舊陣列一起被丟掉，而旗標又擋住重併。改成「資料快取 ＋ 每次重套」
+// 之後就與 lastHistory 何時被換掉無關了。
+let txVolByDate = null;
+async function txVolumeMap() {
+  if (txVolByDate) return txVolByDate;
+  txVolByDate = new Map();                  // 先建好空表：失敗也不重抓，缺這一格不該拖累整張圖
+  try {
+    const d = await getJSON("/api/tx/volume-sessions?days=400");
+    (d.dates || []).forEach((ds, i) => txVolByDate.set(ds, {
+      day: d.day_volume[i], night: d.night_volume[i], ratio: d.ratio[i] }));
+  } catch (e) { /* 量能抓不到就少一個窗格，其餘照畫 */ }
+  return txVolByDate;
+}
+async function mergeTxVolume(rows) {
+  if (!rows.length) return;
+  const m = await txVolumeMap();
+  rows.forEach((r) => {                     // 量能有、籌碼沒有的日期略過（X 軸由籌碼／K線決定）
+    const t = m.get(r.date);
+    if (!t) return;
+    r.tx_day_vol = t.day; r.tx_night_vol = t.night; r.tx_night_ratio = t.ratio;
+  });
+}
+
 async function loadChipTrend() {
   const el = $("chipchart");
   if (!el) return;
@@ -1849,6 +1888,7 @@ async function loadChipTrend() {
     try { comboKline = await getJSON("/api/index/kline?symbol=taiex&interval=1d"); }
     catch (e) { comboKline = null; }
   }
+  await mergeTxVolume(lastHistory);
   const note = $("combo-note");
   if (!lastHistory.length) {
     chipChart.clear();
@@ -1868,6 +1908,37 @@ async function loadChipTrend() {
 // 全市場漲跌幅分布：漲跌家數只給數量，這張給「形狀」——跌得多是廣而淺還是窄而深。
 // 長條無文字，故用亮色 C.up/C.down（同漲跌家數條與 K 線的 token 規則）；0 桶灰。
 function distBarColor(b) { return b > 0 ? C.up : b < 0 ? C.down : C.muted; }
+// 漲幅／跌幅排行榜。分布圖回答「跌得廣還是跌得深」，這兩張回答「是誰」——
+// 同一個問題的兩種解析度，所以排在同一列。名次不另外標數字：清單本身就是順序，
+// 再加一欄 1./2./3. 只是重複已經由位置表達的資訊。
+function renderMoverList(el, rows, dir) {
+  if (!rows || !rows.length) {
+    // 全面下殺那天漲幅榜可能真的是空的——講清楚是「今天沒有」而不是「載入失敗」
+    el.innerHTML = `<div class="muted small mover-empty">今日無${dir === "up" ? "上漲" : "下跌"}個股</div>`;
+    return;
+  }
+  el.innerHTML = rows.map((r) => `
+    <a class="mover-row stock" data-code="${esc(r.code)}" data-name="${esc(r.name)}" href="#">
+      <span class="mover-code">${esc(r.code)}</span>
+      <span class="mover-name">${esc(r.name)}</span>
+      <span class="mover-pct ${r.chg_pct >= 0 ? "up" : "down"}">${r.chg_pct > 0 ? "+" : ""}${fmt(r.chg_pct, 2)}%</span>
+    </a>`).join("");
+}
+
+async function loadMoverRanks() {
+  const g = $("rank-gainers"), l = $("rank-losers");
+  if (!g || !l) return;
+  try {
+    const d = await getJSON("/api/rank/movers?n=8");
+    renderMoverList(g, d.up, "up");
+    renderMoverList(l, d.down, "down");
+    const note = $("movers-rank-note");
+    if (note) note.textContent = d.n ? `（共 ${fmt(d.n, 0)} 檔）` : "";
+  } catch (e) {
+    g.innerHTML = l.innerHTML = `<div class="muted small mover-empty">載入失敗</div>`;
+  }
+}
+
 async function loadDistribution() {
   const el = $("dist-chart"); if (!el) return;
   if (!distChart) distChart = initChart(el);
@@ -1910,56 +1981,6 @@ async function loadDistribution() {
   } catch (e) { distChart.clear(); }
 }
 
-async function loadIndexChart() {
-  if (!idxChart) idxChart = initChart($("idxchart"));
-  idxChart.showLoading();
-  try {
-    const d = await getJSON(`/api/index/kline?symbol=${idxSymbol}&interval=${idxInterval}`);
-    idxChart.hideLoading();
-    if (!d.candles || !d.candles.length) { idxChart.clear(); $("idx-note").textContent = "尚無資料"; return; }
-    $("idx-note").textContent = d.proxy ? "（台指期歷史抓取失敗，暫以加權指數近似）" : (idxSymbol === "tx" ? "（台指期：期交所近月歷史日K）" : "");
-    lastIndexData = d;
-    idxChart.setOption(candlestickOption(d, d.candles.length > 120 ? 70 : 0, overviewWaves, wavePct), true);
-    idxChart.resize();      // 同 loadChipTrend：不依賴 init 當下的容器尺寸
-  } catch (e) { idxChart.hideLoading(); $("idx-note").textContent = "載入失敗：" + e.message; }
-  const panel = $("tx-vol-panel");
-  if (panel) {
-    if (idxSymbol === "tx") { panel.classList.remove("hidden"); loadTxVolumeChart(); }
-    else panel.classList.add("hidden");
-  }
-}
-
-function txVolumeOption(d) {
-  const dates = d.dates.map((x) => x.slice(5));
-  return {
-    tooltip: { trigger: "axis" },
-    legend: { textStyle: { color: "#ccc" }, top: 0 },
-    grid: { left: 56, right: 56, top: 30, bottom: 26 },
-    xAxis: { type: "category", data: dates, axisLabel: { color: "#999" } },
-    yAxis: [
-      { type: "value", name: "口", axisLabel: { color: "#999" } },
-      { type: "value", name: "夜/日比", position: "right", axisLabel: { color: "#999" }, splitLine: { show: false } },
-    ],
-    series: [
-      { name: "日盤量", type: "bar", data: d.day_volume, itemStyle: { color: SER.trust } },
-      { name: "夜盤量", type: "bar", data: d.night_volume, itemStyle: { color: SER.foreign } },
-      { name: "夜/日比", type: "line", yAxisIndex: 1, data: d.ratio, symbolSize: 4,
-        lineStyle: { color: C.up }, itemStyle: { color: C.up } },
-    ],
-  };
-}
-async function loadTxVolumeChart() {
-  const el = $("tx-vol-chart");
-  if (!el) return;
-  if (!txVolChart) txVolChart = initChart(el);
-  try {
-    const d = await getJSON("/api/tx/volume-sessions?days=60");
-    if (!d.dates || !d.dates.length) { txVolChart.clear(); return; }
-    txVolChart.setOption(txVolumeOption(d), true);
-    txVolChart.resize();    // 同上；此圖藏在 .hidden 面板裡，init 時尺寸為 0 更是常態
-  } catch (e) { txVolChart.clear(); }
-}
-
 async function loadMarketSummary(refresh) {
   const box = $("market-summary"); box.textContent = "AI 生成中…";
   try { const s = await getJSON("/api/market/summary" + (refresh ? "?refresh=1" : "")); box.textContent = s.text || ""; box.classList.toggle("disabled", !s.enabled); }
@@ -1989,7 +2010,7 @@ async function autoUpdate() {
     const fail = (res.failed || []).map((f) => f.name).join("、");
     bar.innerHTML = fail ? `已自動更新（部分來源未取得：${fail}）` : "✅ 已自動更新";
     bar.className = "status-bar " + (fail ? "warn" : "ok");
-    await loadDashboard(); await loadIndexChart(); loadBreadth(); loadDistribution(); loadMovers(); loadSectors(); loadMarketSummary(false);
+    await loadDashboard(); loadBreadth(); loadDistribution(); loadMoverRanks(); loadMovers(); loadSectors(); loadMarketSummary(false);
     setTimeout(() => bar.classList.add("hidden"), 5000);
   } catch (e) {
     bar.textContent = "自動更新失敗：" + e.message; bar.className = "status-bar err";
@@ -2348,12 +2369,9 @@ $('btn-telegram-test').addEventListener("click", async () => {
 });
 $("btn-news-refresh").addEventListener("click", () => loadNews(true));
 
-// 大盤圖控制
-document.querySelectorAll('input[name="idx"]').forEach((el) => el.addEventListener("change", (e) => { idxSymbol = e.target.value; loadIndexChart(); }));
-document.querySelectorAll("#view-overview .tf").forEach((btn) => btn.addEventListener("click", () => {
-  document.querySelectorAll("#view-overview .tf").forEach((b) => b.classList.remove("active"));
-  btn.classList.add("active"); idxInterval = btn.dataset.iv; loadIndexChart();
-}));
+// （原本這裡有一組 `#view-overview .tf` 的週期切換 handler，隨總覽 K 線一起移除。
+//   **必須整組刪掉而不是留著**：熱力圖的「展開完整熱力圖」按鈕也掛 .tf，留著會被它
+//   誤觸並呼叫已刪除的 loadIndexChart——同 CLAUDE.md 記過的 .ctf 全域 handler 誤傷事件。）
 $("pulse-expand").addEventListener("click", () => {
   pulseExpanded = !pulseExpanded;
   $("pulse-expand").textContent = pulseExpanded ? "收合組成 ▴" : "展開組成 ▾";
@@ -2393,10 +2411,14 @@ $("view-overview").addEventListener("click", (e) => {
 });
 initCollapsibleGroups();
 $("wave-help-toggle").addEventListener("click", (e) => { e.preventDefault(); $("wave-help").classList.toggle("hidden"); });
-$("wave-chk").addEventListener("change", (e) => { overviewWaves = e.target.checked; if (idxChart && lastIndexData) idxChart.setOption(candlestickOption(lastIndexData, lastIndexData.candles.length > 120 ? 70 : 0, overviewWaves, wavePct), true); });
 $("wave-pct").addEventListener("input", (e) => {
   wavePct = Number(e.target.value) / 100; $("wave-pct-val").textContent = `轉折 ${e.target.value}%`;
-  if (overviewWaves && idxChart && lastIndexData) idxChart.setOption(candlestickOption(lastIndexData, lastIndexData.candles.length > 120 ? 70 : 0, overviewWaves, wavePct), true);
+  // 滑桿原本只重畫總覽那張圖；隨 K 線列搬到個股頁後必須改重畫個股圖，否則拖動滑桿
+  // 只有數字會變、線不會動（實測過：標籤跳到「轉折 12%」但圖完全沒變），
+  // 使用者只會覺得這個控制項壞了。
+  if (stockWaves && stockChart && lastStockData) {
+    stockChart.setOption(candlestickOption(lastStockData, lastStockData.candles.length > 120 ? 60 : 0, stockWaves, wavePct), true);
+  }
 });
 
 // 個股圖控制
@@ -2468,7 +2490,7 @@ document.querySelectorAll(".rku").forEach((b) => b.addEventListener("click", () 
   document.querySelectorAll(".rku").forEach((x) => x.classList.toggle("active", x === b));
   rankUnit = b.dataset.unit; loadInstRanking();
 }));
-window.addEventListener("resize", () => { idxChart && idxChart.resize(); stockChart && stockChart.resize(); chipChart && chipChart.resize(); stockChipsChart && stockChipsChart.resize(); if (sectorChart) { sectorChart.resize(); if (lastHeatmapData) fitHeatmapFonts(lastHeatmapData); } cupChart && cupChart.resize(); txVolChart && txVolChart.resize(); distChart && distChart.resize(); });
+window.addEventListener("resize", () => { stockChart && stockChart.resize(); chipChart && chipChart.resize(); stockChipsChart && stockChipsChart.resize(); if (sectorChart) { sectorChart.resize(); if (lastHeatmapData) fitHeatmapFonts(lastHeatmapData); } cupChart && cupChart.resize(); distChart && distChart.resize(); });
 // 粉圓/M PLUS 是 async 載入。若熱力圖在字型載入前已排版，measureText 量到的是系統字寬度，
 // 字型 swap 後實際寬度改變 → 可能截字。字型就緒後重跑一次字級擬合（重用既有 refit 路徑）。
 if (document.fonts && document.fonts.ready) {
@@ -2480,9 +2502,9 @@ if (document.fonts && document.fonts.ready) {
   // 公開模式：只跑總覽所需的唯讀載入。設定/跨週非總覽；autoUpdate 會 POST /api/update/run
   // （寫 DB、打外部 API），匿名訪客絕不可觸發。
   const d = await loadDashboard();
-  loadIndexChart();
   loadBreadth();
   loadDistribution();
+  loadMoverRanks();
   loadMovers();
   loadSectors();
   loadMarketSummary(false);  // 讀快取即回；排程更新完會自動預先生成，開頁不另扣費
