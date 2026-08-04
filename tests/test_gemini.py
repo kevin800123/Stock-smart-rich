@@ -229,3 +229,83 @@ def test_run_logs_the_full_error_but_returns_only_the_short_one(monkeypatch, cap
     assert "今日免費額度" in out["text"]
     logged = capsys.readouterr().out
     assert "RESOURCE_EXHAUSTED" in logged and "PerDay" in logged
+
+
+def _fake_client(behaviour):
+    """behaviour: {model: Exception 或 回傳文字}"""
+    class Models:
+        def generate_content(self, model, contents, config=None):
+            r = behaviour[model]
+            if isinstance(r, Exception):
+                raise r
+            class Resp:
+                text = r
+                usage_metadata = type("U", (), {
+                    "prompt_token_count": 1, "candidates_token_count": 1,
+                    "thoughts_token_count": None, "total_token_count": 2})()
+            return Resp()
+    return type("C", (), {"models": Models()})()
+
+
+def test_run_falls_over_to_the_next_model_when_the_daily_quota_is_gone(monkeypatch, capsys):
+    """免費層額度是「每日 × 每專案 × 每模型」，所以主力用完還有別的可用。
+    自動退比等人發現「今天推播都沒有 AI」再手動改 MODEL 重新部署好。"""
+    from stocks_power_rich import gemini
+
+    quota = Exception("429 RESOURCE_EXHAUSTED free_tier PerDay limit: 20")
+    monkeypatch.setattr(gemini, "MODELS", ("m-a", "m-b", "m-c"))
+    monkeypatch.setattr(gemini, "genai_client",
+                        lambda k: _fake_client({"m-a": quota, "m-b": quota, "m-c": "成功"}))
+
+    out = gemini._run("p", "k")
+    assert out["enabled"] is True
+    assert out["text"] == "成功"
+    assert out["model"] == "m-c"
+    assert "改試下一個模型" in capsys.readouterr().out
+
+
+def test_run_does_not_burn_other_models_on_a_non_quota_error(monkeypatch):
+    """提示詞／金鑰／參數問題換模型也不會好，硬換只是把同一個錯誤重打三次、
+    白燒另外兩個模型的額度。"""
+    from stocks_power_rich import gemini
+
+    tried = []
+
+    class Models:
+        def generate_content(self, model, contents, config=None):
+            tried.append(model)
+            raise Exception("403 PERMISSION_DENIED")
+
+    monkeypatch.setattr(gemini, "MODELS", ("m-a", "m-b", "m-c"))
+    monkeypatch.setattr(gemini, "genai_client",
+                        lambda k: type("C", (), {"models": Models()})())
+
+    out = gemini._run("p", "k")
+    assert out["enabled"] is False
+    assert tried == ["m-a"], "非配額錯誤不該繼續試其他模型"
+    assert "金鑰" in out["text"]
+
+
+def test_run_reports_friendly_error_when_every_model_is_exhausted(monkeypatch):
+    from stocks_power_rich import gemini
+
+    quota = Exception("429 RESOURCE_EXHAUSTED free_tier PerDay limit: 20")
+    monkeypatch.setattr(gemini, "MODELS", ("m-a", "m-b"))
+    monkeypatch.setattr(gemini, "genai_client",
+                        lambda k: _fake_client({"m-a": quota, "m-b": quota}))
+
+    out = gemini._run("p", "k")
+    assert out["enabled"] is False
+    assert "今日免費額度" in out["text"]
+    assert "{" not in out["text"]
+
+
+def test_model_list_excludes_models_the_free_tier_cannot_use():
+    """實測 2.0 系列在免費層 limit=0，列進去只會浪費一次往返。"""
+    from stocks_power_rich import gemini
+
+    assert gemini.MODEL == gemini.MODELS[0]
+    assert len(gemini.MODELS) >= 2
+    for m in gemini.MODELS:
+        assert not m.startswith("gemini-2."), m
+        assert "latest" not in m

@@ -8,11 +8,17 @@ import json
 # 輸出格式與品質跟著漂移而沒有任何錯誤——與本專案「寧可大聲壞掉，也不要安靜地錯」
 # 的一貫取捨一致（同 資料日 D／快取守衛 那幾條）。
 # 免費層的請求上限是 **每日、每專案、每模型**（`GenerateRequestsPerDayPerProjectPerModel`），
-# 3.6-flash 實測只有 **20 次/天**。本專案正常一天只用 ~6 次（4 場新聞＋1 次盤勢＋零星），
-# 20 次原本夠用，但幾乎沒有容錯——換模型時做幾輪比較測試就會把當天額度吃光。
-# 換到 3.5-flash 取得獨立額度；它也是唯一同時接受 thinking_budget=0 與 thinking_level 的，
-# 對設定比較寬容。**額度是分模型計的，所以要壓測請換一個不在正式路徑上的模型。**
-MODEL = "gemini-3.5-flash"
+# 實測 20 次/天。本專案正常一天只用 ~6 次（4 場新聞＋1 次盤勢＋零星），20 次原本夠用，
+# 但幾乎沒有容錯：做幾輪模型比較測試就會把當天額度吃光，接下來整天的推播都沒有 AI 內文。
+#
+# **既然額度是分模型計的，就依序退。** 主力用不了就換下一個，等效額度從 20 變成約 60，
+# 而且是**自動**的——不必等人發現「今天推播都沒有 AI」再手動改 MODEL 重新部署。
+# 順序＝品質優先：3.6-flash（最新）→ 3.5-flash → 3.1-flash-lite（最省、預設就不思考）。
+# 三個都實測接受 `thinking_level="minimal"`。2.0 系列不列入：免費層 `limit=0`，根本不給用。
+# 仍然刻意釘明確版本而不用 `gemini-flash-latest` 別名——釘版本壞掉是 404、吵、看得見、
+# 好修；別名會某天無聲換模型讓輸出格式與品質漂移（同「寧可大聲壞掉，不要安靜地錯」）。
+MODELS = ("gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite")
+MODEL = MODELS[0]      # 對外顯示與測試用的主力模型名
 
 
 def genai_client(api_key: str):
@@ -65,22 +71,42 @@ def friendly_error(exc) -> str:
     return f"（AI 摘要失敗：{s.splitlines()[0][:120]}）"
 
 
+def _is_quota_error(exc) -> bool:
+    s = str(exc)
+    return "RESOURCE_EXHAUSTED" in s or "429" in s
+
+
 def _run(prompt: str, api_key: str, *, thinking: bool = True) -> dict:
+    """依 `MODELS` 順序嘗試，**只有配額用盡才換下一個**。
+
+    其他錯誤（提示詞問題、金鑰無效、模型參數不合）換模型也不會好，硬換只是把同一個
+    錯誤重打三次、白燒另外兩個模型的額度，所以立刻停。
+    """
     if not api_key:
         return {"enabled": False, "text": "（未啟用 AI 摘要：未設定 GEMINI_API_KEY）"}
     try:
         client = genai_client(api_key)
-        resp = client.models.generate_content(
-            model=MODEL, contents=prompt, config=_thinking_config(thinking))
-        _log_usage(resp, thinking)
-        return {"enabled": True, "text": resp.text}
-    except Exception as e:  # noqa: BLE001 — 失敗即降級，不影響數據功能
-        # 完整例外只進日誌；畫面上給一句人看得懂的話（見 friendly_error）
-        print(f"[gemini] ERROR {type(e).__name__}: {e}", flush=True)
+    except Exception as e:  # noqa: BLE001 — 建 client 就失敗（金鑰格式等）也要降級，不可往外拋
+        print(f"[gemini] ERROR client {type(e).__name__}: {e}", flush=True)
         return {"enabled": False, "text": friendly_error(e)}
+    last = None
+    for i, model in enumerate(MODELS):
+        try:
+            resp = client.models.generate_content(
+                model=model, contents=prompt, config=_thinking_config(thinking))
+            _log_usage(resp, thinking, model)
+            return {"enabled": True, "text": resp.text, "model": model}
+        except Exception as e:  # noqa: BLE001 — 失敗即降級，不影響數據功能
+            last = e
+            print(f"[gemini] ERROR model={model} {type(e).__name__}: {e}", flush=True)
+            if not _is_quota_error(e) or i == len(MODELS) - 1:
+                break
+            print(f"[gemini] 配額用盡，改試下一個模型：{MODELS[i + 1]}", flush=True)
+    # 完整例外只進日誌；畫面上給一句人看得懂的話（見 friendly_error）
+    return {"enabled": False, "text": friendly_error(last)}
 
 
-def _log_usage(resp, thinking: bool) -> None:
+def _log_usage(resp, thinking: bool, model: str = MODEL) -> None:
     """把每次呼叫的 token 用量印到 stdout（Zeabur 會收）。
 
     這次「月額度用盡」是**完全無聲**地發生的——撞上限前沒有任何跡象可查。
@@ -88,7 +114,7 @@ def _log_usage(resp, thinking: bool) -> None:
     """
     try:
         u = resp.usage_metadata
-        print(f"[gemini] thinking={'on' if thinking else 'off'} "
+        print(f"[gemini] model={model} thinking={'on' if thinking else 'off'} "
               f"in={u.prompt_token_count} out={u.candidates_token_count} "
               f"thoughts={getattr(u, 'thoughts_token_count', None)} "
               f"total={u.total_token_count}", flush=True)
