@@ -5,7 +5,8 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter
 
 from .deps import conn
-from .helpers import get_ai_cache, set_ai_cache
+from .helpers import (get_ai_cache, set_ai_cache, ai_cooling_down,
+                      note_ai_failure, bump_ai_calls)
 from .. import gemini, telegram_push
 from ..config import load_config
 from ..sources import news
@@ -341,7 +342,16 @@ def news_logic(c, slot: str | None = None, refresh: int = 0) -> dict:
     cfg = load_config()
     snapshot = _snapshot_from_market_daily(c)
     request_payload = {"slot": slot, "report_date": today, "snapshot": snapshot, "markets": markets}
-    result = gemini.summarize_news(request_payload, cfg.gemini_api_key)
+    if not refresh and ai_cooling_down(c):
+        # 剛失敗過就先不打（免費層一天只有 20 次，重試要克制）。新聞標題照樣抓、
+        # 照樣顯示，少的只有 AI 摘要那一段。按「更新摘要」可以穿透這個冷卻。
+        result = {"enabled": False, "text": _AI_UNAVAILABLE_NOTE}
+    else:
+        result = gemini.summarize_news(request_payload, cfg.gemini_api_key)
+        if result.get("enabled"):
+            bump_ai_calls(c)
+        else:
+            note_ai_failure(c)
     summary = result.get("text", "")
     # 推播條列由 Python 從完整版壓出來，不再為了「同一份素材的另一種寫法」
     # 多打一次 Gemini（見 telegram_digest 的說明）。

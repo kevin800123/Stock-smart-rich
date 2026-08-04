@@ -11,11 +11,12 @@ from .helpers import (
     _push_line,
     _intraday_scan,
     _insti_for,
+    ai_calls_today,
     REPO_DIR
 )
 from ..db import get_setting, set_setting, get_snapshot_dates, get_tx_history, get_ai_cache, backup_db
 from ..config import load_config
-from .. import updater
+from .. import updater, gemini
 
 router = APIRouter(prefix="/api")
 
@@ -196,6 +197,10 @@ def get_settings(request: Request):
     last_date = _latest_date(c)
     return {
         "gemini_configured": bool(cfg.gemini_api_key),
+        # 免費層是每日 × 每專案 × 每模型 20 次，撞上限前完全沒有跡象可查（實際發生過，
+        # 網頁突然整段吐 429 原文）。只回次數，不回金鑰。
+        "gemini_calls_today": ai_calls_today(c),
+        "gemini_model": gemini.MODEL,
         "line_configured": bool(cfg.line_token),
         "line_webhook_configured": bool(cfg.line_secret),   # 只回布林，絕不外洩 secret
         "telegram_configured": bool(cfg.telegram_token and cfg.telegram_chat_id),

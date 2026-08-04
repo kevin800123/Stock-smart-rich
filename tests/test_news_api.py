@@ -413,3 +413,50 @@ def test_digest_ignores_colon_inside_the_bold_label():
     assert "• 關鍵數據" not in out and "🔥 關鍵數據" not in out
     assert "Lasertec" in out and "JUKI" in out
     assert len([ln for ln in out.splitlines() if ln.startswith(("•", "🔥"))]) == 2
+
+
+def test_ai_failure_starts_a_cooldown_so_page_loads_dont_retry_every_time(tmp_path, monkeypatch):
+    """免費層一天只有 20 次。不快取失敗是對的（免得把失敗永久化），但單獨存在就會
+    變成重試風暴——每次進頁面都重打一次。失敗後要靜置一段時間。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.api import news as news_api
+    from stocks_power_rich.main import create_app
+
+    calls = {"n": 0}
+
+    def failing(*a, **k):
+        calls["n"] += 1
+        return {"enabled": False, "text": "（AI 摘要失敗：429 RESOURCE_EXHAUSTED.）"}
+
+    monkeypatch.setattr(news_api.news, "fetch_market_news", lambda *a, **k: ([], False))
+    monkeypatch.setattr(news_api.gemini, "summarize_news", failing)
+    client = TestClient(create_app())
+
+    for _ in range(4):
+        body = client.get("/api/news?slot=afternoon").json()
+        assert "429" not in body["telegram_text"]      # 錯誤原文仍不可進推播正文
+    assert calls["n"] == 1, "冷卻期內不該一直重打 Gemini"
+
+    # 使用者按「更新摘要」是明確意圖，可以穿透冷卻
+    client.get("/api/news?slot=afternoon&refresh=1")
+    assert calls["n"] == 2
+
+
+def test_successful_ai_calls_are_counted_for_the_free_tier_ceiling(tmp_path, monkeypatch):
+    """撞到每日 20 次上限前完全沒有跡象可查（實際發生過），所以要能看到今天用了幾次。
+    被 429 擋掉的請求本來就沒算進當日配額，因此只計成功的。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.api import news as news_api
+    from stocks_power_rich.main import create_app
+
+    brief = "#### 🇹🇼 台股｜6 則精選\n* 🔥 **台股收盤上漲**\n"
+    monkeypatch.setattr(news_api.news, "fetch_market_news", lambda *a, **k: ([], False))
+    monkeypatch.setattr(news_api.gemini, "summarize_news",
+                        lambda *a, **k: {"enabled": True, "text": brief})
+    client = TestClient(create_app())
+
+    assert client.get("/api/settings").json()["gemini_calls_today"] == 0
+    client.get("/api/news?slot=afternoon")
+    assert client.get("/api/settings").json()["gemini_calls_today"] == 1
+    client.get("/api/news?slot=afternoon")            # 走快取，不該再計一次
+    assert client.get("/api/settings").json()["gemini_calls_today"] == 1

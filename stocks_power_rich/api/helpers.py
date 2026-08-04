@@ -554,6 +554,43 @@ def _push_line(c, full: bool, force: bool = False) -> dict:
 # 成本低故保留。`refresh=True`（手動按鈕／排程 job）繞過冷卻。
 _OSFUT_FAIL_COOLDOWN = 300  # 秒
 
+# Gemini 免費層是 **每日 × 每專案 × 每模型 20 次**，額度很淺。呼叫失敗時我們刻意
+# 不寫快取（免得把失敗永久化），但「不快取失敗」單獨存在就會變成重試風暴——每次
+# 進頁面都重打一次。這裡沿用 `_osfut_cooling_down` 那套：失敗後靜置一段時間再試。
+# 使用者按「更新摘要」（refresh=1）是明確意圖，可以穿透冷卻。
+_AI_FAIL_COOLDOWN = 900  # 秒（15 分鐘；免費層一天只有 20 次，重試要克制）
+
+
+def ai_cooling_down(c) -> bool:
+    fail = get_ai_cache(c, "ai:fail_at")
+    if not fail:
+        return False
+    try:
+        return (datetime.now() - datetime.fromisoformat(fail["at"])).total_seconds() < _AI_FAIL_COOLDOWN
+    except (KeyError, ValueError, TypeError):
+        return False
+
+
+def note_ai_failure(c) -> None:
+    set_ai_cache(c, "ai:fail_at", {"at": datetime.now().isoformat()})
+
+
+def bump_ai_calls(c) -> int:
+    """記錄今天成功打了幾次 Gemini，讓設定頁看得到離 20 次上限還有多遠。
+
+    這次額度用盡是**完全無聲**發生的——撞上限前沒有任何可查的跡象，網頁才突然
+    整段吐出 429 原文。只算成功的呼叫：被 429 擋掉的請求本來就沒算進當日配額。
+    """
+    key = f"aicalls:{datetime.now().strftime('%Y-%m-%d')}"
+    n = (get_ai_cache(c, key) or {}).get("n", 0) + 1
+    set_ai_cache(c, key, {"n": n})
+    return n
+
+
+def ai_calls_today(c) -> int:
+    key = f"aicalls:{datetime.now().strftime('%Y-%m-%d')}"
+    return (get_ai_cache(c, key) or {}).get("n", 0)
+
 
 def _osfut_cooling_down(c) -> bool:
     fail = get_ai_cache(c, "osfut:fail_at")

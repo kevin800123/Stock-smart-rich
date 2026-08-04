@@ -15,6 +15,9 @@ from .helpers import (
     set_ai_cache,
     _os_futures,
     _turnover_for,
+    ai_cooling_down,
+    note_ai_failure,
+    bump_ai_calls,
 )
 from ..sources import twse, taifex, mis, tpex
 from .. import analysis, gemini, ss_trader, traders
@@ -618,9 +621,14 @@ def market_summary_logic(c, refresh: int = 0):
     sectors = {"領漲(%)": [[s["name"], s["chg_pct"]] for s in secs[:3]],
                "領跌(%)": [[s["name"], s["chg_pct"]] for s in secs[-3:][::-1]]}
     payload = {"最新盤後": latest, "近6日走勢": trend, "類股": sectors}
+    if not refresh and ai_cooling_down(c):
+        return {"enabled": False, "text": "（AI 摘要暫時無法使用，稍後自動重試）"}
     result = gemini.summarize_market(payload, cfg.gemini_api_key)
     if result.get("enabled"):
+        bump_ai_calls(c)
         set_ai_cache(c, key, result)
+    else:
+        note_ai_failure(c)
     return result
 
 @router.get("/market/summary")
