@@ -654,3 +654,59 @@ def test_keyword_never_marks_a_substring_of_a_longer_word():
     # 其餘每個詞也不可出現在這些常見長詞裡
     for longer in ("殖利率", "匯率", "獲利率", "毛利率", "周轉率", "營益率"):
         assert not _TG_KEY.search(longer), longer
+
+
+def test_ai_failure_still_pushes_real_headlines_not_just_an_apology(tmp_path, monkeypatch):
+    """實際收到過的 21:10 推播只有盤面加一句「AI 摘要暫時無法使用」，內容整段消失——
+    但那時三個市場的新聞**都已經抓回來了**，等於白白丟掉 60 則標題。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.api import news as news_api
+    from stocks_power_rich.main import create_app
+
+    def fake_fetch(market, n=20, now=None):
+        return ([{"title": f"{market} 頭條{i}", "url": f"https://x/{market}{i}",
+                  "source": "來源"} for i in range(1, 9)], False)
+
+    monkeypatch.setattr(news_api.news, "fetch_market_news", fake_fetch)
+    monkeypatch.setattr(news_api.gemini, "summarize_news",
+                        lambda *a, **k: {"enabled": False, "text": "（AI 摘要暫停：已用完今日免費額度）"})
+    client = TestClient(create_app())
+
+    text = client.get("/api/news?slot=evening").json()["telegram_text"]
+    assert "標題快覽" in text
+    assert "us 頭條1" in text and "jp 頭條1" in text and "tw 頭條1" in text
+    assert "🔥" in text                      # 首則仍標重點
+    assert "非投資建議" in text
+    # 每市場只取 6 則，不是把 8 則全倒出來
+    assert "頭條7" not in text and "頭條8" not in text
+
+
+def test_headline_fallback_still_filters_investment_advice():
+    """標題是媒體原文、沒有經過 AI 改寫，出現「逢低布局」這類字眼的機率反而更高，
+    所以那道過濾在這條路徑上更重要。"""
+    from stocks_power_rich.api.news import headline_digest, strip_advice_lines
+
+    markets = {"tw": [{"title": "台股逢低布局清單曝光"}, {"title": "證交所公布處置新制"}],
+               "jp": [], "us": []}
+    out = headline_digest(markets, "afternoon")
+    assert out.count("• ") == 2
+    filtered, dropped = strip_advice_lines(out)
+    assert dropped == 1 and "逢低布局" not in filtered and "處置新制" in filtered
+
+
+def test_headline_fallback_degrades_to_the_note_when_no_news_either():
+    """連新聞都沒抓到時才回到那句說明——這時是真的無話可說。"""
+    from stocks_power_rich.api.news import headline_digest, _AI_UNAVAILABLE_NOTE
+
+    assert headline_digest({"tw": [], "jp": [], "us": []}, "evening") == _AI_UNAVAILABLE_NOTE
+
+
+def test_headline_fallback_follows_the_slot_market_order():
+    """晚間場先美股、收盤場先台股——與 telegram_digest 同一套 _PUSH_PLAN 順序。"""
+    from stocks_power_rich.api.news import headline_digest
+
+    mk = {m: [{"title": f"{m}頭條"}] for m in ("tw", "us", "jp")}
+    evening = headline_digest(mk, "evening")
+    afternoon = headline_digest(mk, "afternoon")
+    assert evening.index("us頭條") < evening.index("tw頭條")
+    assert afternoon.index("tw頭條") < afternoon.index("us頭條")

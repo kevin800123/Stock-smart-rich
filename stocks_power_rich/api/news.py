@@ -288,6 +288,35 @@ _SNAPSHOT_TERMS = ("加權指數", "加權漲跌", "成交金額", "成交值", 
                    "日經225", "日經指數", "費半", "費城半導體", "VIX")
 
 
+def headline_digest(markets: dict, slot: str, per_market: int = 6) -> str:
+    """AI 不可用時的替代內文：**直接列原始新聞標題**。
+
+    先前這種情況只送一句「AI 摘要暫時無法使用」，但那時候三個市場的新聞**其實都已經
+    抓回來了**（60 則標題就在手上），等於白白丟掉。實際收到的推播只有盤面加一句道歉，
+    使用者要的是內容——有內容就該給，只是換一種（未經改寫的）呈現。
+
+    輸出與 `telegram_digest` 同樣是 `• ` 條列，才能繼續走同一條管線
+    （投資建議過濾、首則標 🔥、跳脫、粗體／底線強調）。標題是媒體原文、沒有經過改寫，
+    所以更需要那道投資建議過濾——原始標題出現「逢低布局」這類字眼的機率比 AI 改寫後高。
+    日股標題維持日文原文：這裡沒有翻譯能力，硬譯不如照實呈現（來源標了株探）。
+    """
+    _, plan = _PUSH_PLAN.get(slot, _PUSH_PLAN["afternoon"])
+    blocks = []
+    for market, _count in plan:
+        items = (markets.get(market) or [])[:per_market]
+        if not items:
+            continue
+        flag, name = _MARKET_META[market]
+        lines = [f"{flag} {name}｜標題快覽"]
+        lines += [f"• {it.get('title')}" for it in items if it.get("title")]
+        if len(lines) > 1:
+            blocks.append("\n".join(lines))
+    if not blocks:
+        return _AI_UNAVAILABLE_NOTE
+    blocks.append("⚠️ 非投資建議，資訊僅供研究參考")
+    return "\n\n".join(blocks)
+
+
 def useful_data(title: str, data: str) -> str:
     """關鍵數據只有在「標題與盤面都沒講過」時才值得附上，否則就是噪音。
 
@@ -463,7 +492,11 @@ def news_logic(c, slot: str | None = None, refresh: int = 0) -> dict:
     summary = result.get("text", "")
     # 推播條列由 Python 從完整版壓出來，不再為了「同一份素材的另一種寫法」
     # 多打一次 Gemini（見 telegram_digest 的說明）。
-    raw_push = telegram_digest(summary, slot, today) if result.get("enabled") else _AI_UNAVAILABLE_NOTE
+    # AI 不可用時**不要只送一句道歉**：新聞這時候其實都已經抓回來了（三個市場共 60 則
+    # 標題就在 markets 裡），退成「標題快覽」至少還是今天的新聞。實際發生過一次
+    # 21:10 推播只有盤面加一句「AI 摘要暫時無法使用」，內容整段消失。
+    raw_push = (telegram_digest(summary, slot, today) if result.get("enabled")
+                else headline_digest(markets, slot))
     telegram_text = compose_push_message(raw_push, snapshot, markets, slot, today)
     payload = {"date": today, "slot": slot, "summary": summary,
               "telegram_text": telegram_text,
