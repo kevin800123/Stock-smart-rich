@@ -60,26 +60,6 @@ def test_news_summary_prompt_requires_structured_sourced_brief(monkeypatch):
     assert "不得補造" in captured["prompt"] and "非投資建議" in captured["prompt"]
 
 
-def test_news_push_prompt_uses_compact_midday_template(monkeypatch):
-    captured = {}
-
-    def fake_run(prompt, api_key, **kw):
-        captured["prompt"] = prompt
-        return {"enabled": True, "text": "ok"}
-
-    monkeypatch.setattr(gemini, "_run", fake_run)
-    out = gemini.summarize_news_push(
-        {"slot": "midday", "report_date": "2026-08-03", "snapshot": {}, "markets": {}},
-        full_brief="完整報告",
-        api_key="k",
-    )
-
-    assert out["text"] == "ok"
-    assert "台股 6、日股 6、美股 6" in captured["prompt"]
-    assert "來源未提供可驗證數據" in captured["prompt"]
-    assert "日股項目必須翻譯日文株探標題" in captured["prompt"]
-
-
 def test_uses_model_when_key(monkeypatch):
     class FakeResp:
         text = "盤勢偏多"
@@ -98,7 +78,7 @@ def test_uses_model_when_key(monkeypatch):
     assert out["text"] == "盤勢偏多"
 
 
-def test_news_prompts_never_carry_the_long_google_news_urls():
+def test_news_prompts_never_carry_the_long_google_news_urls(monkeypatch):
     """網址是純浪費：模型不需要（延伸閱讀是 Python 端從同一份 markets 組的），
     但 Google 新聞的轉址網址每則 250~350 字元、60 則、兩支 prompt 各帶一次，
     實測占輸入 ~55%。月額度是有限的，不該花在這上面。"""
@@ -111,11 +91,13 @@ def test_news_prompts_never_carry_the_long_google_news_urls():
                "snapshot": {"加權指數": 43386.0}, "markets": markets}
 
     seen = []
-    gemini._run = lambda prompt, api_key, **kw: seen.append(prompt) or {"enabled": True, "text": "x"}
+    # 一定要用 monkeypatch：直接指派 gemini._run 會殘留到後續測試，
+    # 讓 test_degrades_without_key 這種「單獨跑會過、整批跑就掛」的假失敗出現。
+    monkeypatch.setattr(gemini, "_run",
+                        lambda prompt, api_key, **kw: seen.append(prompt) or {"enabled": True, "text": "x"})
     gemini.summarize_news(payload, "k")
-    gemini.summarize_news_push(payload, "full brief", "k")
 
-    assert len(seen) == 2
+    assert len(seen) == 1
     for prompt in seen:
         assert long_url not in prompt
         assert "CBMi" not in prompt
@@ -136,26 +118,24 @@ def test_slim_markets_is_pure_and_handles_empty():
     assert "url" in src["tw"][0]
 
 
-def test_thinking_is_off_for_mechanical_news_calls_and_on_for_market_judgement():
+def test_thinking_is_off_for_mechanical_news_calls_and_on_for_market_judgement(monkeypatch):
     """gemini-2.5-flash 預設開啟動態思考，而思考 token 以「輸出」計價（牌價約為
-    輸入的 8 倍），往往才是帳單大頭。新聞那兩支是機械性工作（讀標題→照格式吐條列
-    →翻譯），一天跑 8 次，關掉思考；summarize_market 要判斷背離／誘多這類跨指標
+    輸入的 8 倍），往往才是帳單大頭。新聞摘要是機械性工作（讀標題→照格式吐條列
+    →翻譯），一天跑 4 次，關掉思考；summarize_market 要判斷背離／誘多這類跨指標
     因果、且一天只跑一次，保留思考。"""
     from stocks_power_rich import gemini
 
     seen = {}
-    gemini._run = lambda prompt, api_key, thinking=True: seen.__setitem__(
-        len(seen), thinking) or {"enabled": True, "text": "x"}
+    monkeypatch.setattr(gemini, "_run", lambda prompt, api_key, thinking=True:
+                        seen.__setitem__(len(seen), thinking) or {"enabled": True, "text": "x"})
 
     payload = {"slot": "afternoon", "report_date": "2026-08-04",
                "snapshot": {}, "markets": {"tw": [{"title": "t", "source": "s"}]}}
     gemini.summarize_news(payload, "k")
-    gemini.summarize_news_push(payload, "brief", "k")
     gemini.summarize_market({}, "k")
 
     assert seen[0] is False, "summarize_news 應關閉思考"
-    assert seen[1] is False, "summarize_news_push 應關閉思考"
-    assert seen[2] is True, "summarize_market 是判讀型，保留思考"
+    assert seen[1] is True, "summarize_market 是判讀型，保留思考"
 
 
 def test_thinking_config_builds_zero_budget_only_when_disabled():

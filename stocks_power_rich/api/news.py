@@ -182,7 +182,19 @@ def compose_push_message(ai_text: str, snapshot: dict, markets: dict,
 
 
 def telegram_digest(summary: str, slot: str, report_date: str = "") -> str:
-    """Build a time-prioritized 15-story push: five translated stories per market."""
+    """把完整版摘要（markdown）在 Python 端壓成推播用的條列，**不再多打一次 Gemini**。
+
+    先前是「Gemini 寫完整版 → 再叫 Gemini 壓縮成推播版」，等於同一份素材付兩次錢，
+    而第二支純粹在做改寫與截長。改由這支純函式做之後，新聞的 LLM 呼叫從
+    8 次/天降為 4 次/天（輸入輸出都減半），且推播文字**直接取自完整版的標題與
+    關鍵數據**，不再有第二次改寫可能引入的偏移。
+
+    輸出**必須是 `• ` 條列**，這是 `compose_push_message` 那條管線的契約：
+    `strip_advice_lines` 只過濾 `•`／`🔥` 開頭的行、`mark_lead_bullets` 也只認 `•`。
+    舊版吐的是「1. 標題」加下一行「   🔢 數據」，若直接沿用，**投資建議過濾器會
+    整個失效**（安全性回歸，不只是版面問題），每則也會佔掉兩行。
+    標題與日期一律由 `compose_push_message` 產生，這裡不重複輸出。
+    """
     stories = {key: [] for key in MARKETS}
     market = None
     for raw in (summary or "").splitlines():
@@ -203,23 +215,27 @@ def telegram_digest(summary: str, slot: str, report_date: str = "") -> str:
         elif bold not in _DETAIL_LABELS and not any(item["title"] == bold for item in stories[market]):
             stories[market].append({"title": bold, "data": ""})
 
-    heading, plan = _PUSH_PLAN.get(slot, _PUSH_PLAN["afternoon"])
-    lines = [heading]
-    if report_date:
-        lines.append(f"📅 {report_date}")
-    for market, count in plan:
-        flag, name = _MARKET_META[market]
-        chosen = stories[market][:count]
-        lines.extend(["", f"{flag} {name}｜重點掃描"])
-        for index, item in enumerate(chosen, 1):
-            lines.append(f"{index}. {item['title']}")
-            data = item["data"]
-            if data and "來源未提供" not in data:
-                lines.append(f"   🔢 {data}")
     if not any(stories.values()):
-        return summary or "目前尚無可推播的財經新聞。"
-    lines.extend(["", "👀 完整事件、影響與後續指標請見每日財經新聞頁", "⚠️ 非投資建議，資訊僅供研究參考"])
-    return "\n".join(lines)
+        # 解析不到任何一則（完整版格式改版）——**絕不可 return summary**，那會把整份
+        # markdown（#### 與 ** 全都在）倒進 Telegram。給一句話請使用者看網頁版。
+        return "本次摘要格式無法轉為推播條列，完整內容請見每日財經新聞頁。"
+
+    _, plan = _PUSH_PLAN.get(slot, _PUSH_PLAN["afternoon"])
+    blocks = []
+    for market, count in plan:
+        chosen = stories[market][:count]
+        if not chosen:
+            continue
+        flag, name = _MARKET_META[market]
+        lines = [f"{flag} {name}｜重點掃描"]
+        for item in chosen:
+            data = item["data"]
+            # 「來源未提供可驗證數據」是完整版的佔位語，對推播沒有資訊量
+            extra = f"　{data}" if data and "來源未提供" not in data else ""
+            lines.append(f"• {item['title']}{extra}")
+        blocks.append("\n".join(lines))
+    blocks.append("⚠️ 非投資建議，資訊僅供研究參考")
+    return "\n\n".join(blocks)
 
 
 def _current_slot(now: datetime | None = None) -> str:
@@ -287,16 +303,9 @@ def news_logic(c, slot: str | None = None, refresh: int = 0) -> dict:
     request_payload = {"slot": slot, "report_date": today, "snapshot": snapshot, "markets": markets}
     result = gemini.summarize_news(request_payload, cfg.gemini_api_key)
     summary = result.get("text", "")
-    push_result = (gemini.summarize_news_push(request_payload, summary, cfg.gemini_api_key)
-                   if result.get("enabled") else {})
-    if push_result.get("enabled") and push_result.get("text"):
-        raw_push = push_result["text"]
-    elif result.get("enabled"):
-        # 精簡版呼叫失敗但完整版成功——退回用完整版的結構化 markdown 摘要,
-        # 而不是完整版失敗時那段給網頁看的降級提示文字。
-        raw_push = telegram_digest(summary, slot, today)
-    else:
-        raw_push = _AI_UNAVAILABLE_NOTE
+    # 推播條列由 Python 從完整版壓出來，不再為了「同一份素材的另一種寫法」
+    # 多打一次 Gemini（見 telegram_digest 的說明）。
+    raw_push = telegram_digest(summary, slot, today) if result.get("enabled") else _AI_UNAVAILABLE_NOTE
     telegram_text = compose_push_message(raw_push, snapshot, markets, slot, today)
     payload = {"date": today, "slot": slot, "summary": summary,
               "telegram_text": telegram_text,

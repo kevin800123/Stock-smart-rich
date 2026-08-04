@@ -22,8 +22,6 @@ def test_news_endpoint_caches_enabled_summary_and_hides_telegram_secrets(tmp_pat
 
     monkeypatch.setattr(news_api.news, "fetch_market_news", fake_fetch)
     monkeypatch.setattr(news_api.gemini, "summarize_news", fake_summary)
-    monkeypatch.setattr(news_api.gemini, "summarize_news_push",
-                        lambda *args, **kwargs: {"enabled": True, "text": "Telegram 摘要"})
     client = TestClient(create_app())
 
     first = client.get("/api/news?slot=afternoon")
@@ -31,7 +29,7 @@ def test_news_endpoint_caches_enabled_summary_and_hides_telegram_secrets(tmp_pat
     body = first.json()
     # telegram_text 現在是組裝結果：AI 文字（已跳脫）＋ 底部延伸閱讀連結，
     # 不再是 Gemini 原樣輸出（盤面／過濾／連結／跳脫都在 compose_push_message 做）。
-    assert "Telegram 摘要" in body["telegram_text"]
+    assert "AI 摘要" in body["summary"]
     assert "延伸閱讀" in body["telegram_text"]
     assert body["summary"] == "AI 摘要"
     assert body["fallback"] == {"tw": False, "us": False, "jp": True}
@@ -61,10 +59,11 @@ def test_news_test_endpoint_uses_telegram_wrapper(tmp_path, monkeypatch):
     from stocks_power_rich.main import create_app
 
     monkeypatch.setattr(news_api.news, "fetch_market_news", lambda *args, **kwargs: ([], False))
+    brief = ("#### 🇹🇼 台股｜6 則精選\n"
+             "* 🔥 **台股收盤上漲**\n"
+             "  * 🔢 **關鍵數據**：加權指數上漲 100 點。\n")
     monkeypatch.setattr(news_api.gemini, "summarize_news",
-                        lambda *args, **kwargs: {"enabled": True, "text": "test summary"})
-    monkeypatch.setattr(news_api.gemini, "summarize_news_push",
-                        lambda *args, **kwargs: {"enabled": True, "text": "test push"})
+                        lambda *args, **kwargs: {"enabled": True, "text": brief})
     sent = {}
     monkeypatch.setattr(telegram_push, "send_message",
                         lambda token, chat_id, text: sent.update(token=token, chat_id=chat_id, text=text)
@@ -75,7 +74,7 @@ def test_news_test_endpoint_uses_telegram_wrapper(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert response.json()["push"]["ok"] is True
     # 送出的是組裝後的訊息（程式標題＋AI 內文），不是 Gemini 原樣輸出
-    assert "test push" in sent["text"]
+    assert "非投資建議" in sent["text"]
     # 標題日期由程式產生並跳脫（MarkdownV2 的 - 必須跳脫，否則整則會被退件）
     date = response.json()["news"]["date"]
     assert sent["text"].splitlines()[0].endswith(telegram_push.escape_mdv2(date))
@@ -245,22 +244,6 @@ def test_snapshot_returns_empty_when_nothing_recent_has_an_index(tmp_path, monke
     assert _snapshot_from_market_daily(c) == {}
 
 
-def test_push_prompt_forbids_label_prefixes_and_two_line_stories():
-    """實跑輸出過「• 短標籤：台股收盤上漲。」＋內容換行——模型把模板裡的佔位字
-    當成要照抄的前綴。prompt 必須明確禁止前綴與拆行。"""
-    from stocks_power_rich import gemini
-
-    captured = {}
-    gemini._run = lambda prompt, api_key, **kw: captured.setdefault("prompt", prompt) or {"enabled": True, "text": ""}
-    gemini.summarize_news_push({"slot": "afternoon", "report_date": "2026-08-03",
-                                "snapshot": {}, "markets": {}}, "brief", "key")
-    p = captured["prompt"]
-    assert "不得在句子前面加任何標籤或前綴" in p
-    assert "短標籤" in p and "不要寫「短標籤：」" in p     # 明確點名觀察到的失敗字樣
-    assert "一則只佔一行" in p
-    assert "不要自己再輸出一次標題行" in p.replace("**", "")
-
-
 def test_news_never_leaks_raw_gemini_error_when_main_call_fails(tmp_path, monkeypatch):
     """實測發生過：Gemini 503 時 news_logic 把 gemini._run 的例外字串
     （含原始 error dict）直接送進 Telegram 正文。summarize_news 失敗時必須
@@ -275,17 +258,9 @@ def test_news_never_leaks_raw_gemini_error_when_main_call_fails(tmp_path, monkey
     monkeypatch.setattr(news_api.news, "fetch_market_news", lambda *a, **k: ([], False))
     monkeypatch.setattr(news_api.gemini, "summarize_news",
                         lambda *a, **k: {"enabled": False, "text": raw_error})
-    called = {"push": False}
-
-    def fail_if_called(*a, **k):
-        called["push"] = True
-        return {"enabled": False, "text": raw_error}
-
-    monkeypatch.setattr(news_api.gemini, "summarize_news_push", fail_if_called)
     client = TestClient(create_app())
 
     body = client.get("/api/news?slot=afternoon").json()
-    assert called["push"] is False          # enabled=False 時本就不該再呼叫精簡版
     assert "UNAVAILABLE" not in body["telegram_text"]
     assert "503" not in body["telegram_text"]
     assert "error" not in body["telegram_text"]
@@ -293,9 +268,10 @@ def test_news_never_leaks_raw_gemini_error_when_main_call_fails(tmp_path, monkey
     assert body["enabled"] is False
 
 
-def test_news_falls_back_to_digest_when_only_push_call_fails(tmp_path, monkeypatch):
-    """完整版成功、精簡版失敗時，必須退回用完整版摘要組的 digest，
-    而不是把精簡版的例外字串（同樣是 text 非空但 enabled=False）當內容送出。"""
+def test_push_text_is_digested_from_full_brief_without_a_second_llm_call(tmp_path, monkeypatch):
+    """推播條列改由 Python 從完整版壓出來，全程只呼叫一次 Gemini。
+
+    先前是「Gemini 寫完整版 → 再叫 Gemini 壓縮成推播版」，同一份素材付兩次錢。"""
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.api import news as news_api
     from stocks_power_rich.main import create_app
@@ -308,12 +284,61 @@ def test_news_falls_back_to_digest_when_only_push_call_fails(tmp_path, monkeypat
     monkeypatch.setattr(news_api.news, "fetch_market_news", lambda *a, **k: ([], False))
     monkeypatch.setattr(news_api.gemini, "summarize_news",
                         lambda *a, **k: {"enabled": True, "text": full_brief})
-    monkeypatch.setattr(news_api.gemini, "summarize_news_push",
-                        lambda *a, **k: {"enabled": False,
-                                         "text": "（AI 摘要失敗：503 UNAVAILABLE.）"})
+    assert not hasattr(news_api.gemini, "summarize_news_push"), "第二支 LLM 呼叫應已移除"
     client = TestClient(create_app())
 
     body = client.get("/api/news?slot=afternoon").json()
-    assert "UNAVAILABLE" not in body["telegram_text"]
-    assert "台股收盤上漲" in body["telegram_text"]   # 退回 digest 解析出的內容
-    assert body["enabled"] is True                    # 完整版成功，JSON 仍標成功
+    text = body["telegram_text"]
+    assert "台股收盤上漲" in text                      # digest 解析出的標題
+    assert "加權指數上漲 100 點" in text                # 關鍵數據併進同一行
+    assert "🔥 台股收盤上漲" in text                    # 首則標 🔥（靠 • 開頭才認得出來）
+    assert "####" not in text and "**" not in text      # 不可把 markdown 原樣倒出去
+    assert body["enabled"] is True
+
+
+def test_digest_output_still_feeds_the_advice_filter():
+    """安全性回歸防線：digest 必須吐 `• ` 條列，因為 strip_advice_lines 與
+    mark_lead_bullets 都只認 `•`／`🔥` 開頭。舊版吐「1. 標題」＋下一行「   🔢 數據」，
+    若直接沿用，投資建議過濾器會**整個失效**而且沒有任何錯誤。"""
+    from stocks_power_rich.api.news import telegram_digest, strip_advice_lines
+
+    brief = ("#### 🇹🇼 台股｜6 則精選\n"
+             "* 🔥 **分析師建議逢低承接半導體權值股**\n"
+             "  * 🔢 **關鍵數據**：目標價 1200 元。\n"
+             "* 🔥 **台股收盤上漲**\n"
+             "  * 🔢 **關鍵數據**：加權指數上漲 100 點。\n")
+    digest = telegram_digest(brief, "afternoon", "2026-08-04")
+
+    for line in digest.splitlines():
+        if "台股收盤上漲" in line or "逢低承接" in line:
+            assert line.startswith("• "), f"必須是條列才過得了濾網: {line!r}"
+
+    filtered, dropped = strip_advice_lines(digest)
+    assert dropped == 1
+    assert "逢低承接" not in filtered and "目標價" not in filtered
+    assert "台股收盤上漲" in filtered
+
+
+def test_digest_never_dumps_raw_markdown_when_parsing_fails():
+    """完整版格式改版而解析不到任何一則時，不可 return summary——那會把整份
+    markdown（#### 與 ** 都在）倒進 Telegram。"""
+    from stocks_power_rich.api.news import telegram_digest
+
+    out = telegram_digest("### 標題\n這份格式完全不同\n**粗體**", "afternoon", "2026-08-04")
+    assert "####" not in out and "**" not in out
+    assert "這份格式完全不同" not in out
+    assert "每日財經新聞頁" in out
+
+
+def test_digest_keeps_slot_specific_market_order():
+    """早報先美股、收盤先台股——_PUSH_PLAN 的順序必須保留。"""
+    from stocks_power_rich.api.news import telegram_digest
+
+    brief = ""
+    for flag, name in (("🇹🇼", "台股"), ("🇺🇸", "美股"), ("🇯🇵", "日股")):
+        brief += f"#### {flag} {name}｜6 則精選\n* 🔥 **{name}第一則**\n"
+
+    morning = telegram_digest(brief, "morning", "2026-08-04")
+    afternoon = telegram_digest(brief, "afternoon", "2026-08-04")
+    assert morning.index("美股第一則") < morning.index("台股第一則")
+    assert afternoon.index("台股第一則") < afternoon.index("美股第一則")

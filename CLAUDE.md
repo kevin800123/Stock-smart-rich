@@ -133,6 +133,8 @@ Same flex container bites line-clamping: **`-webkit-line-clamp` does not work on
 - **新聞那兩支呼叫關閉 thinking（`_run(..., thinking=False)`）**。`gemini-2.5-flash` **預設開啟動態思考**，而思考 token 以「輸出」計價（牌價輸出約為輸入的 8 倍），所以它往往才是帳單大頭，不是一直在減的輸入。`summarize_news`／`summarize_news_push` 是**機械性工作**（讀標題 → 照格式吐條列 → 翻譯）、一天跑 8 次，關掉划算；**`summarize_market` 保留思考**——它要判斷背離／誘多這類跨指標因果，且一天只跑一次，成本可忽略。`summarize_csv` 同理保留。`_log_usage` 會把每次的 `in/out/thoughts` 印到 stdout（Zeabur 收得到）——這次月額度用盡是**完全無聲**發生的，撞上限前無跡可循，一行用量日誌就能回推是誰在燒。
 - **快取鍵 `news:v6:{date}:{slot}`**。含 slot 是因為四個時段的必含主題不同；**版號在推播格式改版時要進版**，否則舊格式的快取會被當成今天的結果送出（同 `dist:` 快取那次的教訓）。只有 Gemini 成功（`enabled`）才寫快取。
 
+**每場只呼叫一次 Gemini。** 原本是「`summarize_news` 寫完整版 → `summarize_news_push` 再叫 Gemini 壓成推播版」，同一份素材付兩次錢，而第二支純粹在做改寫與截長。2026-08 拿掉第二支（函式已刪），改由 `telegram_digest` 這支**純函式**從完整版的 markdown 壓出條列，LLM 呼叫 8 次/天 → **4 次/天**。**`telegram_digest` 的輸出必須是 `• ` 條列**，這是後面那條管線的契約：`strip_advice_lines` 與 `mark_lead_bullets` 都只認 `•`／`🔥` 開頭。舊版吐的是「1. 標題」加下一行「   🔢 數據」，若當時直接沿用，**投資建議過濾器會整個失效且不會有任何錯誤**（安全性回歸，不只是版面問題）——`tests/test_news_api.py::test_digest_output_still_feeds_the_advice_filter` 鎖住這件事。解析不到任何一則時**絕不可 `return summary`**（那會把整份含 `####`／`**` 的 markdown 倒進 Telegram），改回一句請使用者看網頁版。
+
 **推播訊息由程式組裝，不是把 Gemini 輸出原樣送出**（`api/news.py::compose_push_message`）。順序：標題（程式）→ 📈 盤面（程式）→ 新聞（AI，過濾後）→ 🔗 延伸閱讀（程式）。四條規則都是實際踩過的：
 
 1. **盤面數字絕不經 LLM**。`_snapshot_from_market_daily` 從 `market_daily` 取值、`render_snapshot_block` 在 Python 算漲跌%。先前推播沒有盤面區塊，模型就把指數揉進散文（「加權指數收漲266點至43386點」），等於繞過本專案最重要的防線（參考專案實測模型把 −3.79% 寫成 +3.76%）。缺值寫「—」，**不可寫成「43,386（無資料）」**。日期不等於報告日就標「截至 MM-DD」（07:00 那場必然是前一交易日）。
