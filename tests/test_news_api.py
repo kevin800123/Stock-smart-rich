@@ -184,7 +184,7 @@ def test_compose_push_escapes_the_characters_that_broke_markdownv2():
 
     ai = "🇯🇵 日股與外匯\n• 三菱UFJ (8306) 最終利益年增48%，創同期新高。\n• 標普500震幅達3.5%。"
     out = compose_push_message(ai, {}, {}, "afternoon", "2026-08-03")
-    assert r"\(8306\)" in out
+    assert r"\(8306\)" in out        # 括號要跳脫；代號不帶單位，不加粗（見 bold 那條規則）
     assert "48%" in out and r"\." in out          # . 與 ( ) - 皆已跳脫
     assert "(" not in out.replace(r"\(", "")      # 沒有任何未跳脫的左括號
 
@@ -229,7 +229,8 @@ def test_snapshot_skips_todays_empty_row_and_walks_back(tmp_path, monkeypatch):
     assert snap["日期"] == prev
     block = render_snapshot_block(snap, today)
     assert "43,634" in block and "截至" in block
-    assert block.count("—") == 0
+    taiex_line = next(l for l in block.splitlines() if "加權" in l)
+    assert "—" not in taiex_line   # 主要讀數要有值（國際欄缺值另有「—」是刻意的）
 
 
 def test_snapshot_returns_empty_when_nothing_recent_has_an_index(tmp_path, monkeypatch):
@@ -290,7 +291,7 @@ def test_push_text_is_digested_from_full_brief_without_a_second_llm_call(tmp_pat
     body = client.get("/api/news?slot=afternoon").json()
     text = body["telegram_text"]
     assert "台股收盤上漲" in text                      # digest 解析出的標題
-    assert "外資買超 120 億元" in text                  # 關鍵數據併進同一行
+    assert "__外資買超__ *120 億元*" in text            # 關鍵數據併進同一行，並加上強調
     assert "🔥 台股收盤上漲" in text                    # 首則標 🔥（靠 • 開頭才認得出來）
     assert "####" not in text and "**" not in text      # 不可把 markdown 原樣倒出去
     assert body["enabled"] is True
@@ -481,3 +482,144 @@ def test_news_test_endpoint_accepts_an_explicit_slot(tmp_path, monkeypatch):
     body = client.post("/api/news/test?slot=midday").json()
     assert body["news"]["slot"] == "midday"
     assert sent["text"].startswith("☀️ 12:00 午間財經快訊")
+
+
+def test_snapshot_shows_nikkei_even_when_missing_and_adds_change_pct(tmp_path, monkeypatch):
+    """使用者回報「少了日股的大盤、漲跌%」。日經 NULL 時整欄消失，讀者只會以為
+    「今天沒這欄」而不會去補資料——本站三個市場是台／美／日，日股缺席本身就是資訊。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.api.news import _snapshot_from_market_daily, render_snapshot_block
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    from datetime import datetime, timedelta, timezone
+    tz = timezone(timedelta(hours=8))
+    d0 = (datetime.now(tz) - timedelta(days=1)).strftime("%Y-%m-%d")
+    d1 = datetime.now(tz).strftime("%Y-%m-%d")
+    upsert_market_daily(c, {"date": d0, "taiex": 43000.0, "sox": 11000.0,
+                            "n225": 63000.0, "kospi": 6300.0, "vix": 16.0})
+    # 今天 n225 缺、kospi 也缺 → 日經仍要出現（寫「—」），費半要有漲跌%
+    upsert_market_daily(c, {"date": d1, "taiex": 43386.0, "taiex_chg": 266.0,
+                            "sox": 11311.0, "vix": 15.99})
+
+    snap = _snapshot_from_market_daily(c)
+    assert snap["國際前值"]["sox"] == 11000.0
+    out = render_snapshot_block(snap, d1)
+
+    assert "日經 —" in out, "日經缺值也要出現，不可整欄消失"
+    assert "費半 11,311" in out and "▲2.83%" in out      # (11311-11000)/11000
+    assert "韓股" not in out                              # 脈絡欄位缺值就不佔版面
+
+
+def test_push_body_emphasises_numbers_bold_and_keywords_underline():
+    """Telegram 端與網頁同一套分工：數字粗體、關鍵詞底線（兩個不同的軸）。"""
+    from stocks_power_rich.api.news import compose_push_message
+
+    body = "🇹🇼 台股｜重點掃描\n🔥 外資買超 252 億元，處置新制 8 月 10 日上路"
+    out = compose_push_message(body, {}, {}, "afternoon", "2026-08-04")
+
+    assert "*252 億元*" in out          # 數字粗體，單位一起
+    assert "__外資買超__" in out      # 相鄰關鍵詞併成一段，避免 ____ 破壞解析
+    assert "__處置新制__" in out
+    assert "*8 月*" in out and "*10 日*" in out
+    # 哨兵字元不可外洩到訊息裡
+    for ch in ("\x01", "\x02", "\x03", "\x04"):
+        assert ch not in out
+
+
+def test_push_emphasis_survives_markdownv2_escaping():
+    """`1.09` 的小數點會被跳脫成 `1\.09`。強調必須在跳脫**前**標記、跳脫**後**才換符號，
+    否則正則得處理跳脫過的形式，難寫又容易漏。"""
+    from stocks_power_rich.api.news import compose_push_message
+
+    body = "🇺🇸 美股｜重點掃描\n🔥 標普漲 1.09% (創新高)，聯準會降息預期不變"
+    out = compose_push_message(body, {}, {}, "afternoon", "2026-08-04")
+
+    assert "*1\.09%*" in out          # 粗體包住已跳脫的小數
+    assert "__創新高__" in out and "__聯準會降息__" in out   # 相鄰的併成一段
+    # 括號等特殊字元仍然要跳脫，否則整則會被 Telegram 退件
+    assert "\(" in out and "\)" in out
+
+
+def test_push_emphasis_leaves_headers_and_disclaimer_alone():
+    """段落標題與免責聲明不強調——全部都粗體等於都沒粗體。"""
+    from stocks_power_rich.api.news import emphasize_push_body
+
+    out = emphasize_push_body("🇹🇼 台股｜重點掃描\n• 外資買超 252 億\n⚠️ 非投資建議，資訊僅供研究參考")
+    lines = out.splitlines()
+    assert "\x01" not in lines[0] and "\x03" not in lines[0]
+    assert "\x01" in lines[1]
+    assert "\x01" not in lines[2] and "\x03" not in lines[2]
+
+
+def test_adjacent_keywords_merge_into_one_span():
+    """「聯準會降息」中間沒有分隔字，各自包起來會產生 `____`——那會讓 Telegram 認不出
+    配對，整則退回純文字，而且是**無聲**的（訊息照送、只是格式全失效）。"""
+    from stocks_power_rich.api.news import compose_push_message
+
+    out = compose_push_message("🇺🇸 美股｜重點掃描\n🔥 聯準會降息機率升高", {}, {},
+                               "afternoon", "2026-08-04")
+    assert "____" not in out
+    assert "__聯準會降息__" in out
+    assert out.count("__") % 2 == 0, "底線符號必須成對"
+
+
+def test_intl_change_pct_only_compares_against_the_immediately_previous_row(tmp_path, monkeypatch):
+    """實跑輸出過「韓股 6,359 ▲13.68%」——本日值對上 5 天前的最近非空值，那是跨多日的
+    累計，掛在盤面上會被當成今天的漲跌。日漲跌的定義就是「對前一個交易日」，
+    那天沒值就是算不出來，寧可不顯示。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import datetime, timedelta, timezone
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.api.news import _snapshot_from_market_daily, render_snapshot_block
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    tz = timezone(timedelta(hours=8))
+    d = [(datetime.now(tz) - timedelta(days=n)).strftime("%Y-%m-%d") for n in (5, 1, 0)]
+    upsert_market_daily(c, {"date": d[0], "taiex": 1.0, "kospi": 5593.57})
+    upsert_market_daily(c, {"date": d[1], "taiex": 1.0, "sox": 11000.0})   # kospi 這天沒值
+    upsert_market_daily(c, {"date": d[2], "taiex": 43000.0, "sox": 11311.0, "kospi": 6359.0})
+
+    snap = _snapshot_from_market_daily(c)
+    assert "kospi" not in snap["國際前值"], "前一列沒有韓股 → 不可跳過它去抓 5 天前的"
+    out = render_snapshot_block(snap, d[2])
+    assert "13.68%" not in out
+    assert "韓股 6,359" in out          # 數值照顯示，只是沒有漲跌%
+    assert "▲2.83%" in out              # 費半前一列有值，照算
+
+
+def test_intl_change_pct_hides_a_rounded_zero(tmp_path, monkeypatch):
+    """國際指數是「上一個交易時段收盤」，隔日常常還沒更新而與前一列同值。
+    這時的 ▬0.00% 是資料尚未換日的假象，不是「今天沒漲跌」。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import datetime, timedelta, timezone
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.api.news import _snapshot_from_market_daily, render_snapshot_block
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    tz = timezone(timedelta(hours=8))
+    d0 = (datetime.now(tz) - timedelta(days=1)).strftime("%Y-%m-%d")
+    d1 = datetime.now(tz).strftime("%Y-%m-%d")
+    upsert_market_daily(c, {"date": d0, "taiex": 1.0, "sox": 11311.08, "vix": 15.99})
+    upsert_market_daily(c, {"date": d1, "taiex": 43000.0, "sox": 11311.08, "vix": 15.99})
+
+    out = render_snapshot_block(_snapshot_from_market_daily(c), d1)
+    assert "0.00%" not in out and "▬" not in out
+    assert "費半 11,311" in out
+
+
+def test_push_bold_is_reserved_for_numbers_that_carry_a_unit():
+    """實跑輸出過 `H*2*O Retailing`、`標普 *500* 指數`——名稱與代號裡的數字不是數據，
+    粗體之後反而讓人找不到真正的數字。帶單位才是「這是量測值」的可靠訊號。"""
+    from stocks_power_rich.api.news import compose_push_message
+
+    body = ("🇯🇵 日股｜重點掃描\n"
+            "🔥 H2O Retailing 股價創新高，標普 500 指數上看 8200 點，漲 237 日圓")
+    out = compose_push_message(body, {}, {}, "afternoon", "2026-08-04")
+
+    assert "H2O" in out and "*2*" not in out          # 名稱裡的數字不動
+    assert "標普 500 指數" in out and "*500*" not in out
+    assert "*8200 點*" in out and "*237 日圓*" in out  # 帶單位的量測值才粗體

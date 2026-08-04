@@ -125,8 +125,29 @@ def render_snapshot_block(snapshot: dict, report_date: str = "") -> str:
 
     intl = snapshot.get("那斯達克100/費半等國際指標若有") or {}
     labels = (("sox", "費半"), ("n225", "日經"), ("kospi", "韓股"), ("vix", "VIX"))
-    picked = [f"{name} {_fmt_num(intl[key], 2 if key == 'vix' else 0)}"
-              for key, name in labels if intl.get(key) is not None]
+    prev = snapshot.get("國際前值") or {}
+    # 日經永遠顯示（缺值寫「—」）：本站的三個市場是台／美／日，日股大盤缺席本身就是
+    # 資訊——先前它是 NULL 就整個消失，讀者只會以為「今天沒這欄」而不會去補資料。
+    # 韓股／VIX 是脈絡不是主體，有才顯示。
+    always = {"n225", "sox"}
+    picked = []
+    for key, name in labels:
+        cur = intl.get(key)
+        if cur is None:
+            if key in always:
+                picked.append(f"{name} —")
+            continue
+        digits = 2 if key == "vix" else 0
+        seg = f"{name} {_fmt_num(cur, digits)}"
+        base = prev.get(key)
+        if base:
+            pct = (cur - base) / base * 100
+            # 四捨五入後是 0.00% 就不寫。國際指數是「上一個交易時段收盤」，隔日常常
+            # 還沒更新而與前一列同值，此時的「▬0.00%」是資料尚未換日的假象，
+            # 不是「今天沒漲跌」——印出來只會被誤讀。
+            if abs(pct) >= 0.005:
+                seg += f" {'▲' if pct > 0 else '▼'}{abs(pct):.2f}%"
+        picked.append(seg)
     if picked:
         lines.append("• " + "　".join(picked))
     return "\n".join(lines)
@@ -149,6 +170,63 @@ def build_reading_links(markets: dict, per_market: int = 1) -> str:
     if not rows:
         return ""
     return telegram_push.escape_mdv2("🔗 延伸閱讀") + "\n" + "　".join(rows)
+
+
+# Telegram 端的強調。與網頁同一套分工：**數字用粗體、關鍵詞用底線**——兩個不同的軸，
+# 疊在一起不會互相稀釋（網頁那邊是亮度 vs 底線，這裡是粗體 vs 底線）。
+# 關鍵詞表與 `web/app.js` 的 `_FACT_KEY` 同義但**各自維護**：那邊是 JS、這邊是 Python，
+# 沒有共用的執行環境；改動時兩邊都要動（同 CLAUDE.md 對「兩份文件會漂移」的提醒）。
+_TG_KEY = re.compile("(" + "|".join([
+    "新制", "上路", "法規", "處置", "金管會", "證交所", "櫃買", "鬆綁", "解禁", "關稅",
+    "外資", "投信", "自營", "法人", "買超", "賣超", "空單", "多單", "未平倉", "融資", "融券",
+    "法說", "財報", "財測", "除息", "除權", "配息", "拆股", "回購", "併購", "增資",
+    "上調", "下修", "調升", "調降", "創新高", "漲停", "跌停",
+    "利率", "降息", "升息", "通膨", "央行", "聯準會", "非農",
+]) + ")")
+# **必須帶單位才粗體**（`+` 而不是 `*`）。粗體很重，只留給「量測值」。
+# 實跑輸出過 `H*2*O Retailing`、`標普 *500* 指數`、`\(*8242*\)`——名稱與代號裡的數字
+# 不是數據，粗體之後反而讓人找不到真正的數字。帶單位是「這是量測值」最可靠的訊號。
+# 前面再擋一個拉丁字母，避免 `H2O`／`COVID19` 這種字母數字混排被切開。
+_TG_NUM = re.compile(
+    r"(?<![A-Za-z])\d[\d,]*(?:\.\d+)?"
+    r"(?:\s*(?:美元|日圓|港幣|人民幣|%|％|倍|點|元|億|萬|兆|口|張|家|人|年|月|日|股|檔))+")
+# 哨兵字元：先在**未跳脫**的文字上標記，跳脫完再換成真正的語法符號。
+# 直接在跳脫後的字串上塞 `*` 會踩到反斜線（`1\.09` 的小數點已被跳脫），
+# 正則要處理跳脫過的形式，既難寫又容易漏；用控制字元當佔位最穩——
+# escape_mdv2 只跳脫 MarkdownV2 的特殊字元集，控制字元原樣通過。
+_B0, _B1, _U0, _U1 = "\x01", "\x02", "\x03", "\x04"
+
+
+def emphasize_push_body(text: str) -> str:
+    """在**跳脫前**的內文標出數字與關鍵詞，回傳含哨兵的字串。"""
+    out = []
+    for line in (text or "").splitlines():
+        if line.startswith(("•", "🔥")):     # 只強調條列本身，段落標題與免責聲明不動
+            seen = set()
+
+            def key_sub(m):
+                w = m.group(1)
+                if w in seen:
+                    return w                 # 同一行同一個詞只標第一次（同網頁的理由）
+                seen.add(w)
+                return f"{_U0}{w}{_U1}"
+
+            line = _TG_KEY.sub(key_sub, line)
+            line = _TG_NUM.sub(lambda m: f"{_B0}{m.group(0)}{_B1}", line)
+        out.append(line)
+    return "\n".join(out)
+
+
+def apply_mdv2_marks(escaped: str) -> str:
+    """跳脫完成後，把哨兵換成 MarkdownV2 的粗體／底線符號。
+
+    **相鄰的兩段要先併成一段。** 「聯準會降息」中間沒有分隔字，兩個關鍵詞各自包起來
+    會產生 `__聯準會____降息__`——那個 `____` 會讓 Telegram 的解析器認不出配對，整則
+    退回純文字（而且是**無聲**的：訊息照送、只是所有格式失效）。粗體同理。
+    """
+    merged = escaped.replace(_U1 + _U0, "").replace(_B1 + _B0, "")
+    return (merged.replace(_B0, "*").replace(_B1, "*")
+                  .replace(_U0, "__").replace(_U1, "__"))
 
 
 def compose_push_message(ai_text: str, snapshot: dict, markets: dict,
@@ -175,7 +253,9 @@ def compose_push_message(ai_text: str, snapshot: dict, markets: dict,
     if snap:
         parts.append(telegram_push.escape_mdv2(snap))
     if body:
-        parts.append(telegram_push.escape_mdv2(body))
+        # 先在未跳脫的文字上塞哨兵 → 跳脫 → 再換成 * 與 __（見 emphasize_push_body）
+        parts.append(apply_mdv2_marks(
+            telegram_push.escape_mdv2(emphasize_push_body(body))))
     links = build_reading_links(markets)
     if links:
         parts.append(links)
@@ -308,11 +388,23 @@ def _snapshot_from_market_daily(c) -> dict:
     if not row:
         return {}          # 一週內都沒有指數 → 寧可不出盤面，也不端出過期數字
     m = dict(row)
+    keys = ("sox", "n225", "kospi", "vix")
+    # 漲跌%只跟**緊鄰的前一列**比，不逐欄往回找最近的非空值。
+    # 一開始是往回找的，實測就出事：韓股本日 6,359、最近一筆非空是 5 天前的 5,593，
+    # 算出「▲13.68%」掛在盤面上——那是跨多日的累計，讀者卻會當成今天的漲跌。
+    # 「日漲跌」的定義就是「對前一個交易日」；那一天沒有值就是算不出來，
+    # 寧可不顯示，也不要端出一個看起來像當日、實際上不是的數字。
+    prow = c.execute(
+        "SELECT * FROM market_daily WHERE date < ? ORDER BY date DESC LIMIT 1",
+        (m.get("date"),)).fetchone()
+    pm = dict(prow) if prow else {}
+    prev = {k: pm[k] for k in keys if pm.get(k) is not None}
     return {
         "日期": m.get("date"), "加權指數": m.get("taiex"), "加權漲跌": m.get("taiex_chg"),
         "成交金額(億)": m.get("turnover"), "台指期": m.get("tx_price"),
         "那斯達克100/費半等國際指標若有": {
-            k: m.get(k) for k in ("sox", "n225", "kospi", "vix") if m.get(k) is not None},
+            k: m.get(k) for k in keys if m.get(k) is not None},
+        "國際前值": prev,
     }
 
 
@@ -327,7 +419,9 @@ def news_logic(c, slot: str | None = None, refresh: int = 0) -> dict:
     today = datetime.now(_TAIPEI).strftime("%Y-%m-%d")
     # 推播格式改版（盤面區塊／投資建議過濾／行內連結／MarkdownV2 跳脫）→ 進版號，
     # 否則舊格式的快取會被當成今天的結果直接送出（同 dist 快取那次的教訓）。
-    key = f"news:v6:{today}:{slot}"
+    # v7：盤面加上國際指數漲跌%＋日經缺值也顯示，推播內文加上粗體／底線強調。
+    # 推播格式一改就要進版，否則今天稍早存的舊格式快取會被當成今天的結果直接送出。
+    key = f"news:v7:{today}:{slot}"
     cached = get_ai_cache(c, key)
     if cached and not refresh:
         return cached
