@@ -397,6 +397,52 @@ function trimBlankLines(lines) {
 
 // The API returns editor-controlled Markdown. Escape first, then support only the
 // small, deliberate subset used by the daily brief so fetched text stays safe.
+// 財經新聞裡真正被「找」的東西只有兩種：數字，以及決定後續影響的那個詞。
+// 其餘敘述是連接語。這兩類各給一種安靜的處理，刻意都不動色相——
+// 本站的紅／綠鎖給行情漲跌、琥珀鎖給「注意這格」、藍已被條列標籤（事件／關鍵數據…）
+// 佔用，任何一個拿來當泛用強調都會讓既有語彙失效。
+// 數字：只加亮度與字重。**不依漲跌上色**——「跌破 43,386 點」的 43,386 是價位不是漲跌，
+// 依方向著色會把「水位」誤讀成「下跌」，正是本站色彩規則要避免的事。
+// 關鍵詞：亮度＋一條紫色底線。底線與填色是**不同的軸**，所以疊在藍色標籤旁不會打架
+// （同 `.card.alert` 用外框而非第四種色相的理由）；紫色沿用既有的 `--chart-trust`，
+// 不新增色相，且本頁沒有投信序列，不會撞義。
+const _FACT_KEY = new RegExp("(" + [
+  // 制度與政策——會改變交易規則，影響最久
+  "新制", "上路", "法規", "處置", "金管會", "證交所", "櫃買", "鬆綁", "解禁", "關稅",
+  // 籌碼與資金——本站的核心視角
+  "外資", "投信", "自營", "法人", "買超", "賣超", "空單", "多單", "未平倉", "融資", "融券",
+  // 公司事件——有明確日期與後果
+  "法說", "財報", "財測", "除息", "除權", "配息", "拆股", "回購", "併購", "增資",
+  "上調", "下修", "調升", "調降", "創新高", "漲停", "跌停",
+  // 總經——決定資金成本
+  "利率", "降息", "升息", "通膨", "央行", "聯準會", "非農",
+].join("|") + ")", "g");
+// 數字連同緊跟的單位一起標，否則「693」亮而「點」暗，看起來像被切斷。
+// 單位用 `*` 可連續：「1854 萬人」的量詞是兩個字，只吃一個會變成「1854 萬」亮、
+// 「人」暗。多字單位放在前面，否則 `元` 會先吃掉「美元」的後半。
+const _FACT_NUM = new RegExp(
+  "\\d[\\d,]*(?:\\.\\d+)?" +
+  "(?:\\s*(?:美元|日圓|港幣|人民幣|%|％|倍|點|元|億|萬|兆|口|張|家|人|年|月|日|股|檔))*", "g");
+
+function markFacts(html) {
+  // **在 esc() 之後執行，所以必須跳過標籤與 HTML 實體**：`&#39;` 裡就有數字，
+  // 直接對整串套數字正則會把實體切壞，變成畫面上的亂碼。
+  // split 帶捕獲群組時，分隔符落在奇數索引，只處理偶數索引的純文字段。
+  // 同一行裡同一個詞只標第一次。實測「證券市場實施處置股改制，縮短處置期間並鬆綁…」
+  // 一句話就標了兩次「處置」——第二次沒有新增任何資訊，只是讓句子看起來在結巴。
+  const seen = new Set();
+  return String(html).split(/(<[^>]*>|&[a-zA-Z#0-9]+;)/g).map((seg, i) => {
+    if (i % 2) return seg;
+    // 先關鍵詞（中文）再數字（阿拉伯數字）：插入的 class 名不含數字，
+    // 所以第二次替換不會咬到第一次產生的標記。
+    return seg.replace(_FACT_KEY, (m) => {
+      if (seen.has(m)) return m;
+      seen.add(m);
+      return `<span class="nx-key">${m}</span>`;
+    }).replace(_FACT_NUM, '<span class="nx-num">$&</span>');
+  }).join("");
+}
+
 function renderNewsMarkdown(text) {
   const sections = { intro: [], tw: [], us: [], jp: [], tail: [] };
   const marketHeaders = {
@@ -416,16 +462,19 @@ function renderNewsMarkdown(text) {
     sections[current].push(line);
   });
   const inline = (value) => esc(value).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  // 只在條列（標題／事件／關鍵數據／影響／關注）上標記，標題列不標——
+  // 「6 則精選」的 6 亮起來只是噪音，那不是讀者要找的數字。
+  const marked = (value) => markFacts(inline(value));
   const toHtml = (lines) => lines.map((line) => {
     if (/^###\s+/.test(line)) return `<h3 class="news-md-title">${inline(line.replace(/^###\s+/, ""))}</h3>`;
     if (/^####\s+/.test(line)) return `<h4 class="news-md-heading">${inline(line.replace(/^####\s+/, ""))}</h4>`;
     if (/^\s*[*-]\s+/.test(line)) {
       const value = line.replace(/^\s*[*-]\s+/, "");
       const cls = value.includes("🔥") ? "news-md-item news-story-title" : "news-md-item news-story-detail";
-      return `<div class="${cls}">${inline(value)}</div>`;
+      return `<div class="${cls}">${marked(value)}</div>`;
     }
     if (!line.trim()) return '<div class="news-md-gap"></div>';
-    return `<p class="news-md-text">${inline(line)}</p>`;
+    return `<p class="news-md-text">${marked(line)}</p>`;
   }).join("");
   // 三個市場一律全開。原本是 <details> 只展開當下時段那一個，但這一頁本來就是
   // 「一次讀完今天三個市場」，每次進來都要再點兩下才看得到另外兩市，收合反而礙事。

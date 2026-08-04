@@ -534,6 +534,20 @@ body[data-public] .status-bar { display: none; }
 .news-market-body .news-story-detail { padding: 1px var(--space-md) 1px 28px; color: var(--text-secondary); font-size: var(--font-size-data); line-height: 1.55; }
 .news-market-body .news-story-detail::before { left: var(--space-md); width: 5px; height: 5px; background: var(--text-muted); box-shadow: none; }
 .news-market-body .news-story-detail strong { color: var(--info); }
+/* 數字：只加亮度與字重，不動色相。紅／綠在本站鎖給行情漲跌，拿來標一般數字會把
+   「43,386 點」這種價位讀成「下跌」。數字本來就長得跟中文不一樣，亮度就夠認出來。
+   數字走 "Num" 那組 @font-face（M PLUS Rounded 1c），字重拉到 650 仍是同一支字。 */
+.nx-num { color: var(--text-primary); font-weight: 650; }
+/* 關鍵詞：亮度＋一條紫底線。底線與填色是不同的軸，疊在藍色的條列標籤旁不會打架。
+   紫色沿用既有的 --chart-trust，不新增色相；本頁沒有投信序列，不會撞義。 */
+.nx-key {
+  color: var(--text-primary);
+  border-bottom: 1px solid color-mix(in srgb, var(--chart-trust) 55%, transparent);
+  padding-bottom: 1px;
+}
+/* 故事標題本身已是亮字＋粗體，再標一次會變成整行都在喊。只留數字的字重差。 */
+.news-story-title .nx-key { border-bottom: none; color: inherit; }
+.news-story-title .nx-num { color: inherit; }
 
 @media (max-width: 760px) {
   #news-summary { padding: var(--space-lg); font-size: var(--font-size-sm); }
