@@ -57,3 +57,43 @@ def test_top_movers_never_pads_a_ranking_with_the_wrong_direction():
     assert [r["code"] for r in out["up"]] == ["2330"]
     assert [r["code"] for r in out["down"]] == ["2615", "3105"]
     assert out["n"] == 4          # 採計檔數仍算全部有效報價
+
+
+def test_search_symbols_digits_match_code_prefix_only():
+    from stocks_power_rich.analysis import search_symbols
+    names = {"2330": "台積電", "2317": "鴻海", "6533": "晶心科", "1234": "黑松"}
+    out = search_symbols(names, "23", n=8)
+    assert [r["code"] for r in out] == ["2317", "2330"]
+    # 純數字不比對名稱：打代號的人要的是代號，名稱裡的數字是雜訊
+    assert search_symbols({"9999": "台積電2330概念"}, "2330") == []
+
+
+def test_search_symbols_ranks_exact_then_prefix_then_contains():
+    from stocks_power_rich.analysis import search_symbols
+    names = {"1101": "台泥", "2330": "台積電", "3711": "日月光投控台積供應鏈", "2337": "旺宏"}
+    out = search_symbols(names, "台積", n=8)
+    # 「台積電」開頭相符，排在「只是包含」的 3711 前面——只用「包含」一種權重時
+    # 兩者同分，順序會由 dict 決定，等於不穩定。
+    assert [r["code"] for r in out] == ["2330", "3711"]
+    exact = search_symbols({"2330": "台積電", "9999": "台積電控股"}, "台積電", n=8)
+    assert [r["code"] for r in exact] == ["2330", "9999"]
+
+
+def test_search_symbols_is_case_insensitive_and_capped():
+    from stocks_power_rich.analysis import search_symbols
+    names = {str(2300 + i): f"TSMC{i}" for i in range(20)}
+    out = search_symbols(names, "tsmc", n=5)
+    assert len(out) == 5
+    assert all(r["name"].startswith("TSMC") for r in out)
+
+
+def test_search_symbols_empty_query_returns_nothing():
+    from stocks_power_rich.analysis import search_symbols
+    assert search_symbols({"2330": "台積電"}, "") == []
+    assert search_symbols({"2330": "台積電"}, "   ") == []
+    assert search_symbols({}, "台積") == []
+
+
+def test_search_symbols_falls_back_to_code_when_name_missing():
+    from stocks_power_rich.analysis import search_symbols
+    assert search_symbols({"2330": None}, "2330") == [{"code": "2330", "name": "2330"}]

@@ -11,8 +11,22 @@
   <div class="app">
     <header class="topbar">
       <h1>STOCKS POWER RICH <span class="zh">股力智富</span></h1>
+      <!-- 手機專用的搜尋開關。**刻意放在標題這一列而不是 .actions 裡**：頂欄在 375px
+           本來就會折成兩列（標題 193px ＋ 資料日那組 270px 放不進 351px），標題那列
+           還有 150px 空著，而 .actions 那列只有 18px 高——把一顆 34px 的鈕放進去
+           會把整個頂欄從 56px 撐到 74px，放在標題列則完全不佔額外高度。 -->
+      <button id="gs-toggle" class="gs-toggle" type="button" aria-label="搜尋代號或名稱" aria-expanded="false">🔍</button>
+      <!-- 全域搜尋：任何頁面都能直接跳到個股。建議清單是絕對定位的浮層，
+           所以外層要 position:relative；role=combobox 讓鍵盤與螢幕閱讀器知道
+           下面那張清單跟這個輸入框是一組的。 -->
+      <div class="gsearch" role="combobox" aria-expanded="false" aria-haspopup="listbox" aria-owns="gs-list">
+        <input id="gs-input" type="search" placeholder="搜尋代號或名稱" autocomplete="off"
+               aria-autocomplete="list" aria-controls="gs-list" />
+        <ul id="gs-list" class="gs-list" role="listbox" hidden></ul>
+      </div>
       <div class="actions">
         <span id="data-date" class="data-date"></span>
+        <span id="freshness" class="freshness"></span>
         <span id="last-updated" class="muted">尚未更新</span>
       </div>
     </header>
@@ -27,7 +41,6 @@
         <a class="nav active" data-view="overview" data-primary data-short="總覽"><span class="ico">📊</span><span class="lbl">總覽</span></a>
         <a class="nav" data-view="news" data-primary data-short="新聞"><span class="ico">📰</span><span class="lbl">每日財經新聞</span></a>
         <a class="nav" data-view="rotation" data-short="輪動"><span class="ico">🔄</span><span class="lbl">族群輪動</span></a>
-        <a class="nav" data-view="weekly" data-short="跨週AI"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
         <a class="nav" data-view="osfut" data-short="海期"><span class="ico">🌏</span><span class="lbl">海期監控</span></a>
         <a class="nav" data-view="hiprice" data-short="高價股"><span class="ico">💰</span><span class="lbl">高價股監控</span></a>
       </div>
@@ -35,12 +48,22 @@
         <div class="nav-group-title">選股</div>
         <a class="nav" data-view="picks" data-short="選股"><span class="ico">🎯</span><span class="lbl">籌碼/基本選股</span></a>
         <a class="nav" data-view="cup" data-short="杯柄"><span class="ico">🏆</span><span class="lbl">杯柄選股</span></a>
-        <a class="nav" data-view="traders" data-short="操盤手"><span class="ico">🧭</span><span class="lbl">操盤手</span></a>
       </div>
       <div class="nav-group">
-        <div class="nav-group-title">個股・交易</div>
+        <div class="nav-group-title">個股</div>
         <a class="nav" data-view="stock" data-primary data-short="個股"><span class="ico">🔍</span><span class="lbl">個股查詢</span></a>
         <a class="nav" data-view="watch" data-primary data-short="自選"><span class="ico">⭐</span><span class="lbl">自選股</span></a>
+      </div>
+      <!-- 進階：使用者回饋「左側欄位不夠精準，有些功能不是很常用」。這三個是週期性或
+           偶爾才開的（週報一週一次、操盤手是方法論檢核、帳本是事後記錄），收進預設收合
+           的群組，讓天天要看的那 9 個不必跟它們搶注意力。**只在 >860px 生效**：
+           860px 以下側欄是 56px 圖示軌、群組標題本來就藏起來，手機更是把 .nav-group
+           設成 display:contents 交給「更多」面板——那兩種模式下沒有標題可以點，
+           收合起來就再也打不開了。 -->
+      <div class="nav-group" data-collapsible="adv">
+        <div class="nav-group-title">進階</div>
+        <a class="nav" data-view="weekly" data-short="跨週AI"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
+        <a class="nav" data-view="traders" data-short="操盤手"><span class="ico">🧭</span><span class="lbl">操盤手</span></a>
         <a class="nav" data-view="trades" data-short="帳本"><span class="ico">📒</span><span class="lbl">交易帳本</span></a>
       </div>
       <div class="nav-group nav-group-sys">
@@ -87,6 +110,11 @@
              （而非用 IntersectionObserver 控制顯示）——頁面在頂端時它跟上面的詳細版
              重疊一行，代價很小；一旦超出視窗，sticky 自然貼頂，不必額外判斷可見性。 -->
         <div id="kpi-sticky" class="kpi-sticky"></div>
+        <!-- 三則新聞標題：每個市場一則。資料只來自 /api/news/headlines，那支**只讀
+             已存在的快取**、不抓取也不打 Gemini（見 api/news.py::headlines_logic）——
+             免費層一天只有 20 次，總覽不該為了一格順帶資訊就吃掉一次。
+             整塊沒有資料時 renderNewsStrip 會把它藏起來，不留空殼。 -->
+        <div id="news-strip" class="news-strip" hidden></div>
         <!-- 兩階層：section-head（這一段回答什麼問題）＞ group-title（單一區塊）。
              分組照本站自己的世界觀：籌碼解釋行情，所以「誰在動錢」與「價格長什麼樣」
              各成一段，而不是把 8 個同權重的區塊平鋪。 -->

@@ -507,6 +507,51 @@ def news_logic(c, slot: str | None = None, refresh: int = 0) -> dict:
     return payload
 
 
+def pick_headlines(markets: dict, per_market: int = 1) -> list[dict]:
+    """每個市場取前 per_market 則 → [{market, flag, name, title, url}]。
+
+    每市場各取一則（而不是「台股取三則」）是刻意的：總覽這一格要的是「今天世界發生什麼」，
+    三則全是台股就跟下面整頁的台股資料重複了。順序照 _MARKET_META，與新聞頁一致——
+    同一份資料不該在兩個地方用不同的排序，讀者會以為那是某種權重。
+    """
+    out = []
+    for key, (flag, name) in _MARKET_META.items():
+        for it in (markets.get(key) or [])[:per_market]:
+            if it.get("title"):
+                out.append({"market": key, "flag": flag, "name": name,
+                            "title": it["title"], "url": it.get("url") or ""})
+    return out
+
+
+def headlines_logic(c, n: int = 3) -> dict:
+    """總覽用的新聞標題：**只讀已存在的快取，絕不抓取、絕不呼叫 Gemini。**
+
+    這一格是「順帶看一眼」，不值得為它付出代價。直接叫 news_logic 會有兩個問題：
+    快取沒中時它會去抓三個市場的新聞（株探還要遵守 3 秒 Crawl-delay），然後打一次
+    Gemini——**開一次總覽就吃掉一格免費層額度（一天只有 20 次）**。所以這裡只掃
+    `news:v7:{date}:{slot}` 這些既有的鍵，全都沒有就回空陣列，前端整塊不顯示。
+
+    掃描順序是今天由晚到早、再退到昨天：07:00 之前今天還沒有任何一場，
+    這時顯示昨晚那場並標上它的日期，比顯示空白有用。
+    """
+    today = datetime.now(_TAIPEI)
+    for day in (today, today - timedelta(days=1)):
+        ds = day.strftime("%Y-%m-%d")
+        for slot in ("evening", "afternoon", "midday", "morning"):
+            cached = get_ai_cache(c, f"news:v7:{ds}:{slot}")
+            if not cached:
+                continue
+            items = pick_headlines(cached.get("markets") or {})[:max(1, n)]
+            if items:
+                return {"date": ds, "slot": slot, "items": items}
+    return {"date": None, "slot": None, "items": []}
+
+
+@router.get("/news/headlines")
+def get_news_headlines(n: int = 3):
+    return headlines_logic(conn(), n=n)
+
+
 @router.get("/news")
 def get_news(slot: str | None = None, refresh: int = 0):
     return news_logic(conn(), slot=slot, refresh=refresh)

@@ -710,3 +710,109 @@ def test_headline_fallback_follows_the_slot_market_order():
     afternoon = headline_digest(mk, "afternoon")
     assert evening.index("us頭條") < evening.index("tw頭條")
     assert afternoon.index("tw頭條") < afternoon.index("us頭條")
+
+
+# ===== 總覽的 3 則新聞標題（只讀快取） =====
+
+def test_pick_headlines_takes_one_per_market_in_page_order():
+    from stocks_power_rich.api.news import pick_headlines
+    markets = {
+        "us": [{"title": "us-1", "url": "u1"}, {"title": "us-2", "url": "u2"}],
+        "tw": [{"title": "tw-1", "url": "t1"}],
+        "jp": [{"title": "jp-1", "url": "j1"}],
+    }
+    out = pick_headlines(markets)
+    # 順序照 _MARKET_META（台→美→日），不是 markets dict 的插入順序——同一份資料
+    # 在兩個頁面用不同排序，讀者會以為那是某種權重。
+    assert [r["market"] for r in out] == ["tw", "us", "jp"]
+    assert [r["title"] for r in out] == ["tw-1", "us-1", "jp-1"]
+    assert out[0]["flag"] == "🇹🇼"
+
+
+def test_pick_headlines_skips_missing_markets_and_empty_titles():
+    from stocks_power_rich.api.news import pick_headlines
+    out = pick_headlines({"tw": [{"title": "", "url": "x"}], "jp": [{"title": "jp-1"}]})
+    assert [r["title"] for r in out] == ["jp-1"]
+    assert out[0]["url"] == ""          # 缺 url 不能變成 None，前端要拿它當 href
+    assert pick_headlines({}) == []
+
+
+def test_news_headlines_endpoint_never_fetches_or_calls_gemini(tmp_path, monkeypatch):
+    """**這一格不值得花一次免費層額度。** 直接叫 news_logic 會在快取沒中時去抓三個
+    市場（株探還有 3 秒 Crawl-delay）並打一次 Gemini——等於「開一次總覽就吃掉
+    1/20 的當日額度」。所以沒有快取時必須安靜地回空，而不是去生一份出來。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    from stocks_power_rich.api import news as news_api
+    from stocks_power_rich.main import create_app
+
+    calls = []
+    monkeypatch.setattr(news_api.news, "fetch_market_news",
+                        lambda *a, **k: calls.append("fetch") or ([], False))
+    monkeypatch.setattr(news_api.gemini, "summarize_news",
+                        lambda *a, **k: calls.append("gemini") or {"enabled": True, "text": "x"})
+    client = TestClient(create_app())
+
+    body = client.get("/api/news/headlines").json()
+    assert body == {"date": None, "slot": None, "items": []}
+    assert calls == []                  # 一次都沒有
+
+
+def test_news_headlines_reads_the_latest_cached_slot(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import datetime, timedelta, timezone
+    from stocks_power_rich.api import news as news_api
+    from stocks_power_rich.api.helpers import set_ai_cache
+    from stocks_power_rich.db import get_connection, init_db
+    from stocks_power_rich.main import create_app
+
+    c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
+    today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+    set_ai_cache(c, f"news:v7:{today}:morning", {"markets": {"tw": [{"title": "早上", "url": "a"}]}})
+    set_ai_cache(c, f"news:v7:{today}:afternoon", {"markets": {"tw": [{"title": "下午", "url": "b"}]}})
+
+    calls = []
+    monkeypatch.setattr(news_api.news, "fetch_market_news",
+                        lambda *a, **k: calls.append("fetch") or ([], False))
+    body = TestClient(create_app()).get("/api/news/headlines").json()
+
+    assert body["slot"] == "afternoon" and body["date"] == today
+    assert [r["title"] for r in body["items"]] == ["下午"]
+    assert calls == []
+
+
+def test_news_headlines_falls_back_to_yesterday_before_the_morning_run(tmp_path, monkeypatch):
+    """07:00 之前今天一場都還沒跑過，顯示昨晚那場並標上它的日期，比顯示空白有用。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import datetime, timedelta, timezone
+    from stocks_power_rich.api.helpers import set_ai_cache
+    from stocks_power_rich.db import get_connection, init_db
+    from stocks_power_rich.main import create_app
+
+    c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
+    y = (datetime.now(timezone(timedelta(hours=8))) - timedelta(days=1)).strftime("%Y-%m-%d")
+    set_ai_cache(c, f"news:v7:{y}:evening", {"markets": {"us": [{"title": "昨晚美股", "url": "u"}]}})
+
+    body = TestClient(create_app()).get("/api/news/headlines").json()
+    assert body["date"] == y and body["slot"] == "evening"
+    assert [r["title"] for r in body["items"]] == ["昨晚美股"]
+
+
+# ===== 全域搜尋 =====
+
+def test_stock_search_route_is_not_swallowed_by_the_code_route(tmp_path, monkeypatch):
+    """`/api/stock/search` 必須排在 `/api/stock/{code}/...` 之前註冊，否則會被當成
+    code=\"search\" 吃掉——那種失效是安靜的（回 200、內容卻是查不到的個股）。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.api import stock as stock_api
+    from stocks_power_rich.main import create_app
+
+    monkeypatch.setattr(stock_api, "_ohlc_names",
+                        lambda c: {"2330": "台積電", "2317": "鴻海", "6533": "晶心科"})
+    client = TestClient(create_app())
+
+    body = client.get("/api/stock/search?q=23").json()
+    assert [r["code"] for r in body["items"]] == ["2317", "2330"]
+    assert client.get("/api/stock/search?q=台積").json()["items"][0]["code"] == "2330"
+    assert client.get("/api/stock/search?q=").json()["items"] == []

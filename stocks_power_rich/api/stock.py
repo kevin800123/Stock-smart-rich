@@ -27,10 +27,24 @@ from ..db import (
     get_all_ohlc
 )
 from ..sources import kline, tdcc, twse, tpex, taifex
-from .. import patterns, backtest
+from .. import analysis, patterns, backtest
 
 router = APIRouter(prefix="/api")
 _custody_lock = threading.Lock()
+
+
+# **這條路由必須排在 `/stock/{code}/...` 之前**——FastAPI 依註冊順序比對，
+# 若 `{code}` 那組先註冊，`/api/stock/search` 會被當成 code="search" 吃掉。
+@router.get("/stock/search")
+def stock_search(q: str = "", n: int = 8):
+    """全域搜尋：代號前綴或名稱包含 → [{code, name}]。比對規則見 analysis.search_symbols。
+
+    名稱表直接用 `_ohlc_names`（上市 + 上櫃，`ai_cache` 逐月快取），**不另開資料源也不另設
+    快取鍵**：多一把無 TTL 的鍵就多一個「抓失敗的空表被永久化」的面（os-futures／turnover／
+    dist 已各踩過一次），而這張表本來就是高價股／熱力圖在用的同一份。
+    """
+    return {"q": q, "items": analysis.search_symbols(_ohlc_names(conn()), q, n=n)}
+
 
 @router.get("/stock/{code}/ohlc")
 def stock_ohlc(code: str, bars: int = 400):

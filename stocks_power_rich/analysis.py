@@ -76,6 +76,39 @@ def top_movers(rows: list[dict], n: int = 8) -> dict:
     return {"up": trim(up), "down": trim(down), "n": len(ok)}
 
 
+def search_symbols(names: dict, q: str, n: int = 8) -> list[dict]:
+    """全域搜尋用的代號／名稱比對。names＝{code: name} → [{code, name}]，最多 n 筆。
+
+    兩種查法是**分開的**，不是同一種模糊比對：
+    - 純數字 → 只比對**代號前綴**。打 `23` 的人要的是 2330／2317 這種開頭相符的，
+      不是名字裡剛好有 23 的（實測「2330」若允許名稱包含，會撈到一堆無關的興櫃）。
+    - 其他 → 只比對**名稱包含**（不分大小寫，涵蓋英文代號如 TSMC 這類別名）。
+      代號不會誤中：使用者打中文時本來就不是在找代號。
+
+    名稱比對的排序是「越接近完全相同越前面」：完全相等 → 開頭相符 → 包含，
+    同級再依代號。若只用「包含」一種權重，打「台積」會讓 台積電 排在
+    某檔名字更長、只是碰巧含這兩個字的股票後面（順序由 dict 決定＝不穩定）。
+    """
+    q = (q or "").strip()
+    if not q:
+        return []
+    if q.isdigit():
+        hits = [(code, nm) for code, nm in names.items() if str(code).startswith(q)]
+        hits.sort(key=lambda kv: (len(str(kv[0])), str(kv[0])))
+    else:
+        low = q.lower()
+        scored = []
+        for code, nm in names.items():
+            s = (nm or "").lower()
+            if low not in s:
+                continue
+            rank = 0 if s == low else (1 if s.startswith(low) else 2)
+            scored.append((rank, str(code), code, nm))
+        scored.sort(key=lambda t: (t[0], t[1]))
+        hits = [(code, nm) for _, _, code, nm in scored]
+    return [{"code": str(code), "name": nm or str(code)} for code, nm in hits[:max(1, n)]]
+
+
 def _num(v):
     return v if isinstance(v, (int, float)) and v is not None else 0.0
 

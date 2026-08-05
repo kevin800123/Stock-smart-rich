@@ -863,6 +863,45 @@ function renderCards(m, prev = {}, hist = []) {
   ].join("");
 }
 
+// 資料新鮮度徽章：頂欄那個「資料日期：YYYY-MM-DD」只說了資料**是哪天的**，
+// 沒說**那是不是今天的**——而「今天」正是每次進站第一個要確認的事（本站每晚 21:00
+// 才更新，白天看到的一定是昨天的盤後）。徽章補上那句話。
+// 落差用**日曆天**而非交易日：跨週末時說「落後 3 天」是事實，硬換算成「落後 1 個交易日」
+// 反而會讓週一早上看起來像資料很新。data_stale 才是「該不該擔心」的判定（後端已考慮
+// 週末，見 helpers.data_is_stale），所以顏色吃它、天數只是補充。
+function renderFreshness(d) {
+  const el = $("freshness");
+  if (!el) return;
+  const ds = d && d.latest ? d.latest.date : null;
+  if (!ds) { el.textContent = ""; el.className = "freshness"; return; }
+  const today = d.today || new Date().toISOString().slice(0, 10);
+  const days = Math.round((Date.parse(today) - Date.parse(ds)) / 86400000);
+  el.textContent = days <= 0 ? "今日" : `落後 ${days} 天`;
+  el.className = "freshness " + (d.data_stale ? "stale" : "ok");
+  el.title = d.data_stale
+    ? `資料日 ${ds}，官方盤後資料尚未釋出或更新未跑；晚間排程或按「一鍵更新」後會補上`
+    : `資料日 ${ds}（最近一個已結算的交易日）`;
+}
+
+// 總覽的三則新聞標題。**只讀 /api/news/headlines**，那支不抓取也不打 Gemini
+// （見 api/news.py::headlines_logic）——免費層一天只有 20 次，總覽不該為了一格
+// 順帶資訊就吃掉一次。沒有快取就整塊隱藏，不留空殼。
+async function loadNewsStrip() {
+  const el = $("news-strip");
+  if (!el) return;
+  try {
+    const d = await getJSON("/api/news/headlines?n=3");
+    const items = d.items || [];
+    if (!items.length) { el.hidden = true; return; }
+    const asof = d.date && lastLatest && d.date !== lastLatest.date ? `（${d.date}）` : "";
+    el.innerHTML = items.map((it) =>
+      `<a class="nsi" href="${esc(it.url)}" target="_blank" rel="noopener noreferrer">` +
+      `<span class="nsi-f">${esc(it.flag)}</span><span class="nsi-t">${esc(it.title)}</span></a>`
+    ).join("") + `<span class="news-strip-more">新聞標題${asof}　點擊開啟原文，完整摘要見「每日財經新聞」</span>`;
+    el.hidden = false;
+  } catch (e) { el.hidden = true; }
+}
+
 function renderStale(d) {
   const el = $("stale-note");
   if (!el) return;
@@ -972,6 +1011,8 @@ async function loadDashboard() {
   renderKpiSticky();              // 同樣家數尚未到齊時會自行留白，loadBreadth 完再補畫一次
   loadChipTrend();
   renderStale(d);
+  renderFreshness(d);
+  loadNewsStrip();               // 只讀快取，不會觸發抓取或 Gemini
   if (d.latest && d.latest.updated_at) $("last-updated").textContent = "更新：" + d.latest.updated_at.replace("T", " ").slice(0, 19);
   return d;
 }
@@ -2438,6 +2479,102 @@ $("view-overview").addEventListener("click", (e) => {
   }
 });
 initCollapsibleGroups();
+
+// ========== 側欄「進階」群組收合 ==========
+// 與 .card-group 那套刻意共用同一個 localStorage 命名空間與同一個「點標題切換」的手勢，
+// 不另發明一套——同一個動作在兩個地方應該長得一樣、記得一樣。
+document.querySelectorAll(".nav-group[data-collapsible]").forEach((g) => {
+  const key = COLLAPSE_KEY("nav:" + g.dataset.collapsible);
+  // 預設收合（存的值不是 "0" 就當收合）：這個群組的存在意義就是「平常不用看」，
+  // 預設展開等於什麼都沒改。使用者打開過就記住展開。
+  if (localStorage.getItem(key) !== "0") g.classList.add("collapsed");
+  const title = g.querySelector(".nav-group-title");
+  if (title) title.addEventListener("click", () => {
+    localStorage.setItem(key, g.classList.toggle("collapsed") ? "1" : "0");
+  });
+});
+
+// ========== 頂欄全域搜尋 ==========
+// 任何頁面都能直接跳到個股，不必先切到「個股查詢」再打一次。
+let gsItems = [], gsCursor = -1, gsTimer = null, gsSeq = 0;
+const gsBox = $("gs-input"), gsList = $("gs-list");
+const gsWrap = gsBox ? gsBox.closest(".gsearch") : null;
+
+function gsClose() {
+  gsItems = []; gsCursor = -1;
+  if (gsList) { gsList.hidden = true; gsList.innerHTML = ""; }
+  if (gsWrap) gsWrap.setAttribute("aria-expanded", "false");
+}
+function gsRender() {
+  if (!gsList) return;
+  gsList.innerHTML = gsItems.length
+    ? gsItems.map((it, i) => `<li class="gs-item${i === gsCursor ? " on" : ""}" role="option"` +
+        ` aria-selected="${i === gsCursor}" data-code="${esc(it.code)}" data-name="${esc(it.name)}">` +
+        `<span class="gs-code">${esc(it.code)}</span><span class="gs-name">${esc(it.name)}</span></li>`).join("")
+    : '<li class="gs-empty">查無相符的代號或名稱</li>';
+  gsList.hidden = false;
+  if (gsWrap) gsWrap.setAttribute("aria-expanded", "true");
+}
+function gsGo(code, name) {
+  gsClose();
+  if (gsBox) gsBox.value = "";
+  showView("stock");
+  $("stock-input").value = code;
+  loadStock(code, name);
+}
+async function gsSearch(q) {
+  // 每次請求帶一個序號，回來時只認最後一次——打字快時回應會亂序抵達，
+  // 沒有這道防護就會看到「輸入 2330 卻顯示 23 的結果」這種閃回。
+  const seq = ++gsSeq;
+  try {
+    const d = await getJSON("/api/stock/search?q=" + encodeURIComponent(q) + "&n=8");
+    if (seq !== gsSeq) return;
+    gsItems = d.items || []; gsCursor = -1; gsRender();
+  } catch (e) { if (seq === gsSeq) gsClose(); }
+}
+if (gsBox) {
+  gsBox.addEventListener("input", () => {
+    const q = gsBox.value.trim();
+    clearTimeout(gsTimer);
+    if (!q) { gsClose(); return; }
+    gsTimer = setTimeout(() => gsSearch(q), 180);   // 去抖：不要每個按鍵都打一次 API
+  });
+  gsBox.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { gsClose(); gsBox.blur(); return; }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      if (!gsItems.length) return;
+      e.preventDefault();
+      gsCursor = (gsCursor + (e.key === "ArrowDown" ? 1 : -1) + gsItems.length) % gsItems.length;
+      gsRender();
+      return;
+    }
+    if (e.key !== "Enter") return;
+    const hit = gsCursor >= 0 ? gsItems[gsCursor] : gsItems[0];
+    if (hit) { gsGo(hit.code, hit.name); return; }
+    // 還沒有建議（打太快、或這支代號不在名稱表裡）時，4 位數字就直接當代號用——
+    // 名稱表是逐月快取的官方清單，新上市或剛改名的股票可能還沒進去，
+    // 這時「查無資料」是錯的答案，直接查才是。
+    const q = gsBox.value.trim();
+    if (/^\d{4,6}$/.test(q)) gsGo(q, q);
+  });
+  gsList.addEventListener("mousedown", (e) => {
+    // 用 mousedown 而非 click：click 發生在 blur 之後，清單那時已經被關掉了。
+    const li = e.target.closest(".gs-item");
+    if (li) { e.preventDefault(); gsGo(li.dataset.code, li.dataset.name); }
+  });
+  gsBox.addEventListener("blur", () => setTimeout(gsClose, 120));
+}
+// 手機的搜尋開關（桌機/平板 CSS 把它藏起來，搜尋框常駐）
+const gsToggle = $("gs-toggle");
+if (gsToggle && gsBox) gsToggle.addEventListener("click", () => {
+  const open = document.querySelector(".topbar").classList.toggle("search-open");
+  gsToggle.setAttribute("aria-expanded", open ? "true" : "false");
+  // 展開後要自己聚焦，否則使用者得再點一次才能打字；收起時把輸入與建議一起清掉，
+  // 免得下次展開看到上一輪的殘留。
+  if (open) gsBox.focus();
+  else { gsBox.value = ""; gsClose(); }
+});
+
 $("wave-help-toggle").addEventListener("click", (e) => { e.preventDefault(); $("wave-help").classList.toggle("hidden"); });
 $("wave-pct").addEventListener("input", (e) => {
   wavePct = Number(e.target.value) / 100; $("wave-pct-val").textContent = `轉折 ${e.target.value}%`;
