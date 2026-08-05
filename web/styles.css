@@ -260,7 +260,10 @@ body[data-public] .status-bar { display: none; }
 }
 .pulse-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-2); }
 .pulse-title { font-size: var(--fs-md); font-weight: 700; color: var(--text); }
-.pulse-gauge-chart { width: 100%; height: 148px; }
+/* 176px 是算出來的，不是挑順眼的：讀數移到弧線下方（app.js 的 offsetCenter 105%）之後，
+   半徑 66% × 高度/2 ＝ 58px，讀數中心落在圓心下方 58px、文字塊高 ~46px，所以最少要
+   44%×H + 58 + 23 ≤ H。改動 radius／center／offsetCenter 任一個都要重算這個高度。 */
+.pulse-gauge-chart { width: 100%; height: 176px; }
 .pulse-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2); }
 .pulse-item { background: var(--sunken); border-radius: var(--r); padding: 6px 10px; min-width: 0; }
 .pulse-item-k { display: block; font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
@@ -297,7 +300,16 @@ body[data-public] .status-bar { display: none; }
      於是很容易跑去改 padding／gap，但那些值都是對的。`.pulse-card` 的 `flex: 1 1 300px`
      同理。直排時一律把高度交還給內容。 */
   .overview-top .market-strip, .pulse-card { flex: 0 0 auto; }
-  .pulse-card { max-width: none; }
+  /* **`max-width: 100%` 不能寫成 `none`。** `.overview-top` 是 `flex-wrap: wrap` 的**直排**
+     容器，多行 flex 的 `align-items: stretch` 是把項目拉到「該 flex line 的 cross size」，
+     而那條線的寬度由項目自己的 max-content 決定——**不是容器寬度**。所以只要卡片內容
+     有一塊很寬的東西，卡片就會整個撐出去：實測手機按下「展開組成」後，裡面那張檢核表
+     （說明欄是 `white-space: nowrap` 的長句）min-content 710px，`.pulse-card` 當場從
+     352px 變成 **745px**，儀表、四個分項、標題整排被推出畫面外——就是使用者說的「格式跑掉」。
+     桌機沒事只是因為基礎規則有 `max-width: 380px` 壓著，這裡把它改成 `none` 就等於拆掉
+     唯一的護欄。注意 `min-width: 0` 治不了這個：自動最小尺寸那條規則只作用在**主軸**，
+     這裡撐開的是交叉軸。（此問題早於手機版改版，用舊的 `flex: 1 1 300px` 實測同樣 745px。） */
+  .pulse-card { max-width: 100%; }
   .kpi-sticky { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 6px; }
 }
 @media (max-width: 500px) {
@@ -966,6 +978,15 @@ a.stock:hover { text-decoration: underline; }
      所以手機上把名次欄收起來（名次由列序表達），凍結改套在「股票」欄。 */
   #view-hiprice th:first-child,
   #view-hiprice td:first-child { display: none; }
+
+  /* 「展開組成」那張檢核表：**只讓第一欄換行，說明欄維持 nowrap。**
+     全域的 `th, td { white-space: nowrap }` 讓整張表 min-content 有 710px，第一欄
+     「融資維持率（上市）」自己就 197px——凍住它等於吃掉 350px 視窗的一半半。
+     試過讓整張表都換行（實測縮到 316px、完全不用橫捲），但說明欄只分到 86px，
+     長句變成一行 ~6 個字，**比橫捲更難讀**，所以退回「第一欄換行＋其餘照舊橫捲」。 */
+  #pulse-compose th:first-child, #pulse-compose td:first-child {
+    white-space: normal; min-width: 5em; max-width: 7em;
+  }
 
   tbody tr td:not([colspan]):first-child,
   #view-hiprice tbody tr td:nth-child(2) {

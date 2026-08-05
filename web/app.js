@@ -879,12 +879,19 @@ function renderStale(d) {
 // 刻意不用紅／綠：那兩色在本站鎖給「行情漲跌」，且台股慣例紅漲綠跌——拿綠色表示
 // 「健康／強」恰好會撞上本站「綠＝跌」的既有語意。改用單一色相（C.info 藍）貫穿
 // 指針與強調色，強弱程度交給文字判讀（label），顏色只負責「這是這張卡的視覺重心」。
+// **讀數必須在指針掃不到的地方。** 原本 `center: ["50%","68%"]` ＋ `detail.offsetCenter:
+// [0,"6%"]` 把數字放在圓心正下方 4px，而指針從圓心往外掃 55% 半徑——起訖角是 200°／-20°，
+// 兩端都指向**斜下方**，於是分數落在 0~15 或 85~100 這種偏端點的值時，指針就直接壓過數字。
+// 那是幾何上的必然，不是某個螢幕寬度的問題（gauge 的半徑吃 min(寬,高)，本站永遠是高度，
+// 所以桌機手機一樣會撞）。改成把讀數整個移到**弧線下方**：圓心上移、半徑縮小、讀數推到
+// 105% 半徑處，指針最遠只到 55%，兩者之間留 27px 淨空。容器高度連帶要加高（見 styles.css
+// 的 .pulse-gauge-chart），否則讀數會被切掉——三個數字是綁在一起的，改一個要重算另外兩個。
 function pulseGaugeOption(overall, label) {
   const has = overall != null;
   return {
     series: [{
       type: "gauge", startAngle: 200, endAngle: -20, min: 0, max: 100,
-      radius: "92%", center: ["50%", "68%"],
+      radius: "66%", center: ["50%", "44%"],
       progress: { show: has, width: 10, itemStyle: { color: C.info } },
       axisLine: { lineStyle: { width: 10, color: [[1, C.borderStrong]] } },
       pointer: { show: has, length: "55%", width: 4, itemStyle: { color: C.info } },
@@ -893,7 +900,7 @@ function pulseGaugeOption(overall, label) {
       title: { show: false },
       detail: {
         valueAnimation: true,
-        offsetCenter: [0, "6%"],
+        offsetCenter: [0, "105%"],
         formatter: () => has
           ? `{val|${fmt(overall, 1)}}\n{lbl|${label || ""}}`
           : "{val|—}\n{lbl|資料不足}",
