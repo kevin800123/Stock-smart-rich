@@ -56,25 +56,25 @@ let MA_DEFS;
 const CSS_VAR = (name, fallback) =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 const C = {
-  up: CSS_VAR("--up", "#ff6b7a"),
-  down: CSS_VAR("--down", "#3cd39a"),
-  upFill: CSS_VAR("--up-fill", "#b8323f"),
-  downFill: CSS_VAR("--down-fill", "#14764f"),
-  accent: CSS_VAR("--accent", "#ffc14d"),
-  info: CSS_VAR("--info", "#7cc0ff"),
-  chartForeign: CSS_VAR("--chart-foreign", "#6bd0ff"),
-  chartTrust: CSS_VAR("--chart-trust", "#b79bff"),
-  chartDealer: CSS_VAR("--chart-dealer", "#f7c778"),
-  text: CSS_VAR("--text", "#f7f3ea"),
-  muted: CSS_VAR("--muted", "#9a8d79"),
-  label: CSS_VAR("--label", "#cfc3ad"),
-  border: CSS_VAR("--border", "#514534"),
-  borderSubtle: CSS_VAR("--border-subtle", "#241e15"),
-  borderDefault: CSS_VAR("--border-default", "#514534"),
-  borderStrong: CSS_VAR("--border-strong", "#7a6950"),
-  gridline: CSS_VAR("--border-subtle", "#241e15"),
-  panel: CSS_VAR("--bg-panel", "#17140e"),
-  tooltip: CSS_VAR("--bg-card", "#1f1a12"),
+  up: CSS_VAR("--up", "#f56069"),
+  down: CSS_VAR("--down", "#25b37d"),
+  upFill: CSS_VAR("--up-fill", "#c62b38"),
+  downFill: CSS_VAR("--down-fill", "#127a53"),
+  accent: CSS_VAR("--accent", "#f0a500"),
+  info: CSS_VAR("--info", "#6cb6ff"),
+  chartForeign: CSS_VAR("--chart-foreign", "#57c7ff"),
+  chartTrust: CSS_VAR("--chart-trust", "#a78bfa"),
+  chartDealer: CSS_VAR("--chart-dealer", "#f4b860"),
+  text: CSS_VAR("--text", "#e6e6e6"),
+  muted: CSS_VAR("--muted", "#8a94a3"),
+  label: CSS_VAR("--label", "#cfd6df"),
+  border: CSS_VAR("--border", "#2e3845"),
+  borderSubtle: CSS_VAR("--border-subtle", "#1b2a3d"),
+  borderDefault: CSS_VAR("--border-default", "#2b3e57"),
+  borderStrong: CSS_VAR("--border-strong", "#3a5270"),
+  gridline: CSS_VAR("--border-subtle", "#1b2a3d"),
+  panel: CSS_VAR("--bg-panel", "#0f1927"),
+  tooltip: CSS_VAR("--bg-card", "#142033"),
   bg: CSS_VAR("--bg", "#0f1419"),
 };
 MA_DEFS = [
@@ -338,11 +338,8 @@ function renderTrader(d) {
   $("trader-sections").innerHTML = (d.sections || []).map(renderTraderSection).join("");
   $("trader-disclaimer").innerHTML = d.disclaimer ? `⚠️ ${esc(d.disclaimer)}` : "";
 }
-// 判定色一律走 token，不要再寫死色碼——寫死的那兩個（#8a94a3／#666）在暖色改版後
-// 就成了畫面上唯一還是冷灰的東西，而且改 token 時完全不會被發現。
 const TRADER_MARK = { bull: ["▲ 偏多", "var(--up)"], bear: ["▼ 偏空", "var(--down)"],
-  warn: ["⚠ 留意", "var(--warning)"], neutral: ["● 中性", "var(--muted)"],
-  na: ["— 無資料", "var(--text-disabled)"] };
+  warn: ["⚠ 留意", "#e0a23c"], neutral: ["● 中性", "#8a94a3"], na: ["— 無資料", "#666"] };
 function traderCell(row, col) {
   const v = row[col.key];
   if (col.kind === "stock") return stockLink(row.code, row.name);
