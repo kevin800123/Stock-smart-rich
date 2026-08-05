@@ -219,6 +219,7 @@ body {
    各視圖元素綁事件，移除節點會讓綁定拋 TypeError 而整頁掛掉。 */
 body[data-public] .nav:not([data-view="overview"]) { display: none; }
 body[data-public] .nav-group-title { display: none; }             /* 只剩總覽，群組標題無意義 */
+body[data-public] .nav-more { display: none; }                      /* 手機底部列的「更多」：只剩一頁時無處可去 */
 body[data-public] .nav-group + .nav-group { margin-top: 0; }        /* 空群組不留間距 */
 body[data-public] .status-bar { display: none; }
 
@@ -289,6 +290,13 @@ body[data-public] .status-bar { display: none; }
 
 @media (max-width: 900px) {
   .overview-top { flex-direction: column; }
+  /* **方向一轉，flex-basis 就從「寬度」變成「高度」。** `.market-strip` 的
+     `flex: 2 1 420px`（本意是「並排時佔 2 份、最小 420px 寬」）在直排時把它撐成
+     **420px 高**——實測內容只有 242px，多出來的 178px 全是空白，而且外層的
+     `align-items: center` 會把 wrap 出來的兩行各自置中，看起來完全像「間距沒調好」，
+     於是很容易跑去改 padding／gap，但那些值都是對的。`.pulse-card` 的 `flex: 1 1 300px`
+     同理。直排時一律把高度交還給內容。 */
+  .overview-top .market-strip, .pulse-card { flex: 0 0 auto; }
   .pulse-card { max-width: none; }
   .kpi-sticky { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 6px; }
 }
@@ -842,7 +850,11 @@ a.stock:hover { text-decoration: underline; }
   .chart-side { flex-direction: row; flex-wrap: wrap; flex-basis: auto; }
 }
 
-/* 手機：導覽改底部分頁列，版面單欄；寬表格沿用 .table-wrap 的左右滑動 */
+/* 「更多」鈕：只在手機出現，桌機/平板由完整側欄取代。 */
+.nav-more { display: none; }
+.nav-scrim { display: none; }
+
+/* 手機：導覽改「4 個常駐分頁 ＋ 更多面板」，版面單欄；寬表格沿用 .table-wrap 的左右滑動 */
 @media (max-width: 600px) {
   .app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 
@@ -853,29 +865,135 @@ a.stock:hover { text-decoration: underline; }
   .muted, .data-date { font-size: 12px; }
 
   .content { flex: 1; min-height: 0; }
-  .view { padding: 12px 12px 74px; }               /* 底部留白避免被分頁列蓋住 */
+  /* 底部留白 = 分頁列高度 ＋ iPhone 底部指示條（safe-area），不夠的話最後一列會被蓋住 */
+  .view { padding: 12px 12px calc(62px + env(safe-area-inset-bottom, 0px)); }
   .table-wrap.fill-half { max-height: 60vh; }
 
-  /* 左側欄 → 固定底部分頁列（12 個圖示平均分佈） */
+  /* 左側欄 → 固定底部分頁列。
+     **`display: flex` 這行不能省。** `.sidebar` 本身沒有宣告 display（桌機的 flex 容器
+     是它裡面的 `.sidebar-nav`），而這裡把 `.sidebar-nav` 與 `.nav-group` 都設成
+     `display: contents` 讓 13 個 .nav 直接成為 `.sidebar` 的子項——少了這行，`.sidebar`
+     仍是 block，13 個 .nav 就一個一個往下疊：實測底部列高 **648px**、每個 .nav 寬 375px，
+     等於一塊固定面板蓋掉 80% 的畫面，整個 App 在手機上不能用。只設 flex-direction 不會
+     有任何作用也不會報錯，是那種「看 CSS 看不出來、要量才知道」的失效。 */
   .sidebar {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
-    flex-direction: row; gap: 0; padding: 0; overflow: visible;
+    display: flex; flex-direction: row; align-items: stretch; gap: 0;
+    padding: 0 0 env(safe-area-inset-bottom, 0px); overflow: visible;
     background: var(--panel); border-right: none; border-top: 1px solid var(--border);
+    box-shadow: 0 -6px 20px rgba(0, 0, 0, 0.35);
   }
   .sidebar-nav { display: contents; }
-  /* 群組容器 display:contents → 消失於版面，內部 nav 直接成為底部列的 flex 項目，
-     沿用下方既有底部列 CSS 不必改；群組標題與釘底一併收起 */
   .nav-group { display: contents; }
   .nav-group-title { display: none; }
-  .nav {
-    flex: 1 1 0; min-width: 0; flex-direction: column; gap: 2px;
-    justify-content: center; padding: 7px 1px; border-radius: 0; font-size: 10px;
+
+  /* 13 個目的地擠不進 375px：一格只有 28.8px，圖示放得下、標籤只剩一個字，
+     等於有跟沒有一樣。改成 iOS/Android 都通用的「4 常駐 ＋ 更多」——4+1 格各 75px，
+     圖示與短標籤都放得下，其餘 9 個進「更多」面板（3 欄、每格 ~105px）。 */
+  .nav, .nav-more {
+    flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+    align-items: center; justify-content: center; padding: 7px 1px;
+    border: 1px solid transparent; border-radius: 0; min-height: 56px;
+    background: transparent; color: var(--text); font: inherit; cursor: pointer;
   }
-  .nav .ico { font-size: 19px; }
-  .nav .lbl { display: block; font-size: 9px; line-height: 1; white-space: nowrap;
-              overflow: hidden; text-overflow: ellipsis; max-width: 100%; text-align: center; }
-  .nav:hover { background: transparent; }
-  .nav.active { background: transparent; color: var(--accent); font-weight: 700; }
+  .nav:not([data-primary]) { display: none; }
+  .nav-more { display: flex; }
+  .nav .ico, .nav-more .ico { font-size: 20px; line-height: 1; }
+  /* 手機一律用 data-short：底部列與面板的格寬都容不下「籌碼/基本選股」這種長度，
+     兩種狀態共用一條規則比各寫一條不容易漂移。 */
+  .nav .lbl { display: none; }
+  .nav::after {
+    content: attr(data-short); font-size: 10px; line-height: 1;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+  }
+  .nav-more .lbl { font-size: 10px; line-height: 1; }
+  .nav:hover, .nav-more:hover { background: transparent; border-color: transparent; }
+  .nav.active { background: transparent; border-color: transparent; box-shadow: none;
+                color: var(--accent); font-weight: 700; }
+
+  /* 展開的「更多」面板：整個側欄變成貼底的網格，13 個目的地一次看完。
+     用同一批 .nav 節點而不是另外複製一份 DOM——複製就會有兩套 active 狀態要同步。 */
+  .sidebar.open {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 2px; padding: 10px 10px calc(10px + env(safe-area-inset-bottom, 0px));
+    max-height: 70vh; overflow-y: auto; border-radius: var(--r-lg) var(--r-lg) 0 0;
+  }
+  .sidebar.open .nav { display: flex; min-height: 62px; }
+  .sidebar.open .nav-more .lbl::before { content: "關閉"; }
+  .sidebar.open .nav-more .lbl { font-size: 0; }
+  .sidebar.open .nav-more .lbl::before { font-size: 10px; }
+  .sidebar.open .nav-more .ico { transform: rotate(45deg); }
+
+  /* 面板外的遮罩：點一下關閉。hidden 屬性由 app.js 切換，這裡只管長相。 */
+  .nav-scrim { display: block; position: fixed; inset: 0; z-index: 49;
+               background: rgba(0, 0, 0, 0.45); }
+  .nav-scrim[hidden] { display: none; }
+
+  /* 置頂 KPI 條：手機用 3 欄 × 2 列而不是 2 欄 × 3 列。實測 2 欄時整條高 132px，
+     加上頂列 56px 等於固定吃掉 188/812＝23% 的畫面；3 欄壓到 ~78px。 */
+  .kpi-sticky { grid-template-columns: repeat(3, minmax(0, 1fr));
+                gap: 4px 8px; padding: 6px 10px; }
+  .kpi-k { font-size: 10px; }
+  .kpi-v { font-size: 13px; }
+
+  /* 大盤條：手機上原本 420px、佔掉半個螢幕才看到第一張卡 */
+  .market-strip { padding: 12px 14px; gap: var(--sp-3); }
+  .ms-index .ms-val { font-size: 30px; }
+  .ms-index .ms-chg { font-size: var(--fs-base); }
+  .ms-inst { gap: var(--sp-3); }
+  .ms-inst .ms-i-v { font-size: var(--fs-md); }
+  .ms-inst .ms-i.total .ms-i-v { font-size: var(--fs-lg); }
+  .ms-verdict { font-size: var(--fs-base); }
+  .section-head { margin-top: var(--sp-4); }
+  .sh-title { font-size: var(--fs-md); }
+  .card-group { padding: 12px; }
+
+  /* 寬表格在 350px 的視窗裡只露得出三成（自選股實測 1,153px、高價股 991px），橫向捲到
+     一半就不知道這一列是哪一檔了，而且畫面上**沒有任何跡象**顯示右邊還有東西。兩個處理：
+     (1) 第一欄凍住，代號/名稱一直在；(2) 右緣加陰影當「還有內容」的提示。
+     陰影用 background-attachment local/scroll 疊圖：`local` 那層跟著內容捲、捲到底時
+     剛好蓋掉固定在邊緣的 `scroll` 陰影層，所以不必用 JS 監聽 scroll 事件。
+     `:not([colspan])` 是必要的——自選股的估價面板是一整列 `<td colspan="13">`，
+     把它凍在左邊會變成整個面板浮在表格上。 */
+  .table-wrap {
+    background:
+      linear-gradient(to left, var(--sunken), rgba(0, 0, 0, 0)) right center / 22px 100% no-repeat local,
+      radial-gradient(farthest-side at 100% 50%, rgba(0, 0, 0, 0.5), rgba(0, 0, 0, 0)) right center / 12px 100% no-repeat scroll,
+      var(--sunken);
+  }
+  /* 凍哪一欄：實測 6 張寬表裡有 5 張的第 1 欄就是識別欄（股票／個股／檢核項），
+     只有高價股例外——它第 1 欄是名次「#」（41px）。凍一個序號沒有意義又吃掉一成螢幕寬，
+     所以手機上把名次欄收起來（名次由列序表達），凍結改套在「股票」欄。 */
+  #view-hiprice th:first-child,
+  #view-hiprice td:first-child { display: none; }
+
+  tbody tr td:not([colspan]):first-child,
+  #view-hiprice tbody tr td:nth-child(2) {
+    position: sticky; left: 0; z-index: 2;
+    box-shadow: inset -1px 0 0 var(--border-strong);
+  }
+  /* **凍住的欄位一定要不透明**，否則捲過去的內容會從半透明的斑馬紋／hover 底色下面透出來，
+     看起來像疊字。直接改 `background` 會陷入特異度戰爭——`#daily`／`#industry` 各有自己
+     帶 ID 前綴的斑馬紋與 hover 規則（(1,1,2)），權重高過任何不含 ID 的選擇器，而且以後
+     新增一張表就要再補一條。改用 `::after` 疊一層不透明底，跟那些規則完全不衝突：
+     sticky 已經建立堆疊脈絡，`z-index:-1` 只會壓在這一格自己的背景之上、文字之下。 */
+  tbody tr td:not([colspan]):first-child::after,
+  #view-hiprice tbody tr td:nth-child(2)::after {
+    content: ""; position: absolute; inset: 0; z-index: -1; background: var(--sunken);
+  }
+  /* 整列展開的面板（自選股估價）寬度會跟著整張 1,153px 的表格走，在 350px 的視窗裡
+     等於要一邊橫捲一邊填表。把**面板本身**黏在左緣並限寬到可視範圍（td 不能黏，理由見上）——
+     max-width 用 vw 而不是 %：% 是相對那 1,129px 的 td，限不出東西來。 */
+  td[colspan] > * { position: sticky; left: 0; max-width: 88vw; }
+
+  /* th 本來就是 sticky top:0，補上 left:0 即成雙軸凍結；box-shadow 要把原本的下緣線一起帶著寫，
+     否則整條寫掉只剩右緣線，表頭下方的分隔就在第一欄斷掉。 */
+  th:not([colspan]):first-child,
+  #view-hiprice th:nth-child(2) {
+    left: 0; z-index: 3;
+    box-shadow: inset -1px 0 0 var(--border-strong), inset 0 -1px 0 var(--border-strong),
+                0 4px 9px rgba(0, 0, 0, 0.16);
+  }
 
   /* 卡片固定 2 欄；並排區塊一律直排 */
   .card-grid, .cards { grid-template-columns: repeat(2, 1fr); gap: 7px; }
@@ -883,9 +1001,9 @@ a.stock:hover { text-decoration: underline; }
   .rank-split { flex-direction: column; gap: 4px; }
   .chart-side { gap: 12px; }
 
-  /* 輸入框滿版、按鈕加大好點 */
+  /* 輸入框滿版、按鈕加大好點（44px 是 iOS 建議的最小可點高度） */
   .stock-input { width: 100%; }
-  .tf, .ktf, .ctf, .rkf, .rku, .ai-btn, .file-label { padding: 8px 14px; font-size: 14px; }
+  .tf, .ktf, .ctf, .rkf, .rku, .ai-btn, .file-label { padding: 10px 14px; font-size: 14px; min-height: 40px; }
   .set-row > label { width: auto; }
 }
 

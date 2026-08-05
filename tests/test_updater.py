@@ -418,47 +418,101 @@ def test_backfill_intl_fred_no_holes_skips_fetch(tmp_path, monkeypatch):
     assert not called
 
 
-def test_backfill_intl_kospi_fills_when_date_matches_a_hole(tmp_path, monkeypatch):
+def test_backfill_intl_tv_same_day_key_only_fills_its_own_date(tmp_path, monkeypatch):
+    """n225/kospi 的定義就是「該市場 D 當天的收盤」→ 只填 D == 快照場次日。"""
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
     d = date.today()
     upsert_market_daily(conn, {"date": d.isoformat(), "taiex": 23000.0})   # kospi 缺 → 是個洞
 
-    monkeypatch.setattr(updater.intl, "fetch_kospi_dated",
-                        lambda: {"date": d.isoformat(), "value": 6690.63, "chg_pct": -5.72})
+    monkeypatch.setattr(updater.intl, "fetch_dated_closes",
+                        lambda keys=None: {"kospi": {"date": d.isoformat(),
+                                                     "value": 6690.63, "chg_pct": -5.72}})
 
-    filled = updater._backfill_intl_kospi(conn, days=7)
-
-    assert filled == [d.isoformat()]
+    assert updater._backfill_intl_tv(conn, days=7) == [d.isoformat()]
     row = conn.execute("SELECT kospi, kospi_chg FROM market_daily WHERE date=?",
                        (d.isoformat(),)).fetchone()
     assert tuple(row) == (6690.63, -5.72)
 
 
-def test_backfill_intl_kospi_no_match_writes_nothing(tmp_path, monkeypatch):
-    """快照解出的日期跟任何一個洞都對不上（例如南韓還沒收盤）→ 不硬猜、不寫入。"""
+def test_backfill_intl_tv_same_day_key_no_match_writes_nothing(tmp_path, monkeypatch):
+    """快照解出的日期跟任何一個洞都對不上（南韓休市、或洞早補過了）→ 不硬猜、不寫入。"""
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
     d = date.today()
     upsert_market_daily(conn, {"date": d.isoformat(), "taiex": 23000.0})
 
-    monkeypatch.setattr(updater.intl, "fetch_kospi_dated",
-                        lambda: {"date": (d - timedelta(days=5)).isoformat(),
-                                 "value": 1.0, "chg_pct": 1.0})
+    monkeypatch.setattr(updater.intl, "fetch_dated_closes",
+                        lambda keys=None: {"kospi": {"date": (d - timedelta(days=5)).isoformat(),
+                                                     "value": 1.0, "chg_pct": 1.0}})
 
-    assert updater._backfill_intl_kospi(conn, days=7) == []
+    assert updater._backfill_intl_tv(conn, days=7) == []
     row = conn.execute("SELECT kospi FROM market_daily WHERE date=?", (d.isoformat(),)).fetchone()
     assert row[0] is None
 
 
-def test_backfill_intl_kospi_no_holes_skips_fetch(tmp_path, monkeypatch):
+def test_backfill_intl_tv_lagging_key_fills_rows_after_the_session_only(tmp_path, monkeypatch):
+    """sox/vix 是「台北 D 日晚間可得的最近一場」→ 填所有 D > S 的洞，D == S 的不填。
+
+    D == S 那格要的是 S 的**前**一場，快照給不了；填下去就是把 S 自己的收盤
+    貼上 S 那天的標籤（早了一場），而且「只填 NULL 不覆蓋」會讓它永遠留著。
+    """
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
-    upsert_market_daily(conn, {"date": date.today().isoformat(), "kospi": 6690.63})
+    d = date.today()
+    s = (d - timedelta(days=1)).isoformat()
+    for ds in (s, d.isoformat()):
+        upsert_market_daily(conn, {"date": ds, "taiex": 23000.0})
+
+    monkeypatch.setattr(updater.intl, "fetch_dated_closes",
+                        lambda keys=None: {"sox": {"date": s, "value": 12179.26, "chg_pct": 6.55}})
+
+    assert updater._backfill_intl_tv(conn, days=7) == [d.isoformat()]
+    assert conn.execute("SELECT sox FROM market_daily WHERE date=?", (s,)).fetchone()[0] is None
+    assert conn.execute("SELECT sox, sox_chg FROM market_daily WHERE date=?",
+                        (d.isoformat(),)).fetchone()[0] == 12179.26
+
+
+def test_backfill_intl_tv_never_overwrites_an_existing_value(tmp_path, monkeypatch):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    d = date.today()
+    s = (d - timedelta(days=1)).isoformat()
+    upsert_market_daily(conn, {"date": s, "taiex": 23000.0})
+    upsert_market_daily(conn, {"date": d.isoformat(), "sox": 999.0, "kospi": 111.0})
+
+    monkeypatch.setattr(updater.intl, "fetch_dated_closes",
+                        lambda keys=None: {"sox": {"date": s, "value": 12179.26, "chg_pct": 6.55},
+                                           "kospi": {"date": d.isoformat(), "value": 1.0, "chg_pct": 1.0}})
+
+    updater._backfill_intl_tv(conn, days=7)
+    assert conn.execute("SELECT sox, kospi FROM market_daily WHERE date=?",
+                        (d.isoformat(),)).fetchone()[0] == 999.0
+
+
+def test_backfill_intl_tv_no_holes_skips_fetch(tmp_path, monkeypatch):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    upsert_market_daily(conn, {"date": date.today().isoformat(),
+                               "sox": 1.0, "vix": 2.0, "n225": 3.0, "kospi": 4.0})
     called = []
-    monkeypatch.setattr(updater.intl, "fetch_kospi_dated", lambda: called.append(1) or None)
-    assert updater._backfill_intl_kospi(conn, days=7) == []
+    monkeypatch.setattr(updater.intl, "fetch_dated_closes",
+                        lambda keys=None: called.append(keys) or {})
+    assert updater._backfill_intl_tv(conn, days=7) == []
     assert not called
+
+
+def test_backfill_intl_tv_only_asks_for_keys_that_have_holes(tmp_path, monkeypatch):
+    """沒缺的 key 不必進請求——少一欄就少一次「拿盤中價覆蓋」的機會。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    upsert_market_daily(conn, {"date": date.today().isoformat(),
+                               "sox": 1.0, "vix": 2.0, "n225": 3.0})
+    asked = []
+    monkeypatch.setattr(updater.intl, "fetch_dated_closes",
+                        lambda keys=None: asked.append(list(keys)) or {})
+    updater._backfill_intl_tv(conn, days=7)
+    assert asked == [["kospi"]]
 
 
 def test_run_update_writes_session_aligned_intl_not_live_snapshot(tmp_path, monkeypatch):
@@ -489,7 +543,7 @@ def test_run_update_writes_session_aligned_intl_not_live_snapshot(tmp_path, monk
     monkeypatch.setattr(updater.fred, "fetch_fred_series", lambda series_id, start_date: (
         {prev_session: 300.0} if series_id == "NIKKEI225" else {}
     ))
-    monkeypatch.setattr(updater.intl, "fetch_kospi_dated", lambda: None)
+    monkeypatch.setattr(updater.intl, "fetch_dated_closes", lambda keys=None: {})
 
     result = updater.run_update(conn, intl_tickers={"sox": "^SOX", "n225": "^N225"})
 

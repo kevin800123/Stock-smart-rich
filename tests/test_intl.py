@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 import pandas as pd
 
 from stocks_power_rich.sources import intl
@@ -103,26 +105,66 @@ def test_parse_chart_history_maps_timestamps_to_session_dates():
     assert intl.parse_chart_history({}) == {}
 
 
-def test_parse_tv_scan_dated_converts_epoch_to_local_session_date():
-    # KOSPI 收盤在台北傍晚更新前已結束，用回傳的 time 欄位反查是否真的落在該場次日期，
-    # 不是像 sox 那樣可能抓到盤中即時價。1784851200 UTC = 2026-07-24 00:00 UTC，
-    # 換成 Asia/Seoul(+9) 仍是 2026-07-24。
-    payload = {"data": [{"s": "TVC:KOSPI", "d": [6690.63, -5.72, -406.27, 1784851200]}]}
-    out = intl.parse_tv_scan_dated(payload)
-    assert out == {"date": "2026-07-24", "value": 6690.63, "chg_pct": -5.72}
+def test_session_closed_uses_market_local_time_and_settle_buffer():
+    # 美股 16:00 ET 收盤＋30 分緩衝 → 2026-08-04 那場在 20:30 UTC 才算收完
+    ny = ("America/New_York", (16, 0))
+    just_before = datetime(2026, 8, 4, 20, 29, tzinfo=timezone.utc)
+    just_after = datetime(2026, 8, 4, 20, 30, tzinfo=timezone.utc)
+    assert not intl.session_closed("2026-08-04", *ny, now=just_before)
+    assert intl.session_closed("2026-08-04", *ny, now=just_after)
+    # 冬令時間同一個時鐘時刻會晚一小時（EST=UTC-5）→ 不可寫死時差
+    assert not intl.session_closed("2026-01-05", *ny,
+                                   now=datetime(2026, 1, 5, 21, 29, tzinfo=timezone.utc))
+    assert intl.session_closed("2026-01-05", *ny,
+                               now=datetime(2026, 1, 5, 21, 30, tzinfo=timezone.utc))
 
 
-def test_parse_tv_scan_dated_missing_fields_returns_none():
-    assert intl.parse_tv_scan_dated({"data": []}) is None
-    assert intl.parse_tv_scan_dated({}) is None
-    # 缺 time 欄位（只有 3 個元素）→ 無法判定場次日期，不可硬猜
-    assert intl.parse_tv_scan_dated({"data": [{"s": "TVC:KOSPI", "d": [6690.63, -5.72, -406.27]}]}) is None
-    assert intl.parse_tv_scan_dated({"data": [{"s": "TVC:KOSPI", "d": [None, None, None, 1784851200]}]}) is None
+def test_parse_tv_dated_rejects_sessions_that_have_not_closed_yet():
+    """`time` 是 bar 的**開盤**時間戳，所以「日期解得出來」不等於「那一場收完了」。
+
+    實測 09:05 台北打 scanner，NI225／KOSPI 回的就是當天進行中的盤中值（bar 開盤
+    09:00 當地）；若照舊只看日期就寫入，等於把盤中價貼上收盤的標籤，而且因為
+    「只填 NULL 不覆蓋」永遠不會被修正。
+    """
+    specs = {k: intl.TV_DATED[k] for k in ("sox", "n225")}
+    payload = {"data": [
+        # SOX：bar 開盤 2026-08-04 09:30 NY（13:30 UTC），該場 16:00 ET 收
+        {"s": "TVC:SOX", "d": [12179.26, 6.55, 748.6, 1785850200]},
+        # NI225：bar 開盤 2026-08-05 09:00 JST（前一日 00:00 UTC），該場 15:00 JST 收
+        {"s": "TVC:NI225", "d": [65935.6, 3.09, 1977.0, 1785888000]},
+    ]}
+    # 2026-08-05 01:05 UTC ＝ 台北 09:05：美股 08-04 那場早收完，日本 08-05 那場才剛開盤
+    now = datetime(2026, 8, 5, 1, 5, tzinfo=timezone.utc)
+    out = intl.parse_tv_dated(payload, specs, now=now)
+    assert out == {"sox": {"date": "2026-08-04", "value": 12179.26, "chg_pct": 6.55}}
+
+    # 日本收盤後（15:30 JST＝06:30 UTC）才收得到 n225
+    later = datetime(2026, 8, 5, 6, 30, tzinfo=timezone.utc)
+    assert intl.parse_tv_dated(payload, specs, now=later)["n225"] == {
+        "date": "2026-08-05", "value": 65935.6, "chg_pct": 3.09}
 
 
-def test_fetch_kospi_dated_wraps_scanner(monkeypatch):
+def test_parse_tv_dated_skips_rows_it_cannot_judge():
+    specs = {"kospi": intl.TV_DATED["kospi"]}
+    now = datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc)
+    assert intl.parse_tv_dated({"data": []}, specs, now=now) == {}
+    assert intl.parse_tv_dated({}, specs, now=now) == {}
+    # 缺 time（只有 3 欄）→ 判不出場次日期，不可硬猜
+    assert intl.parse_tv_dated(
+        {"data": [{"s": "TVC:KOSPI", "d": [6690.63, -5.72, -406.27]}]}, specs, now=now) == {}
+    assert intl.parse_tv_dated(
+        {"data": [{"s": "TVC:KOSPI", "d": [None, None, None, 1784851200]}]}, specs, now=now) == {}
+    # 不在 specs 裡的代碼一律忽略
+    assert intl.parse_tv_dated(
+        {"data": [{"s": "NASDAQ:NVDA", "d": [207.1, 1.0, 2.0, 1784851200]}]}, specs, now=now) == {}
+
+
+def test_fetch_dated_closes_requests_only_the_wanted_tickers(monkeypatch):
+    seen = {}
+
     def fake_post(url, json=None, **kw):
-        assert json["symbols"]["tickers"] == ["TVC:KOSPI"]
+        seen["tickers"] = json["symbols"]["tickers"]
+        seen["columns"] = json["columns"]
 
         class _R:
             status_code = 200
@@ -131,16 +173,19 @@ def test_fetch_kospi_dated_wraps_scanner(monkeypatch):
         return _R()
 
     monkeypatch.setattr(intl.httpx, "post", fake_post)
-    out = intl.fetch_kospi_dated()
-    assert out == {"date": "2026-07-24", "value": 6690.63, "chg_pct": -5.72}
+    out = intl.fetch_dated_closes(["kospi"])
+    assert seen["tickers"] == ["TVC:KOSPI"] and "time" in seen["columns"]
+    # 1784851200 UTC ＝ 2026-07-24 09:00 KST，那一場早已收完（測試當下已是 2026-08）
+    assert out["kospi"] == {"date": "2026-07-24", "value": 6690.63, "chg_pct": -5.72}
 
 
-def test_fetch_kospi_dated_failure_returns_none(monkeypatch):
+def test_fetch_dated_closes_failure_returns_empty(monkeypatch):
     def boom(url, json=None, **kw):
         raise RuntimeError("blocked")
 
     monkeypatch.setattr(intl.httpx, "post", boom)
-    assert intl.fetch_kospi_dated() is None
+    assert intl.fetch_dated_closes() == {}
+    assert intl.fetch_dated_closes([]) == {}     # 沒有要補的 key → 連請求都不發
 
 
 def test_fetch_intl_history_falls_back_to_chart_api(monkeypatch):

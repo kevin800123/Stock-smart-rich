@@ -17,35 +17,42 @@
       </div>
     </header>
 
-    <aside class="sidebar">
+    <!-- data-primary 標出手機底部列的 4 個常駐分頁，其餘收進「更多」面板；
+         data-short 是手機用的短標籤（底部列每格只有 ~75px、面板每格 ~105px，
+         「籌碼/基本選股」這種長度一定會被截成沒有意義的字）。 -->
+    <aside class="sidebar" id="nav-sheet">
       <nav class="sidebar-nav" aria-label="主導覽">
       <div class="nav-group">
         <div class="nav-group-title">市場</div>
-        <a class="nav active" data-view="overview"><span class="ico">📊</span><span class="lbl">總覽</span></a>
-        <a class="nav" data-view="news"><span class="ico">📰</span><span class="lbl">每日財經新聞</span></a>
-        <a class="nav" data-view="rotation"><span class="ico">🔄</span><span class="lbl">族群輪動</span></a>
-        <a class="nav" data-view="weekly"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
-        <a class="nav" data-view="osfut"><span class="ico">🌏</span><span class="lbl">海期監控</span></a>
-        <a class="nav" data-view="hiprice"><span class="ico">💰</span><span class="lbl">高價股監控</span></a>
+        <a class="nav active" data-view="overview" data-primary data-short="總覽"><span class="ico">📊</span><span class="lbl">總覽</span></a>
+        <a class="nav" data-view="news" data-primary data-short="新聞"><span class="ico">📰</span><span class="lbl">每日財經新聞</span></a>
+        <a class="nav" data-view="rotation" data-short="輪動"><span class="ico">🔄</span><span class="lbl">族群輪動</span></a>
+        <a class="nav" data-view="weekly" data-short="跨週AI"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
+        <a class="nav" data-view="osfut" data-short="海期"><span class="ico">🌏</span><span class="lbl">海期監控</span></a>
+        <a class="nav" data-view="hiprice" data-short="高價股"><span class="ico">💰</span><span class="lbl">高價股監控</span></a>
       </div>
       <div class="nav-group">
         <div class="nav-group-title">選股</div>
-        <a class="nav" data-view="picks"><span class="ico">🎯</span><span class="lbl">籌碼/基本選股</span></a>
-        <a class="nav" data-view="cup"><span class="ico">🏆</span><span class="lbl">杯柄選股</span></a>
-        <a class="nav" data-view="traders"><span class="ico">🧭</span><span class="lbl">操盤手</span></a>
+        <a class="nav" data-view="picks" data-short="選股"><span class="ico">🎯</span><span class="lbl">籌碼/基本選股</span></a>
+        <a class="nav" data-view="cup" data-short="杯柄"><span class="ico">🏆</span><span class="lbl">杯柄選股</span></a>
+        <a class="nav" data-view="traders" data-short="操盤手"><span class="ico">🧭</span><span class="lbl">操盤手</span></a>
       </div>
       <div class="nav-group">
         <div class="nav-group-title">個股・交易</div>
-        <a class="nav" data-view="stock"><span class="ico">🔍</span><span class="lbl">個股查詢</span></a>
-        <a class="nav" data-view="watch"><span class="ico">⭐</span><span class="lbl">自選股</span></a>
-        <a class="nav" data-view="trades"><span class="ico">📒</span><span class="lbl">交易帳本</span></a>
+        <a class="nav" data-view="stock" data-primary data-short="個股"><span class="ico">🔍</span><span class="lbl">個股查詢</span></a>
+        <a class="nav" data-view="watch" data-primary data-short="自選"><span class="ico">⭐</span><span class="lbl">自選股</span></a>
+        <a class="nav" data-view="trades" data-short="帳本"><span class="ico">📒</span><span class="lbl">交易帳本</span></a>
       </div>
       <div class="nav-group nav-group-sys">
         <div class="nav-group-title">系統</div>
-        <a class="nav" data-view="settings"><span class="ico">⚙️</span><span class="lbl">設定</span></a>
+        <a class="nav" data-view="settings" data-short="設定"><span class="ico">⚙️</span><span class="lbl">設定</span></a>
       </div>
       </nav>
+      <button id="nav-more" class="nav-more" type="button" aria-expanded="false" aria-controls="nav-sheet">
+        <span class="ico">☰</span><span class="lbl">更多</span>
+      </button>
     </aside>
+    <div id="nav-scrim" class="nav-scrim" hidden></div>
 
     <main class="content terminal-workspace">
       <div id="update-status" class="status-bar hidden"></div>

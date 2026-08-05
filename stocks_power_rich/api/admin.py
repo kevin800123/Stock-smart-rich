@@ -129,7 +129,7 @@ def intl_backfill(days: int = 120):
         yf_tickers = {k: v for k, v in tickers.items() if k not in updater.INTL_NON_YFINANCE_KEYS}
         filled = list(updater._backfill_intl(c, yf_tickers, days=days))
         filled += updater._backfill_intl_fred(c, days=days)
-        filled += updater._backfill_intl_kospi(c, days=days)
+        filled += updater._backfill_intl_tv(c, days=days)
         filled = sorted(set(filled))
         cutoff = (date.today() - timedelta(days=days)).isoformat()
         cond = " OR ".join(f"{k} IS NULL" for k in tickers)

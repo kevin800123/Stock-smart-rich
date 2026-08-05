@@ -223,9 +223,11 @@ def _backfill_intl(conn, intl_tickers: dict, days: int = 10) -> list:
     return filled
 
 
-# vix/n225 改走 FRED、kospi 改走 TradingView 帶日期快照（見各自 fetch 函式的說明）——
-# 呼叫端把 intl_tickers 傳給 _backfill_intl 前，先排除這三個 key，其餘（sox/gold/jpy/
-# btc/twd）仍走原本的 yfinance 路徑不動，Yahoo 哪天解封就自己好。
+# vix/n225 的**歷史**改走 FRED、kospi 沒有可靠的免費歷史源——呼叫端把 intl_tickers 傳給
+# _backfill_intl 前先排除這三個 key，其餘（sox/gold/jpy/btc/twd）仍走原本的 yfinance
+# 路徑不動，Yahoo 哪天解封就自己好。
+# 注意這裡管的是**歷史**來源。「今天那一格」另由 _backfill_intl_tv 統一補（sox 也在內），
+# 所以 sox 同時吃 yfinance（歷史）與 TradingView（當日），兩者都只填 NULL，不會打架。
 INTL_NON_YFINANCE_KEYS = set(fred.FRED_SERIES) | {"kospi"}
 
 
@@ -266,26 +268,43 @@ def _backfill_intl_fred(conn, days: int = 10) -> list:
     return filled
 
 
-def _backfill_intl_kospi(conn, days: int = 10) -> list:
-    """kospi 走 TradingView 帶日期快照（intl.fetch_kospi_dated）。
+def _backfill_intl_tv(conn, days: int = 10) -> list:
+    """sox／vix／n225／kospi 走 TradingView 帶日期快照（intl.fetch_dated_closes）。
 
-    scanner 只給「現在」、沒有歷史可回補——跟 _backfill_intl/_backfill_intl_fred
-    不同，這裡一次最多只能填「快照解出的那個日期」一格；解出的日期若不是任何一個洞
-    （例如南韓還沒收盤、或洞早就補過了），就什麼都不寫，留給下次自癒，絕不硬猜。
+    **這條路徑專治「今天」那一格**，補不到歷史：scanner 只給「現在」，一次最多填一個場次。
+    歷史仍靠 _backfill_intl（yfinance）與 _backfill_intl_fred，三者都只填 NULL 不覆蓋，
+    所以誰先跑到都不會破壞彼此，順序不重要。之所以需要它：yfinance 被 Zeabur 出站 IP 擋死
+    （sox 長期全 NULL），FRED 則慢一天（實測 08-05 當下 VIXCLS 只到 08-03、NIKKEI225
+    只到 08-04），兩者都補不到當日。
+
+    日期怎麼對到台股資料日，兩種 key 規則不同，理由同 intl.pick_close_for：
+    - same_day（n225/kospi）：這一欄的定義就是「該市場在 D 當天的收盤」→ **只填 D == S**。
+    - 其餘（sox/vix）：定義是「台北 D 日晚間可得的最近一場」→ 填**所有 D > S 的洞**。
+      這是安全的：S 是「當下最後一個**已收盤**的場次」，所以 (S, D) 之間不可能存在另一個
+      已收盤的場次，任何 D > S 的正確答案就是 S。連假／美股休市時多列共用同一個 S 是對的。
+      反過來 D == S 的洞不會被填（那格要的是 S 的**前**一場，快照給不了）——寧可留 NULL。
     """
     cutoff = (_date.today() - timedelta(days=days)).isoformat()
+    keys = list(intl.TV_DATED)
     rows = conn.execute(
-        "SELECT date FROM market_daily WHERE date >= ? AND kospi IS NULL ORDER BY date",
+        f"SELECT date, {', '.join(keys)} FROM market_daily WHERE date >= ? ORDER BY date",
         (cutoff,),
     ).fetchall()
-    holes = {r[0] for r in rows}
-    if not holes:
+    holes = {key: {r[0] for r in rows if r[i + 1] is None} for i, key in enumerate(keys)}
+    want = [k for k in keys if holes[k]]
+    if not want:
         return []
-    got = intl.fetch_kospi_dated()
-    if not got or got["date"] not in holes:
-        return []
-    upsert_market_daily(conn, {"date": got["date"], "kospi": got["value"], "kospi_chg": got["chg_pct"]})
-    return [got["date"]]
+    patches: dict[str, dict] = {}
+    for key, snap in intl.fetch_dated_closes(want).items():
+        s = snap["date"]
+        targets = ([s] if s in holes[key] else []) if key in intl.INTL_SAME_DAY \
+            else sorted(d for d in holes[key] if d > s)
+        for ds in targets:
+            patches.setdefault(ds, {})[key] = snap["value"]
+            patches[ds][key + "_chg"] = snap["chg_pct"]
+    for ds, patch in sorted(patches.items()):
+        upsert_market_daily(conn, {"date": ds, **patch})
+    return sorted(patches)
 
 
 def backfill_history(conn, days: int = 30, cap: int = 20) -> dict:
@@ -592,7 +611,7 @@ def run_update(conn, intl_tickers: dict) -> dict:
         yf_tickers = {k: v for k, v in intl_tickers.items() if k not in INTL_NON_YFINANCE_KEYS}
         filled = list(_backfill_intl(conn, yf_tickers))
         filled += _backfill_intl_fred(conn)
-        filled += _backfill_intl_kospi(conn)
+        filled += _backfill_intl_tv(conn)
         filled = sorted(set(filled))
         today_ds = D.isoformat() if D else None
         if today_ds and today_ds in filled:

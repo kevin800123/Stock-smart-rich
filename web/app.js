@@ -215,6 +215,11 @@ function candlestickOption(data, startPct, showW, pct) {
 function showView(name) {
   document.querySelectorAll(".view").forEach((v) => v.classList.toggle("active", v.id === "view-" + name));
   document.querySelectorAll(".nav").forEach((n) => n.classList.toggle("active", n.dataset.view === name));
+  // 捲動位置是**整個 App 共用**的（.content 是唯一的捲動容器，見該處註解），所以從
+  // 捲到底的總覽切到個股會直接落在新頁的底部，看起來像「這頁沒有內容」。手機尤其明顯：
+  // 總覽在 375px 下高 7,674px，切過去幾乎不可能落在有東西的地方。
+  const scroller = document.querySelector(".content");
+  if (scroller) scroller.scrollTop = 0;
   if (name === "overview") { chipChart && chipChart.resize(); sectorChart && sectorChart.resize(); distChart && distChart.resize(); }
   if (name === "stock") { stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize(); }
   if (name === "rotation") { loadRotation(); loadCross(); }
@@ -2264,8 +2269,24 @@ async function importLatest() {
   catch (e) { $("upload-info").textContent = "讀取失敗：" + e.message; }
 }
 
+// ========== 手機導覽：4 個常駐分頁 ＋「更多」面板 ==========
+// 面板展開的就是側欄那 13 個 .nav 節點本身（見 styles.css 手機段的 .sidebar.open），
+// 不另外複製一份 DOM——複製就會有兩套 active 狀態要同步，遲早漂移。
+const navSheet = $("nav-sheet"), navMore = $("nav-more"), navScrim = $("nav-scrim");
+function setNavSheet(open) {
+  if (!navSheet) return;
+  navSheet.classList.toggle("open", open);
+  if (navMore) navMore.setAttribute("aria-expanded", open ? "true" : "false");
+  if (navScrim) navScrim.hidden = !open;
+}
+if (navMore) navMore.addEventListener("click", () => setNavSheet(!navSheet.classList.contains("open")));
+if (navScrim) navScrim.addEventListener("click", () => setNavSheet(false));
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") setNavSheet(false); });
+
 // ========== 事件 ==========
-document.querySelectorAll(".nav").forEach((n) => n.addEventListener("click", () => showView(n.dataset.view)));
+document.querySelectorAll(".nav").forEach((n) => n.addEventListener("click", () => {
+  showView(n.dataset.view); setNavSheet(false);
+}));
 $("csv").addEventListener("change", (e) => { if (e.target.files[0]) uploadCsv(e.target.files[0]); });
 $("btn-latest").addEventListener("click", importLatest);
 $("date-select").addEventListener("change", (e) => loadDaily(e.target.value));
@@ -2490,7 +2511,14 @@ document.querySelectorAll(".rku").forEach((b) => b.addEventListener("click", () 
   document.querySelectorAll(".rku").forEach((x) => x.classList.toggle("active", x === b));
   rankUnit = b.dataset.unit; loadInstRanking();
 }));
-window.addEventListener("resize", () => { stockChart && stockChart.resize(); chipChart && chipChart.resize(); stockChipsChart && stockChipsChart.resize(); if (sectorChart) { sectorChart.resize(); if (lastHeatmapData) fitHeatmapFonts(lastHeatmapData); } cupChart && cupChart.resize(); distChart && distChart.resize(); });
+// **這裡要列出「每一張」圖**，漏掉的那張在視窗變動後就永遠停在舊尺寸（echarts.init 凍住
+// 容器尺寸，見上面各載入函式的註解）。手機上這條路徑不是罕見情境——轉個方向就會走到，
+// 而 375↔812 的寬度差足以讓漏網的圖整張畫錯位。pulseChart／stockCustodyChart 原本就漏了。
+window.addEventListener("resize", () => {
+  [stockChart, chipChart, stockChipsChart, stockCustodyChart, pulseChart, cupChart, distChart]
+    .forEach((c) => c && c.resize());
+  if (sectorChart) { sectorChart.resize(); if (lastHeatmapData) fitHeatmapFonts(lastHeatmapData); }
+});
 // 粉圓/M PLUS 是 async 載入。若熱力圖在字型載入前已排版，measureText 量到的是系統字寬度，
 // 字型 swap 後實際寬度改變 → 可能截字。字型就緒後重跑一次字級擬合（重用既有 refit 路徑）。
 if (document.fonts && document.fonts.ready) {

@@ -7,7 +7,7 @@
   2026-07 全面換掉；只需當下報價、不需歷史，TradingView scanner 剛好夠用。
 """
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
@@ -174,44 +174,89 @@ def parse_tv_scan(payload) -> dict:
     return out
 
 
-_KOSPI_TICKER = "TVC:KOSPI"
+# ===== TradingView 帶日期快照（補「今天」那一格）=====
+# yfinance 與 FRED 各自補得到歷史，卻都補不到「今天」：
+#   - yfinance 從 Zeabur 出站 IP 整段被 429 擋死（見上面海期監控那段），sox 因此長期全 NULL。
+#   - FRED 逐日更新但**慢一天**：實測 2026-08-05 當下 VIXCLS 最新只到 08-03、NIKKEI225
+#     只到 08-04，而台股資料日 08-05 需要的正是 VIX 的 08-04 收盤與日經的 08-05 收盤。
+# scanner 給不了歷史，但給得了「現在」，剛好補上這一格。
+#
+# **`time` 欄位是該根日 K 的「開盤」時間戳，不是收盤**（實測：SOX 09:30 NY、NI225 09:00 JST、
+# KOSPI 09:00 KST、VIX 03:15 NY）。所以它只說明「這根 bar 屬於哪一場」，**完全不保證那一場
+# 已經收完**——09:05 台北實測 NI225／KOSPI 回的就是當天進行中的盤中值。原本 kospi 那條路徑
+# 只靠「排程剛好在南韓收盤後才跑」而安全，不是由程式保證的；任何時候手動打 /api/intl/backfill
+# 都會把盤中價寫成收盤。現在每個代碼自帶場次收盤時刻，由 session_closed() 判定，
+# 這也正是先前 sox 被判定不能用這招的原因（它的 21:30 台北是**開盤**）——加上守衛後就能用了。
+#
+# {key: (TradingView 代碼, 市場時區, 場次收盤 (時, 分))}
+TV_DATED: dict[str, tuple[str, str, tuple[int, int]]] = {
+    "sox": ("TVC:SOX", "America/New_York", (16, 0)),
+    "vix": ("TVC:VIX", "America/New_York", (16, 15)),      # VIX 揭露到 16:15 ET
+    "n225": ("TVC:NI225", "Asia/Tokyo", (15, 0)),
+    "kospi": ("TVC:KOSPI", "Asia/Seoul", (15, 30)),
+}
+# 收盤後再等一段才採用：指數的最終值會在鐘響後幾分鐘才定案，且各市場偶有提早/延後收盤
+# （南韓大學入學考當天延後一小時），留 30 分鐘不影響任何一場排程（實際讀取都在數小時後）。
+TV_SETTLE_MIN = 30
 
 
-def parse_tv_scan_dated(payload, tz: str = "Asia/Seoul") -> dict | None:
-    """TradingView scanner 回應（多要 time 欄位）→ {date, value, chg_pct}，或 None。
+def session_closed(ds: str, tz: str, close_hm: tuple[int, int],
+                   now: datetime | None = None, settle_min: int = TV_SETTLE_MIN) -> bool:
+    """ds 那天、該市場的場次是否已經收完（含 settle_min 緩衝）。
 
-    scanner 是即時快照 API，沒有「這是哪個場次的收盤」的保證——`time` 是該筆報價的
-    bar 時間戳，換算成該市場當地時區的日期後即可反查。與 fetch_intl_history 的
-    same_day 邏輯一樣：**只在算出的日期真的等於呼叫端要的資料日時才可信**，這裡只負責
-    把日期解出來，比對交給呼叫端（updater._backfill_intl_kospi）。
-    缺 time／缺 close／payload 格式不對 → 一律回 None，不硬猜。
+    用 ZoneInfo 組當地時間再比較，夏令時間自動處理——美股 16:00 ET 對台北是 04:00 或 05:00，
+    寫死時差會在換季那兩週靜默錯一小時。
     """
-    rows = payload.get("data") or []
-    if not rows:
-        return None
-    d = rows[0].get("d") or []
-    if len(d) < 4 or d[0] is None or d[3] is None:
-        return None
-    ds = datetime.fromtimestamp(d[3], tz=timezone.utc).astimezone(ZoneInfo(tz)).strftime("%Y-%m-%d")
-    return {"date": ds, "value": round(float(d[0]), 4),
-            "chg_pct": round(float(d[1]), 2) if d[1] is not None else None}
+    from datetime import date as _d
+    from datetime import time as _t
+    h, m = close_hm
+    end = datetime.combine(_d.fromisoformat(ds), _t(h, m), tzinfo=ZoneInfo(tz)) \
+        + timedelta(minutes=settle_min)
+    return (now or datetime.now(timezone.utc)) >= end
 
 
-def fetch_kospi_dated() -> dict | None:
-    """KOSPI 現貨指數的單筆帶日期快照（南韓收盤在台北傍晚更新前已結束，故可信）。
+def parse_tv_dated(payload, specs: dict, now: datetime | None = None) -> dict:
+    """scanner 回應（columns 多要 time）→ {key: {date, value, chg_pct}}。
 
-    不像 fetch_intl_history 有歷史可回補——scanner 只給「現在」，這裡一次只能填
-    「今天」這一格，日期核對留給呼叫端。
+    specs = {key: (ticker, tz, close_hm)}；以 "s"(代碼) 反查 key，回應順序不保證。
+    **只收「該場次已收盤」的列**：缺 time／缺 close／場次未收完 → 該 key 直接不出現，
+    由呼叫端維持 NULL 等下次。寧可少一格，也不要把盤中價貼上收盤的標籤——後者因為
+    「只填 NULL 不覆蓋」而永遠不會被修正。
     """
-    body = {"symbols": {"tickers": [_KOSPI_TICKER], "query": {"types": []}},
+    by_ticker = {spec[0]: (key, spec) for key, spec in specs.items()}
+    out = {}
+    for row in (payload.get("data") or []):
+        hit = by_ticker.get(row.get("s"))
+        d = row.get("d") or []
+        if not hit or len(d) < 4 or d[0] is None or d[3] is None:
+            continue
+        key, (_, tz, close_hm) = hit
+        ds = datetime.fromtimestamp(d[3], tz=timezone.utc).astimezone(ZoneInfo(tz)).strftime("%Y-%m-%d")
+        if not session_closed(ds, tz, close_hm, now=now):
+            continue
+        out[key] = {"date": ds, "value": round(float(d[0]), 4),
+                    "chg_pct": round(float(d[1]), 2) if d[1] is not None else None}
+    return out
+
+
+def fetch_dated_closes(keys=None) -> dict:
+    """一次 POST 抓 TV_DATED 各代碼的帶日期快照 → {key: {date, value, chg_pct}}。
+
+    只回「場次已收盤」的 key（見 parse_tv_dated）。整批失敗回空 dict——呼叫端維持 NULL，
+    下次更新自己會再試，不需要備援來源。
+    """
+    specs = {k: v for k, v in TV_DATED.items() if keys is None or k in keys}
+    if not specs:
+        return {}
+    body = {"symbols": {"tickers": [s[0] for s in specs.values()], "query": {"types": []}},
             "columns": ["close", "change", "change_abs", "time"]}
     try:
         r = httpx.post(_TV_SCAN_URL, json=body, timeout=20, headers=_TV_UA)
         if r.status_code == 200:
-            return parse_tv_scan_dated(r.json())
-    except Exception:  # noqa: BLE001
+            return parse_tv_dated(r.json(), specs)
+    except Exception:  # noqa: BLE001 — 抓不到就維持 NULL，不是錯誤
         pass
-    return None
+    return {}
 
 
 def fetch_futures_monitor(tries: int = 3) -> list[dict]:
