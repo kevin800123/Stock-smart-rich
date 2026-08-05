@@ -247,9 +247,19 @@
           <b>怎麼判斷的</b>：先用轉折% 抓出高低轉折點，取最近一段，<b>三大鐵律全部符合才標</b>：① 第2浪不跌破第1浪起點　② 第3浪不是最短　③ 第4浪不重疊第1浪價格區。其後若接合法的逆勢三波，再加標 A–B–C。不符合就不標（不硬湊）。
         </div>
         <div id="stock-profile" class="kline-profile"></div>
+        <!-- 空狀態：還沒查詢時，原本是 722px 的空白畫布、沒有任何提示。空畫面應該是
+             邀請動作而不是等待——這裡直接把「可以查什麼」放上來：自選股與最近查詢
+             都是一鍵就到的目的地，兩者的資料本來就有（/api/watchlist 與 localStorage）。
+             查詢之後由 app.js 隱藏，讓位給圖表。 -->
+        <div id="stock-empty" class="stock-empty">
+          <div class="se-title">查一檔個股</div>
+          <div class="se-hint">上方輸入代號或名稱後按 Enter，也可以用頂欄的搜尋框。</div>
+          <div id="se-watch" class="se-group hidden"><div class="se-label">自選股</div><div id="se-watch-list" class="se-chips"></div></div>
+          <div id="se-recent" class="se-group hidden"><div class="se-label">最近查詢</div><div id="se-recent-list" class="se-chips"></div></div>
+        </div>
         <!-- K 線排在籌碼之上：查個股時先看價格走勢，再看誰在買賣（使用者要求）。
              上方工具列的 時/日/週/月 與艾略特勾選都是操作這張圖，放在一起才對得上。 -->
-        <div id="stock-chart" class="chart-big"></div>
+        <div id="stock-chart" class="chart-big hidden"></div>
         <div id="stock-chips-wrap" class="hidden">
           <div class="pane-title">個股三大法人買賣超（近 60 日，張）<span id="stock-chips-note" class="muted small"></span></div>
           <div id="stock-chips" style="width:100%;height:190px"></div>

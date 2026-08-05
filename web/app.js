@@ -43,6 +43,11 @@ let sectorChart = null, heatmapMarket = "tse", heatmapTop = 5, lastHeatmapData =
 // 的主因）。false＝只算資料、不畫 treemap，省下 setOption／fitHeatmapFonts 的成本。
 let hmDetailExpanded = false;
 let cupChart = null, cupMatches = [], cupLoaded = false;
+// 進頁才載入的旗標（比照 cupLoaded）。**這兩支是開頁流量的大頭**：實測總覽開頁抓
+// 2,639 KB，其中 analysis/weekly 就佔 2,262 KB、analysis/daily 209 KB＝**94% 是使用者
+// 當下沒在看的頁面**（跨週還收在「進階」群組裡，可能整天不會打開）。它們只寫
+// currentPicks／#weekly／#date-select，總覽完全不吃，所以延後載入沒有任何副作用。
+let weeklyLoaded = false, picksLoaded = false;
 let rankWho = "foreign", rankUnit = "shares";
 let MA_DEFS;
 
@@ -51,25 +56,25 @@ let MA_DEFS;
 const CSS_VAR = (name, fallback) =>
   getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
 const C = {
-  up: CSS_VAR("--up", "#f56069"),
-  down: CSS_VAR("--down", "#25b37d"),
-  upFill: CSS_VAR("--up-fill", "#c62b38"),
-  downFill: CSS_VAR("--down-fill", "#127a53"),
-  accent: CSS_VAR("--accent", "#f0a500"),
-  info: CSS_VAR("--info", "#6cb6ff"),
-  chartForeign: CSS_VAR("--chart-foreign", "#57c7ff"),
-  chartTrust: CSS_VAR("--chart-trust", "#a78bfa"),
-  chartDealer: CSS_VAR("--chart-dealer", "#f4b860"),
-  text: CSS_VAR("--text", "#e6e6e6"),
-  muted: CSS_VAR("--muted", "#8a94a3"),
-  label: CSS_VAR("--label", "#cfd6df"),
-  border: CSS_VAR("--border", "#2e3845"),
-  borderSubtle: CSS_VAR("--border-subtle", "#1b2a3d"),
-  borderDefault: CSS_VAR("--border-default", "#2b3e57"),
-  borderStrong: CSS_VAR("--border-strong", "#3a5270"),
-  gridline: CSS_VAR("--border-subtle", "#1b2a3d"),
-  panel: CSS_VAR("--bg-panel", "#0f1927"),
-  tooltip: CSS_VAR("--bg-card", "#142033"),
+  up: CSS_VAR("--up", "#ff6b7a"),
+  down: CSS_VAR("--down", "#3cd39a"),
+  upFill: CSS_VAR("--up-fill", "#b8323f"),
+  downFill: CSS_VAR("--down-fill", "#14764f"),
+  accent: CSS_VAR("--accent", "#ffc14d"),
+  info: CSS_VAR("--info", "#7cc0ff"),
+  chartForeign: CSS_VAR("--chart-foreign", "#6bd0ff"),
+  chartTrust: CSS_VAR("--chart-trust", "#b79bff"),
+  chartDealer: CSS_VAR("--chart-dealer", "#f7c778"),
+  text: CSS_VAR("--text", "#f7f3ea"),
+  muted: CSS_VAR("--muted", "#9a8d79"),
+  label: CSS_VAR("--label", "#cfc3ad"),
+  border: CSS_VAR("--border", "#514534"),
+  borderSubtle: CSS_VAR("--border-subtle", "#241e15"),
+  borderDefault: CSS_VAR("--border-default", "#514534"),
+  borderStrong: CSS_VAR("--border-strong", "#7a6950"),
+  gridline: CSS_VAR("--border-subtle", "#241e15"),
+  panel: CSS_VAR("--bg-panel", "#17140e"),
+  tooltip: CSS_VAR("--bg-card", "#1f1a12"),
   bg: CSS_VAR("--bg", "#0f1419"),
 };
 MA_DEFS = [
@@ -221,14 +226,21 @@ function showView(name) {
   const scroller = document.querySelector(".content");
   if (scroller) scroller.scrollTop = 0;
   if (name === "overview") { chipChart && chipChart.resize(); sectorChart && sectorChart.resize(); distChart && distChart.resize(); }
-  if (name === "stock") { stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize(); }
+  if (name === "stock") {
+    renderStockEmpty();          // 還沒查過的話，把自選股／最近查詢填上（已查過就是 hidden，直接 return）
+    stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize();
+  }
   if (name === "rotation") { loadRotation(); loadCross(); }
   // 高價股監控輪詢：進入才啟動、切走即停——控制請求量。海期監控 2026-07 起改排程
   // 每日兩次更新（見 main.py::osfut_job），切進頁面只讀快取，不再輪詢。
   if (name === "osfut") loadOsFutures();
   if (name === "hiprice") { loadRankPrice(); startRankPolling(); } else stopRankPolling();
   if (name === "cup") { if (!cupLoaded) loadCupHandle(); else cupChart && cupChart.resize(); }
-  if (name === "weekly") loadCsvSummary(false);  // 讀快取即回；匯入後才會重新生成
+  if (name === "weekly") {
+    loadCsvSummary(false);  // 讀快取即回；匯入後才會重新生成
+    if (!weeklyLoaded) { weeklyLoaded = true; loadWeekly(); }
+  }
+  if (name === "picks" && !picksLoaded) { picksLoaded = true; loadDates(); }
   if (name === "news") loadNews();
   if (name === "watch") loadWatchlist();
   if (name === "trades") loadTrades();
@@ -326,8 +338,11 @@ function renderTrader(d) {
   $("trader-sections").innerHTML = (d.sections || []).map(renderTraderSection).join("");
   $("trader-disclaimer").innerHTML = d.disclaimer ? `⚠️ ${esc(d.disclaimer)}` : "";
 }
+// 判定色一律走 token，不要再寫死色碼——寫死的那兩個（#8a94a3／#666）在暖色改版後
+// 就成了畫面上唯一還是冷灰的東西，而且改 token 時完全不會被發現。
 const TRADER_MARK = { bull: ["▲ 偏多", "var(--up)"], bear: ["▼ 偏空", "var(--down)"],
-  warn: ["⚠ 留意", "#e0a23c"], neutral: ["● 中性", "#8a94a3"], na: ["— 無資料", "#666"] };
+  warn: ["⚠ 留意", "var(--warning)"], neutral: ["● 中性", "var(--muted)"],
+  na: ["— 無資料", "var(--text-disabled)"] };
 function traderCell(row, col) {
   const v = row[col.key];
   if (col.kind === "stock") return stockLink(row.code, row.name);
@@ -2274,11 +2289,45 @@ async function loadStockCustody(code) {
   } catch (e) { stockCustodyChart.hideLoading(); if (note) note.textContent = "（載入失敗）"; }
 }
 
+// ===== 個股空狀態：把空白畫布換成可以直接點的目的地 =====
+const RECENT_KEY = "spr:recent-stocks";
+const recentStocks = () => { try { return JSON.parse(localStorage.getItem(RECENT_KEY)) || []; } catch (e) { return []; } };
+function pushRecent(code, name) {
+  const list = recentStocks().filter((r) => r.code !== code);
+  list.unshift({ code, name: name || code });
+  try { localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 8))); } catch (e) { }
+}
+const chipHtml = (r) => `<button class="se-chip" data-code="${esc(r.code)}" data-name="${esc(r.name || "")}">` +
+  `<b>${esc(String(r.code).split(".")[0])}</b><span>${esc(r.name || "")}</span></button>`;
+async function renderStockEmpty() {
+  const box = $("stock-empty"); if (!box || box.classList.contains("hidden")) return;
+  const rec = recentStocks();
+  $("se-recent-list").innerHTML = rec.map(chipHtml).join("");
+  $("se-recent").classList.toggle("hidden", !rec.length);
+  try {
+    // 自選股是這頁最可能的下一步，資料本來就有——沒有就整組不顯示，不留空標題。
+    const d = await getJSON("/api/watchlist");
+    const items = (d.stocks || []).slice(0, 12);   // 端點回的是 {stocks, latest}
+    $("se-watch-list").innerHTML = items.map((r) => chipHtml(r)).join("");
+    $("se-watch").classList.toggle("hidden", !items.length);
+  } catch (e) { $("se-watch").classList.add("hidden"); }
+}
+// 委派在靜態祖先上——動態產生的元素不得寫 inline on*=（CSP script-src 'self' 會靜默丟掉）
+$("stock-empty").addEventListener("click", (e) => {
+  const b = e.target.closest(".se-chip");
+  if (b) { $("stock-input").value = b.dataset.code; loadStock(b.dataset.code, b.dataset.name); }
+});
+
 async function loadStock(code, name) {
   code = (code || "").trim().toUpperCase();
   if (!code) return;
   if (!/\./.test(code)) code += ".TW";
   stockCode = code;
+  // 讓位給圖表。**必須在 initChart 之前**：容器還是 display:none 時 echarts 會把尺寸
+  // 記成 0，之後不會自己重量（本檔多處記載過的坑）。
+  $("stock-empty").classList.add("hidden");
+  $("stock-chart").classList.remove("hidden");
+  pushRecent(code, name);
   if (!stockChart) stockChart = initChart($("stock-chart"));
   $("stock-note").textContent = "載入中…";
   try { renderProfile(await getJSON(`/api/stock/${encodeURIComponent(code)}/profile`)); } catch (e) { $("stock-profile").innerHTML = ""; }
@@ -2302,6 +2351,9 @@ async function applyImportResult(res) {
   if (res.error && !res.count) { info.innerHTML = `<span class="err-text">⚠ ${esc(res.error)}</span>`; return; }
   if (!res.count) { info.innerHTML = `<span class="err-text">⚠ 讀到 0 檔（${res.snap_date}）。請確認是籌碼匯出檔。</span>`; return; }
   info.textContent = `已匯入 ${res.file ? res.file + "：" : ""}${res.snap_date}，共 ${res.count} 檔`;
+  // 匯入後這兩份一定要立刻重抓（使用者剛換了資料），不受上面的 once-flag 管；
+  // 順手把旗標設起來，之後切到那兩頁就不會再抓一次同樣的東西。
+  weeklyLoaded = true; picksLoaded = true;
   await loadDates(); await loadWeekly();
   loadCsvSummary(false); // 匯入清了該日快取 → 這次載入會自動重新生成
 }
@@ -2683,8 +2735,8 @@ if (document.fonts && document.fonts.ready) {
   loadInstRanking();
   loadOptionsSentiment();
   if (PUBLIC) return;
-  loadDates();
-  loadWeekly();
+  // loadDates()／loadWeekly() 已改為進頁才載入（見 showView 與 weeklyLoaded/picksLoaded）。
+  // 它們合計 2,471 KB＝總覽開頁流量的 94%，而總覽一個位元組都用不到。
   // 自動更新：無資料、或資料非當日（平日尚未更新到最新交易日）時，自動抓一次
   if (!d || !d.latest || !d.latest.date || d.data_stale) autoUpdate();
 })();

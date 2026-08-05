@@ -243,8 +243,8 @@ def test_compose_rank_flex_columns_align_and_colour_by_convention():
     assert line_push.compose_rank_flex(_RANK_D)["contents"]["body"]["contents"][2] \
         ["contents"][0]["contents"][2]["color"] == line_push._C_DOWN    # 川湖 -1.88% ＝綠
     tail = _rows(line_push.compose_rank_flex(_RANK_D))[2]["contents"][0]["contents"]
-    assert tail[4]["text"] == "▲262.2億" and tail[4]["color"] == "#f0a500"   # 放量＝金
-    assert rows[1]["contents"][0]["contents"][4]["color"] == "#8a94a3"       # 縮量＝灰
+    assert tail[4]["text"] == "▲262.2億" and tail[4]["color"] == line_push._C_GOLD   # 放量＝金
+    assert rows[1]["contents"][0]["contents"][4]["color"] == line_push._C_MUTED       # 縮量＝灰
 
 
 def test_compose_rank_flex_flow_bar_only_for_inflow():
@@ -258,7 +258,7 @@ def test_compose_rank_flex_flow_bar_only_for_inflow():
     bar_mtk, bar_wiwynn = rows[2]["contents"][1], rows[3]["contents"][1]
     assert bar_mtk["width"] == "100%"                            # 262.2 億為最大放量
     assert bar_wiwynn["width"] == "59%"                          # 153.9/262.2 ≈ 59%
-    assert bar_mtk["backgroundColor"] == "#f0a500"
+    assert bar_mtk["backgroundColor"] == line_push._C_GOLD
 
 
 def test_compose_rank_flex_empty_degrades_to_text_message():
@@ -314,7 +314,7 @@ def test_compose_daily_flex_ratio_stays_uncoloured():
     sect = _sect(line_push.compose_daily_flex(_ROW, [], []), "期貨籌碼")
     vals = [r["contents"][1] for r in sect["contents"][1:]]   # [標籤, 值, 昨值] 三欄平鋪
     assert any("小台多空" in str(r) for r in sect["contents"])
-    assert {v["color"] for v in vals} == {"#e6e6e6"}          # 一律主文色，不套漲跌色
+    assert {v["color"] for v in vals} == {line_push._C_TEXT}          # 一律主文色，不套漲跌色
 
 
 def test_compose_daily_flex_shows_margin_in_both_versions():
@@ -501,7 +501,7 @@ def test_compose_daily_flex_market_on_page1_ai_alone_on_page2():
     assert "融資餘額" not in p2 and "國際行情" not in p2
     assert "AI 解讀" in str(b2["header"])
     label, body_text = b2["body"]["contents"][0]["contents"]
-    assert label["text"] == "法人" and label["color"] == "#f0a500"
+    assert label["text"] == "法人" and label["color"] == line_push._C_GOLD
     assert body_text["size"] == "md"                # 正文放大（使用者反映原本看不清）
 
 
@@ -624,18 +624,18 @@ def test_ai_page_renders_labels_and_highlights_conclusion():
     first = body[0]                                        # 一般欄目：垂直堆疊
     assert first["layout"] == "vertical"
     assert first["contents"][0]["text"] == "國際"
-    assert first["contents"][0]["color"] == "#f0a500" and first["contents"][0]["weight"] == "bold"
+    assert first["contents"][0]["color"] == line_push._C_GOLD and first["contents"][0]["weight"] == "bold"
     assert first["contents"][1]["size"] == "md" and first["contents"][1]["wrap"] is True
 
     concl = body[3]                                        # 結論：水平＝左金條＋內容
     assert concl["layout"] == "horizontal"
     assert concl["contents"][0]["width"] == "3px"
-    assert concl["contents"][0]["backgroundColor"] == "#f0a500"
+    assert concl["contents"][0]["backgroundColor"] == line_push._C_GOLD
     assert concl["contents"][1]["contents"][0]["text"] == "結論"
     assert "誘多警訊" in concl["contents"][1]["contents"][1]["text"]
 
     assert body[4]["size"] == "xs"                         # 免責行退到次要色階
-    assert body[4]["color"] == "#8a94a3"
+    assert body[4]["color"] == line_push._C_MUTED
 
 
 def test_header_shows_tx_and_tsmc_change_pct():
@@ -650,7 +650,7 @@ def test_international_section_keeps_label_uncoloured():
     """國際行情換回兩欄：名稱與數值維持主文色，只有漲跌%上色——整行染色會讓標籤失去層級。"""
     sect = _sect(line_push.compose_daily_flex(_ROW, _SECTORS, [], prev=_PREV), "國際行情")
     cells = sect["contents"][1]["contents"]                # 第一列：日經、韓股各佔兩欄
-    assert cells[0]["text"] == "日經 40,123" and cells[0]["color"] == "#e6e6e6"
+    assert cells[0]["text"] == "日經 40,123" and cells[0]["color"] == line_push._C_TEXT
     assert cells[1]["text"] == "+1.20%" and cells[1]["color"] == line_push._C_UP
 
 
@@ -693,14 +693,14 @@ def test_section_colours_never_drift_towards_direction_colours():
             gap = abs(_hue(vals[i]) - _hue(vals[j]))
             assert min(gap, 360 - gap) >= 30, f"{vals[i]} 與 {vals[j]} 太接近"
     # 國際行情不靠色相、靠亮度：必須明顯亮於一般列標籤才讀得出是標題
-    assert _contrast(line_push._C_SEC_INTL, "#0f1419") > _contrast(line_push._C_MUTED, "#0f1419") * 1.5
+    assert _contrast(line_push._C_SEC_INTL, line_push._C_BG) > _contrast(line_push._C_MUTED, line_push._C_BG) * 1.5
     # 全部都要在卡片底色上過 AA（小標是 14px）
     for colour in list(hued.values()) + [line_push._C_SEC_INTL]:
-        assert _contrast(colour, "#0f1419") >= 4.5
+        assert _contrast(colour, line_push._C_BG) >= 4.5
 
 
 def test_direction_colours_pass_aa_on_the_header_band():
     """漲跌與台指期/台積電% 都在標題帶 #1a2029 上，舊的 #e8404a 實測只有 4.10 未過 AA。"""
     for colour in (line_push._C_UP, line_push._C_DOWN):
-        assert _contrast(colour, "#1a2029") >= 4.5
-        assert _contrast(colour, "#0f1419") >= 4.5
+        assert _contrast(colour, line_push._C_HEAD) >= 4.5
+        assert _contrast(colour, line_push._C_BG) >= 4.5
