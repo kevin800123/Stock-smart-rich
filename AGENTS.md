@@ -1,0 +1,94 @@
+# AGENTS.md
+
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+
+STOCKS POWER RICH (股力智富) — a single-user Taiwan-stock chip-analysis app: daily market/chip dashboard, daily-CSV stock screening, per-stock K-line + chips, sector rotation, optional Gemini summaries. FastAPI backend that also serves a vanilla-JS frontend; SQLite storage.
+
+## Commands
+Windows. Use the project `.venv` (Python 3.11+).
+
+- **Run locally**: `.venv\Scripts\python -m uvicorn stocks_power_rich.main:app --host 127.0.0.1 --port 8000`
+  - Or double-click `啟動.bat` (first run creates venv + installs deps; sets `SPR_ENABLE_SCHEDULER=1`; opens the browser).
+- **All tests**: `.venv\Scripts\python -m pytest -q`
+- **Single test**: `.venv\Scripts\python -m pytest tests/test_twse.py::test_parse_taiex_rwd_latest_row -q`
+- No linter/formatter is configured; match surrounding style.
+
+Gotchas:
+- The Windows terminal mangles CJK (Big5/UTF-8) output. To inspect API/data with non-ASCII, write results to a UTF-8 file and Read it, rather than printing to the shell.
+- **Never gate a commit on `pytest | tail`** — the pipe masks pytest's exit code (a failing suite looks like it passed). Run pytest as its own command and check the summary.
+
+## Architecture
+
+**One service, two roles** (`main.py::create_app`): JSON API under `/api/*` **and** serves the frontend (`web/`, no build step) via `StaticFiles` at `/`. Because relative `/api` paths work, it deploys as a single service (no CORS). `app = create_app(enable_scheduler=os.getenv("SPR_ENABLE_SCHEDULER")=="1")` at import time.
+
+`main.py` is now a thin coordinator (~190 lines): it builds the app, registers middleware (Basic Auth + security headers), mounts static, starts the scheduler, and `include_router`s the six `APIRouter`s under **`api/`** — `market` (大盤/板塊/情緒/法人排行), `stock` (個股 OHLC/K線/股東分佈/自選股/型態), `trades` (交易帳本), `csv` (籌碼 CSV 上傳匯入), `public` (免密碼 `/public/*` 頁面與 overview API), `admin` (系統/更新/回補/備份). Shared pieces: `api/deps.py` (`conn()` DB lifecycle) and `api/helpers.py` (LINE compose, watchlist, `data_is_stale`/update-result alerts, cup-handle screen — logic that background Jobs also call). **New endpoints or logic go in the matching `api/` submodule; anything a scheduler Job needs lives in `api/helpers.py` first, then the Job in `main.py` calls it.** `main.py` re-exports `data_is_stale`/`_check_basic` from `api.helpers` for existing tests.
+
+**Storage** (`db.py`, stdlib `sqlite3`): schema + upserts + lazy migrations (`init_db` runs `ALTER TABLE` for newly-added columns, so adding a column to `MARKET_COLS`/`CHIP_COLS` is enough). Tables: `market_daily`, `chip_snapshot`, `tx_history`, `custody_dist`, `watchlist`, `settings`, `ai_cache`, `csv_files`. `ai_cache` doubles as a general per-key cache (valuation, T86/TPEx per date, sectors, TDCC week, etc.).
+
+**Data sources** (`sources/*.py`) — each module = *pure parse functions* (unit-tested with sample payloads) + *thin network wrappers* (mocked in tests). `twse` (證交所), `taifex` (期交所), `tdcc` (集保), `tpex` (櫃買), `intl` (yfinance 國際指數), `kline` (yfinance K線 + generic OHLC resampler).
+
+### The central design: single "資料日期 D"
+`updater.run_update` fetches 加權指數 **first** to define the data date `D`, then fetches every other source **for that exact D**, so all values on a dashboard row are the same trading day. Two rules make this reliable:
+- **Prefer direct endpoints over openapi.** TWSE `rwd/zh/...` and TAIFEX official CSV downloads publish same-day (~15:00); the openapi mirrors lag to evening/next day. Only fall back to openapi where no direct source exists.
+- **Never walk back to another date.** A source returns null if D isn't published yet (rather than silently returning yesterday's data mislabeled as D). `_refresh_recent` / `_backfill_chips` / `_backfill_margin` re-fetch recent days on later runs to fill nulls and overwrite preliminary→final revisions.
+
+### Two hard-won invariants (do not regress)
+- **`run_update`'s "delete future rows" keys off the real calendar `datetime.now()`**, deleting only rows outside `[today-400d, today]`. It must NOT key off the *fetched* date — a source occasionally returning a wrong old date (e.g. a month-boundary bug) would then wipe all good history.
+- Month-boundary: to get "latest / a month" of index data, anchor on the **last day of the previous month**, not "today − N days" (which overshoots two months back at the start of a month).
+
+### Frontend (`web/app.js`, one file)
+View-switching SPA + ECharts (local `web/vendor/echarts.min.js`, no CDN — CSP is `script-src 'self'`). Candlestick data is `[open, close, low, high]`. All fetches use relative `/api`. Charts degrade to "尚無資料" on empty; tooltips round floats. Elliott-wave detection lives **only** in Python (`elliott.py`); `kline.py` precomputes `waves` (a `{pct: segments}` dict for thresholds 2–15%) into the K-line API response, and `app.js` just renders `data.waves[pctKey]`. **Do not reintroduce a JS Elliott implementation** — the dual-implementation drift it caused is gone; add new wave logic on the backend.
+
+**全域搜尋／新鮮度徽章／總覽新聞條（2026-08）**：`GET /api/stock/search` → `analysis.search_symbols`（純數字只比對**代號前綴**、其餘只比對**名稱包含**，名稱排序是「完全相等→開頭相符→只是包含」；名稱表沿用既有的 `_ohlc_names`，不另設快取鍵）。**該路由必須註冊在 `/stock/{code}/...` 之前**，否則被當成 `code="search"` 吃掉——回 200 的安靜失效，已用測試鎖住。`GET /api/news/headlines` → `headlines_logic` **只讀既有快取，絕不抓取也絕不呼叫 Gemini**（直接叫 `news_logic` 等於「開一次總覽就吃掉 1/20 的當日免費額度」），沒有快取就回空、前端整塊隱藏。新鮮度徽章的顏色吃後端 `data_stale`、天數用日曆天，**不用紅綠**（鎖給行情漲跌），過期沿用琥珀＝「注意這格」。側欄的「進階」群組收合 **CSS 只在 >860px 生效**：以下是圖示軌／手機 `display:contents`，沒有標題可點，收起來就打不開。
+
+**手機版（≤600px）**：底部列是「4 個常駐分頁（`data-primary`）＋『更多』面板」，不是 13 個平均分佈（一格只有 28.8px）；面板展開的就是側欄那 13 個 `.nav` 節點本身（`.sidebar.open` 變 3 欄網格），不複製 DOM。三個踩過的坑：(1) **`.sidebar` 手機段一定要 `display: flex`**——它本身沒宣告 display，桌機的 flex 容器是裡面的 `.sidebar-nav`，而手機段把它設成 `display: contents`；少了那行只設 `flex-direction` 完全沒作用也不報錯，實測底部列高 **648px** 蓋掉 80% 畫面。(2) **`flex-basis` 在 `flex-direction` 翻成 column 時會從「寬度」變成「高度」**（`.market-strip` 的 `flex: 2 1 420px` → 420px 高，內容只有 244px），直排時一律 `flex: 0 0 auto`。(3) 寬表格凍結第一欄要用 **`::after` 疊不透明底**而非改 `background`——`#daily`/`#industry` 的斑馬紋規則帶 ID 前綴、權重贏過任何不含 ID 的選擇器；並用 `:not([colspan])` 排除自選股的估價面板列。`window` 的 resize handler 要列出**每一張** echarts（手機轉方向就會走到）。
+
+**四個實測缺陷（2026-08）**：(1) **總覽開頁 2,639→169 KB**——`analysis/weekly`(2,262 KB)＋`analysis/daily`(209 KB) 在開機的 IIFE 就抓，總覽一個位元組都用不到；改成進頁才載入（沿用既有 `cupLoaded` 的 once-flag 慣例），但 `applyImportResult`（上傳 CSV 後）必須維持立即重抓。(2) **`--muted` 對比 4.12→4.85**：它用在 11–12px 小字、光總覽 56 處，正是對比要求最嚴的尺寸，而本專案對 `--up`/`--down` 有明文量測紀律卻漏了用量最大的這個。(3) **觸控目標補到 24px**（WCAG 2.2 SC 2.5.8）：**先量才發現原本的判斷是錯的**——勾選框雖然只有 13×13px，但命中範圍是外層 `<label>`（77–129px 寬），要撐的是 label 的**高度**不是把方框畫大。(4) **個股查詢空狀態**：原本 722px 空白畫布，改成搜尋提示＋自選股快捷＋最近查詢；**解除 `hidden` 必須排在 `initChart` 之前**，否則容器還是 `display:none`，echarts 把尺寸記成 0。另：**測試不可複製色碼**（`tests/test_line_push.py` 改引用 `line_push._C_*` 常數）——複製一份權威值，換色時整批紅燈而那不是真回歸，是測試拿舊底量新色。**同批曾試過一次「暖色記帳桌」整體改版，使用者看過後 `git revert`**；量測數字說服不了「不喜歡」，視覺方向要先讓使用者看到再談細節。
+
+**兩個 ≤900px 的版面缺陷（2026-08）**：(1) **「展開組成」把 `.pulse-card` 從 352 撐成 745px**——`.overview-top` 是 `flex-wrap: wrap` 的直排容器，多行 flex 的 `align-items: stretch` 拉到的是「**該 flex line** 的 cross size」，而那條線的寬度由項目自己的 max-content 決定，不是容器寬度；裡面檢核表的說明欄 `nowrap` 長句 min-content 就 710px。**`min-width: 0` 治不了**（自動最小尺寸只作用在**主軸**，這裡撐開的是交叉軸），**也與 `flex` 值無關**（用改版前的值實測同樣 745px ＝既有缺陷非回歸）。修法是把 ≤900px 誤設成 `none` 的 `max-width` 改回 `100%`。(2) **市場儀表指針壓過讀數**：`center:["50%","68%"]`＋`offsetCenter:[0,"6%"]` 把讀數放在圓心正下方 4px，而起訖角 200°/−20° 兩端都指斜下方——幾何上的必然，**與螢幕寬度無關**。改成讀數移到弧線下方（`radius:66%`／`center:["50%","44%"]`／`offsetCenter:[0,"105%"]`／容器 176px，**這四個數字綁在一起，改一個要重算其他三個**）。驗證法：對 canvas `getImageData` 數「讀數方框內有幾個指針色的像素」，新幾何 7 個值全是 0，**且用舊幾何跑同一支檢查會得到 639~758**——證明這個檢查不是恆真。
+
+**Layout quirk**: `.view` is `display: flex; flex-direction: column;` so content-heavy pages (e.g., trading journal with 未平倉+已平倉 tables) can be compressed by flex-shrink. **Solution**: `.table-wrap` has `flex-shrink: 0` by default; `.table-wrap.fill` overrides to `flex-shrink: 1; flex: 1 1 0; min-height: 0` for tables that should occupy remaining space. Add `flex-shrink: 0` to any new table that must maintain readable height regardless of page overflow.
+
+### Other backend pieces
+- `analysis.py`: `filtered_picks` (W55 翻多 ∧ 大戶增比>0 ∧ 營收年增>0 ∧ 推估EPS>0, sorted by 蘭值); `industry_to_sector` maps the CSV's `上市/上櫃+類股` field to official 類股 names for sector cross-referencing; `trade_stats(trades, closes, taiex_by_date)` returns `{trades: [...{status, net_pct, pnl, mkt_pct, alpha}], stats: {closed_n, win_rate, avg_win, avg_loss, payoff, expectancy, realized_pnl, open_pnl, avg_alpha}}` for trading journal performance (fees deducted, open positions marked-to-market).
+- `csv_import.py`: imports the user's daily 選股 CSV/Excel — multi-encoding auto-detect (cp950 / big5hkscs / utf-8-sig …), `.xlsx/.xlsm` via openpyxl, ROC/西元 date extraction, field-count normalization for unquoted commas in text columns.
+- `gemini.py`: AI summaries degrade to plain data when no key; cached per day in `ai_cache`. Never expose the key (API returns only `gemini_configured: bool`).
+- `line_push.py`: `compose_daily_brief(row, sectors, watch, ai_text, full, tsmc, prev, cup)` + `compose_breakout_alert(hits, hhmm)` format LINE messages（16:00 的 brief job 已於 2026-08 移除，`compose_daily_brief` 現在只服務每日完整版與 webhook 查詢；intraday breakouts with ⭐ for picks). Breakout alerts use **ATR threshold** (price > resistance + 0.3×ATR) + **two-round confirmation** (candidate on first cross, report only if still above threshold 5min later) to reduce false alerts. **月額度用盡會自動停播（2026-08）**：`api/helpers.py::_is_quota_exceeded` 認 429 + body 含「monthly limit」，三個 broadcast 路徑（每日完整版／週報／盤中警示）都先查 `line_quota_paused(c)`，本月已知用盡就跳過不打；`line_quota_month` 存的是「用盡當月」字串，判斷式只比對是否等於**現在**的月份，月份一換自動恢復，不用另外排程去清。webhook 的 reply 不耗額度、完全不受影響。
+- `patterns.py`: cup-handle detection (左緣未破高 ∧ 杯身寬 ∧ 柄淺守穩 ∧ strength filter); `atr(closes, period=14)` for position sizing.
+- `ledger.py`: signal forward-test. `record_daily_signals` snapshots each day's `filtered_picks` + cup-handle hits into `signal_ledger`; a RetN updater later backfills 5/10/20-day realized returns from `stock_ohlc`. Bias-free (no survivorship) counterpart to `backtest.py`'s one-shot historical cup backtest; the performance-aggregation API compares "signals-all" vs the trade journal's actual alpha.
+- **`traders/` (操盤手)**: a registry of trading-persona analyzers behind the「操盤手」view. Each persona = one module exposing `META = {id,name,emoji,tagline,desc}` + `analyze(conn) -> {date, sections[], disclaimer}`, registered in `traders/__init__._MODULES`. `sections` are generic typed blocks (`checklist` / `table` / `routine` / `note`) the frontend renders without bespoke code, so **adding a persona = one new module, no endpoint/frontend change**. Endpoints: `GET /api/traders` (list for the picker) + `GET /api/traders/{id}` (that persona's analysis, `{**META, **analyze()}`). `traders/ss.py` is the first persona; its pure rule engine lives in `ss_trader.py` (quantifiable subset of the "Ss" methodology — full qualitative distillation in `.Codex/skills/ss-trader/SKILL.md`): market checklist (融資維持率 13X% 抄底區, 融資 vs 大盤 wash, VIX contrarian, USD/TWD via the `twd` intl ticker, volume×position, 小那 vs 小道 fund flow, night-session ratio, settlement week) + 一紅吃三黑 candle signal + 季季高-approx picks. Every persona's output carries a mandatory not-advice disclaimer.
+- `offsite_backup.py`: after the 21:00 `backup_db`, pushes the rotated backup to a remote Git repo (env-gated; silently skips if unset). `mask_secrets` scrubs OAuth tokens from logs via `re.sub(r'https?://[^@\s]+@', 'https://***@', text)` — never log a raw remote URL.
+- `scheduler.py` (APScheduler, `timezone="Asia/Taipei"`) runs the daily update in-process; needs the process alive. Intraday breakout scanning runs every 5min during market hours. `cli.py` is the equivalent for Windows Task Scheduler.
+
+## Data-source quirks (would trip you up)
+- **TWSE**: ROC (民國) dates = year+1911. `T86` (per-stock 三大法人) is **上市 only**; OTC uses TPEx. Direct RWD endpoints take a `date` param.
+- **TAIFEX**: official CSV downloads (`dlFutDataDown`, `futContractsDateDown`) need **GET-cookie-then-POST**, ≤~30-day chunks, and `.decode("ms950")`.
+- **TDCC (集保)**: opendata `getOD.ashx?id=1-5` returns **the current week only** (trend accumulates weekly via `updater._accumulate_custody`, new-week-only). Requires `verify=False` (their cert lacks a Subject Key Identifier). Stock codes are **space-padded to 6 chars** — `.strip()`.
+- **TPEx (櫃買)**: `dailyTrade` by date; fields are parsed **by fixed column position** (the field labels 買進/賣出/買賣超股數 repeat and can't disambiguate groups).
+- **yfinance**: flaky / rate-limited from datacenter IPs → `kline._history` retries; the index K-line falls back to TWSE `MI_5MINS_HIST` OHLC; `.TW`→`.TWO` fallback covers OTC; `intl.fetch_intl_indices` falls back to the direct Yahoo v8 chart API (no cookie/crumb handshake — the part that fails on datacenter IPs; Stooq CSV endpoints are dead, 404).
+- **備援不能是「全有全無」——主來源可用 ≠ 主來源是最新的。** `/api/index/kline` 原本只在 yfinance 回不到 5 根時才改用官方 TWSE，於是 yfinance 只是**落後一天**時完全沒有補救：實測 2026-08-06，`^TWII` 只到 08-04 而 TWSE `MI_5MINS_HIST` 已有 08-05。症狀是「大盤×籌碼對照」的籌碼窗格有最新一天、K 線那格卻是 `'-'` 佔位——而那天通常正是使用者最想看的一天。`kline.merge_tail(base, rows, interval)` 只補**嚴格比主來源最後一天更新**的列（既有日期不覆蓋也不重複，缺收盤價的列跳過，沒得補就原樣回傳同一個物件、不重跑波浪），官方那份走既有的 `idxohlc:{YYYYMMDD}` 逐日快取所以一天最多一次網路呼叫。**加任何「主來源 → 備援」的降級路徑時都要問：主來源只是落後而不是掛掉時，會發生什麼事？**
+- **國際指數的「歷史」與「今天」是兩條路**：歷史走 yfinance（Zeabur 被 429 擋，只剩 gold/jpy/twd/btc 靠它）＋FRED（`vix`/`n225`，**慢一天**）＋**Nasdaq 公開 API（`sox`，2026-08 換掉長期斷線的 yfinance 路徑，見 `sources/nasdaq.py`／`updater._backfill_intl_nasdaq`，免金鑰、不受 Yahoo 那個 IP 封鎖影響）**；kospi 沒有可靠免費歷史源，維持現狀。**當日那一格**走 `updater._backfill_intl_tv` → TradingView scanner 帶日期快照（sox/vix/n225/kospi）。scanner 的 `time` 是該根日 K 的**開盤**時間戳（實測 SOX 09:30 NY、NI225/KOSPI 09:00 當地），**「日期解得出來」不等於「那一場收完了」**——09:05 台北打回來的 NI225/KOSPI 就是進行中的盤中值。所以 `intl.TV_DATED` 每個代碼自帶場次收盤時刻、由 `session_closed()`（ZoneInfo 比較，自動處理夏令時間）＋30 分緩衝把關；`INTL_SAME_DAY` 只填 `D == S`，其餘填所有 `D > S` 的洞，全部只填 NULL 不覆蓋。亞股時段回 `filled: []` 是**正確**結果。**`_backfill_intl(conn, intl_tickers)` 在 `intl_tickers` 濾完後若剛好變空會炸 SQL 語法錯誤**（`cols` 空字串 → `SELECT date,  FROM ...`）——把 `sox` 也排除到「有頂替來源」清單後才踩到，現已在 `keys` 為空時直接回傳 `[]`。
+
+## Config (`config.py`, via .env / env vars)
+`GEMINI_API_KEY`, `SPR_SCHEDULE_TIME` (default 21:00), `SPR_DB_PATH`, `SPR_DATA_DIR` (Date/), `SPR_ENABLE_SCHEDULER`, `TZ`. On any non-Taipei host, `TZ=Asia/Taipei` is mandatory — the data-date/schedule logic uses naive local time.
+
+LINE push (`line_push.py`): `LINE_CHANNEL_ACCESS_TOKEN` (Messaging API **broadcast** — the user's OA has only themselves as friend; LINE Notify is discontinued). `SPR_SCHEDULE_TIME`（預設 21:00）推每日完整版；`SPR_WEEKLY_PUSH_TIME`（預設 17:00，固定週六）推週報。**`SPR_LINE_PUSH_TIME`／16:00 速報 job 已於 2026-08 移除，設了不會生效。** Non-today data auto-skips pushes; `POST /api/line/test` forces one. Never expose the token (settings returns `line_configured: bool` only, plus `line_quota_paused: bool` for the auto-pause guard above).
+
+Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` enable a global HTTP Basic Auth middleware (both must be set; unset = off for local dev) — gates all routes incl. static. A second middleware always sets security headers (CSP allowing self + jsdelivr for ECharts, no unsafe-eval; X-Frame-Options DENY; nosniff). Frontend must `esc()` any external/CSV string before innerHTML (XSS). `data_dir` from settings is whitelisted to `REPO_DIR`/`SPR_DATA_DIR` via `_dir_within`. CSV upload capped at 10MB + extension allowlist. `db.backup_db` (SQLite online-backup API, rotate 7) runs in the 21:00 job + `POST /api/db/backup`. Rate-limiting (M2), TDCC's `verify=False` (M4), and unsanitized error detail (L4) are deliberately deferred/kept — each re-evaluated post-auth and judged low residual risk (see SECURITY.md for the reasoning per item, not just "not done"). `requirements-lock.txt` is a `pip freeze` snapshot for audit reference — regenerate via pip-audit when touching requirements.txt, then uninstall pip-audit itself so its transitive deps don't pollute the lock file.
+
+### Public pages (`/public/*`)
+Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
+- `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.
+- `GET /public/api/overview` — data endpoint: taiex, intl, sectors, inst (buy/sell spread + prev), fut (foreign OI, retail LS ratio + prev), margin/short balance + prev, ai_text.
+- `GET /public/api/inst-rank?who=foreign&unit=shares` — lightweight filter-and-rerender endpoint (張/金額 toggle without full page reload).
+- `GET /public/logic` — cup-handle explanation page.
+- `GET /public/disclaimer` — risk warning page.
+
+**Never return** personal data (watchlist, trades, settings) from `/public/*`.
+
+## Cloud deploy (Zeabur, one service)
+`Procfile` + `zbpack.json` start `uvicorn ... --port ${PORT:-8080}` (single worker only — multiple workers duplicate the scheduler and contend on SQLite). Must mount a **persistent Volume at `/data`** with `SPR_DB_PATH=/data/spr.sqlite`, else every redeploy wipes the DB. Cold-start / one-off helpers: `GET /api/backfill?days=200&max_fetch=20`（加權/現貨法人/融資券——**`market_daily` 建列的唯一入口**，上限 400 天，其他回補端點都只填既有列、建不出列，故窗口上限要跟得上這支）, `GET /api/chips/backfill?days=200&max_fetch=15`（台指期籌碼歷史）, `GET /api/intl/backfill?days=120`（國際指數歷史，新增 ticker 後必跑）, `GET /api/inst/backfill?days=60&max_fetch=15`（個股三大法人預熱）, `GET /api/csv/import-all` (imports every CSV in `Date/`), `GET /api/ohlc/backfill?days=377&max_fetch=60` (全市場個股 OHLC 進 `stock_ohlc` for the cup-handle screen — chunked/resumable, call repeatedly until `done`; then `/api/patterns/cup-handle` screens 亞當杯柄 型態, `patterns.py`). Daily use: the web "上傳今日檔" button → `POST /api/csv/upload` (no redeploy). "讀取資料夾最新檔" only sees `Date/` committed to the repo.
+
+## Conventions
+- TDD: write the parse test first; keep parse functions pure and wrappers thin. Endpoint tests use `TestClient` with `SPR_DB_PATH` = tmp file and `monkeypatch.setattr(sources.X, "fetch_...", ...)`.
+- Daily 選股 CSVs are tracked in `Date/`. Commits end with a `Co-Authored-By: Codex ...` trailer. Pushing to `main` (private GitHub repo) triggers a Zeabur redeploy.

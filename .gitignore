@@ -11,8 +11,11 @@ data/csv/
 
 # 本機工具產物，不進版控：
 # .agents/ 是 ss-trader skill 的鏡像（正本在 .claude/skills/ss-trader/）
-# AGENTS.md 為其他 AI 工具的本機說明（本專案的正本是 CLAUDE.md）
 # docs/line-richmenu/ 是 LINE 圖文選單底圖，上傳到 LINE 後即由平台保管
+#
+# AGENTS.md 曾經也在這份清單裡（理由是「其他 AI 工具的本機說明，正本在 CLAUDE.md」），
+# 但 CLAUDE.md 開頭明講「兩份都要更新、發現不一致時以原始碼為準」——這個約定假設
+# 兩份文件都在同一個 repo 裡讓人比對，AGENTS.md 若不進版控，clone 到別台機器或
+# Codex 在 CI 裡跑就直接是空的，"正本" 的説法也就無從查證。2026-08 已改進版控。
 .agents/
-AGENTS.md
 docs/line-richmenu/
