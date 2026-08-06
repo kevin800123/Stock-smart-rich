@@ -1047,18 +1047,42 @@ a.stock:hover { text-decoration: underline; }
   .nav.active { background: transparent; border-color: transparent; box-shadow: none;
                 color: var(--accent); font-weight: 700; }
 
-  /* 展開的「更多」面板：整個側欄變成貼底的網格，13 個目的地一次看完。
-     用同一批 .nav 節點而不是另外複製一份 DOM——複製就會有兩套 active 狀態要同步。 */
+  /* 展開的「更多」面板：沿用同一批 .nav 節點，改為右側分組抽屜；不另外複製 DOM，
+     否則會有兩套 active 狀態要同步。 */
   .sidebar.open {
-    display: grid; grid-template-columns: repeat(3, 1fr);
-    gap: 2px; padding: 10px 10px calc(10px + env(safe-area-inset-bottom, 0px));
-    max-height: 70vh; overflow-y: auto; border-radius: var(--r-lg) var(--r-lg) 0 0;
+    position: fixed; top: 0; right: 0; bottom: 0; left: auto;
+    width: min(84vw, 300px); max-height: none;
+    display: flex; flex-direction: column; align-items: stretch; gap: 0;
+    padding: calc(10px + env(safe-area-inset-top, 0px)) 10px calc(10px + env(safe-area-inset-bottom, 0px));
+    overflow-y: auto; border-radius: var(--r-lg) 0 0 var(--r-lg);
+    transform: translateX(0); animation: nav-drawer-in 180ms ease;
   }
-  .sidebar.open .nav { display: flex; min-height: 62px; }
+  .sidebar.open .sidebar-nav { display: flex; flex-direction: column; gap: 2px; min-height: 0; }
+  .sidebar.open .nav-group { display: block; }
+  .sidebar.open .nav-group + .nav-group { margin-top: var(--space-sm); padding-top: 0; border-top: 0; }
+  .sidebar.open .sidebar-nav .nav-group-sys { margin-top: var(--space-sm); }
+  .sidebar.open .nav-group-title { display: block; }
+  /* 抽屜內的小標題只是分組標籤，不能讓手機點擊改寫桌機的收合偏好。 */
+  .sidebar.open .nav-group-title { pointer-events: none; }
+  .sidebar.open .nav {
+    flex: 0 0 auto; display: flex; flex-direction: row; justify-content: flex-start;
+    gap: 10px; min-height: 44px; padding: 8px 14px;
+  }
+  .sidebar.open .nav::after { content: none; }
+  .sidebar.open .nav .lbl { display: inline; font-size: 14px; }
+  .sidebar.open .nav-more { order: -1; flex: 0 0 auto; }
   .sidebar.open .nav-more .lbl::before { content: "關閉"; }
   .sidebar.open .nav-more .lbl { font-size: 0; }
   .sidebar.open .nav-more .lbl::before { font-size: 10px; }
   .sidebar.open .nav-more .ico { transform: rotate(45deg); }
+
+  @keyframes nav-drawer-in {
+    from { transform: translateX(100%); }
+    to { transform: translateX(0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar.open { animation: none; }
+  }
 
   /* 面板外的遮罩：點一下關閉。hidden 屬性由 app.js 切換，這裡只管長相。 */
   .nav-scrim { display: block; position: fixed; inset: 0; z-index: 49;
