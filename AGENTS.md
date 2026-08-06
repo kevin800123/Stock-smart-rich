@@ -39,6 +39,10 @@ Gotchas:
 ### Frontend (`web/app.js`, one file)
 View-switching SPA + ECharts (local `web/vendor/echarts.min.js`, no CDN — CSP is `script-src 'self'`). Candlestick data is `[open, close, low, high]`. All fetches use relative `/api`. Charts degrade to "尚無資料" on empty; tooltips round floats. Elliott-wave detection lives **only** in Python (`elliott.py`); `kline.py` precomputes `waves` (a `{pct: segments}` dict for thresholds 2–15%) into the K-line API response, and `app.js` just renders `data.waves[pctKey]`. **Do not reintroduce a JS Elliott implementation** — the dual-implementation drift it caused is gone; add new wave logic on the backend.
 
+**卡片異常與今日重點**：`.card.alert` 只由 `cardWrap` 產生並同步收集明細；泛用門檻理由以 `alertReason` 為唯一權威版本，`isAlert` 只是布林投影。10 日均量刻意走 `isVolMaAlert`，不吃泛用 `isAlert` 的位階頭尾 10%，避免稀釋「量縮破線」語意。所有固定門檻仍由 `/api/dashboard` 的 `bands` 供給。
+
+**「注意這格」只有琥珀外框**（`.card.alert`／`.ms-verdict.alert`），紅綠只給行情漲跌。`#today-focus` 刻意不用琥珀：一個在清單每一列都亮的訊號，在那份清單裡的資訊量是零。
+
 **全域搜尋／新鮮度徽章／總覽新聞條（2026-08）**：`GET /api/stock/search` → `analysis.search_symbols`（純數字只比對**代號前綴**、其餘只比對**名稱包含**，名稱排序是「完全相等→開頭相符→只是包含」；名稱表沿用既有的 `_ohlc_names`，不另設快取鍵）。**該路由必須註冊在 `/stock/{code}/...` 之前**，否則被當成 `code="search"` 吃掉——回 200 的安靜失效，已用測試鎖住。`GET /api/news/headlines` → `headlines_logic` **只讀既有快取，絕不抓取也絕不呼叫 Gemini**（直接叫 `news_logic` 等於「開一次總覽就吃掉 1/20 的當日免費額度」），沒有快取就回空、前端整塊隱藏。新鮮度徽章的顏色吃後端 `data_stale`、天數用日曆天，**不用紅綠**（鎖給行情漲跌），過期沿用琥珀＝「注意這格」。側欄的「進階」群組收合 **CSS 只在 >860px 生效**：以下是圖示軌／手機 `display:contents`，沒有標題可點，收起來就打不開。
 
 **手機版（≤600px）**：底部列是「4 個常駐分頁（`data-primary`）＋『更多』面板」，不是 13 個平均分佈（一格只有 28.8px）；面板展開的就是側欄那 13 個 `.nav` 節點本身（`.sidebar.open` 變 3 欄網格），不複製 DOM。三個踩過的坑：(1) **`.sidebar` 手機段一定要 `display: flex`**——它本身沒宣告 display，桌機的 flex 容器是裡面的 `.sidebar-nav`，而手機段把它設成 `display: contents`；少了那行只設 `flex-direction` 完全沒作用也不報錯，實測底部列高 **648px** 蓋掉 80% 畫面。(2) **`flex-basis` 在 `flex-direction` 翻成 column 時會從「寬度」變成「高度」**（`.market-strip` 的 `flex: 2 1 420px` → 420px 高，內容只有 244px），直排時一律 `flex: 0 0 auto`。(3) 寬表格凍結第一欄要用 **`::after` 疊不透明底**而非改 `background`——`#daily`/`#industry` 的斑馬紋規則帶 ID 前綴、權重贏過任何不含 ID 的選擇器；並用 `:not([colspan])` 排除自選股的估價面板列。`window` 的 resize handler 要列出**每一張** echarts（手機轉方向就會走到）。

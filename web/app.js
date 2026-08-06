@@ -607,7 +607,9 @@ function railHtml(rk) {
     + `<i style="left:${rk.p}%"></i></div>`;
 }
 // 卡片外殼：把 alert（琥珀外框）與位階條收在一處，五個卡片建構式共用。
+let lastAlerts = [];
 function cardWrap(inner, title, rk, alert) {
+  if (alert && typeof alert === "object") lastAlerts.push(alert);
   const attr = title ? ` title="${esc(title)}"` : "";
   return `<div class="card${alert ? " alert" : ""}"${attr}>${inner}${railHtml(rk)}</div>`;
 }
@@ -668,8 +670,9 @@ function balanceCard(label, srcRow, curDate, balKey, chgKey, hist = [], amtKey =
   const extra = amt == null ? ""
     : `${est ? "市值" : "金額"} ${fmt(amt, 1)} 億${est ? "（估）" : ""}`
       + (amtChg == null ? "" : `　${amtChg > 0 ? "▲" : "▼"}${fmt(Math.abs(amtChg), 1)}`);
+  const alert = cardAlert(balKey, label, srcRow[balKey], fmt(srcRow[balKey], 0), rk, "tw");
   return card(lbl, fmt(srcRow[balKey], 0), srcRow[chgKey], pctOf(srcRow[balKey], srcRow[chgKey]),
-    "", "", rk, isAlert(balKey, srcRow[balKey], rk), extra);
+    "", "", rk, alert, extra);
 }
 // 融資維持率卡：DB 未存官方逐日漲跌（不像融資/融券有 margin_chg/short_chg 現成值），
 // 故從 hist 找 srcRow 當日之前最近一筆有值的交易日自行算較昨——比較基準是 srcRow 自己的日期，
@@ -684,6 +687,11 @@ function maintTip(even, call, mv, sv, amt, est) {
     + (mv != null ? `\n本日 融資市值 ${fmt(mv, 0)} 億 ÷ 融資金額 ${fmt(amt, 0)} 億` : "")
     + `\n註：成數為一般股票標準值，警示股／處置股更低，故兩平線為近似；`
     + `各家計算口徑不同（是否含 ETF 等），與外部數字不可直接對照。`;
+}
+function relToBreakeven(v, even) { return even ? (v - even) / even * 100 : null; }
+const MAINT_NEAR_CALL = 1.08, MAINT_DEEP_LOSS = -20;
+function isMaintAlert(v, call, rel) {
+  return call != null && (v < call * MAINT_NEAR_CALL || (rel != null && rel <= MAINT_DEEP_LOSS));
 }
 function marginMaintCard(hist, srcRow, curDate, opts) {
   const { label, col, mvCol, amtCol } = opts;
@@ -701,12 +709,16 @@ function marginMaintCard(hist, srcRow, curDate, opts) {
   const chg = priorRow ? srcRow[col] - priorRow[col] : null;
   const v = srcRow[col];
   const rk = pctile(hist, col, v);
-  const rel = even ? (v - even) / even * 100 : null;
+  const rel = relToBreakeven(v, even);
   const extra = rel == null ? ""
     : `相對兩平 ${rel > 0 ? "+" : ""}${fmt(rel, 1)}%（${rel >= 0 ? "獲利" : "套牢"}）`;
   const tip = maintTip(even, call, srcRow[mvCol], srcRow[opts.svCol], srcRow[amtCol]);
   // 逼近追繳線或深度套牢＝值得看一眼（與 ss_trader 同向：低維持率是反指標，不是利空）
-  const alert = call != null && (v < call * 1.08 || (rel != null && rel <= -20));
+  const alert = isMaintAlert(v, call, rel) ? {
+    key: col, label, display: `${fmt(v, 1)}%`,
+    reason: `追繳線 ${fmt(call, 0)}%` + (rel == null ? "" : `；相對兩平 ${rel > 0 ? "+" : ""}${fmt(rel, 1)}%`),
+    tier: 1, rank: rk, group: "tw",
+  } : false;
   return card(lbl, fmt(v, 1) + "%", chg, pctOf(v, chg), "", tip, rk, alert, extra);
 }
 // 10 日均量卡：大盤量能的「絕對水位」（既有的爆量/量縮判定看的是相對變化，兩者互補）。
@@ -715,6 +727,7 @@ function marginMaintCard(hist, srcRow, curDate, opts) {
 // 跌破時亮琥珀外框（值得看一眼），以及在 tooltip 裡說明它是什麼。
 // alert 自行由後端門檻算，不吃泛用 isAlert 的「位階頭尾 10%」：這張卡的琥珀外框
 // 要專門代表「量縮到那條線以下」，混入位階極端會稀釋掉它的意思。
+function isVolMaAlert(v, lo) { return lo != null && v <= lo; }
 function volMaCard(hist, m, prev) {
   const v = m.turnover_ma10;
   const lo = (lastBands.turnover_ma10 || {}).low;
@@ -726,8 +739,13 @@ function volMaCard(hist, m, prev) {
   const tip = `近 10 個交易日成交金額的平均（上市，證交所 FMTQIK 官方值）。`
     + (lo ? `\n參考：${fmt(lo, 0)} 億是常見的量能萎縮觀察線，跌破時本卡片標示琥珀外框。` : "")
     + `\n註：本站為上市口徑，與「上市櫃合計」的數字不可直接對照。`;
+  const rk = pctile(hist, "turnover_ma10", v);
+  const alert = isVolMaAlert(v, lo) ? {
+    key: "turnover_ma10", label, display: `${fmt(v, 0)} 億`,
+    reason: `低於 ${fmt(lo, 0)} 億量能觀察線`, tier: 1, rank: rk, group: "tw",
+  } : false;
   return card(label, fmt(v, 0), chg, pct, '<span class="card-unit">億</span>', tip,
-    pctile(hist, "turnover_ma10", v), lo != null && v <= lo);
+    rk, alert);
 }
 // 市場內部儀表：指數（方向）＋三大法人（資金）。中間的漲跌家數由 loadBreadth 填 #breadth，
 // 三者並列才看得出「指數持平但下跌家數遠多於上漲」這種內部背離。
@@ -785,15 +803,33 @@ function renderVerdict() {
 function renderTodayFocus() {
   const el = $("today-focus"); if (!el) return;
   const v = verdictOf(lastLatest && lastLatest.taiex_chg, lastBreadth);
-  if (!v || !v.diverge) { el.innerHTML = ""; return; }
-  const pct = Math.round(Math.abs(v.gap) / v.tot * 100);
-  const display = `${fmt(v.up, 0)} 漲 ／ ${fmt(v.down, 0)} 跌`;
-  const reason = `差距 ${pct}%，門檻 ${Math.round(VERDICT_GAP * 100)}%`;
+  const items = [];
+  if (v && v.diverge) {
+    const pct = Math.round(Math.abs(v.gap) / v.tot * 100);
+    items.push(`<div class="today-focus-item"><span class="today-focus-label">指數 vs 漲跌家數</span>` +
+      `<strong class="today-focus-value">${fmt(v.up, 0)} 漲 ／ ${fmt(v.down, 0)} 跌</strong>` +
+      `<span class="today-focus-reason">差距 ${pct}%，門檻 ${Math.round(VERDICT_GAP * 100)}%</span></div>`);
+  }
+  const alerts = lastAlerts.map((alert, order) => ({ alert, order })).sort((a, b) => {
+    if (a.alert.tier !== b.alert.tier) return a.alert.tier - b.alert.tier;
+    if (a.alert.tier === 2) {
+      const byExtreme = Math.abs(b.alert.rank.p - 50) - Math.abs(a.alert.rank.p - 50);
+      if (byExtreme) return byExtreme;
+    }
+    return a.order - b.order;
+  });
+  const shown = alerts.slice(0, Math.max(0, 4 - items.length));
+  shown.forEach(({ alert }) => {
+    items.push(`<div class="today-focus-item"><span class="today-focus-label">${esc(alert.label)}</span>` +
+      `<strong class="today-focus-value">${esc(alert.display)}</strong>` +
+      `<span class="today-focus-reason">${esc(alert.reason)}</span></div>`);
+  });
+  if (!items.length) { el.innerHTML = ""; return; }
+  const hiddenN = alerts.length - shown.length;
+  const more = hiddenN > 0 ? `<div class="today-focus-more">另 ${hiddenN} 項見下方卡片</div>` : "";
   el.innerHTML = `<div class="today-focus-head"><span class="today-focus-title">今日重點</span>` +
     `<span class="today-focus-note">下方對應卡片有琥珀外框</span></div>` +
-    `<div class="today-focus-item"><span class="today-focus-label">指數 vs 漲跌家數</span>` +
-    `<strong class="today-focus-value">${display}</strong>` +
-    `<span class="today-focus-reason">${reason}</span></div>`;
+    items.join("") + more;
 }
 
 // ===== 置頂 KPI 條：捲到頁面任何位置都還看得到主指標。=====
@@ -857,14 +893,27 @@ function pctile(hist, key, v) {
   if (a.length < RAIL_MIN_N) return null;
   return { p: Math.round(a.filter((x) => x < v).length / a.length * 100), n: a.length };
 }
-// 異常＝跨過 ss_trader 的固定門檻，或位階落在頭尾 10%。兩者都套同一個琥珀外框。
-function isAlert(key, v, rank) {
+// 異常理由是唯一權威版本；布林 isAlert 只是它的投影，避免外框與今日重點各判一遍。
+function alertReason(key, v, rank) {
   const band = lastBands[key];
-  if (band && v != null && (v <= band.low || v >= band.high)) return true;
-  return !!rank && (rank.p >= 90 || rank.p <= 10);
+  // v != null 必須同時守住 low/high 比較：JS 會把 null 脅迫成 0，造成缺值誤報。
+  if (band && v != null && (v <= band.low || v >= band.high)) {
+    const low = v <= band.low;
+    return { tier: 1, text: `固定門檻 ${low ? "≤" : "≥"} ${fmt(low ? band.low : band.high)}` };
+  }
+  if (rank && (rank.p >= 90 || rank.p <= 10)) {
+    return { tier: 2, text: `近 ${rank.n} 日位階 ${rank.p}%` };
+  }
+  return null;
+}
+function isAlert(key, v, rank) { return alertReason(key, v, rank) != null; }
+function cardAlert(key, label, v, display, rank, group) {
+  const reason = alertReason(key, v, rank);
+  return reason ? { key, label, display, reason: reason.text, tier: reason.tier, rank, group } : false;
 }
 
 function renderCards(m, prev = {}, hist = []) {
+  lastAlerts = [];
   if (!m || !m.date) { $("cards-tw").innerHTML = '<div class="muted">尚無大盤資料。</div>'; $("cards-fut").innerHTML = ""; $("cards-intl").innerHTML = ""; $("data-date").textContent = ""; return; }
   $("data-date").textContent = "資料日期：" + m.date;
   // retail_ls_mtx/tmf 是比率（如 0.139），介面一律以百分比呈現（13.9%），避免讀成「0.139 倍」
@@ -883,10 +932,17 @@ function renderCards(m, prev = {}, hist = []) {
   renderMarketStrip(m, sum3(m));   // 加權指數與三大法人合計移到頂端儀表，下方卡片不再重複
   // 位階：把「這個數字在近期分佈的哪裡」補上。同一欄位算一次，rk 與 alert 共用。
   const rank = (key, v) => pctile(hist, key, v === undefined ? m[key] : v);
+  const rankedAlert = (key, label, v, display, group) => {
+    const rk = rank(key, v);
+    return { rk, alert: cardAlert(key, label, v, display, rk, group) };
+  };
+  const foreign = rankedAlert("inst_foreign", "外資買賣超", m.inst_foreign, `${fmt(m.inst_foreign)} 億`, "tw");
+  const trust = rankedAlert("inst_trust", "投信買賣超", m.inst_trust, `${fmt(m.inst_trust)} 億`, "tw");
+  const dealer = rankedAlert("inst_dealer", "自營買賣超", m.inst_dealer, `${fmt(m.inst_dealer)} 億`, "tw");
   $("cards-tw").innerHTML = [
-    flowCard("外資買賣超", m.inst_foreign, prev.inst_foreign, " 億", rank("inst_foreign"), isAlert("inst_foreign", m.inst_foreign, rank("inst_foreign"))),
-    flowCard("投信買賣超", m.inst_trust, prev.inst_trust, " 億", rank("inst_trust"), isAlert("inst_trust", m.inst_trust, rank("inst_trust"))),
-    flowCard("自營買賣超", m.inst_dealer, prev.inst_dealer, " 億", rank("inst_dealer"), isAlert("inst_dealer", m.inst_dealer, rank("inst_dealer"))),
+    flowCard("外資買賣超", m.inst_foreign, prev.inst_foreign, " 億", foreign.rk, foreign.alert),
+    flowCard("投信買賣超", m.inst_trust, prev.inst_trust, " 億", trust.rk, trust.alert),
+    flowCard("自營買賣超", m.inst_dealer, prev.inst_dealer, " 億", dealer.rk, dealer.alert),
     // 融資金額是官方數字；融券金額官方不發布，只能以現價估算，故標「估」
     balanceCard("融資餘額(張)", marginRow, m.date, "margin_balance", "margin_chg", hist, "margin_value", false, "margin_value_chg"),
     balanceCard("融券餘額(張)", marginRow, m.date, "short_balance", "short_chg", hist, "short_mv", true),
@@ -896,13 +952,20 @@ function renderCards(m, prev = {}, hist = []) {
       mvCol: "otc_margin_mv", svCol: "otc_short_mv", amtCol: "otc_margin_value" }),
     volMaCard(hist, m, prev),
   ].join("");
+  const foreignOi = rankedAlert("tx_foreign_oi", "外資台指淨未平倉", m.tx_foreign_oi,
+    `${fmt(Math.abs(m.tx_foreign_oi), 0)} 口`, "fut");
+  const retailOi = rankedAlert("retail_oi_mtx", "散戶小台淨未平倉", m.retail_oi_mtx,
+    `${fmt(Math.abs(m.retail_oi_mtx), 0)} 口`, "fut");
+  const retailMtx = rankedAlert("retail_ls_mtx", "小台散戶多空比", m.retail_ls_mtx, ls(m.retail_ls_mtx), "fut");
+  const retailTmf = rankedAlert("retail_ls_tmf", "微台散戶多空比", m.retail_ls_tmf, ls(m.retail_ls_tmf), "fut");
+  const vix = rankedAlert("vix", "VIX 恐慌指數", m.vix, fmt(m.vix), "fut");
   $("cards-fut").innerHTML = [
     card("台指期", fmt(m.tx_price), m.tx_chg, pctOf(m.tx_price, m.tx_chg)),
-    oiCard("外資台指淨未平倉", m.tx_foreign_oi, prev.tx_foreign_oi, rank("tx_foreign_oi"), isAlert("tx_foreign_oi", m.tx_foreign_oi, rank("tx_foreign_oi"))),
-    oiCard("散戶小台淨未平倉", m.retail_oi_mtx, prev.retail_oi_mtx, rank("retail_oi_mtx"), isAlert("retail_oi_mtx", m.retail_oi_mtx, rank("retail_oi_mtx"))),
-    qualCard("小台散戶多空比", lsQual(m.retail_ls_mtx), ls(m.retail_ls_mtx), lsm.chg, lsm.pct, rank("retail_ls_mtx"), isAlert("retail_ls_mtx", m.retail_ls_mtx, rank("retail_ls_mtx"))),
-    qualCard("微台散戶多空比", lsQual(m.retail_ls_tmf), ls(m.retail_ls_tmf), lst.chg, lst.pct, rank("retail_ls_tmf"), isAlert("retail_ls_tmf", m.retail_ls_tmf, rank("retail_ls_tmf"))),
-    card("VIX 恐慌指數", fmt(m.vix), chgPts(m.vix, m.vix_chg), m.vix_chg, "", "", rank("vix"), isAlert("vix", m.vix, rank("vix"))),
+    oiCard("外資台指淨未平倉", m.tx_foreign_oi, prev.tx_foreign_oi, foreignOi.rk, foreignOi.alert),
+    oiCard("散戶小台淨未平倉", m.retail_oi_mtx, prev.retail_oi_mtx, retailOi.rk, retailOi.alert),
+    qualCard("小台散戶多空比", lsQual(m.retail_ls_mtx), ls(m.retail_ls_mtx), lsm.chg, lsm.pct, retailMtx.rk, retailMtx.alert),
+    qualCard("微台散戶多空比", lsQual(m.retail_ls_tmf), ls(m.retail_ls_tmf), lst.chg, lst.pct, retailTmf.rk, retailTmf.alert),
+    card("VIX 恐慌指數", fmt(m.vix), chgPts(m.vix, m.vix_chg), m.vix_chg, "", "", vix.rk, vix.alert),
   ].join("");
   // 國際市場刻意不給位階條：價格的 45 日位階訊號薄弱，畫了只是裝飾，
   // 反而稀釋位階條在籌碼欄位上的意義。

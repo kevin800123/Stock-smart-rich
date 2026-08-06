@@ -354,6 +354,7 @@ body[data-public] .status-bar { display: none; }
 .today-focus-label { color: var(--label); font-size: var(--fs-sm); }
 .today-focus-value { color: var(--text); font-size: var(--fs-sm); }
 .today-focus-reason { color: var(--muted); font-size: var(--fs-xs); }
+.today-focus-more { color: var(--muted); font-size: var(--fs-xs); }
 
 /* 總覽的三則新聞標題。刻意做成**一行一則的低調長條**而不是卡片：它是「順帶看一眼」，
    給它卡片的視覺重量就會跟下面真正的讀數搶注意力。國旗當市場標記，沿用新聞頁同一套

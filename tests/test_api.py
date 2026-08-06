@@ -1,10 +1,28 @@
 import json
 import os
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from stocks_power_rich.main import create_app
 from tests.conftest import HEADER, ROW_2330
+
+
+def test_frontend_card_alert_guards():
+    web = Path(__file__).parents[1] / "web"
+    js = (web / "app.js").read_text(encoding="utf-8")
+    css = (web / "styles.css").read_text(encoding="utf-8")
+
+    assert js.count("rank.p >= 90") == 1
+    for fn in ("alertReason", "relToBreakeven", "isMaintAlert", "isVolMaAlert"):
+        assert f"function {fn}(" in js
+    assert "onclick=" not in js
+    assert js.count("lastAlerts = []") >= 1
+    assert "#today-focus:empty" in css
+    render_cards = js.index("function renderCards(")
+    reset = js.index("lastAlerts = [];", render_cards)
+    early_return = js.index("if (!m || !m.date)", render_cards)
+    assert render_cards < reset < early_return
 
 
 def test_dashboard_and_upload(tmp_path, monkeypatch):
