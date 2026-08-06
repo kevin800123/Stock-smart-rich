@@ -350,6 +350,7 @@ body[data-public] .status-bar { display: none; }
 }
 .news-strip[hidden] { display: none; }
 .nsi { display: flex; align-items: baseline; gap: 7px; min-width: 0;
+       min-height: 24px; padding-block: 2px;
        color: var(--text-secondary); text-decoration: none; font-size: var(--fs-sm); }
 .nsi:hover .nsi-t { color: var(--text-primary); text-decoration: underline; }
 .nsi-f { flex: 0 0 auto; }
@@ -676,6 +677,9 @@ body[data-public] .status-bar { display: none; }
 .rank-row span.up, .rank-row span.down { padding: 2px 5px; border-radius: 3px; }
 .rank-row span.up { background: var(--up-soft); }
 .rank-row span.down { background: var(--down-soft); }
+#rank-buy .rank-row a.stock, #rank-sell .rank-row a.stock {
+  min-height: 24px; padding-block: 2px;
+}
 /* 每日新聞沿用法人排行的欄位與列樣式，只把三市場改成等寬三欄；窄螢幕仍由下方
    .rank-split 的既有規則直排，讓標題不必壓成難讀的三小欄。 */
 .news-split .rank-row { align-items: flex-start; }
