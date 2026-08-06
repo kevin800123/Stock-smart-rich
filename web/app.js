@@ -564,8 +564,9 @@ async function loadSettings() {
     ln.textContent = s.line_configured
       ? `已設定 ✓（每日完整版 ${s.schedule_time}・週報 週六 ${s.weekly_push_time}）`
         + (s.line_webhook_configured ? "・查詢 webhook ✓" : "・查詢 webhook 未設定")
+        + (s.line_quota_paused ? "・⚠️ 本月推播額度已用盡，暫停主動推播（次月自動恢復；查詢 webhook 仍可用）" : "")
       : "未設定";
-    ln.className = "set-badge " + (s.line_configured ? "ok" : "no");
+    ln.className = "set-badge " + (s.line_configured && !s.line_quota_paused ? "ok" : "no");
     const tg = $("set-telegram");
     tg.textContent = s.telegram_configured ? "已設定 ✓（每日 07:00／12:00／17:00／21:10）" : "未設定";
     tg.className = "set-badge " + (s.telegram_configured ? "ok" : "no");

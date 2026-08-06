@@ -564,6 +564,80 @@ def test_line_push_failure_recorded_retry_and_recovery_notice(tmp_path, monkeypa
     assert r3["ok"] is True and not str(sent[3][0]).startswith("⚠️")
 
 
+def test_line_quota_exceeded_pauses_broadcast_and_auto_resumes_next_month(tmp_path, monkeypatch):
+    """LINE broadcast 按收訊人數計月額度，免費層很淺、用盡前無跡可循（LINE 回 429 +
+    body 含「monthly limit」）。之前只有失敗記錄會補一則「前次推播失敗」通知，收到那則
+    不代表這次也失敗——現在額度用盡要：(1) 判定成獨立狀態而非一般失敗，不重試（重試
+    也不會成功，白打一次）；(2) 本月已知用盡後，下次直接跳過、連 broadcast 都不打；
+    (3) 設定頁揭露狀態；(4) 月份字串一換就自動恢復，不必另外排程去清除。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok-x")
+    from stocks_power_rich import line_push
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily, set_setting
+    from stocks_power_rich.sources import twse
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-08-06", "taiex": 43361.0})
+    monkeypatch.setattr(twse, "fetch_sector_indices", lambda date=None: [])
+    monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {})
+    calls = []
+
+    def fake_broadcast(token, msgs):
+        calls.append(msgs)
+        return {"ok": False, "status": 429,
+                "error": '{"message":"You have reached your monthly limit."}'}
+
+    monkeypatch.setattr(line_push, "broadcast_messages", fake_broadcast)
+    app = create_app()
+    client = TestClient(app)
+    r1 = client.post("/api/line/test").json()
+    assert r1["ok"] is False and r1["quota_paused"] is True
+    assert len(calls) == 1                                    # 額度用盡不重試
+
+    r2 = client.post("/api/line/test").json()                 # 本月已知用盡
+    assert r2["quota_paused"] is True and len(calls) == 1      # 這次連 broadcast 都不打
+
+    s = client.get("/api/settings").json()
+    assert s["line_quota_paused"] is True and "tok" not in str(s)
+
+    # 模擬跨月：判斷式只比對「現在」的月份字串，把紀錄改成別的月份就等於月份已翻頁
+    set_setting(c, "line_quota_month", "2000-01")
+    monkeypatch.setattr(line_push, "broadcast_messages",
+                        lambda tok, msgs: calls.append(msgs) or {"ok": True, "status": 200})
+    r3 = client.post("/api/line/test").json()
+    assert r3["ok"] is True and len(calls) == 2                # 自動恢復，不需要手動介入
+    assert client.get("/api/settings").json()["line_quota_paused"] is False
+
+
+def test_intraday_quota_paused_skips_broadcast_but_still_scans(tmp_path, monkeypatch):
+    """盤中哨兵每 5 分鐘一次，額度用盡當天最容易反覆撞 429——已知本月用盡就不再嘗試
+    broadcast，但掃描/命中判定照常回傳，且不把命中標成「已警示」（額度恢復後仍補送）。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok-x")
+    from stocks_power_rich import line_push
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc, set_ai_cache, set_setting
+    from stocks_power_rich.sources import mis, tpex
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    bulk_upsert_ohlc(c, "2026-07-04", {"2330": {"open": 1, "high": 2, "low": 1, "close": 1.5}})
+    set_ai_cache(c, "cupsig:2026-07-04", [{"code": "8069", "name": "元太", "resistance": 212.0, "atr": 2.0}])
+    monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {"8069": "元太"})
+    monkeypatch.setattr(mis, "fetch_mis_quotes", lambda tokens: {"8069": 213.5})
+    from datetime import datetime as _dt
+    set_setting(c, "line_quota_month", _dt.now().strftime("%Y-%m"))
+    calls = []
+    monkeypatch.setattr(line_push, "broadcast_messages",
+                        lambda tok, msgs: calls.append(msgs) or {"ok": True})
+    app = create_app()
+    client = TestClient(app)
+    client.post("/api/intraday/test?push=1")                  # 第一輪只記候選
+    r2 = client.post("/api/intraday/test?push=1").json()
+    assert [h["code"] for h in r2["hits"]] == ["8069"]         # 掃描與命中判定不受影響
+    assert len(calls) == 0                                     # 但完全沒有嘗試 broadcast
+
+
 def test_line_watchlist_pct_falls_back_to_ohlc(tmp_path, monkeypatch):
     """自選股報價源查無（上市/上櫃報價都沒有）→ 以 stock_ohlc 日K收盤回推漲跌%，
     不再出現「有價無漲跌%」的缺行（衛司特/亞通實例）。

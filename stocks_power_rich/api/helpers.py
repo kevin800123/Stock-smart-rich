@@ -354,6 +354,26 @@ def _note_push_fail(c, full: bool, err) -> None:
                 f"{'完整版' if full else '速報'} {str(err)[:80]}")
 
 
+def _is_quota_exceeded(resp: dict) -> bool:
+    """LINE broadcast 月額度用盡回 429，body 是 `{"message": "You have reached your
+    monthly limit."}`——與其他 429（例如短時間內炸太多次）用同一個狀態碼，只能靠
+    文字分辨，故比對 `error` 裡的關鍵詞而非只看 status。"""
+    return resp.get("status") == 429 and "monthly limit" in (resp.get("error") or "").lower()
+
+
+def line_quota_paused(c) -> bool:
+    """本月是否已偵測到 LINE broadcast 月額度用盡。
+
+    儲存的是「用盡當下的月份字串」，判斷式只比對是否等於**現在**的月份——月份
+    字串一換（次月）比對自然不成立，不需要另外排程去清除設定就能自動恢復。
+    只擋 broadcast（主動推播），webhook 的 reply 不耗額度、不受影響。"""
+    return get_setting(c, "line_quota_month") == datetime.now().strftime("%Y-%m")
+
+
+def _note_line_quota_exceeded(c) -> None:
+    set_setting(c, "line_quota_month", datetime.now().strftime("%Y-%m"))
+
+
 def cup_handle_screen_logic(c, min_r: float = patterns.MIN_R_DEFAULT):
     from ..db import ohlc_dates, get_all_ohlc
     ods = ohlc_dates(c)
@@ -542,6 +562,9 @@ def _push_line(c, full: bool, force: bool = False) -> dict:
     cfg = load_config()
     if not cfg.line_token:
         return {"ok": False, "error": "未設定 LINE_CHANNEL_ACCESS_TOKEN"}
+    if line_quota_paused(c):
+        return {"ok": False, "error": "本月 LINE 推播額度已用盡，暫停主動推播（次月自動恢復）",
+                "quota_paused": True}
     msgs, err = _daily_messages(c, full=full, force=force)
     if err:
         if err.get("fatal"):
@@ -552,12 +575,16 @@ def _push_line(c, full: bool, force: bool = False) -> dict:
         msgs = [{"type": "text",
                  "text": f"⚠️ 前次推播失敗（{prev_fail}），數據以本則為準"}] + msgs
     r = line_push.broadcast_messages(cfg.line_token, msgs)
-    if not r.get("ok"):
+    # 額度用盡重試也不會成功，且只是在浪費第二次呼叫——不重試，直接判定並記錄
+    if not r.get("ok") and not _is_quota_exceeded(r):
         time.sleep(2)
         r = line_push.broadcast_messages(cfg.line_token, msgs)
     if r.get("ok"):
         if prev_fail:
             set_setting(c, "line_push_fail", "")
+    elif _is_quota_exceeded(r):
+        _note_line_quota_exceeded(c)
+        r = {**r, "quota_paused": True}
     else:
         _note_push_fail(c, full, r.get("error") or f"HTTP {r.get('status')}")
     return r
@@ -664,6 +691,10 @@ def _os_futures(refresh: bool = False) -> dict:
 
 def _intraday_scan(c, push: bool = True) -> dict:
     cfg = load_config()
+    # 每 5 分鐘一次的排程最容易在額度用盡當天反覆撞 429——已知本月用盡就直接不送，
+    # 掃描/命中判定照常跑（回傳值不受影響），只是不廣播、也不把命中標成「已警示」
+    # （這樣額度恢復後同一天若還在盤中，仍會補送這次沒送出的警示）。
+    push = push and not line_quota_paused(c)
     ods = [r[0] for r in c.execute("SELECT DISTINCT date FROM stock_ohlc ORDER BY date").fetchall()]
     if not ods:
         return {"checked": 0, "hits": [], "note": "無 OHLC 歷史"}
@@ -684,7 +715,9 @@ def _intraday_scan(c, push: bool = True) -> dict:
             _mis_state.update({"date": today, "fails": 0, "warned": False})
         _mis_state["fails"] += 1
         if _mis_state["fails"] >= 6 and not _mis_state["warned"] and push:
-            line_push.broadcast_text(cfg.line_token, "⚠️ 盤中突破哨兵連續無法取得報價（來源可能失效），今日暫停警示。")
+            r = line_push.broadcast_text(cfg.line_token, "⚠️ 盤中突破哨兵連續無法取得報價（來源可能失效），今日暫停警示。")
+            if not r.get("ok") and _is_quota_exceeded(r):
+                _note_line_quota_exceeded(c)
             _mis_state["warned"] = True
         return {"checked": len(pending), "hits": [], "note": "查查無報價"}
     _mis_state.update({"date": today, "fails": 0})
@@ -696,7 +729,9 @@ def _intraday_scan(c, push: bool = True) -> dict:
     set_ai_cache(c, f"cuppending:{today}", sorted(crossing.keys()))
     if hits and push:
         txt = line_push.compose_breakout_alert(hits, datetime.now().strftime("%H:%M"))
-        line_push.broadcast_text(cfg.line_token, txt)
+        r = line_push.broadcast_text(cfg.line_token, txt)
+        if not r.get("ok") and _is_quota_exceeded(r):
+            _note_line_quota_exceeded(c)
         set_ai_cache(c, f"cupalerted:{today}", sorted(alerted | {h["code"] for h in hits}))
     return {"checked": len(pending), "hits": hits}
 

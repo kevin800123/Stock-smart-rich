@@ -28,6 +28,9 @@ from .api.helpers import (
     _check_update_result_and_alert,
     _os_futures,
     _intraday_scan,
+    line_quota_paused,
+    _is_quota_exceeded,
+    _note_line_quota_exceeded,
     data_is_stale,
     WEB_DIR,
 )
@@ -171,11 +174,15 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             from .api.helpers import _weekly_messages
             from .db import get_snapshot_dates
             c = conn()
+            if line_quota_paused(c):
+                return
             dates = get_snapshot_dates(c)
             # staleness guard：最新快照距今 >7 天代表本週沒匯 CSV，別重複推舊內容
             if not dates or (date.today() - date.fromisoformat(dates[-1])) > timedelta(days=7):
                 return
-            line_push.broadcast_messages(cfg.line_token, _weekly_messages(c))
+            r = line_push.broadcast_messages(cfg.line_token, _weekly_messages(c))
+            if not r.get("ok") and _is_quota_exceeded(r):
+                _note_line_quota_exceeded(c)
         except Exception:  # noqa: BLE001 — 推播失敗不影響其他排程
             pass
 

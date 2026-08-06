@@ -12,6 +12,7 @@ from .helpers import (
     _intraday_scan,
     _insti_for,
     ai_calls_today,
+    line_quota_paused,
     REPO_DIR
 )
 from ..db import get_setting, set_setting, get_snapshot_dates, get_tx_history, get_ai_cache, backup_db
@@ -203,6 +204,7 @@ def get_settings(request: Request):
         "gemini_model": gemini.MODEL,
         "line_configured": bool(cfg.line_token),
         "line_webhook_configured": bool(cfg.line_secret),   # 只回布林，絕不外洩 secret
+        "line_quota_paused": line_quota_paused(c),          # 本月 broadcast 額度已用盡（reply 不受影響）
         "telegram_configured": bool(cfg.telegram_token and cfg.telegram_chat_id),
         "offsite_backup_configured": bool(cfg.backup_git_remote),
         "weekly_push_time": cfg.weekly_push_time,
