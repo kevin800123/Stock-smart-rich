@@ -778,10 +778,8 @@ function renderVerdict() {
 }
 
 // ===== 置頂 KPI 條：捲到頁面任何位置都還看得到主指標。=====
-// 刻意不用 IntersectionObserver 做「捲過才顯示」——這一列直接放在 .overview-top
-// 後面、section-head「籌碼」之前，頁面在頂端時它照樣顯示一次（跟上面詳細版資訊
-// 重疊一行，代價很小），position:sticky 本身在捲動超過這個位置後自然貼頂，
-// 不需要額外 JS 判斷可見性。
+// 桌機維持直接放在 .overview-top 後面的設計；手機折成兩列後，和詳細版重複的
+// 項目變多，因此僅在手機於 .overview-top 還在 .content 可視範圍時暫時隱藏。
 // 資料來自三個既有的模組層變數（lastLatest／lastBreadth／lastPulse），三者由不同
 // API 各自到位，所以三個載入點都呼叫本函式一次（同 renderVerdict 的既有作法），
 // 缺哪一塊就讓那一格顯示「—」，不等全部到齊。
@@ -807,6 +805,29 @@ function renderKpiSticky() {
   ];
   el.innerHTML = items.map(([k, v]) => `<div class="kpi-item"><span class="kpi-k">${k}</span><span class="kpi-v">${v}</span></div>`).join("");
 }
+
+const MOBILE_KPI_MEDIA = window.matchMedia("(max-width: 600px)");
+let mobileKpiObserver = null;
+function syncMobileKpiSticky() {
+  const kpi = $("kpi-sticky");
+  const overviewTop = document.querySelector(".overview-top");
+  const scroller = document.querySelector(".content");
+  if (!kpi || !overviewTop || !scroller) return;
+  if (mobileKpiObserver) mobileKpiObserver.disconnect();
+  if (!MOBILE_KPI_MEDIA.matches) {
+    kpi.classList.remove("hidden");
+    mobileKpiObserver = null;
+    return;
+  }
+  // 先隱藏避免 observer 的首次 callback 前閃出；用 display:none 不佔首屏版位。
+  kpi.classList.add("hidden");
+  mobileKpiObserver = new IntersectionObserver(([entry]) => {
+    kpi.classList.toggle("hidden", entry.isIntersecting);
+  }, { root: scroller, threshold: 0 });
+  mobileKpiObserver.observe(overviewTop);
+}
+MOBILE_KPI_MEDIA.addEventListener("change", syncMobileKpiSticky);
+syncMobileKpiSticky();
 
 // 某欄位在近 N 日的百分位。位階條只在樣本夠時才畫得有意義——n<15 的欄位（如目前
 // 只有 7 筆有值的融資維持率）畫出來是雜訊，寧可不畫，改由固定門檻判定。

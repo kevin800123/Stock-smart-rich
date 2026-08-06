@@ -106,9 +106,9 @@
             <div id="ms-inst" class="ms-inst"></div>
           </div>
         </div>
-        <!-- 置頂 KPI 條：position:sticky，捲過頁面上半段後仍貼在頂端。刻意放在這裡
-             （而非用 IntersectionObserver 控制顯示）——頁面在頂端時它跟上面的詳細版
-             重疊一行，代價很小；一旦超出視窗，sticky 自然貼頂，不必額外判斷可見性。 -->
+        <!-- 置頂 KPI 條：桌機維持直接放在這裡，頂端和詳細版重疊一行後自然 sticky。
+             手機實測會折成兩列、重複 6 項並佔首屏 11%，所以 app.js 只在 <=600px
+             等 .overview-top 捲出 .content 後才顯示它。 -->
         <div id="kpi-sticky" class="kpi-sticky"></div>
         <!-- 三則新聞標題：每個市場一則。資料只來自 /api/news/headlines，那支**只讀
              已存在的快取**、不抓取也不打 Gemini（見 api/news.py::headlines_logic）——
