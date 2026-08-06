@@ -180,7 +180,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             pass
 
     def news_job(slot: str):
-        """每日財經新聞：三時段各自的必含主題不同，快取鍵也各自獨立（見 news_logic），
+        """每日財經新聞：四時段各自的必含主題不同，快取鍵也各自獨立（見 news_logic），
         所以每個時段是一個獨立的 job 而非同一支函式帶參數重複註冊。"""
         def _run():
             try:
