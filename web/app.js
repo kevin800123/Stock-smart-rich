@@ -2503,9 +2503,16 @@ $("pulse-expand").addEventListener("click", () => {
 // （內容之後才由各 load* 函式填入），所以收合狀態可以在腳本一載入就套用，不必等
 // 任何 API 資料回來。
 const COLLAPSE_KEY = (key) => `spr:collapse:${key}`;
+// 手機總覽首訪只保留最常先看的台股大盤與法人排行；僅供沒有既有偏好時判斷，
+// 絕不寫入 localStorage，避免這個行動版預設同步成桌機的收合狀態。
+const MOBILE_OPEN = new Set(["tw", "rank"]);
 function initCollapsibleGroups() {
   document.querySelectorAll("#view-overview .card-group[data-key]").forEach((g) => {
-    if (localStorage.getItem(COLLAPSE_KEY(g.dataset.key)) === "1") g.classList.add("collapsed");
+    const saved = localStorage.getItem(COLLAPSE_KEY(g.dataset.key));
+    if (saved === "1" ||
+        (saved === null && window.matchMedia("(max-width: 600px)").matches && !MOBILE_OPEN.has(g.dataset.key))) {
+      g.classList.add("collapsed");
+    }
   });
 }
 $("view-overview").addEventListener("click", (e) => {
