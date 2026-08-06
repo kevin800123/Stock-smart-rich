@@ -340,6 +340,21 @@ body[data-public] .status-bar { display: none; }
 }
 .kpi-sticky:empty { display: none; }
 
+/* 今日重點沿用新聞條的低調容器；條目本身不另做卡片或琥珀標記。 */
+.today-focus {
+  display: grid; gap: 8px;
+  background: rgba(16, 26, 40, 0.72); border: 1px solid rgba(58, 82, 112, 0.7);
+  border-radius: var(--r-lg); padding: 10px 12px;
+}
+#today-focus:empty { display: none; }
+.today-focus-head { display: flex; align-items: baseline; gap: 8px; }
+.today-focus-title { color: var(--label); font-size: var(--fs-sm); font-weight: 700; }
+.today-focus-note { color: var(--muted); font-size: var(--fs-xs); }
+.today-focus-item { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.today-focus-label { color: var(--label); font-size: var(--fs-sm); }
+.today-focus-value { color: var(--text); font-size: var(--fs-sm); }
+.today-focus-reason { color: var(--muted); font-size: var(--fs-xs); }
+
 /* 總覽的三則新聞標題。刻意做成**一行一則的低調長條**而不是卡片：它是「順帶看一眼」，
    給它卡片的視覺重量就會跟下面真正的讀數搶注意力。國旗當市場標記，沿用新聞頁同一套
    （_MARKET_META），不另外發明色塊或標籤。 */
@@ -472,6 +487,7 @@ body[data-public] .status-bar { display: none; }
    而非逐一加 class，因為它們的「必須滿版」是結構性的、不會有例外。 */
 #view-overview.active .overview-top,
 #view-overview.active #kpi-sticky,
+#view-overview.active #today-focus,
 #view-overview.active #news-strip,
 #view-overview.active .section-head,
 #view-overview.active .chart-row,

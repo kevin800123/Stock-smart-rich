@@ -748,14 +748,13 @@ function renderMarketStrip(m, total3) {
 // 刻意只陳述觀察不給動作——「內部偏弱」可以，「偏空」不行，全站免責基調一致。
 const VERDICT_GAP = 0.1;   // 家數差需達總家數 10% 才算背離，否則平盤日天天都在響
 let lastBreadth = null;
-function renderVerdict() {
-  const el = $("ms-verdict");
-  if (!el) return;
-  const b = lastBreadth, chg = lastLatest && lastLatest.taiex_chg;
-  if (!b || chg == null) { el.textContent = ""; el.className = "ms-verdict"; return; }
+// 回傳可重用的背離判定；市場摘要與今日重點只各自決定措辭，不各算一份門檻。
+function verdictOf(taiexChg, breadth) {
+  const b = breadth, chg = taiexChg;
+  if (!b || chg == null) return null;
   const up = b.up || 0, flat = b.flat || 0, down = b.down || 0;
   const tot = up + flat + down;
-  if (!tot) { el.textContent = ""; el.className = "ms-verdict"; return; }
+  if (!tot) return null;
   const gap = up - down;
   const wide = Math.abs(gap) >= VERDICT_GAP * tot;
   const idxUp = chg > 0, idxDown = chg < 0;
@@ -773,8 +772,28 @@ function renderVerdict() {
       ? `指數持平，家數${gap > 0 ? "偏多" : "偏空"} ${fmt(Math.abs(gap), 0)} 家`
       : "指數與家數皆無明顯方向";
   }
-  el.textContent = text;
-  el.className = "ms-verdict" + (diverge ? " alert" : "");
+  return { text, diverge, gap, tot, wide, up, down };
+}
+
+function renderVerdict() {
+  const el = $("ms-verdict"); if (!el) return;
+  const v = verdictOf(lastLatest && lastLatest.taiex_chg, lastBreadth);
+  el.textContent = v ? v.text : "";
+  el.className = "ms-verdict" + (v && v.diverge ? " alert" : "");
+}
+
+function renderTodayFocus() {
+  const el = $("today-focus"); if (!el) return;
+  const v = verdictOf(lastLatest && lastLatest.taiex_chg, lastBreadth);
+  if (!v || !v.diverge) { el.innerHTML = ""; return; }
+  const pct = Math.round(Math.abs(v.gap) / v.tot * 100);
+  const display = `${fmt(v.up, 0)} 漲 ／ ${fmt(v.down, 0)} 跌`;
+  const reason = `差距 ${pct}%，門檻 ${Math.round(VERDICT_GAP * 100)}%`;
+  el.innerHTML = `<div class="today-focus-head"><span class="today-focus-title">今日重點</span>` +
+    `<span class="today-focus-note">下方對應卡片有琥珀外框</span></div>` +
+    `<div class="today-focus-item"><span class="today-focus-label">指數 vs 漲跌家數</span>` +
+    `<strong class="today-focus-value">${display}</strong>` +
+    `<span class="today-focus-reason">${reason}</span></div>`;
 }
 
 // ===== 置頂 KPI 條：捲到頁面任何位置都還看得到主指標。=====
@@ -1043,6 +1062,7 @@ async function loadDashboard() {
   renderPulse(d.pulse || null);
   renderVerdict();               // 家數尚未載入時會自行留白，loadBreadth 完再補畫一次
   renderKpiSticky();              // 同樣家數尚未到齊時會自行留白，loadBreadth 完再補畫一次
+  renderTodayFocus();
   loadChipTrend();
   renderStale(d);
   renderFreshness(d);
@@ -1072,8 +1092,8 @@ async function loadBreadth() {
   const note = $("breadth-note");
   try {
     const d = await getJSON("/api/breadth");
-    if (d.up == null && d.down == null) { el.innerHTML = ""; if (note) note.textContent = ""; lastBreadth = null; renderVerdict(); renderKpiSticky(); return; }
-    lastBreadth = d; renderVerdict(); renderKpiSticky();
+    if (d.up == null && d.down == null) { el.innerHTML = ""; if (note) note.textContent = ""; lastBreadth = null; renderVerdict(); renderKpiSticky(); renderTodayFocus(); return; }
+    lastBreadth = d; renderVerdict(); renderKpiSticky(); renderTodayFocus();
     const up = d.up || 0, flat = d.flat || 0, down = d.down || 0, tot = up + flat + down || 1;
     const w = (n) => (n / tot * 100).toFixed(1) + "%";
     if (note) note.textContent = `（${d.date}）`;
@@ -1090,7 +1110,7 @@ async function loadBreadth() {
         <div class="seg flat" style="width:${w(flat)}" title="平盤 ${fmt(flat, 0)}"></div>
         <div class="seg down" style="width:${w(down)}" title="下跌 ${fmt(down, 0)}"></div>
       </div>`;
-  } catch (e) { el.innerHTML = ""; lastBreadth = null; renderVerdict(); renderKpiSticky(); }
+  } catch (e) { el.innerHTML = ""; lastBreadth = null; renderVerdict(); renderKpiSticky(); renderTodayFocus(); }
 }
 
 // 亞當杯柄型態選股：清單 + K 線疊「趨勢線(左緣→右緣)＋壓力線(右緣水平)」

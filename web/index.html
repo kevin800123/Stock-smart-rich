@@ -110,6 +110,7 @@
              手機實測會折成兩列、重複 6 項並佔首屏 11%，所以 app.js 只在 <=600px
              等 .overview-top 捲出 .content 後才顯示它。 -->
         <div id="kpi-sticky" class="kpi-sticky"></div>
+        <div id="today-focus" class="today-focus"></div>
         <!-- 三則新聞標題：每個市場一則。資料只來自 /api/news/headlines，那支**只讀
              已存在的快取**、不抓取也不打 Gemini（見 api/news.py::headlines_logic）——
              免費層一天只有 20 次，總覽不該為了一格順帶資訊就吃掉一次。
