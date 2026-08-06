@@ -19,7 +19,7 @@ from .db import (
     upsert_tx_history,
 )
 from . import analysis
-from .sources import fred, intl, taifex, tdcc, tpex, twse
+from .sources import fred, intl, nasdaq, taifex, tdcc, tpex, twse
 
 
 def _accumulate_custody(conn) -> str | None:
@@ -195,9 +195,16 @@ def _backfill_intl(conn, intl_tickers: dict, days: int = 10) -> list:
 
     只填 NULL 的用意：既有值是舊行為「抓取當下的最新值」產生的，語意與本函數的
     「場次收盤」不同；覆寫等於默默改寫歷史，寧可讓新舊並存且各自有明確出處。
+
+    intl_tickers 為空時直接回傳——production 目前一定會剩 gold/jpy/twd/btc 這幾檔
+    （sox/n225/kospi/vix 都各自被 Nasdaq／FRED／TradingView 頂替），但呼叫端傳一份
+    更窄的 ticker dict 並非不可能（測試就踩過一次）：cols 為空字串會讓下面的 SQL
+    變成 `SELECT date,  FROM ...`，語法錯誤。
     """
-    cutoff = (_date.today() - timedelta(days=days)).isoformat()
     keys = list(intl_tickers)
+    if not keys:
+        return []
+    cutoff = (_date.today() - timedelta(days=days)).isoformat()
     cols = ", ".join(keys)
     rows = conn.execute(
         f"SELECT date, {cols} FROM market_daily WHERE date >= ? ORDER BY date", (cutoff,),
@@ -223,12 +230,12 @@ def _backfill_intl(conn, intl_tickers: dict, days: int = 10) -> list:
     return filled
 
 
-# vix/n225 的**歷史**改走 FRED、kospi 沒有可靠的免費歷史源——呼叫端把 intl_tickers 傳給
-# _backfill_intl 前先排除這三個 key，其餘（sox/gold/jpy/btc/twd）仍走原本的 yfinance
-# 路徑不動，Yahoo 哪天解封就自己好。
+# vix/n225 的**歷史**改走 FRED、sox 改走 Nasdaq 公開 API、kospi 沒有可靠的免費歷史源
+# ——呼叫端把 intl_tickers 傳給 _backfill_intl 前先排除這四個 key，其餘（gold/jpy/btc/twd）
+# 仍走原本的 yfinance 路徑不動，Yahoo 哪天解封就自己好。
 # 注意這裡管的是**歷史**來源。「今天那一格」另由 _backfill_intl_tv 統一補（sox 也在內），
-# 所以 sox 同時吃 yfinance（歷史）與 TradingView（當日），兩者都只填 NULL，不會打架。
-INTL_NON_YFINANCE_KEYS = set(fred.FRED_SERIES) | {"kospi"}
+# 所以 sox 同時吃 Nasdaq（歷史）與 TradingView（當日），兩者都只填 NULL，不會打架。
+INTL_NON_YFINANCE_KEYS = set(fred.FRED_SERIES) | {"kospi", "sox"}
 
 
 def _backfill_intl_fred(conn, days: int = 10) -> list:
@@ -264,6 +271,31 @@ def _backfill_intl_fred(conn, days: int = 10) -> list:
                 patch[key + "_chg"] = got["chg_pct"]
         if patch:
             upsert_market_daily(conn, {"date": ds, **patch})
+            filled.append(ds)
+    return filled
+
+
+def _backfill_intl_nasdaq(conn, days: int = 10) -> list:
+    """sox（費半）走 Nasdaq 官方公開歷史 API（免金鑰、不受 Yahoo 那個 IP 封鎖影響，
+    見 sources/nasdaq.py 開頭說明）。洞掃描與「只填 NULL、絕不覆蓋」的邏輯跟
+    _backfill_intl/_backfill_intl_fred 一致，只是資料源換了。"""
+    cutoff = (_date.today() - timedelta(days=days)).isoformat()
+    rows = conn.execute(
+        "SELECT date, sox FROM market_daily WHERE date >= ? ORDER BY date", (cutoff,),
+    ).fetchall()
+    holes = [r for r in rows if r[1] is None]
+    if not holes:
+        return []
+    raw = nasdaq.fetch_sox_history(days=days)
+    if not raw:
+        return []
+    hist = intl.parse_history_closes(sorted(raw.items()))
+    filled = []
+    for r in holes:
+        ds = r[0]
+        got = intl.pick_close_for(hist, ds, same_day=False)
+        if got:
+            upsert_market_daily(conn, {"date": ds, "sox": got["value"], "sox_chg": got["chg_pct"]})
             filled.append(ds)
     return filled
 
@@ -611,6 +643,7 @@ def run_update(conn, intl_tickers: dict) -> dict:
         yf_tickers = {k: v for k, v in intl_tickers.items() if k not in INTL_NON_YFINANCE_KEYS}
         filled = list(_backfill_intl(conn, yf_tickers))
         filled += _backfill_intl_fred(conn)
+        filled += _backfill_intl_nasdaq(conn)
         filled += _backfill_intl_tv(conn)
         filled = sorted(set(filled))
         today_ds = D.isoformat() if D else None
