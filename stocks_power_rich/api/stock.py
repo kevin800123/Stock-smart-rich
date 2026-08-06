@@ -104,21 +104,37 @@ def index_kline(symbol: str = "taiex", interval: str = "1d"):
         except Exception:  # noqa: BLE001
             return {"candles": [], "dates": [], "volumes": [], "symbol": "tx"}
 
+    def _twse_rows():
+        """官方指數 OHLC，逐日快取（一天最多一次網路呼叫）。"""
+        c = conn()
+        key = f"idxohlc:{datetime.now().strftime('%Y%m%d')}"
+        rows = get_ai_cache(c, key)
+        if rows is None:
+            rows = twse.fetch_index_ohlc_history(12)
+            if rows:
+                set_ai_cache(c, key, rows)
+        return rows or []
+
     try:
         out = kline.fetch_index_kline(symbol, interval)
         if len(out.get("candles") or []) > 5:
+            # **主來源可用 ≠ 主來源是最新的。** yfinance 偶爾落後官方一天（實測
+            # 2026-08-06 08:17，^TWII 只到 08-04，TWSE 已有 08-05），而原本這裡
+            # 一旦拿到夠多根就直接 return、永不問官方——於是「大盤×籌碼對照」的
+            # 籌碼窗格有最新一天、K 線卻沒有，最想看的那天反而是空的。
+            # merge_tail 只補比主來源更新的日期，既有的一律不動。
+            if symbol == "taiex":
+                try:
+                    out = kline.merge_tail(out, _twse_rows(), interval)
+                    out["symbol"] = symbol
+                except Exception:  # noqa: BLE001 — 補不到就用主來源原樣，不要因此整支失敗
+                    pass
             return out
     except Exception:  # noqa: BLE001
         pass
     if symbol == "taiex":
         try:
-            c = conn()
-            key = f"idxohlc:{datetime.now().strftime('%Y%m%d')}"
-            rows = get_ai_cache(c, key)
-            if rows is None:
-                rows = twse.fetch_index_ohlc_history(12)
-                if rows:
-                    set_ai_cache(c, key, rows)
+            rows = _twse_rows()
             if rows:
                 res = kline.ohlc_candles(rows, interval)
                 res["symbol"] = "taiex"

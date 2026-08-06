@@ -104,6 +104,38 @@ def fetch_index_kline(symbol: str, interval: str = "1d") -> dict:
     return {"symbol": symbol, **_df_to_candles(df, interval)}
 
 
+def merge_tail(base: dict, rows: list, interval: str = "1d") -> dict:
+    """把 rows 裡「比 base 更新」的日期補到 base 的尾巴，回新的 K 線輸出。
+
+    **備援不能是全有全無的。** 原本 `/api/index/kline` 只在主來源（yfinance）回不到
+    5 根時才改用官方 TWSE，於是主來源只是「落後一天」時完全沒有補救：實測
+    2026-08-06 08:17，yfinance `^TWII` 只到 08-04，而 TWSE MI_5MINS_HIST 已有 08-05
+    （收盤 44611.6，與 `market_daily` 一致）。結果就是「大盤×籌碼對照」的籌碼窗格
+    有 08-05、K 線卻沒有——最新一天看不到指數，而那通常正是使用者最想看的一天。
+
+    只補**嚴格比 base 最後一天更新**的列，所以既有的日期不會被覆蓋也不會重複；
+    缺收盤價的列直接跳過（補不出 K 棒，半根比沒有更誤導）。
+    沒有東西可補時原樣回傳同一個物件，不做多餘的重算與重跑波浪。
+    """
+    dates, candles = base.get("dates") or [], base.get("candles") or []
+    if not dates or not rows:
+        return base
+    last = dates[-1]
+    extra = sorted((r for r in rows
+                    if r.get("date") and r["date"] > last and r.get("close") is not None),
+                   key=lambda r: r["date"])
+    if not extra:
+        return base
+    vols = base.get("volumes") or []
+    merged = [{"date": d, "open": c[0], "close": c[1], "low": c[2], "high": c[3],
+               "volume": vols[i] if i < len(vols) else 0}
+              for i, (d, c) in enumerate(zip(dates, candles))]
+    merged += [{"date": r["date"], "open": r.get("open"), "high": r.get("high"),
+                "low": r.get("low"), "close": r["close"], "volume": r.get("volume") or 0}
+               for r in extra]
+    return ohlc_candles(merged, interval)
+
+
 def ohlc_candles(rows: list, interval: str = "1d") -> dict:
     """通用 OHLC 組 K 線：rows 含 date/open/high/low/close(/volume)；週/月以 pandas 聚合。"""
     import pandas as pd

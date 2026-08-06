@@ -132,3 +132,43 @@ def test_sanitize_drops_a_partially_nan_row():
     d, c, _ = _sanitize_series(
         ["d1", "d2"], [[10.0, 10.5, 9.8, 10.6], [10.0, nan, 9.9, 10.2]], [1, 2])
     assert d == ["d1"] and len(c) == 1
+
+
+def test_merge_tail_appends_newer_official_rows_to_a_lagging_primary():
+    """主來源落後官方時要補尾巴，不能只在它「完全失敗」時才用備援。
+
+    實測 2026-08-06 08:17：yfinance ^TWII 只到 08-04，而 TWSE MI_5MINS_HIST 已有
+    08-05（收盤 44611.6，與 market_daily 一致）。原本的備援是**全有全無**——主來源
+    回夠多根就直接用、永遠不問官方，於是「大盤×籌碼對照」的籌碼窗格有 08-05、
+    K 線卻沒有，最新一天看不到指數。
+    """
+    from stocks_power_rich.sources import kline
+    base = {"dates": ["2026-08-03", "2026-08-04"],
+            "candles": [[100.0, 110.0, 99.0, 111.0], [110.0, 120.0, 109.0, 121.0]],
+            "volumes": [10.0, 20.0], "waves": {}}
+    rows = [
+        {"date": "2026-08-04", "open": 110.0, "high": 121.0, "low": 109.0, "close": 120.0},
+        {"date": "2026-08-05", "open": 120.0, "high": 131.0, "low": 119.0, "close": 130.0},
+    ]
+    out = kline.merge_tail(base, rows, "1d")
+    assert out["dates"] == ["2026-08-03", "2026-08-04", "2026-08-05"]
+    assert out["candles"][-1] == [120.0, 130.0, 119.0, 131.0]   # [open, close, low, high]
+    # 既有那天不可被重複附加（rows 也含 08-04）
+    assert out["dates"].count("2026-08-04") == 1
+
+
+def test_merge_tail_is_a_noop_when_primary_is_already_current():
+    from stocks_power_rich.sources import kline
+    base = {"dates": ["2026-08-04"], "candles": [[1.0, 2.0, 0.5, 2.5]], "volumes": [1.0], "waves": {}}
+    # 官方沒有更新的日期 → 原樣返回，不做多餘的重算
+    assert kline.merge_tail(base, [{"date": "2026-08-04", "open": 1.0, "high": 2.5,
+                                    "low": 0.5, "close": 2.0}], "1d") is base
+    assert kline.merge_tail(base, [], "1d") is base
+    assert kline.merge_tail({"dates": [], "candles": []}, [{"date": "2026-08-05", "close": 1.0}], "1d")         == {"dates": [], "candles": []}
+
+
+def test_merge_tail_skips_rows_without_a_close():
+    """缺收盤價的列補不出 K 棒，寧可不補——半根 K 線比沒有更誤導。"""
+    from stocks_power_rich.sources import kline
+    base = {"dates": ["2026-08-04"], "candles": [[1.0, 2.0, 0.5, 2.5]], "volumes": [1.0], "waves": {}}
+    assert kline.merge_tail(base, [{"date": "2026-08-05", "close": None}], "1d") is base
