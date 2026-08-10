@@ -9,6 +9,8 @@ from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
 def test_run_update_collects_and_tolerates_failure(tmp_path, monkeypatch):
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
+    monkeypatch.setattr(updater.stock_flow, "update_day", lambda conn, D: {
+        "TWSE": {"quotes": {}, "margin": {}}, "TPEx": {"quotes": {}, "margin": {}}})
     monkeypatch.setattr(updater.twse, "fetch_taiex", lambda: {"taiex": 23000.0, "taiex_chg": 50.0, "date": "2026-06-23"})
     monkeypatch.setattr(updater.twse, "fetch_institutional", lambda date=None: {"inst_foreign": 1.0, "inst_trust": 2.0, "inst_dealer": 3.0})
     monkeypatch.setattr(updater.twse, "fetch_margin", lambda date=None: {"margin_balance": 1000.0, "margin_chg": 10.0, "short_balance": 200.0, "short_chg": 5.0})
@@ -581,6 +583,8 @@ def test_run_update_writes_session_aligned_intl_not_live_snapshot(tmp_path, monk
     """
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
+    monkeypatch.setattr(updater.stock_flow, "update_day", lambda conn, D: {
+        "TWSE": {"quotes": {}, "margin": {}}, "TPEx": {"quotes": {}, "margin": {}}})
     D = date.today()
     prev_session2 = (D - timedelta(days=2)).isoformat()
     prev_session = (D - timedelta(days=1)).isoformat()

@@ -533,6 +533,34 @@ def parse_stock_turnover(payload: dict) -> dict:
     return out
 
 
+def parse_stock_daily(payload: dict) -> dict:
+    """Parse one MI_INDEX payload into OHLC plus normalized volume and amount."""
+    ohlc = parse_stock_ohlc(payload)
+    turnover = parse_stock_turnover(payload)
+    return {
+        code: {
+            **row,
+            "volume_lots": turnover.get(code, {}).get("vol"),
+            "amount_twd": turnover.get(code, {}).get("amount"),
+        }
+        for code, row in ohlc.items()
+    }
+
+
+def fetch_stock_daily(date: datetime.date | None = None) -> dict:
+    """Fetch MI_INDEX ALLBUT0999 once and share it across price/volume parsing."""
+    day = date or datetime.date.today()
+    try:
+        j = httpx.get(MI_INDEX_RWD,
+                      params={"date": day.strftime("%Y%m%d"), "type": "ALLBUT0999", "response": "json"},
+                      timeout=25, follow_redirects=True).json()
+        if j.get("stat") == "OK" and j.get("tables"):
+            return parse_stock_daily(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
 def fetch_stock_turnover(date: datetime.date | None = None) -> dict:
     """直連 MI_INDEX(ALLBUT0999) 取指定日全上市個股成交量額。當日盤後才發布，查無回空。"""
     day = date or datetime.date.today()

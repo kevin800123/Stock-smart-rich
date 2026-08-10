@@ -64,6 +64,7 @@
         <div class="nav-group-title">進階</div>
         <a class="nav" data-view="weekly" data-short="跨週AI"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
         <a class="nav" data-view="traders" data-short="操盤手"><span class="ico">🧭</span><span class="lbl">操盤手</span></a>
+        <a class="nav" data-view="inst-research" data-short="法人研究"><span class="ico">🧪</span><span class="lbl">法人研究</span></a>
         <a class="nav" data-view="trades" data-short="帳本"><span class="ico">📒</span><span class="lbl">交易帳本</span></a>
       </div>
       <div class="nav-group nav-group-sys">
@@ -339,6 +340,93 @@
           ②除權息隔日的跳空會讓 ATR 暫時偏大（停損偏寬），屬已知失真；
           ③停損是紀律不是預測——碰到就出場，讓「小賠大賺」的期望值替你工作。
         </div>
+      </section>
+
+      <!-- ===== 法人研究：只做全市場歷史驗證，不產生選股或訊號 ===== -->
+      <section id="view-inst-research" class="view inst-research-view">
+        <header id="ir-status-band" class="ir-status-band" data-state="initial">
+          <div class="ir-status-copy">
+            <div class="ir-title-row">
+              <h2>法人資料研究室</h2>
+              <span class="ir-mode-tag">研究工具・非選股</span>
+            </div>
+            <p id="ir-verdict" class="ir-verdict">先確認官方資料覆蓋，再決定是否產生全市場研究報告。</p>
+            <div class="ir-meta">
+              <span>資料區間 <b id="ir-date-range">載入中…</b></span>
+              <span>完整度 <b id="ir-completeness">—</b></span>
+              <span id="ir-report-time">尚未產生報告</span>
+            </div>
+          </div>
+          <ol id="ir-readiness" class="ir-readiness" aria-label="研究準備進度">
+            <li data-step="coverage"><span>資料覆蓋</span><small>確認兩市場各來源</small></li>
+            <li data-step="sample"><span>樣本充足</span><small>至少 30 筆命中觀測</small></li>
+            <li data-step="edge"><span>歷史邊際</span><small>比較 Ret10／Ret20 alpha</small></li>
+          </ol>
+        </header>
+
+        <div id="ir-stale" class="ir-stale" role="status" hidden>資料已更新，請重新計算研究報告。</div>
+        <div id="ir-candidate-warning" class="ir-candidate-warning" role="note" hidden></div>
+
+        <div class="ir-workspace">
+          <aside class="ir-coverage-panel" aria-labelledby="ir-coverage-title">
+            <div class="ir-section-head">
+              <div>
+                <h3 id="ir-coverage-title">資料覆蓋</h3>
+                <p>上市與上櫃分開檢查；任一來源缺漏都會明確列出。</p>
+              </div>
+              <span id="ir-call-estimate" class="ir-estimate">估算中…</span>
+            </div>
+            <div id="ir-coverage" class="ir-coverage">正在讀取覆蓋紀錄…</div>
+            <div class="ir-actions">
+              <button id="ir-backfill" class="file-label ir-primary" type="button">補下一批（最多 3 個交易日）</button>
+              <button id="ir-retry" class="ctf" type="button" hidden>重試本批</button>
+            </div>
+            <div id="ir-backfill-live" class="ir-live muted" aria-live="polite"></div>
+            <div id="ir-errors" class="ir-errors" aria-live="polite"></div>
+          </aside>
+
+          <article class="ir-evidence" aria-labelledby="ir-evidence-title">
+            <div class="ir-evidence-head">
+              <div>
+                <h3 id="ir-evidence-title">全市場歷史證據</h3>
+                <p>條件固定為法人 1／3／5／10／20／60 日累計皆為正；報酬從次一交易日開盤起算。</p>
+              </div>
+              <button id="ir-run" class="file-label ir-primary" type="button">產生全市場研究報告</button>
+            </div>
+
+            <div id="ir-empty" class="ir-empty-state">
+              <strong>尚未計算研究報告</strong>
+              <span>回補資料不會自動觸發研究；由你決定何時用目前版本重新計算。</span>
+            </div>
+
+            <div id="ir-report" hidden>
+              <div class="ir-segments" role="group" aria-label="研究市場切換">
+                <button class="ctf ir-segment active" type="button" data-segment="combined">綜合</button>
+                <button class="ctf ir-segment" type="button" data-segment="twse">上市</button>
+                <button class="ctf ir-segment" type="button" data-segment="tpex">上櫃</button>
+              </div>
+              <div id="ir-core" class="ir-core" aria-label="核心研究證據"></div>
+
+              <section class="ir-chart-section">
+                <div class="ir-chart-head"><h4>每日命中寬度</h4><span>0–2 檔為過稀；高於 100 檔或母體 10% 為過寬</span></div>
+                <div id="ir-breadth-chart" class="ir-chart" role="img" aria-label="每日命中檔數時間圖"></div>
+              </section>
+
+              <section class="ir-chart-section">
+                <div class="ir-chart-head"><h4>法人條件相對全市場的 alpha</h4><span>區間為日期級 Q1–Q3，節點為中位數</span></div>
+                <div id="ir-alpha-chart" class="ir-chart ir-alpha-chart" role="img" aria-label="Ret5 Ret10 Ret20 alpha 四分位區間圖"></div>
+              </section>
+
+              <details class="ir-details">
+                <summary>完整統計</summary>
+                <div id="ir-stats" class="table-wrap"></div>
+              </details>
+            </div>
+            <div id="ir-research-live" class="ir-live muted" aria-live="polite"></div>
+          </article>
+        </div>
+
+        <p id="ir-disclaimer" class="ir-disclaimer">本頁為歷史資料研究工具，不構成投資建議、推薦或買賣訊號。</p>
       </section>
 
       <!-- ===== 交易帳本 ===== -->

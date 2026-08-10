@@ -159,6 +159,35 @@ def parse_otc_turnover(payload: dict) -> dict:
     return out
 
 
+def parse_otc_daily(payload: dict) -> dict:
+    """Parse one dailyQuotes payload into OHLC plus normalized volume and amount."""
+    ohlc = parse_otc_ohlc(payload)
+    turnover = parse_otc_turnover(payload)
+    return {
+        code: {
+            **row,
+            "volume_lots": turnover.get(code, {}).get("vol"),
+            "amount_twd": turnover.get(code, {}).get("amount"),
+        }
+        for code, row in ohlc.items()
+    }
+
+
+def fetch_otc_daily(date: datetime.date | None = None) -> dict:
+    """Fetch dailyQuotes once and share it across price/volume parsing."""
+    day = date or datetime.date.today()
+    ds = f"{day.year}/{day.month:02d}/{day.day:02d}"
+    try:
+        j = httpx.get(DAILY_QUOTES_URL, params={"date": ds, "response": "json"},
+                      timeout=25, follow_redirects=True, verify=False,
+                      headers={"User-Agent": "Mozilla/5.0"}).json()
+        if j.get("stat") == "ok" and j.get("tables"):
+            return parse_otc_daily(j)
+    except Exception:  # noqa: BLE001
+        pass
+    return {}
+
+
 def fetch_otc_turnover(date: datetime.date | None = None) -> dict:
     """直連櫃買 dailyQuotes 取指定日全上櫃個股成交量額。當日盤後才發布，查無回空。
 
@@ -232,9 +261,9 @@ def parse_otc_margin(payload: dict) -> dict:
             code = str(row[ic]).strip()
             if not code:
                 continue
-            if im is not None and (v := _f(row[im])):
+            if im is not None and (v := _f(row[im])) is not None:
                 out["margin"][code] = v
-            if isr is not None and (v := _f(row[isr])):
+            if isr is not None and (v := _f(row[isr])) is not None:
                 out["short"][code] = v
     for row in t.get("summary") or []:
         label = "".join(str(x) for x in row[:2])

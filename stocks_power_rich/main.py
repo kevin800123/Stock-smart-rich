@@ -44,6 +44,7 @@ from .api.public import router as public_router
 from .api.admin import router as admin_router
 from .api.line import router as line_router
 from .api.news import router as news_router, news_logic
+from .api.stock_flow import router as stock_flow_router
 
 # 免帳密的前端靜態資產（精確比對）：/public/overview 與站內共用同一套前端，需能載入這些檔。
 # 僅限程式碼與樣式，不含 index.html（站內入口維持鎖住）。
@@ -98,6 +99,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     app.include_router(admin_router)
     app.include_router(line_router)
     app.include_router(news_router)
+    app.include_router(stock_flow_router)
 
     # 註冊排程 job
     def scheduled_job():

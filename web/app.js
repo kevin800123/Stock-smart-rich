@@ -43,6 +43,8 @@ let sectorChart = null, heatmapMarket = "tse", heatmapTop = 5, lastHeatmapData =
 // 的主因）。false＝只算資料、不畫 treemap，省下 setOption／fitHeatmapFonts 的成本。
 let hmDetailExpanded = false;
 let cupChart = null, cupMatches = [], cupLoaded = false;
+let instBreadthChart = null, instAlphaChart = null;
+let instCoverage = null, instReport = null, instSegment = "combined", instResearchLoading = false;
 // 進頁才載入的旗標（比照 cupLoaded）。**這兩支是開頁流量的大頭**：實測總覽開頁抓
 // 2,639 KB，其中 analysis/weekly 就佔 2,262 KB、analysis/daily 209 KB＝**94% 是使用者
 // 當下沒在看的頁面**（跨週還收在「進階」群組裡，可能整天不會打開）。它們只寫
@@ -245,7 +247,247 @@ function showView(name) {
   if (name === "watch") loadWatchlist();
   if (name === "trades") loadTrades();
   if (name === "traders") loadTraders();
+  if (name === "inst-research") {
+    loadInstResearchCoverage();
+    instBreadthChart && instBreadthChart.resize();
+    instAlphaChart && instAlphaChart.resize();
+  }
   if (name === "settings") loadSettings();
+}
+
+// ========== 法人資料研究室：固定規則、手動回補、手動研究 ==========
+const IR_SOURCE_LABELS = { quotes: "行情與價量", institutional: "三大法人", margin: "融資券" };
+const IR_VERDICTS = {
+  insufficient_data: "資料尚不足", too_broad: "訊號過寬", too_sparse: "訊號過稀",
+  no_historical_edge: "未見歷史優勢", candidate_for_prospective: "僅可前瞻觀察",
+};
+const IR_ANIMATION_MS = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 0 : 260;
+
+function irSetBusy(kind, busy, message = "") {
+  const button = kind === "backfill" ? $("ir-backfill") : $("ir-run");
+  const live = kind === "backfill" ? $("ir-backfill-live") : $("ir-research-live");
+  if (button) {
+    button.disabled = busy;
+    button.textContent = busy
+      ? (kind === "backfill" ? "正在補下一批…" : "正在計算全市場…")
+      : (kind === "backfill" ? "補下一批（最多 3 個交易日）" : (instReport ? "重新產生全市場研究報告" : "產生全市場研究報告"));
+  }
+  if (live) live.textContent = message;
+}
+
+function irCoverageReady(data) {
+  if (!data || !data.markets) return false;
+  return ["TWSE", "TPEx"].every((market) =>
+    Object.values(data.markets[market]?.sources || {}).every((source) => Number(source.complete_days || 0) >= 120));
+}
+
+function irSetReadiness(verdictCode = null) {
+  const readyCoverage = irCoverageReady(instCoverage);
+  const steps = {
+    coverage: { cls: readyCoverage ? "ready" : "blocked",
+      copy: readyCoverage ? "兩市場已具研究深度" : "仍需補齊兩市場來源" },
+    sample: { cls: !instReport ? "" : verdictCode === "insufficient_data" ? "blocked" : "ready",
+      copy: !instReport ? "等待研究報告" : verdictCode === "insufficient_data" ? "日期或命中觀測不足" : "研究下限已滿足" },
+    edge: { cls: verdictCode === "candidate_for_prospective" ? "ready" : verdictCode && verdictCode !== "insufficient_data" ? "blocked" : "",
+      copy: !instReport ? "等待研究報告" : verdictCode === "candidate_for_prospective" ? "只可進入前瞻觀察" : verdictCode === "insufficient_data" ? "樣本不足，尚不判定" : "未形成可前瞻的證據" },
+  };
+  Object.entries(steps).forEach(([name, state]) => {
+    const el = document.querySelector(`#ir-readiness [data-step="${name}"]`);
+    if (!el) return;
+    el.classList.remove("ready", "blocked");
+    if (state.cls) el.classList.add(state.cls);
+    const small = el.querySelector("small"); if (small) small.textContent = state.copy;
+  });
+}
+
+function irSetVerdict(verdict = null) {
+  const band = $("ir-status-band"), text = $("ir-verdict"), warning = $("ir-candidate-warning");
+  const code = verdict?.code || "initial";
+  if (band) band.dataset.state = code;
+  if (text) text.textContent = verdict
+    ? `${IR_VERDICTS[code] || verdict.label || "研究狀態"}：${verdict.message || ""}`
+    : "先確認官方資料覆蓋，再決定是否產生全市場研究報告。";
+  if (warning) {
+    warning.hidden = code !== "candidate_for_prospective";
+    warning.textContent = code === "candidate_for_prospective"
+      ? (instReport?.candidate_warning || verdict.message || "") : "";
+  }
+  irSetReadiness(verdict?.code || null);
+}
+
+function irRenderCoverage(data) {
+  const labels = { TWSE: "上市", TPEx: "上櫃" };
+  const blocks = ["TWSE", "TPEx"].map((market) => {
+    const sources = data.markets?.[market]?.sources || {};
+    const values = Object.values(sources);
+    const covered = values.length ? Math.min(...values.map((source) => Number(source.complete_days || 0))) : 0;
+    const rows = Object.entries(IR_SOURCE_LABELS).map(([sourceKey, sourceLabel]) => {
+      const source = sources[sourceKey] || {};
+      const failed = source.failed || [];
+      const latestFailure = failed.length ? failed[failed.length - 1] : null;
+      return `<div class="ir-source">
+        <div class="ir-source-label"><span>${sourceLabel}</span><span>已覆蓋 ${fmt(source.complete_days || 0, 0)} 個交易日</span></div>
+        <progress max="${Math.max(1, Number(source.expected_days || data.estimated_trading_days || 1))}" value="${Number(source.complete_days || 0)}" aria-label="${labels[market]}${sourceLabel}已覆蓋 ${Number(source.complete_days || 0)} 個交易日"></progress>
+        ${latestFailure ? `<div class="ir-source-failure">${esc(latestFailure.date)}：${esc(latestFailure.error || "來源未回傳")}</div>` : ""}
+      </div>`;
+    }).join("");
+    return `<section class="ir-market"><div class="ir-market-head"><strong>${labels[market]}</strong><span>三項共同完整 ${fmt(covered, 0)} 日</span></div>${rows}</section>`;
+  }).join("");
+  $("ir-coverage").innerHTML = blocks;
+  const all = ["TWSE", "TPEx"].flatMap((market) => Object.values(data.markets?.[market]?.sources || {}));
+  const completeness = all.length ? Math.min(...all.map((source) => Number(source.percent || 0))) : 0;
+  $("ir-completeness").textContent = `${fmt(completeness, 1)}%`;
+  $("ir-date-range").textContent = `${data.calendar_start || "—"}～${data.calendar_end || "—"}`;
+  $("ir-call-estimate").textContent = `估計還需約 ${fmt(data.estimated_calls_remaining || 0, 0)} 次`;
+  irSetReadiness(instReport?.verdict?.code || null);
+}
+
+async function loadInstResearchCoverage() {
+  if (instResearchLoading) return;
+  instResearchLoading = true;
+  $("ir-backfill-live").textContent = "正在讀取兩市場覆蓋紀錄…";
+  try {
+    const data = await getJSON("/api/stock-flow/coverage?days=220");
+    const oldVersion = instCoverage?.data_version;
+    instCoverage = data;
+    irRenderCoverage(data);
+    $("ir-disclaimer").textContent = data.disclaimer || $("ir-disclaimer").textContent;
+    const stale = !!instReport && instReport.data_version !== data.data_version;
+    $("ir-stale").hidden = !stale;
+    if (stale) $("ir-run").textContent = "重新產生全市場研究報告";
+    $("ir-backfill-live").textContent = oldVersion && oldVersion !== data.data_version
+      ? "覆蓋紀錄已更新。" : "覆蓋紀錄已載入。";
+    irSetVerdict(instReport?.verdict || null);
+  } catch (e) {
+    $("ir-coverage").innerHTML = `<div class="ir-error-row">覆蓋紀錄載入失敗：${esc(e.message)}。請稍後重試。</div>`;
+    $("ir-backfill-live").textContent = "無法讀取覆蓋紀錄。";
+  } finally { instResearchLoading = false; }
+}
+
+async function runInstBackfill() {
+  irSetBusy("backfill", true, "正在向官方來源補下一批；上市與上櫃會分開記錄。請勿關閉頁面。");
+  $("ir-errors").innerHTML = ""; $("ir-retry").hidden = true;
+  try {
+    const data = await getJSON("/api/stock-flow/backfill?days=220&max_fetch=3");
+    if (data.busy) { irSetBusy("backfill", false, data.note || "系統忙碌，請稍後再試。"); return; }
+    const errors = data.errors || [];
+    if (errors.length) {
+      $("ir-errors").innerHTML = errors.map((item) => `<div class="ir-error-row">${esc(item.date)}・${esc(item.market)}・${esc(IR_SOURCE_LABELS[item.source] || item.source)}：${esc(item.error || "來源未回傳")}</div>`).join("");
+      $("ir-retry").hidden = false;
+    }
+    irSetBusy("backfill", false, `本批處理 ${fmt((data.filled_dates || []).length, 0)} 個交易日；估計還需約 ${fmt(data.estimated_calls_remaining || 0, 0)} 次。${errors.length ? "部分來源失敗，可重試本批。" : ""}`);
+    await loadInstResearchCoverage();
+  } catch (e) {
+    $("ir-errors").innerHTML = `<div class="ir-error-row">回補失敗：${esc(e.message)}。請確認連線後重試。</div>`;
+    $("ir-retry").hidden = false;
+    irSetBusy("backfill", false, "本批未完成。資料未被視為完整。" );
+  }
+}
+
+function irCoreEvidence(result) {
+  const items = [
+    ["有效日期", `${fmt(result.valid_dates, 0)} 日`],
+    ["成熟 Ret20 日期", `${fmt(result.mature_ret20_dates, 0)} 日`],
+    ["日期×標的命中觀測", fmt(result.hit_observations, 0)],
+    ["每日命中中位數", `${fmt(result.daily_hit_median, 1)} 檔`],
+  ];
+  $("ir-core").innerHTML = items.map(([label, value]) => `<div class="ir-core-item"><span>${label}</span><b>${value}</b></div>`).join("");
+}
+
+function irRenderBreadth(result) {
+  const el = $("ir-breadth-chart");
+  if (!instBreadthChart) instBreadthChart = initChart(el);
+  const rows = result.breadth || [];
+  instBreadthChart.setOption({
+    animationDuration: IR_ANIMATION_MS,
+    tooltip: financeTooltip({ formatter: (params) => {
+      const p = params?.[0], row = rows[p?.dataIndex];
+      return row ? `<b>${esc(row.date)}</b><br/>命中 ${fmt(row.hits, 0)} 檔<br/>母體 ${fmt(row.universe, 0)} 檔<br/>占比 ${fmt(row.hit_pct, 2)}%` : "";
+    }}),
+    grid: { left: 48, right: 20, top: 18, bottom: rows.length > 55 ? 54 : 34 },
+    xAxis: { type: "category", data: rows.map((row) => row.date), axisLabel: { hideOverlap: true } },
+    yAxis: { type: "value", name: "檔數", min: 0 },
+    dataZoom: rows.length > 55 ? [{ type: "inside", start: Math.max(0, 100 - 55 / rows.length * 100), end: 100 },
+      { type: "slider", height: 12, bottom: 8, showDetail: false, borderColor: "transparent", fillerColor: withAlpha(C.info, .18) }] : [],
+    series: [{ type: "bar", name: "命中檔數", data: rows.map((row) => row.hits), barMaxWidth: 12,
+      itemStyle: { color: withAlpha(C.info, .72), borderRadius: [3, 3, 0, 0] },
+      markArea: { silent: true, label: { color: C.muted, fontSize: 10 }, data: [
+        [{ name: "過稀區", yAxis: 0, itemStyle: { color: withAlpha(C.muted, .08) } }, { yAxis: 2 }],
+        [{ name: "過寬區", yAxis: 100, itemStyle: { color: withAlpha(C.accent, .09) } }, { yAxis: Math.max(101, ...rows.map((row) => row.hits)) }],
+      ] } }],
+  }, true);
+  instBreadthChart.resize();
+}
+
+function irRenderAlpha(result) {
+  const el = $("ir-alpha-chart");
+  if (!instAlphaChart) instAlphaChart = initChart(el);
+  const horizons = ["ret5", "ret10", "ret20"];
+  const stats = horizons.map((key) => result.alpha?.[key] || {});
+  const finite = stats.flatMap((s) => [s.q1, s.q3, s.median]).filter((value) => Number.isFinite(value));
+  const extent = Math.max(1, ...finite.map((value) => Math.abs(value))) * 1.25;
+  instAlphaChart.setOption({
+    animationDuration: IR_ANIMATION_MS,
+    tooltip: financeTooltip({ trigger: "item", formatter: (p) => {
+      const s = stats[p.dataIndex] || {};
+      return `<b>${horizons[p.dataIndex]?.toUpperCase()}</b><br/>Q1 ${fmt(s.q1, 3)}%　中位 ${fmt(s.median, 3)}%　Q3 ${fmt(s.q3, 3)}%<br/>正 alpha 日期 ${fmt(s.positive_date_pct, 1)}%（${fmt(s.positive_dates, 0)}/${fmt(s.n, 0)}）`;
+    }}),
+    grid: { left: 152, right: 28, top: 20, bottom: 36 },
+    xAxis: { type: "value", min: -extent, max: extent, axisLabel: { formatter: (v) => `${fmt(v, 2)}%` },
+      splitLine: { lineStyle: { color: C.gridline, type: "dashed" } } },
+    yAxis: { type: "category", data: horizons.map((key, i) => `${key.toUpperCase()}｜正 alpha ${fmt(stats[i].positive_date_pct, 1)}%`) },
+    series: [{ type: "custom", data: stats.map((s, i) => [i, s.q1, s.q3, s.median]),
+      renderItem: (params, api) => {
+        const idx = api.value(0), q1 = api.value(1), q3 = api.value(2), med = api.value(3);
+        if (![q1, q3, med].every(Number.isFinite)) return null;
+        const y = api.coord([0, idx])[1], x1 = api.coord([q1, idx])[0], x3 = api.coord([q3, idx])[0], xm = api.coord([med, idx])[0];
+        return { type: "group", children: [
+          { type: "line", shape: { x1, y1: y, x2: x3, y2: y }, style: { stroke: C.chartTrust, lineWidth: 9, lineCap: "round", opacity: .7 } },
+          { type: "circle", shape: { cx: xm, cy: y, r: 6 }, style: { fill: C.info, stroke: C.tooltip, lineWidth: 2 } },
+        ] };
+      }, encode: { x: [1, 2, 3], y: 0 },
+      markLine: { silent: true, symbol: "none", data: [{ xAxis: 0 }], lineStyle: { color: C.borderStrong, type: "solid" }, label: { show: false } } }],
+  }, true);
+  instAlphaChart.resize();
+}
+
+function irRenderStats(result) {
+  const rows = ["ret5", "ret10", "ret20"].map((key) => {
+    const s = result.alpha?.[key] || {};
+    return `<tr><td>${key.toUpperCase()}</td><td class="num">${fmt(s.mean, 4)}%</td><td class="num">${fmt(s.median, 4)}%</td><td class="num">${fmt(s.q1, 4)}%</td><td class="num">${fmt(s.q3, 4)}%</td><td class="num">${fmt(s.positive_date_pct, 1)}%</td><td class="num">${fmt(s.n, 0)}</td></tr>`;
+  }).join("");
+  $("ir-stats").innerHTML = `<table><thead><tr><th>期間</th><th>平均 alpha</th><th>中位數</th><th>Q1</th><th>Q3</th><th>正 alpha 日期</th><th>日期樣本</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderInstResearchSegment() {
+  if (!instReport) return;
+  const result = instReport.results?.[instSegment];
+  if (!result) return;
+  document.querySelectorAll(".ir-segment").forEach((button) => button.classList.toggle("active", button.dataset.segment === instSegment));
+  irCoreEvidence(result);
+  irRenderStats(result);
+  requestAnimationFrame(() => { irRenderBreadth(result); irRenderAlpha(result); });
+}
+
+async function runInstResearch() {
+  irSetBusy("research", true, "正在依固定規則計算日期級命中、全母體報酬與 alpha…");
+  try {
+    const response = await fetch(apiUrl("/api/stock-flow/research"), { method: "POST" });
+    if (!response.ok) throw new Error(`研究 API ${response.status}`);
+    const data = await response.json();
+    if (data.busy) { irSetBusy("research", false, data.note || "系統忙碌，請稍後再試。"); return; }
+    instReport = data;
+    $("ir-empty").hidden = true;
+    $("ir-report").hidden = false; // 必須先解除 hidden，ECharts 才能取得真實尺寸
+    $("ir-stale").hidden = !instCoverage || data.data_version === instCoverage.data_version;
+    $("ir-report-time").textContent = `報告 ${new Date(data.generated_at).toLocaleString("zh-TW", { hour12: false })}`;
+    $("ir-disclaimer").textContent = data.disclaimer || $("ir-disclaimer").textContent;
+    irSetVerdict(data.verdict);
+    renderInstResearchSegment();
+    irSetBusy("research", false, "研究報告已完成；資料更新後不會自動重算。" );
+  } catch (e) {
+    irSetBusy("research", false, `研究計算失敗：${e.message}。請稍後重試。`);
+  }
 }
 
 // ========== 交易帳本（#6）：實單/模擬單記錄與績效統計 ==========
@@ -2534,6 +2776,13 @@ $("hm-detail-toggle").addEventListener("click", () => {
   }
 });
 $("btn-cup-refresh").addEventListener("click", loadCupHandle);
+$("ir-backfill").addEventListener("click", runInstBackfill);
+$("ir-retry").addEventListener("click", runInstBackfill);
+$("ir-run").addEventListener("click", runInstResearch);
+document.querySelectorAll(".ir-segment").forEach((button) => button.addEventListener("click", () => {
+  instSegment = button.dataset.segment;
+  renderInstResearchSegment();
+}));
 document.querySelectorAll(".cup-r-tab").forEach((b) => b.addEventListener("click", () => {
   const r = Number(b.dataset.r);
   if (r === cupMinR) return;
@@ -2820,7 +3069,8 @@ document.querySelectorAll(".rku").forEach((b) => b.addEventListener("click", () 
 // 容器尺寸，見上面各載入函式的註解）。手機上這條路徑不是罕見情境——轉個方向就會走到，
 // 而 375↔812 的寬度差足以讓漏網的圖整張畫錯位。pulseChart／stockCustodyChart 原本就漏了。
 window.addEventListener("resize", () => {
-  [stockChart, chipChart, stockChipsChart, stockCustodyChart, pulseChart, cupChart, distChart]
+  [stockChart, chipChart, stockChipsChart, stockCustodyChart, pulseChart, cupChart, distChart,
+    instBreadthChart, instAlphaChart]
     .forEach((c) => c && c.resize());
   if (sectorChart) { sectorChart.resize(); if (lastHeatmapData) fitHeatmapFonts(lastHeatmapData); }
 });

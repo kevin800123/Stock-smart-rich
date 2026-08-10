@@ -80,6 +80,18 @@ def test_parse_otc_turnover_positional():
     assert out == {"6488": {"vol": 11378, "amount": 14313524000.0}}
 
 
+def test_parse_otc_daily_reuses_one_payload_for_price_and_volume():
+    payload = {"tables": [{"data": [[
+        "6488", "環球晶", "1240.00", "+35.00", "1230.00", "1305.00", "1205.00", "1258.00",
+        "11,378,000", "14,313,524,000", "9,876", "1240", "2", "1245", "3", "43,000,000",
+        "1240", "1364", "1116",
+    ]]}]}
+    assert tpex.parse_otc_daily(payload) == {
+        "6488": {"open": 1230.0, "high": 1305.0, "low": 1205.0, "close": 1240.0,
+                 "volume_lots": 11378, "amount_twd": 14313524000.0}
+    }
+
+
 def _otc_margin_payload():
     """櫃買 margin/balance 的實際形狀：逐檔在 data、市場合計在 summary 兩列。"""
     return {"tables": [{
@@ -109,7 +121,7 @@ def test_parse_otc_margin_reads_totals_and_per_stock():
     assert out["value"] == 1927.5          # 192,753,560 仟元 = 1,927.5 億
     # 逐檔取「資餘額」「券餘額」而非前日餘額
     assert out["margin"] == {"6488": 1004.0, "5483": 600.0}
-    assert out["short"] == {"6488": 20.0}   # 餘額 0 者不入表，免得拖累後續加總
+    assert out["short"] == {"6488": 20.0, "5483": 0.0}  # 零餘額是有效觀測，缺值才不入表
     assert tpex.parse_otc_margin({}) == {"balance": None, "short_balance": None,
                                          "value": None, "margin": {}, "short": {}}
 
@@ -137,10 +149,11 @@ def test_all_tpex_www_fetchers_use_verify_false(monkeypatch):
     tpex.fetch_otc_industry()
     tpex.fetch_otc_turnover()
     tpex.fetch_otc_ohlc()
+    tpex.fetch_otc_daily()
     tpex.fetch_otc_quotes()
     tpex.fetch_otc_margin()
     tpex.fetch_tpex_insti()
 
-    assert len(calls) == 7
+    assert len(calls) == 8
     for kwargs in calls:
         assert kwargs.get("verify") is False

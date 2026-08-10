@@ -18,7 +18,7 @@ from .db import (
     upsert_market_daily,
     upsert_tx_history,
 )
-from . import analysis
+from . import analysis, stock_flow
 from .sources import fred, intl, nasdaq, taifex, tdcc, tpex, twse
 
 
@@ -115,7 +115,7 @@ def _maint(lots, shorts, closes, margin_value, prefix=""):
             f"{prefix}short_mv": round(sv / 1e8, 1)}
 
 
-def _compute_margin_maintenance(D, margin_value):
+def _compute_margin_maintenance(D, margin_value, detail=None, quotes=None):
     """上市整戶擔保維持率＋分子分母。算不出回 {}。
 
     抽成函數是為了讓每日更新與 _heal_margin_maintenance 共用同一條計算路徑，
@@ -123,13 +123,13 @@ def _compute_margin_maintenance(D, margin_value):
     """
     if not D or not margin_value:
         return {}
-    detail = twse.fetch_margin_detail(D)
-    quotes = twse.fetch_stock_quotes(D)
+    detail = detail if detail is not None else twse.fetch_margin_detail(D)
+    quotes = quotes if quotes is not None else twse.fetch_stock_quotes(D)
     closes = {c: q["close"] for c, q in quotes.items() if q.get("close")}
     return _maint(detail.get("margin", {}), detail.get("short"), closes, margin_value)
 
 
-def _compute_otc_margin_maintenance(D):
+def _compute_otc_margin_maintenance(D, detail=None, quotes=None):
     """上櫃版。餘額與融資金額都在同一支櫃買端點，故連 otc_margin_value 一起回傳。
 
     上櫃融資成數 50%（上市 60%），損益兩平線因此是 200% 而非 166.7%——同一個數字
@@ -137,10 +137,10 @@ def _compute_otc_margin_maintenance(D):
     """
     if not D:
         return {}
-    d = tpex.fetch_otc_margin(D)
+    d = detail if detail is not None else tpex.fetch_otc_margin(D)
     if not d.get("value"):
         return {}
-    quotes = tpex.fetch_otc_quotes(D)
+    quotes = quotes if quotes is not None else tpex.fetch_otc_quotes(D)
     closes = {c: q["close"] for c, q in quotes.items() if q.get("close")}
     out = _maint(d.get("margin", {}), d.get("short"), closes, d["value"], prefix="otc_")
     if not out:
@@ -568,12 +568,23 @@ def run_update(conn, intl_tickers: dict) -> dict:
         except Exception as e:  # noqa: BLE001 — 容錯：單一來源失敗不影響其餘
             failed.append({"source": name.split("_")[0], "name": name, "error": str(e)})
 
+    daily_flow = {}
+    try:
+        if D:
+            daily_flow = stock_flow.update_day(conn, D)
+            success.append("stock_flow_daily")
+    except Exception as e:  # noqa: BLE001
+        failed.append({"source": "stock_flow", "name": "stock_flow_daily", "error": str(e)})
+
     # 大盤整戶擔保維持率（需融資金額＋個股融資融券明細＋全市場收盤；約 21:00 融資公布後才算得出）
     # 跑在 21:00 前時 margin_value 還沒公布，這裡算不出來——記進 failed 而非靜默跳過，
     # 否則「今天為什麼沒維持率」在更新結果裡完全看不出來。缺的那天由 _heal_margin_maintenance 補。
     try:
         if D and row.get("margin_value"):
-            mm = _compute_margin_maintenance(D, row["margin_value"])
+            twse_daily = daily_flow.get("TWSE", {})
+            mm = _compute_margin_maintenance(D, row["margin_value"],
+                                             twse_daily.get("margin"),
+                                             twse_daily.get("quotes"))
             if mm:
                 row.update(mm)
                 success.append("margin_maintenance")
@@ -588,7 +599,9 @@ def run_update(conn, intl_tickers: dict) -> dict:
 
     # 上櫃維持率（櫃買同一支端點就給餘額與融資金額，不必等 TWSE）
     try:
-        otc = _compute_otc_margin_maintenance(D)
+        otc_daily = daily_flow.get("TPEx", {})
+        otc = _compute_otc_margin_maintenance(D, otc_daily.get("margin"),
+                                              otc_daily.get("quotes"))
         if otc:
             row.update(otc)
             success.append("otc_margin_maintenance")
@@ -665,20 +678,6 @@ def run_update(conn, intl_tickers: dict) -> dict:
             success.append(f"tdcc_custody:{wk}")
     except Exception as e:  # noqa: BLE001
         failed.append({"source": "tdcc", "name": "custody", "error": str(e)})
-
-    # 當日全市場個股 OHLC（型態選股用，逐日累積；上市＋上櫃）
-    try:
-        if D:
-            ohlc = twse.fetch_stock_ohlc(D)
-            try:
-                ohlc.update(tpex.fetch_otc_ohlc(D))  # 上櫃失敗不影響上市入庫
-            except Exception:  # noqa: BLE001
-                pass
-            if ohlc:
-                bulk_upsert_ohlc(conn, row["date"], ohlc)
-                success.append("stock_ohlc")
-    except Exception as e:  # noqa: BLE001
-        failed.append({"source": "twse", "name": "stock_ohlc", "error": str(e)})
 
     # 台指期歷史日K（期交所官方下載），刷新近期
     try:

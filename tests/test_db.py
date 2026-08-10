@@ -129,3 +129,46 @@ def test_insert_chip_snapshot_key_only_row_is_a_noop_not_a_crash(tmp_path):
     insert_chip_snapshot(conn, "2026-07-24", [{"code": "2330"}])   # 只帶 key → 不得洗掉 name
     rows = get_snapshot(conn, "2026-07-24")
     assert len(rows) == 1 and rows[0]["name"] == "台積電"
+
+
+def test_stock_flow_schema_migrates_old_ohlc_and_preserves_partial_updates(tmp_path):
+    from stocks_power_rich.db import bulk_upsert_ohlc, bulk_upsert_stock_flow
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    conn.execute("CREATE TABLE stock_ohlc (date TEXT, code TEXT, open REAL, high REAL, "
+                 "low REAL, close REAL, PRIMARY KEY(date, code))")
+    init_db(conn)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(stock_ohlc)")}
+    assert {"volume_lots", "amount_twd"} <= columns
+
+    bulk_upsert_ohlc(conn, "2026-08-07", {
+        "2330": {"open": 10, "high": 11, "low": 9, "close": 10.5,
+                 "volume_lots": 123, "amount_twd": 456},
+    })
+    bulk_upsert_ohlc(conn, "2026-08-07", {"2330": {"close": 10.8}})
+    row = conn.execute("SELECT open, close, volume_lots, amount_twd FROM stock_ohlc").fetchone()
+    assert tuple(row) == (10.0, 10.8, 123.0, 456.0)
+
+    bulk_upsert_stock_flow(conn, "2026-08-07", "TWSE", {
+        "2330": {"name": "台積電", "foreign_lots": 10, "trust_lots": 2,
+                 "dealer_lots": -1, "institutional_total_lots": 11},
+    })
+    bulk_upsert_stock_flow(conn, "2026-08-07", "TWSE", {
+        "2330": {"margin_balance_lots": 0, "short_balance_lots": 3},
+    })
+    row = conn.execute(
+        "SELECT name, foreign_lots, margin_balance_lots, short_balance_lots "
+        "FROM stock_flow_daily").fetchone()
+    assert tuple(row) == ("台積電", 10.0, 0.0, 3.0)
+
+
+def test_stock_source_coverage_is_independent_by_market(tmp_path):
+    from stocks_power_rich.db import set_stock_source_coverage
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    set_stock_source_coverage(conn, "2026-08-07", "TWSE", "quotes", "complete", 100)
+    set_stock_source_coverage(conn, "2026-08-07", "TPEx", "quotes", "failed", 0, "not ready")
+    rows = conn.execute(
+        "SELECT market, status, attempts FROM stock_source_coverage ORDER BY market").fetchall()
+    assert [tuple(row) for row in rows] == [("TPEx", "failed", 1), ("TWSE", "complete", 1)]

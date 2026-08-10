@@ -267,3 +267,16 @@ def test_parse_stock_turnover_empty_when_no_amount_column():
     """只有 OHLC 沒有成交金額的表（欄位缺）→ 回空，不硬猜位置。"""
     payload = {"tables": [{"fields": ["證券代號", "收盤價"], "data": [["2330", "2400"]]}]}
     assert twse.parse_stock_turnover(payload) == {}
+
+
+def test_parse_stock_daily_reuses_one_payload_for_price_and_volume():
+    payload = {"tables": [{
+        "fields": ["證券代號", "證券名稱", "成交股數", "成交筆數", "成交金額",
+                   "開盤價", "最高價", "最低價", "收盤價"],
+        "data": [["2330", "台積電", "28,754,000", "3,079", "69,009,600,000",
+                  "2440.00", "2445.00", "2385.00", "2400.00"]],
+    }]}
+    assert twse.parse_stock_daily(payload) == {
+        "2330": {"open": 2440.0, "high": 2445.0, "low": 2385.0, "close": 2400.0,
+                 "volume_lots": 28754, "amount_twd": 69009600000.0}
+    }

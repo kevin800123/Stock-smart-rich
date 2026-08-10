@@ -113,8 +113,22 @@ def init_db(conn: sqlite3.Connection) -> None:
                  "big400_pct REAL, big_holders REAL, PRIMARY KEY(week, code))")
     # 全市場個股每日 OHLC（型態選股用；由 MI_INDEX ALLBUT0999 逐日回補與累積）
     conn.execute("CREATE TABLE IF NOT EXISTS stock_ohlc (date TEXT, code TEXT, open REAL, high REAL, "
-                 "low REAL, close REAL, PRIMARY KEY(date, code))")
+                 "low REAL, close REAL, volume_lots REAL, amount_twd REAL, PRIMARY KEY(date, code))")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ohlc_code ON stock_ohlc(code, date)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS stock_flow_daily ("
+        "date TEXT, code TEXT, market TEXT, name TEXT, foreign_lots REAL, trust_lots REAL, "
+        "dealer_lots REAL, institutional_total_lots REAL, margin_balance_lots REAL, "
+        "short_balance_lots REAL, PRIMARY KEY(date, code))"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_stock_flow_market_date "
+                 "ON stock_flow_daily(market, date)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS stock_source_coverage ("
+        "date TEXT, market TEXT, source TEXT, status TEXT, row_count INTEGER DEFAULT 0, "
+        "attempts INTEGER DEFAULT 0, last_error TEXT, updated_at TEXT, "
+        "PRIMARY KEY(date, market, source))"
+    )
     # 交易帳本（實單/模擬單；fee_pct=來回費用%，NULL=用預設 0.585）
     conn.execute("CREATE TABLE IF NOT EXISTS trades ("
                  "id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT, name TEXT, shares INTEGER, "
@@ -143,6 +157,10 @@ def init_db(conn: sqlite3.Connection) -> None:
     for col in WATCHLIST_COLS:
         if col not in wl_existing:
             conn.execute(f"ALTER TABLE watchlist ADD COLUMN {col} REAL")
+    ohlc_existing = {r[1] for r in conn.execute("PRAGMA table_info(stock_ohlc)").fetchall()}
+    for col in ("volume_lots", "amount_twd"):
+        if col not in ohlc_existing:
+            conn.execute(f"ALTER TABLE stock_ohlc ADD COLUMN {col} REAL")
     # 一次性資料修正：jpy 語意由「日圓兌台幣(~0.2)」改為「美元兌日圓(~150)」，清掉舊語意殘值
     conn.execute("UPDATE market_daily SET jpy=NULL, jpy_chg=NULL WHERE jpy IS NOT NULL AND jpy < 10")
     conn.commit()
@@ -265,16 +283,62 @@ def bulk_upsert_custody(conn: sqlite3.Connection, week: str, data: dict) -> int:
 
 def bulk_upsert_ohlc(conn: sqlite3.Connection, date: str, rows: dict) -> int:
     """一日全市場 OHLC 批次入庫。rows＝{code: {open,high,low,close}}。"""
-    data = [(date, code, v.get("open"), v.get("high"), v.get("low"), v.get("close"))
+    data = [(date, code, v.get("open"), v.get("high"), v.get("low"), v.get("close"),
+             v.get("volume_lots", v.get("vol")), v.get("amount_twd", v.get("amount")))
             for code, v in rows.items()]
     conn.executemany(
-        "INSERT INTO stock_ohlc (date, code, open, high, low, close) VALUES (?,?,?,?,?,?) "
-        "ON CONFLICT(date, code) DO UPDATE SET open=excluded.open, high=excluded.high, "
-        "low=excluded.low, close=excluded.close",
+        "INSERT INTO stock_ohlc (date, code, open, high, low, close, volume_lots, amount_twd) "
+        "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(date, code) DO UPDATE SET "
+        "open=COALESCE(excluded.open, stock_ohlc.open), "
+        "high=COALESCE(excluded.high, stock_ohlc.high), "
+        "low=COALESCE(excluded.low, stock_ohlc.low), "
+        "close=COALESCE(excluded.close, stock_ohlc.close), "
+        "volume_lots=COALESCE(excluded.volume_lots, stock_ohlc.volume_lots), "
+        "amount_twd=COALESCE(excluded.amount_twd, stock_ohlc.amount_twd)",
         data,
     )
     conn.commit()
     return len(data)
+
+
+def bulk_upsert_stock_flow(conn: sqlite3.Connection, date: str, market: str,
+                           rows: dict) -> int:
+    """Partially upsert normalized institutional and margin observations."""
+    cols = ("name", "foreign_lots", "trust_lots", "dealer_lots",
+            "institutional_total_lots", "margin_balance_lots", "short_balance_lots")
+    data = [(date, code, market, *(value.get(col) for col in cols))
+            for code, value in rows.items()]
+    if not data:
+        return 0
+    assignments = ", ".join(
+        f"{col}=COALESCE(excluded.{col}, stock_flow_daily.{col})" for col in cols)
+    conn.executemany(
+        "INSERT INTO stock_flow_daily (date, code, market, " + ", ".join(cols) + ") "
+        "VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(date, code) DO UPDATE SET "
+        "market=excluded.market, " + assignments,
+        data,
+    )
+    conn.commit()
+    return len(data)
+
+
+def set_stock_source_coverage(conn: sqlite3.Connection, date: str, market: str,
+                              source: str, status: str, row_count: int = 0,
+                              error: str | None = None, updated_at: str | None = None) -> None:
+    """Record each market/source independently; one market never completes another."""
+    if status not in ("complete", "failed"):
+        raise ValueError("coverage status must be complete or failed")
+    stamp = updated_at or datetime.now().isoformat(timespec="seconds")
+    conn.execute(
+        "INSERT INTO stock_source_coverage "
+        "(date, market, source, status, row_count, attempts, last_error, updated_at) "
+        "VALUES (?,?,?,?,?,1,?,?) ON CONFLICT(date, market, source) DO UPDATE SET "
+        "status=excluded.status, row_count=excluded.row_count, "
+        "attempts=stock_source_coverage.attempts+1, last_error=excluded.last_error, "
+        "updated_at=excluded.updated_at",
+        (date, market, source, status, row_count, error, stamp),
+    )
+    conn.commit()
 
 
 def ohlc_dates(conn: sqlite3.Connection) -> list[str]:
