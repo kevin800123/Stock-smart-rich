@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **本檔與 `AGENTS.md` 並存，兩者會漂移。** `AGENTS.md` 是 Codex 用的精簡版（~84 行），這份是詳細版（含每個決定的實測數據與踩坑原因）。2026-08 由 Codex 代班期間做的變更（每日財經新聞＋Telegram、移除 16:00 LINE 速報、高價股改版、深色介面重做）一度只進了 `AGENTS.md`，本檔的 LINE 與色彩段落因此過期並誤導。**改動任何跨檔行為時，兩份都要更新**；發現不一致時以**原始碼**為準，不要相信任一份文件。
+> **本檔與 `AGENTS.md` 並存，兩者會漂移。** `AGENTS.md` 是 Codex 用的精簡版（~84 行），這份是詳細版（含每個決定的實測數據與踩坑原因）。2026-08 由 Codex 代班期間做的變更（每日財經新聞＋Telegram、移除 16:00 LINE 速報、高價股改版、深色介面重做）一度只進了 `AGENTS.md`，本檔的 LINE 與色彩段落因此過期並誤導。**改動任何跨檔行為時，兩份都要更新**；發現不一致時以**原始碼**為準，不要相信任一份文件。`PRODUCT.md` 是另一份文件、範疇不同——它記的是產品原則與定位（給規劃/設計參考），不記實作細節，兩者不衝突。實作決策、資料流、踩過的坑，一律以本檔與 `AGENTS.md` 為準。
 
 STOCKS POWER RICH (股力智富) — a single-user Taiwan-stock chip-analysis app: daily market/chip dashboard, daily-CSV stock screening, per-stock K-line + chips, sector rotation, optional Gemini summaries. FastAPI backend that also serves a vanilla-JS frontend; SQLite storage.
 
@@ -259,6 +259,19 @@ Same flex container bites line-clamping: **`-webkit-line-clamp` does not work on
 **排序三層、上限 4、不設下限**：tier 0 背離（最多 1 條，永遠第一）→ tier 1 跨過固定門檻（維持卡片產生順序，讀者往下找得到）→ tier 2 位階極端（依 `|rank.p - 50|` 由大到小）。tier 1 與 tier 2 不揉成一個分數——「距追繳線 3%」與「位階 96%」沒有共同單位。上限 4 條、**不設下限**：安靜日就該短甚至整塊消失，湊滿下限只會逼它挑普通讀數當重點；超過 4 條在末尾補「另 N 項見下方卡片」，不靜默截斷。**整塊不用琥珀**：琥珀的工作是「從 24 張卡分出這 2 張」，今日重點裡每一條依定義都是琥珀等級，全塗琥珀在區塊內部得不到任何區辨，只換來琥珀在全站多出第三種用法。措辭刻意不重用 `verdictOf().text`（背離句就在 120px 上方，兩句一樣會被讀成樣板）——第一版寫成「下跌多 300 家／指數收紅」，實測與判讀句的**字元重疊率 100%**，改成提供判讀句沒有的資訊（背離強度 `|gap|/tot`），最長共同子字串才從 8 字降到 4。
 
 **驗證方式（沒有前端測試，全靠這個）**：重構前後四個卡片容器的 `innerHTML` 逐字相同（3,700 字元）；拿 53 列歷史 × 10 個 key + 刻意注入 null 共 540 組，新舊 `isAlert` 差異為 0；不變式 `lastAlerts.length === document.querySelectorAll(".card.alert").length`，且重跑 `loadDashboard()` 後不變（排除累加）；注入 tier 0/1/2 混合的假資料確認排序與截斷文字正確。
+
+### 法人資料正規化與研究實驗室（`stock_flow.py`，2026-08）
+
+新增獨立於既有 `market_daily`／逐檔快取之外的正規化資料層，動機是回答一個具體問題：「近期法人多週期買超」是不是有效選股訊號，還是只是選擇偏誤（某工作簿篩出 70 檔幾乎都符合這個特徵，但那份名單本身就是法人偏多股，用它反推規則是循環論證）。**這個模組刻意只交付「資料層＋研究報告」，不交付選股頁、分數或訊號**——研究結果若通過所有統計閘門，也只代表「值得前瞻觀察 6–12 個月」，不代表可以選股，這句話同時進 `verdict.message`（API 回應本身）與畫面，不只是留在文件裡。
+
+- **`stock_flow_daily`**（`(date, code)` 主鍵）正規化三大法人與融資券逐檔數字；`stock_ohlc` 加 `volume_lots`／`amount_twd`。`stock_source_coverage`（`(date, market, source)` 主鍵）讓上市／上櫃的 `quotes`／`institutional`／`margin` 三種來源**各自獨立判定完整度**——TWSE 完成不能代表 TPEx 完成，這是 TPEx `verify=False` 那個「安靜地只有一邊缺資料」教訓的延伸。
+- **`MI_INDEX ALLBUT0999`（上市）與 `dailyQuotes`（上櫃）現在真的只各打一次**：`twse.fetch_stock_daily`／`tpex.fetch_otc_daily` 用同一份回應同時解析 OHLC 與量額（`parse_stock_ohlc`＋`parse_stock_turnover` 的合併版），`update_day` 把這份 payload 直接傳給 `_compute_margin_maintenance`／`_compute_otc_margin_maintenance` 當 `quotes` 參數，取代它們原本各自呼叫 `fetch_stock_quotes`／`fetch_otc_quotes`。兩者都過濾成 4 碼非 00 普通股，融資明細涉及的股票本來就在這個集合內，維持率計算範圍不受影響。`_compute_margin_maintenance`／`_compute_otc_margin_maintenance` 的 `detail`／`quotes` 參數是選用（預設 `None` 時退回舊的獨立抓取），`_heal_margin_maintenance` 完全沒改，向後相容。
+- **`bulk_upsert_ohlc` 從無條件覆寫改成 `COALESCE`，null 不再洗掉既有值**——這是兩個來源合併寫入同一列所必須的（先寫量額、後補價格，或反過來，任一半都不該把另一半清空），但也因此改變了既有杯柄回補路徑的語意：官方定稿值仍會覆寫初值（非 null 一律覆寫），只有「這次沒抓到」才會保留舊值而非寫成空。`tests/test_db.py::test_stock_flow_schema_migrates_old_ohlc_and_preserves_partial_updates` 鎖住這個行為：寫入完整 OHLC 後只寫 `{close}`，斷言 `open`／`volume_lots`／`amount_twd` 原封不動。
+- **上櫃融資的零餘額曾經被當成缺值濾掉**（`tpex.parse_otc_margin` 原本 `if im is not None and (v := _f(row[im]))`，真值判斷把 `0.0` 跟 `None` 混為一談）——改成 `is not None`。驗證過下游 `analysis.margin_maintenance`／`updater._maint` 都已經有 `and lots` 守衛，零張本來就不進加總，所以修正對既有維持率數值**沒有影響**，純粹是語意修正（`stock_flow_daily` 需要區分「餘額是 0」與「沒抓到資料」這兩種不同的事實）。`tests/test_tpex.py` 的斷言從「餘額 0 者不入表」翻成「零餘額是有效觀測，缺值才不入表」，註解原本寫的理由（「免得拖累後續加總」）從來不成立，改的時候一併修正。
+- **回補（`GET /api/stock-flow/backfill?days=220&max_fetch=3`）不依賴 `market_daily` 建立日期範圍**——改用「該市場成功取得行情的日期」自建覆蓋基準，解除了既有 `inst_backfill`（`/api/inst/backfill`）那種「歷史多長完全看 `/api/backfill` 建了幾列」的耦合。`days=220` 是算出來的，不是隨手選的：站內 `days` 一律是**日曆天**，實測交易日/日曆天約 0.67，而研究閘門要求至少 60 個有效日期＋40 個成熟 Ret20 日期，反推至少需要 ~119 個交易日 ≈ 178 日曆天；220 天留了實質餘裕。**改這個數字前務必重新核算**，改小會讓研究永遠卡在 `insufficient_data` 而看不出是規則沒用還是窗口不夠。
+- **研究判定（`classify_research`）依序檢查五個互斥狀態**：`insufficient_data`（任一市場有效日期 <60、成熟 Ret20 <40，或命中觀測 <30）→ `too_broad`（每日命中中位數 >100 檔或 >10%，代表這是市場狀態指標而非個股辨識條件）→ `too_sparse`（命中中位數 0–2 檔，資料量夠但永遠湊不出穩定樣本）→ `no_historical_edge`（Ret10／Ret20 的日期級平均 alpha 未同時為正，或上市／上櫃方向不一致）→ `candidate_for_prospective`。**alpha 先按訊號日期算出命中組與全母體的等權報酬差，再跨日期彙總**，不是把每檔每日的報酬當獨立樣本——後者會嚴重高估顯著性（同一波法人買超橫跨多檔多日，樣本高度相關）。四分位（`_quartile`）**釘死 `method="inclusive"`**，因為 inclusive／exclusive 在小樣本下算出的 Q1/Q3 不同，不釘的話測試會隨 Python 版本或實作細節漂移。
+- **報酬起算點是訊號日的次一交易日開盤**（`forward_return`），不是訊號日或次日收盤——訊號用的三大法人資料本來就是當日收盤後才公布，用當日或次日收盤當進場價是前視偏誤。
+- **顏色語彙沿用全站規則，沒有為這個新頁面破例**：五個研究狀態沒有一個用 `--up`/`--down` 或 `--accent`，`candidate_for_prospective`（統計上「最好」的結果）刻意用藍色 `--info` 而非綠色——綠色在本站語意是「跌」，但更根本的原因是**任何暖色系在這裡都會被讀成「可以買」**，而這正是整個模組要避免的事。
 
 ## Data-source quirks (would trip you up)
 - **TWSE**: ROC (民國) dates = year+1911. `T86` (per-stock 三大法人) is **上市 only**; OTC uses TPEx. Direct RWD endpoints take a `date` param.
