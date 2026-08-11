@@ -501,7 +501,14 @@ body[data-public] .status-bar { display: none; }
 /* 區塊標題：左豎線分層。原本還有一條琥珀漸層底線，在只有單階標題時是好看的收尾，
    但補上 .section-head 後，8 條琥珀底線會與新的一階互相競爭、也稀釋琥珀的語意，
    故移除——階層改由上面那階承擔，這階只要能被認出是標題即可。 */
-.card-group { background: rgba(16, 26, 40, 0.72); border: 1px solid rgba(58, 82, 112, 0.7); border-radius: var(--r-lg); padding: 16px; box-shadow: var(--shadow-card); }
+/* 表面層次：group 是「安靜的區域邊界」、card 才是真正的「抬起的單元」——兩者原本各自
+   疊 bg-step＋border＋shadow 三種訊號，24 張卡的密集網格於是讀成「框中框，兩層都在
+   搶著浮起來」。改成每一級只主打一種訊號：group 只留 bg-step＋髮絲邊（拿掉陰影，
+   它是被動的分組容器，不需要看起來浮著）；card 保留 bg-step＋陰影（它才是真的會
+   hover 抬升的互動單元），邊框降到髮絲級——bg-step 與陰影已經足夠把卡片跟底色分開，
+   一條清楚的邊框只是第三票。.card.alert 用的是 outline 不是 border（見下方），
+   兩者互不影響，邊框變安靜後琥珀外框反而更醒目。不動間距、不動任何一張卡的資訊密度。 */
+.card-group { background: rgba(16, 26, 40, 0.72); border: 1px solid var(--border-subtle); border-radius: var(--r-lg); padding: 16px; }
 .group-title { display: inline-block; font-size: var(--fs-md); color: var(--label); font-weight: 600; margin-bottom: var(--sp-3); border-left: 3px solid var(--info); padding: 0 2px 2px 9px; }
 /* 收合：點標題列收合／展開，狀態存 localStorage（見 app.js initCollapsibleGroups）。
    只用 CSS 隱藏「標題以外的所有直接子項」，不管該區塊內部長什麼樣（卡片網格／
@@ -542,11 +549,11 @@ body[data-public] .status-bar { display: none; }
      被墊高的是佔多數的矮卡片——實測內容 67px 的卡片被撐成 146px，等於每張白白空 55px，
      24 張就是整頁看起來很空的主因。降到 104px 只砍掉純空白，不動任何一張卡的內容。 */
   min-width: 0; min-height: 104px; padding: 10px var(--space-md);
-  background: var(--bg-card); border: 1px solid var(--border-default); border-radius: var(--r-lg);
+  background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--r-lg);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), var(--shadow-card);
   transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
 }
-.card:hover { transform: translateY(-2px); border-color: var(--border-strong); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), var(--shadow-card-hover); }
+.card:hover { transform: translateY(-2px); border-color: var(--border-default); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), var(--shadow-card-hover); }
 /* 有懸停說明的卡片：標籤加點狀底線當「這裡有解釋」的視覺提示 */
 .card[title] { cursor: help; }
 .card[title] .card-label { text-decoration: underline dotted var(--muted); text-underline-offset: 3px; }
