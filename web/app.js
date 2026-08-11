@@ -504,7 +504,7 @@ function renderTrades(d) {
   const cls = (v) => (v > 0 ? "up" : v < 0 ? "down" : "");
   const pct = (v) => v == null ? "—" : (v > 0 ? "+" : "") + fmt(v, 2) + "%";
   const money = (v) => v == null ? "—" : (v > 0 ? "+" : "") + fmt(v, 0);
-  const R = 'style="text-align:right"';
+  const num = (extra) => `class="num${extra ? " " + extra : ""}"`;  // 數字欄統一走 .num（見 styles.css）
   const s = d.stats || {};
   $("tr-stats").innerHTML = [
     ["已平倉筆數", s.closed_n], ["勝率", s.win_rate == null ? "—" : fmt(s.win_rate, 1) + "%"],
@@ -515,18 +515,18 @@ function renderTrades(d) {
   ].map(([k, v]) => `<div class="stat"><div class="stat-k">${k}</div><div class="stat-v">${v == null ? "—" : v}</div></div>`).join("");
   const ts = d.trades || [], op = ts.filter(t => t.status === "open"), cl = ts.filter(t => t.status === "closed");
   $("tr-open").innerHTML = op.length
-    ? `<table><tr><th>股票</th><th>進場日</th><th ${R}>進場價</th><th ${R}>股數</th><th ${R}>現價</th><th ${R}>未實現%</th><th ${R}>未實現損益</th><th ${R}>同期大盤</th><th></th></tr>`
+    ? `<table><tr><th>股票</th><th>進場日</th><th ${num()}>進場價</th><th ${num()}>股數</th><th ${num()}>現價</th><th ${num()}>未實現%</th><th ${num()}>未實現損益</th><th ${num()}>同期大盤</th><th></th></tr>`
       + op.map(t => `<tr title="${esc(t.note || "")}"><td>${stockLink(t.code, t.name)}</td><td>${esc(t.entry_date)}</td>`
-        + `<td ${R}>${fmt(t.entry_price, 2)}</td><td ${R}>${fmt(t.shares, 0)}</td><td ${R}>${t.mark == null ? "—" : fmt(t.mark, 2)}</td>`
-        + `<td ${R} class="${cls(t.net_pct)}">${pct(t.net_pct)}</td><td ${R} class="${cls(t.pnl)}">${money(t.pnl)}</td>`
-        + `<td ${R}>${pct(t.mkt_pct)}</td><td><button class="file-label tr-close" data-id="${t.id}">平倉</button> <button class="file-label tr-del" data-id="${t.id}">刪</button></td></tr>`).join("") + "</table>"
+        + `<td ${num()}>${fmt(t.entry_price, 2)}</td><td ${num()}>${fmt(t.shares, 0)}</td><td ${num()}>${t.mark == null ? "—" : fmt(t.mark, 2)}</td>`
+        + `<td ${num(cls(t.net_pct))}>${pct(t.net_pct)}</td><td ${num(cls(t.pnl))}>${money(t.pnl)}</td>`
+        + `<td ${num()}>${pct(t.mkt_pct)}</td><td><button class="file-label tr-close" data-id="${t.id}">平倉</button> <button class="file-label tr-del" data-id="${t.id}">刪</button></td></tr>`).join("") + "</table>"
     : '<span class="muted small">無未平倉部位（上方「＋記一筆」開始記錄）</span>';
   $("tr-closed").innerHTML = cl.length
-    ? `<table><tr><th>股票</th><th>持有期間</th><th ${R}>進→出</th><th ${R}>股數</th><th ${R}>淨報酬</th><th ${R}>損益</th><th ${R}>同期大盤</th><th ${R}>勝過大盤</th><th></th></tr>`
+    ? `<table><tr><th>股票</th><th>持有期間</th><th ${num()}>進→出</th><th ${num()}>股數</th><th ${num()}>淨報酬</th><th ${num()}>損益</th><th ${num()}>同期大盤</th><th ${num()}>勝過大盤</th><th></th></tr>`
       + cl.map(t => `<tr title="${esc(t.note || "")}"><td>${stockLink(t.code, t.name)}</td><td>${esc(t.entry_date)} → ${esc(t.exit_date)}</td>`
-        + `<td ${R}>${fmt(t.entry_price, 2)} → ${fmt(t.exit_price, 2)}</td><td ${R}>${fmt(t.shares, 0)}</td>`
-        + `<td ${R} class="${cls(t.net_pct)}">${pct(t.net_pct)}</td><td ${R} class="${cls(t.pnl)}">${money(t.pnl)}</td>`
-        + `<td ${R}>${pct(t.mkt_pct)}</td><td ${R} class="${cls(t.alpha)}">${pct(t.alpha)}</td>`
+        + `<td ${num()}>${fmt(t.entry_price, 2)} → ${fmt(t.exit_price, 2)}</td><td ${num()}>${fmt(t.shares, 0)}</td>`
+        + `<td ${num(cls(t.net_pct))}>${pct(t.net_pct)}</td><td ${num(cls(t.pnl))}>${money(t.pnl)}</td>`
+        + `<td ${num()}>${pct(t.mkt_pct)}</td><td ${num(cls(t.alpha))}>${pct(t.alpha)}</td>`
         + `<td><button class="file-label tr-del" data-id="${t.id}">刪</button></td></tr>`).join("") + "</table>"
     : '<span class="muted small">尚無已平倉交易</span>';
 }
@@ -1105,10 +1105,13 @@ function renderTodayFocus() {
 // API 各自到位，所以三個載入點都呼叫本函式一次（同 renderVerdict 的既有作法），
 // 缺哪一塊就讓那一格顯示「—」，不等全部到齊。
 let lastDataStale = false;
+// 上一次成功渲染的六格值（HTML 字串，與 items 同序）；null＝還沒渲染過或剛清空。
+// 只用來判斷「這格跟上次比有沒有變」，不是狀態來源——真正的值仍來自 lastLatest 等全域。
+let kpiPrevValues = null;
 function renderKpiSticky() {
   const el = $("kpi-sticky"); if (!el) return;
   const m = lastLatest;
-  if (!m || !m.date) { el.innerHTML = ""; return; }
+  if (!m || !m.date) { el.innerHTML = ""; kpiPrevValues = null; return; }
   const idxPct = pctOf(m.taiex, m.taiex_chg);
   const b = lastBreadth;
   const total3 = [m.inst_foreign, m.inst_trust, m.inst_dealer].every((x) => x != null)
@@ -1124,7 +1127,14 @@ function renderKpiSticky() {
       ? `${fmt(pulse.overall, 1)} <span class="muted small">${esc((pulse.label || {}).overall || "")}</span>` : "—"],
     ["資料狀態", lastDataStale ? '<span style="color:var(--accent)">尚未更新</span>' : "已更新"],
   ];
-  el.innerHTML = items.map(([k, v]) => `<div class="kpi-item"><span class="kpi-k">${k}</span><span class="kpi-v">${v}</span></div>`).join("");
+  // 值跟上次渲染不同才閃一下（見 styles.css .kpi-item.flash）；kpiPrevValues 為 null
+  // （首次進頁）一律不閃——六格同時亮起來是雜訊，不是「這格剛更新」的訊號。
+  const prev = kpiPrevValues;
+  el.innerHTML = items.map(([k, v], i) => {
+    const changed = prev != null && prev[i] !== undefined && prev[i] !== v;
+    return `<div class="kpi-item${changed ? " flash" : ""}"><span class="kpi-k">${k}</span><span class="kpi-v">${v}</span></div>`;
+  }).join("");
+  kpiPrevValues = items.map(([, v]) => v);
 }
 
 const MOBILE_KPI_MEDIA = window.matchMedia("(max-width: 600px)");
@@ -1566,14 +1576,14 @@ async function loadCupBacktest() {
     const stat = (k, v) => `<div class="stat"><div class="stat-k">${k}</div><div class="stat-v">${v}</div></div>`;
     const hz = (n) => h[n] ? `${fmt(h[n].win_rate, 1)}%勝／均${h[n].avg >= 0 ? "+" : ""}${fmt(h[n].avg, 2)}%` : "—";
     const rows = (d.trades || []).slice(0, 15).map((t) =>
-      `<tr><td>${stockLink(t.code, t.name)}</td><td>${t.entry_date}</td><td style="text-align:right">${fmt(t.entry, 2)}</td>` +
-      ["ret5", "ret10", "ret20"].map((k) => { const v = t[k]; return `<td style="text-align:right" class="${v > 0 ? "up" : v < 0 ? "down" : ""}">${v == null ? "—" : (v > 0 ? "+" : "") + fmt(v, 1) + "%"}</td>`; }).join("") + "</tr>").join("");
+      `<tr><td>${stockLink(t.code, t.name)}</td><td>${t.entry_date}</td><td class="num">${fmt(t.entry, 2)}</td>` +
+      ["ret5", "ret10", "ret20"].map((k) => { const v = t[k]; return `<td class="num ${v > 0 ? "up" : v < 0 ? "down" : ""}">${v == null ? "—" : (v > 0 ? "+" : "") + fmt(v, 1) + "%"}</td>`; }).join("") + "</tr>").join("");
     box.innerHTML =
       `<div class="stats-grid" style="max-width:none">` +
       stat("訊號次數", d.signals) + stat("突破進場", `${d.trades_n}（${fmt(d.breakout_rate, 1)}%）`) +
       stat("持有5日", hz("5")) + stat("持有10日", hz("10")) + stat("持有20日", hz("20")) + `</div>` +
       `<div class="muted small" style="margin:6px 0">假設突破日收盤進場；未含手續費/稅/滑價（來回約0.6%）；樣本不含已下市股（存活者偏差）；歷史不代表未來。資料 ${d.bars} 天（${d.date} 止）。</div>` +
-      (rows ? `<div class="table-wrap" style="max-height:38vh"><table><tr><th>股票</th><th>進場日</th><th style="text-align:right">進場價</th><th style="text-align:right">+5日</th><th style="text-align:right">+10日</th><th style="text-align:right">+20日</th></tr>${rows}</table></div>` : "");
+      (rows ? `<div class="table-wrap" style="max-height:38vh"><table><tr><th>股票</th><th>進場日</th><th class="num">進場價</th><th class="num">+5日</th><th class="num">+10日</th><th class="num">+20日</th></tr>${rows}</table></div>` : "");
   } catch (e) { box.innerHTML = '<span class="muted small">回測載入失敗：' + esc(e.message) + "</span>"; }
 }
 
@@ -2064,17 +2074,17 @@ async function loadWatchlist() {
   try {
     const d = await getJSON("/api/watchlist");
     if (!d.stocks || !d.stocks.length) { el.innerHTML = '<div class="muted small">尚無自選股，輸入股號加入。</div>'; return; }
-    const num = (v, d = 2) => `<td style="text-align:right">${v == null ? "—" : fmt(v, d)}</td>`;
+    const num = (v, d = 2) => `<td class="num">${v == null ? "—" : fmt(v, d)}</td>`;
     const rows = d.stocks.map((s) => {
       const onb = s.in_latest ? '<span class="status new">在榜</span>' : '<span class="status out">未在榜</span>';
       const ret = s.ret_pct == null ? "—" : `<span class="${s.ret_pct > 0 ? "up" : s.ret_pct < 0 ? "down" : ""}">${s.ret_pct > 0 ? "+" : ""}${fmt(s.ret_pct, 2)}%</span>`;
       const ch = s.chip || {};
-      return `<tr><td>${stockLink(s.code, s.name)}</td><td>${onb}</td><td style="text-align:right">${s.times}</td><td>${s.entry_date || "—"}</td><td style="text-align:right">${ret}</td>` +
+      return `<tr><td>${stockLink(s.code, s.name)}</td><td>${onb}</td><td class="num">${s.times}</td><td>${s.entry_date || "—"}</td><td class="num">${ret}</td>` +
         num(ch.close) + num(ch.lan_value, 1) + num(ch.lpe, 1) + num(ch.est_profit) + num(ch.rev_yoy, 1) + num(ch.holder_drop_ratio) + num(ch.big_holder_ratio) +
         `<td><a href="#" class="watch-est" data-code="${esc(s.code)}">估價</a> ／ <a href="#" class="watch-del err-text" data-code="${esc(s.code)}">移除</a></td></tr>` +
         estPanelHtml(s);
     }).join("");
-    const rh = (t) => `<th style="text-align:right">${t}</th>`;
+    const rh = (t) => `<th class="num">${t}</th>`;
     el.innerHTML = `<table><tr><th>股票</th><th>今日選股榜</th>${rh("在榜次數")}<th>進榜日</th>${rh("自進榜報酬")}${rh("收盤")}${rh("蘭值")}${rh("本益比")}${rh("推估EPS")}${rh("營收年增%")}${rh("人數降比")}${rh("大戶增比")}<th></th></tr>${rows}</table>`;
     if (openEstCode) {
       const row = document.getElementById(`est-row-${openEstCode}`);
@@ -2099,10 +2109,10 @@ async function loadRotation() {
     if (!d.sectors || !d.sectors.length) { el.innerHTML = '<div class="muted small">尚無類股資料</div>'; return; }
     const note = $("rotation-note");
     if (note && d.dates.length) note.textContent = `（${d.dates[0].slice(5)} ～ ${d.dates[d.dates.length - 1].slice(5)}）`;
-    const cell = (v) => v == null ? '<td class="muted" style="text-align:right">—</td>'
-      : `<td class="${chgClass(v)}" style="text-align:right">${v > 0 ? "+" : ""}${fmt(v, 2)}</td>`;
-    const head = "<tr><th>類股</th>" + d.dates.map((dt) => `<th style="text-align:right">${dt.slice(5)}</th>`).join("") + '<th style="text-align:right">累計</th></tr>';
-    const body = d.sectors.map((s) => `<tr><td>${esc(s.name)}</td>${s.series.map(cell).join("")}<td class="${chgClass(s.sum)}" style="text-align:right;font-weight:700">${s.sum > 0 ? "+" : ""}${fmt(s.sum, 2)}</td></tr>`).join("");
+    const cell = (v) => v == null ? '<td class="num muted">—</td>'
+      : `<td class="num ${chgClass(v)}">${v > 0 ? "+" : ""}${fmt(v, 2)}</td>`;
+    const head = "<tr><th>類股</th>" + d.dates.map((dt) => `<th class="num">${dt.slice(5)}</th>`).join("") + '<th class="num">累計</th></tr>';
+    const body = d.sectors.map((s) => `<tr><td>${esc(s.name)}</td>${s.series.map(cell).join("")}<td class="num ${chgClass(s.sum)}" style="font-weight:700">${s.sum > 0 ? "+" : ""}${fmt(s.sum, 2)}</td></tr>`).join("");
     el.innerHTML = `<table>${head}${body}</table>`;
   } catch (e) { el.innerHTML = '<div class="muted small">輪動載入失敗</div>'; }
 }
@@ -2477,8 +2487,10 @@ function renderSortable(elId, columns, rows, emptyMsg, onRowClick) {
       va = va == null ? "" : String(va); vb = vb == null ? "" : String(vb); return st.asc ? va.localeCompare(vb) : vb.localeCompare(va);
     });
   }
-  const head = "<tr>" + columns.map((c) => `<th class="sortable" data-sort="${c.key}">${c.label}${st.key === c.key ? (st.asc ? " ▲" : " ▼") : ""}</th>`).join("") + "</tr>";
-  const body = data.map((r, i) => `<tr data-i="${i}"${onRowClick ? ' class="clickrow"' : ""}>` + columns.map((c) => `<td>${c.render ? c.render(r) : fmt(r[c.key], c.dp === undefined ? 2 : c.dp)}</td>`).join("") + "</tr>").join("");
+  // c.numeric 原本只餵排序比較，渲染端從沒讀過它——數字欄一直是左對齊，8+ 欄的選股表
+  // 尤其明顯。共用渲染器改一處，所有吃 numeric:true 的表格（選股／細產業…）一起對齊。
+  const head = "<tr>" + columns.map((c) => `<th class="sortable${c.numeric ? " num" : ""}" data-sort="${c.key}">${c.label}${st.key === c.key ? (st.asc ? " ▲" : " ▼") : ""}</th>`).join("") + "</tr>";
+  const body = data.map((r, i) => `<tr data-i="${i}"${onRowClick ? ' class="clickrow"' : ""}>` + columns.map((c) => `<td${c.numeric ? ' class="num"' : ""}>${c.render ? c.render(r) : fmt(r[c.key], c.dp === undefined ? 2 : c.dp)}</td>`).join("") + "</tr>").join("");
   $(elId).innerHTML = `<table>${head}${body}</table>`;
   $(elId).querySelectorAll("th.sortable").forEach((th) => th.addEventListener("click", () => {
     const key = th.dataset.sort, cur = sortState[elId] || {};

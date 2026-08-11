@@ -3,8 +3,12 @@
    目的：把冷硬的系統黑體換成溫暖一致的圓體，降低介面壓力感。
 
    "Num" 用 unicode-range 只接管數字與拉丁字母，中文落回粉圓——這樣數字/拉丁能單獨用
-   size-adjust 與粉圓中文光學等高（兩套字度量不同）。M PLUS Rounded 1c 為比例圓體、
-   非等寬，故表格數字欄不再嚴格對齊（已與使用者取捨：柔和優先）。 */
+   size-adjust 與粉圓中文光學等高（兩套字度量不同）。M PLUS Rounded 1c 是比例圓體，
+   但**數字本身預設就是等寬**（該字型的 lining figures 天生等寬，不靠 OpenType tnum
+   特性）——實測 body 的 font-variant-numeric:tabular-nums 在此字型下是 no-op、不是
+   救援：0–9 在任何字重下量出來都是同一個 advance width。這行舊註解曾誤植「非等寬、
+   已與使用者取捨」，但欄位右對齊（.num／text-align:right）配等寬數字本來就會逐位
+   對齊，柔和圓體與數字對齊從來不是要取捨的兩難。 */
 @font-face {
   font-family: "Num";
   src: url("/vendor/fonts/mplus-rounded-400.woff2") format("woff2");
@@ -145,6 +149,23 @@
   --r: 6px;
   --r-lg: 8px;
   --r-pill: 999px;
+
+  /* 動效 token：三級時長＋一條標準緩動。收合抽屜（.sidebar.open）、法人研究室圖表
+     （app.js IR_ANIMATION_MS）在此之前各自訂了自己的毫秒數；這裡不是新發明一套時長，
+     是把散落的 .14s/.16s/.3s/180ms/260ms 收進同一份可調的刻度，日後要統一調快/調慢
+     只改這裡。--ease-out 是全站唯一緩動函式——沒有第二種「更有彈性」的曲線，財務工作台
+     的動效只做「確認、不搶戲」，不需要 spring 的表演感。 */
+  --dur-fast: 140ms;
+  --dur-base: 180ms;
+  --dur-med: 320ms;
+  --dur-slow: 900ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+/* 使用者要求「減少動畫」時，全站動效歸零——比逐一在每條規則後面補 media query 可靠，
+   也是唯一能保證新加的動效不會被漏掉的做法。KPI 閃動（見 .kpi-item.flash）與抽屜滑入
+   （.sidebar.open）等既有動效都靠這一條收斂，不必各自重複判斷。 */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -238,7 +259,7 @@ body {
   box-shadow: 8px 0 22px rgba(0, 0, 0, 0.14); z-index: 1;
 }
 .sidebar-nav { display: flex; flex-direction: column; gap: 2px; min-height: 100%; }
-.nav { display: flex; align-items: center; gap: var(--space-sm); min-height: 36px; padding: 8px 12px; border: 1px solid transparent; border-radius: var(--r); color: var(--text); text-decoration: none; cursor: pointer; font-size: var(--font-size-sm); line-height: 1.2; transition: background .16s ease, border-color .16s ease, color .16s ease, box-shadow .16s ease; }
+.nav { display: flex; align-items: center; gap: var(--space-sm); min-height: 36px; padding: 8px 12px; border: 1px solid transparent; border-radius: var(--r); color: var(--text); text-decoration: none; cursor: pointer; font-size: var(--font-size-sm); line-height: 1.2; transition: background var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out), color var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out); }
 .nav .ico { font-size: var(--fs-md); }
 .nav:hover { color: var(--text-primary); background: rgba(245, 181, 68, 0.08); border-color: rgba(245, 181, 68, 0.34); }
 .nav.active { color: var(--accent); background: rgba(245, 181, 68, 0.13); border-color: rgba(245, 181, 68, 0.48); font-weight: 700; box-shadow: inset 3px 0 0 var(--accent); }
@@ -379,6 +400,16 @@ body[data-public] .status-bar { display: none; }
 .kpi-v { font-size: var(--fs-sm); font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kpi-v .up { color: var(--up); }
 .kpi-v .down { color: var(--down); }
+/* KPI 條是全站更新後第一眼看的東西，值變了要看得出來——但不是每一項都有方向
+   （成交金額／資料狀態不是漲跌），所以不能借紅綠，改用全站既有的「中性提醒」語彙
+   --info（同 .rank-row:hover 的 rgba(112,184,255,…) 那份藍），淡入即淡出，
+   不常駐、不需要文字說明。只在值真的變了才加這個 class（見 app.js renderKpiSticky），
+   首次進頁不閃——否則六格同時亮起來是雜訊，不是訊號。 */
+.kpi-item.flash { border-radius: var(--r); animation: kpi-flash var(--dur-slow) var(--ease-out); }
+@keyframes kpi-flash {
+  0% { background: rgba(112, 184, 255, 0.22); }
+  100% { background: transparent; }
+}
 
 @media (max-width: 900px) {
   .overview-top { flex-direction: column; }
@@ -544,7 +575,7 @@ body[data-public] .status-bar { display: none; }
   min-width: 0; min-height: 104px; padding: 10px var(--space-md);
   background: var(--bg-card); border: 1px solid var(--border-default); border-radius: var(--r-lg);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), var(--shadow-card);
-  transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
+  transition: transform var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out);
 }
 .card:hover { transform: translateY(-2px); border-color: var(--border-strong); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), var(--shadow-card-hover); }
 /* 有懸停說明的卡片：標籤加點狀底線當「這裡有解釋」的視覺提示 */
@@ -579,7 +610,7 @@ body[data-public] .status-bar { display: none; }
 .bd-lim.up { background: var(--up-dim); color: #f0a0a0; }
 .bd-lim.down { background: var(--down-dim); color: #7ee2a0; }
 .breadth-bar { display: flex; height: 22px; border-radius: var(--r); overflow: hidden; border: 1px solid var(--border); }
-.breadth-bar .seg { height: 100%; transition: width .3s; }
+.breadth-bar .seg { height: 100%; transition: width var(--dur-med) var(--ease-out); }
 .breadth-bar .seg.up { background: var(--up); }
 .breadth-bar .seg.flat { background: var(--flat); }
 .breadth-bar .seg.down { background: var(--down); }
@@ -686,7 +717,7 @@ body[data-public] .status-bar { display: none; }
   display: flex; justify-content: space-between; align-items: center; gap: var(--space-sm);
   min-height: 31px; padding: var(--space-xs) var(--space-md);
   border-bottom: 1px solid var(--border-subtle); font-size: var(--font-size-table);
-  transition: background-color .14s ease;
+  transition: background-color var(--dur-fast) var(--ease-out);
 }
 #rank-buy .rank-row:nth-child(even), #rank-sell .rank-row:nth-child(even) { background: rgba(112, 184, 255, 0.04); }
 .rank-row:hover { background: rgba(112, 184, 255, 0.10); }
@@ -1215,7 +1246,7 @@ a.stock:hover { text-decoration: underline; }
     display: flex; flex-direction: column; align-items: stretch; gap: 0;
     padding: calc(10px + env(safe-area-inset-top, 0px)) 10px calc(10px + env(safe-area-inset-bottom, 0px));
     overflow-y: auto; border-radius: var(--r-lg) 0 0 var(--r-lg);
-    transform: translateX(0); animation: nav-drawer-in 180ms ease;
+    transform: translateX(0); animation: nav-drawer-in var(--dur-base) var(--ease-out);
   }
   .sidebar.open .sidebar-nav { display: flex; flex-direction: column; gap: 2px; min-height: 0; }
   .sidebar.open .nav-group { display: block; }
@@ -1240,9 +1271,8 @@ a.stock:hover { text-decoration: underline; }
     from { transform: translateX(100%); }
     to { transform: translateX(0); }
   }
-  @media (prefers-reduced-motion: reduce) {
-    .sidebar.open { animation: none; }
-  }
+  /* reduced-motion 現由全站的單一閘門收斂（見 :root 後的全域 media query），
+     不在此重複判斷——兩份會漂移，之前這裡各自寫一份正是要收斂的那個問題。 */
 
   /* 面板外的遮罩：點一下關閉。hidden 屬性由 app.js 切換，這裡只管長相。 */
   .nav-scrim { display: block; position: fixed; inset: 0; z-index: 49;
