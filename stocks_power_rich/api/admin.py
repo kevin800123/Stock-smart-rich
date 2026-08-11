@@ -17,7 +17,7 @@ from .helpers import (
 )
 from ..db import get_setting, set_setting, get_snapshot_dates, get_tx_history, get_ai_cache, backup_db
 from ..config import load_config
-from .. import updater, gemini
+from .. import updater, gemini, analysis
 
 router = APIRouter(prefix="/api")
 
@@ -219,6 +219,39 @@ def get_settings(request: Request):
         "intraday_picks_only": get_setting(c, "intraday_picks_only") == "1",
         "loss_tolerance": int(get_setting(c, "loss_tolerance") or 0) or None,
     }
+
+@router.get("/scoring-rules")
+def get_scoring_rules():
+    """木質/木率 的評分規則（唯讀，供設定頁檢視）。
+
+    規則文字一律來自 analysis.py 的常數——單一權威版本，前端不得複製一份寫死
+    （同 bands/Elliott 的規矩）。木質是「財報體質 × 籌碼」的自家版分數，木率是它的
+    估值化；15 項財報評分屬 Stage 2（待接季報源）故標為未啟用。
+    """
+    return {
+        "mu_score": {
+            "name": "木質",
+            "desc": "財報體質 × 本站籌碼；刻度 0–%d 分。財報是主幹、籌碼是傾斜。" % (15 + len(analysis.MU_CHIP_ITEMS)),
+            "base": "財報分（目前用匯入的蘭質 0–15；Stage 2 換成自算的 15 項）",
+            "chip_items": [{"key": k, "label": lbl} for k, lbl, _op in analysis.MU_CHIP_ITEMS],
+            "max": 15 + len(analysis.MU_CHIP_ITEMS),
+        },
+        "mu_value": {
+            "name": "木率",
+            "formula": "木質 ÷ 本業PE × 100（沿用蘭值公式，只換品質分子）",
+            "quality_floor": analysis.MU_QUALITY_FLOOR,
+            "gate": "木質未達 %d 分時不給「便宜」分，避開價值陷阱（raw 仍保留）。"
+                    % analysis.MU_QUALITY_FLOOR,
+        },
+        "lan_score": {
+            "name": "蘭質（15 項財報評分）",
+            "status": "pending_source",
+            "note": "忠實還原蘭弦；Stage 2 接季報源後啟用，屆時取代木質的財報分並可回算比對 CSV。",
+            "max": 15,
+            "items": [{"id": i, "label": lbl, "points": p} for i, lbl, p in analysis.LAN_SCORE_ITEMS],
+        },
+    }
+
 
 @router.post("/settings")
 def update_settings(request: Request, payload: dict = Body(...)):

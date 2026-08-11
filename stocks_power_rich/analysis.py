@@ -137,6 +137,21 @@ def daily_signals(rows: list[dict], top_n: int = 30) -> list[dict]:
     return scored[:top_n]
 
 
+def attach_mu(row: dict) -> dict:
+    """就地補上木質/木率並回傳同一個 dict（見「木質/木率」段）。
+
+    財報分 Stage 1 用匯入的蘭質（lan_score）；籌碼四欄就取同一列（大戶/人數/投信/外資）。
+    這是木質/木率進入每一列的唯一入口——在後端算、不在 JS 算（同 bands/Elliott 的規矩）。
+    """
+    ms = mu_score(row.get("lan_score"), row)
+    row["mu_score"] = ms["score"] if ms else None
+    mv = mu_value(ms["score"] if ms else None, row.get("lpe"))
+    row["mu_value"] = mv["value"] if mv else None
+    row["mu_raw"] = mv["raw"] if mv else None
+    row["mu_quality_ok"] = mv["quality_ok"] if mv else None
+    return row
+
+
 def filtered_picks(rows: list[dict]) -> list[dict]:
     """選股篩選：W55=1（技術翻多）＋大戶增比>0＋營收年增>0＋推估EPS>0，再依蘭值由高到低排序。"""
     out = []
@@ -149,7 +164,7 @@ def filtered_picks(rows: list[dict]) -> list[dict]:
             continue
         if _num(r.get("est_profit")) <= 0:
             continue
-        out.append(dict(r))
+        out.append(attach_mu(dict(r)))
     out.sort(key=lambda r: (r["lan_value"] if r.get("lan_value") is not None else float("-inf")), reverse=True)
     return out
 
@@ -236,6 +251,152 @@ def estimate_price_range(revenue, gross_margin_pct, opex, tax, shares,
         "mid": round(eps_annual * pe_mid, 2),
         "high": round(eps_annual * pe_high, 2),
     }
+
+
+# ======================================================================
+# 木質 / 木率：自家版「籌碼 × 基本面」評分（見 CLAUDE.md「木質/木率」段）
+#
+# 三個純函數、三個常數。常數是「規則的單一權威版本」——供 /api/scoring-rules 與
+# 設定頁引用，前端不得複製一份寫死（同 bands/Elliott「算式只有一份」的規矩）。
+# 分三層：
+#   lan_score —— 忠實還原蘭弦「蘭質」15 項（Stage 1 先鎖邏輯，季報源接上後才 wire）
+#   mu_score  —— 木質＝財報分 × 本站已在算的籌碼（Stage 1 上線版，用匯入蘭質當財報分）
+#   mu_value  —— 木率＝木質 ÷ 本業PE × 100，加品質閘避開價值陷阱
+# ======================================================================
+
+# 蘭質 15 項評分（忠實對照 XQ XScript Call_LQ；有序、含配分，合計 15）。
+LAN_SCORE_ITEMS = [
+    ("rev_yoy", "營收年增（營收[0]>[4]）", 1),
+    ("rev_qoq", "營收季增（營收[0]>[1]）", 1),
+    ("pretax_qoq", "稅前淨利季增（稅前淨利[0]>[1]）", 1),
+    ("gm_yoy", "毛利率年增（毛利率[0]>[4]）", 1),
+    ("ar_turn_yoy", "應收帳款週轉率年增（[0]>[4]）", 1),
+    ("inv_turn_yoy", "存貨週轉率年增（[0]>[4]）", 1),
+    ("turn_qoq", "應收+存貨週轉率季增（合計[0]>[1]）", 2),
+    ("debt_down", "負債比率下降（[0]<[1] 或 [0]<[4]）", 1),
+    ("ocf_up", "營運現金流雙增（[0]>[1] 且 [0]>[4]）", 1),
+    ("ocf_gt_ni3", "近3季營運現金流 > 稅後淨利", 1),
+    ("cash_content", "近4季現金含量>100%（Σ4現金流/Σ4淨利>1）", 2),
+    ("roe_up", "ROE 雙增（[0]>[1] 且 [0]>[4]）", 1),
+    ("capex_expand", "資本支出擴張（|近3季均|>|近8季均|）", 1),
+]
+
+# 每指標實際用到的季別 index（最新在前）；充足性守衛只查這些位置。
+_LAN_USED = {
+    "revenue": (0, 1, 4),
+    "pretax_income": (0, 1),
+    "gross_margin": (0, 4),
+    "ar_turnover": (0, 1, 4),
+    "inv_turnover": (0, 1, 4),
+    "debt_ratio": (0, 1, 4),
+    "ocf": (0, 1, 2, 3, 4),
+    "net_income": (0, 1, 2, 3),
+    "roe": (0, 1, 4),
+    "capex": (0, 1, 2, 3, 4, 5, 6, 7),
+}
+
+
+def lan_score(financials: dict) -> dict | None:
+    """蘭質＝6 財報紅綠燈 15 項評分（滿分 15），忠實還原 XQ XScript 的 Call_LQ。
+
+    financials＝{指標key: 最新在前的季度數列}，[n]＝n 季前、[4]＝去年同季。key ↔ GetField：
+    revenue(營業收入淨額)、pretax_income(稅前淨利)、gross_margin(營業毛利率)、
+    ar_turnover(應收帳款週轉率)、inv_turnover(存貨週轉率)、debt_ratio(負債比率)、
+    ocf(來自營運之現金流量)、net_income(本期稅後淨利)、roe(ROE)、capex(資本支出金額)。
+
+    比較一律用 XScript 的嚴格 > / <（相等不給分）。任一指標缺 key、或它「用到的季別」越界/為
+    None → 回 None（不可比的部分分數不如不給，同 estimate_price_range 風格）；未用到的 index
+    缺值不影響。cash_content 遇 Σ4(淨利)=0 判 0 分而非擲例外；其餘照原式（含 XScript「負/負可能
+    >1」的口徑怪癖，忠實對齊、非 bug——這函數的用途之一就是回算比對 CSV 的蘭質）。
+    """
+    for key, idxs in _LAN_USED.items():
+        s = financials.get(key)
+        if s is None:
+            return None
+        for i in idxs:
+            if i >= len(s) or s[i] is None:
+                return None
+
+    rev = financials["revenue"]
+    pt = financials["pretax_income"]
+    gm = financials["gross_margin"]
+    ar = financials["ar_turnover"]
+    inv = financials["inv_turnover"]
+    db = financials["debt_ratio"]
+    ocf = financials["ocf"]
+    ni = financials["net_income"]
+    roe = financials["roe"]
+    cap = financials["capex"]
+
+    ni4 = ni[0] + ni[1] + ni[2] + ni[3]
+    checks = {
+        "rev_yoy": 1 if rev[0] > rev[4] else 0,
+        "rev_qoq": 1 if rev[0] > rev[1] else 0,
+        "pretax_qoq": 1 if pt[0] > pt[1] else 0,
+        "gm_yoy": 1 if gm[0] > gm[4] else 0,
+        "ar_turn_yoy": 1 if ar[0] > ar[4] else 0,
+        "inv_turn_yoy": 1 if inv[0] > inv[4] else 0,
+        "turn_qoq": 2 if (ar[0] + inv[0]) > (ar[1] + inv[1]) else 0,
+        "debt_down": 1 if (db[0] < db[1] or db[0] < db[4]) else 0,
+        "ocf_up": 1 if (ocf[0] > ocf[1] and ocf[0] > ocf[4]) else 0,
+        "ocf_gt_ni3": 1 if (ocf[0] + ocf[1] + ocf[2]) > (ni[0] + ni[1] + ni[2]) else 0,
+        "cash_content": 2 if (ni4 != 0 and (ocf[0] + ocf[1] + ocf[2] + ocf[3]) / ni4 > 1) else 0,
+        "roe_up": 1 if (roe[0] > roe[1] and roe[0] > roe[4]) else 0,
+        "capex_expand": 1 if abs(sum(cap[:3]) / 3) > abs(sum(cap[:8]) / 8) else 0,
+    }
+    return {"score": sum(checks.values()), "max": 15, "checks": checks}
+
+
+# 木質的籌碼加成：四個訊號各 +1（boost-only、權重可調——設定頁揭露後再議是否改帶負分）。
+# 每筆＝(chip_snapshot 欄位, 說明, 方向)；方向 "gt"＝>0 favourable、"lt"＝<0 favourable。
+MU_CHIP_ITEMS = [
+    ("big_holder_ratio", "大戶增比 > 0（大戶加碼）", "gt"),
+    ("holder_drop_ratio", "人數降比 < 0（散戶退場、籌碼集中）", "lt"),
+    ("trust_3d", "投信近3日淨買超 > 0", "gt"),
+    ("foreign_3d", "外資近3日淨買超 > 0", "gt"),
+]
+
+
+def mu_score(lan_q, chips: dict | None = None) -> dict | None:
+    """木質＝財報分（lan_q）＋ 本站已在算的籌碼加成（0–4），刻度 0–19。
+
+    lan_q＝財報體質分：Stage 1 用匯入的蘭質（chip_snapshot.lan_score），Stage 2 改吃
+    lan_score()["score"]。lan_q is None → None（財報是主幹）。籌碼是傾斜：缺欄位＝該訊號
+    中性 0 分、不整檔回 None。刻度刻意從 15 換成 19（財報 15 + 籌碼 4）。
+    """
+    if lan_q is None:
+        return None
+    chips = chips or {}
+    hits, bonus = {}, 0
+    for key, _label, op in MU_CHIP_ITEMS:
+        v = chips.get(key)
+        ok = v is not None and ((op == "gt" and v > 0) or (op == "lt" and v < 0))
+        hits[key] = ok
+        if ok:
+            bonus += 1
+    return {"score": lan_q + bonus, "base": lan_q, "chip_bonus": bonus,
+            "chips": hits, "max": 15 + len(MU_CHIP_ITEMS)}
+
+
+# 木率的品質閘門檻（木質 0–19 刻度）：未達此分 → 不給「便宜」分，避開價值陷阱。
+# 10 ≒「財報 8–9/15 ＋ 一點籌碼」。設定頁揭露、之後可調。
+MU_QUALITY_FLOOR = 10
+
+
+def mu_value(mu_q, lpe, quality_floor: float = MU_QUALITY_FLOOR) -> dict | None:
+    """木率＝木質 ÷ 本業PE × 100（沿用蘭值公式，只換品質分子），加品質閘。
+
+    mu_q＝木質、lpe＝本業PE（chip_snapshot.lpe），任一 None → None。lpe<=0 照 XScript
+    對無效 PE 給 0。品質閘：木質未達 quality_floor 時 value 歸 0（不給便宜分），但 raw 仍
+    保留、不隱藏便宜這件事——由呈現層決定要不要標「疑似價值陷阱」。
+    """
+    if mu_q is None or lpe is None:
+        return None
+    quality_ok = mu_q >= quality_floor
+    if lpe <= 0:
+        return {"value": 0, "raw": 0, "quality_ok": quality_ok, "reason": "本業PE≤0"}
+    raw = round(mu_q / lpe * 100)
+    return {"value": raw if quality_ok else 0, "raw": raw, "quality_ok": quality_ok}
 
 
 DEFAULT_TRADE_FEE = 0.585  # 來回費用%＝買賣手續費 0.1425%×2 ＋ 賣出證交稅 0.3%

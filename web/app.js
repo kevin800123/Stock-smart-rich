@@ -818,6 +818,30 @@ async function loadSettings() {
       ["快照天數", s.snapshots], ["台指期歷史天數", s.tx_history_days], ["最新大盤日期", s.last_market_date || "—"],
     ].map(([k, v]) => `<div class="stat"><div class="stat-k">${k}</div><div class="stat-v">${v}</div></div>`).join("");
   } catch (e) { /* 忽略 */ }
+  renderScoringRules();
+}
+
+// 木質/木率 評分規則（唯讀）。規則文字全來自後端 /api/scoring-rules——單一權威版本，
+// 不在此複製一份寫死（同 bands/Elliott 的規矩）。分數不是漲跌，故用中性藍、不碰紅綠/琥珀。
+async function renderScoringRules() {
+  const box = $("set-scoring");
+  if (!box) return;
+  try {
+    const r = await getJSON("/api/scoring-rules");
+    const m = r.mu_score, v = r.mu_value, l = r.lan_score;
+    const chip = (m.chip_items || []).map((c) => `<li>${esc(c.label)}</li>`).join("");
+    const items = (l.items || []).map((it) => `<li>${esc(it.label)}<span class="sr-pt">${it.points}</span></li>`).join("");
+    box.innerHTML =
+      `<div class="sr-card"><div class="sr-h">${esc(m.name)}<span class="sr-max">滿分 ${m.max}</span></div>`
+      + `<div class="sr-desc">${esc(m.desc)}</div>`
+      + `<div class="sr-sub">財報分：${esc(m.base)}</div>`
+      + `<div class="sr-sub">籌碼加成（各 +1）</div><ul class="sr-list">${chip}</ul></div>`
+      + `<div class="sr-card"><div class="sr-h">${esc(v.name)}</div>`
+      + `<div class="sr-desc">${esc(v.formula)}</div>`
+      + `<div class="sr-sub">品質閘：${esc(v.gate)}</div></div>`
+      + `<div class="sr-card sr-pending"><div class="sr-h">${esc(l.name)}<span class="sr-tag">待接季報源</span></div>`
+      + `<div class="sr-desc">${esc(l.note)}</div><ul class="sr-list sr-cols">${items}</ul></div>`;
+  } catch (e) { box.innerHTML = ""; }
 }
 
 async function saveSettings() {
@@ -2433,6 +2457,12 @@ async function autoUpdate() {
 // ========== 選股清單 ==========
 function stockLink(code, name) { const c = esc(code), n = esc(name || ""); return `<a href="#" class="stock" data-code="${c}" data-name="${n}">${c} ${n}</a>`; }
 function lanCell(v) { if (v === null || v === undefined) return "—"; return v > 60 ? `<b style="color:var(--up)">${fmt(v, 1)}</b>` : fmt(v, 1); }
+// 木率：分數不是漲跌 → 高分用中性藍（非紅）。品質閘擋掉的：顯示灰字 raw＋說明，值仍以 0 參與排序沉底。
+function muValueCell(r) {
+  const v = r.mu_value; if (v === null || v === undefined) return "—";
+  if (r.mu_quality_ok === false) return `<span class="muted" title="木質未達門檻，便宜分不計（原值 ${r.mu_raw != null ? fmt(r.mu_raw, 0) : "—"}）">${fmt(r.mu_raw, 0)}⚑</span>`;
+  return v >= 60 ? `<b style="color:var(--info)">${fmt(v, 0)}</b>` : fmt(v, 0);
+}
 
 const sortState = {};
 function renderSortable(elId, columns, rows, emptyMsg, onRowClick) {
@@ -2461,7 +2491,9 @@ function renderSortable(elId, columns, rows, emptyMsg, onRowClick) {
 const PICK_COLS = [
   { key: "code", label: "股票", render: (r) => stockLink(r.code, r.name) },
   { key: "lan_value", label: "蘭值", numeric: true, render: (r) => lanCell(r.lan_value) },
+  { key: "mu_value", label: "木率", numeric: true, render: muValueCell },
   { key: "lan_score", label: "蘭質", numeric: true, dp: 1 },
+  { key: "mu_score", label: "木質", numeric: true, dp: 0 },
   { key: "lpe", label: "本益比", numeric: true },
   { key: "est_profit", label: "推估EPS", numeric: true },
   { key: "rev_yoy", label: "營收年增%", numeric: true, dp: 1 },
@@ -2549,7 +2581,7 @@ function renderProfile(p) {
   const groups = [
     ["籌碼面", [["大戶增比", fmt(c.big_holder_ratio)], ["人數降比", fmt(c.holder_drop_ratio)], ["集保大戶", fmt(c.custody)], ["投信3日", fmt(c.trust_3d)], ["外資3日", fmt(c.foreign_3d)]]],
     ["技術面", [["W55", Number(c.w55) >= 1 ? "翻多 ✓" : "—"]]],
-    ["基本/財務", [["營收年增%", fmt(c.rev_yoy, 1)], ["推估EPS(下季)", fmt(c.est_profit)], ["蘭質(財評/15)", fmt(c.lan_score)], ["本益比(LPE)", fmt(c.lpe)], ["蘭值", lanCell(c.lan_value)], ["市值(億)", fmt(c.market_cap, 0)], ["股本(億)", fmt(c.capital)]]],
+    ["基本/財務", [["營收年增%", fmt(c.rev_yoy, 1)], ["推估EPS(下季)", fmt(c.est_profit)], ["蘭質(財評/15)", fmt(c.lan_score)], ["木質(財評+籌碼/19)", fmt(c.mu_score)], ["本益比(LPE)", fmt(c.lpe)], ["蘭值", lanCell(c.lan_value)], ["木率", muValueCell(c)], ["市值(億)", fmt(c.market_cap, 0)], ["股本(億)", fmt(c.capital)]]],
   ];
   const html = groups.map(([t, items]) => `<div class="pf-group"><span class="pf-title">${t}</span>${items.map(([k, val]) => `<span class="pf-item"><b>${k}</b> ${val}</span>`).join("")}</div>`).join("");
   // TWSE估值只涵蓋上市股，上櫃股三欄永遠是「—」——全空時收起整組，換一行說明而非留破折號佔位

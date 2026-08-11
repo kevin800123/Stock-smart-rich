@@ -177,6 +177,19 @@ def test_dashboard_bands_come_from_ss_trader(tmp_path, monkeypatch):
     assert client.get("/public/api/dashboard").json()["bands"] == bands
 
 
+def test_scoring_rules_come_from_analysis_constants(tmp_path, monkeypatch):
+    """木質/木率 的規則必須來自 analysis 常數，設定頁不得另寫一份（同 bands 的防漂移）。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich import analysis
+
+    r = TestClient(create_app()).get("/api/scoring-rules").json()
+    assert len(r["mu_score"]["chip_items"]) == len(analysis.MU_CHIP_ITEMS)
+    assert r["mu_score"]["max"] == 15 + len(analysis.MU_CHIP_ITEMS)
+    assert r["mu_value"]["quality_floor"] == analysis.MU_QUALITY_FLOOR
+    assert len(r["lan_score"]["items"]) == len(analysis.LAN_SCORE_ITEMS)
+    assert sum(it["points"] for it in r["lan_score"]["items"]) == 15
+
+
 def test_dashboard_pulse_is_none_without_enough_market_data(tmp_path, monkeypatch):
     """沒有 market_daily 資料時，儀表板半圓錶要顯示「資料不足」而不是硬湊出的分數。"""
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))

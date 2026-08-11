@@ -66,6 +66,8 @@ View-switching SPA + ECharts (local `web/vendor/echarts.min.js`, no CDN — CSP 
 
 **`stock_flow.py`（2026-08）**：正規化的法人／融資券逐檔資料層（`stock_flow_daily`）＋研究引擎，只交付資料與研究報告，不交付選股頁或分數——五個研究狀態最好的結果 `candidate_for_prospective` 也只代表「值得前瞻觀察」，不是選股訊號，這句話進 API 回應本身。`update_day` 讓 `MI_INDEX ALLBUT0999`／`dailyQuotes` 各只打一次，同一份 payload 同時供 OHLC、量額、維持率使用。`bulk_upsert_ohlc` 改成 `COALESCE`（null 不再洗值），是兩來源合併寫入同一列的必要條件；改這個函式前看 CLAUDE.md 對應段落。`days=220` 是算出來的（交易日/日曆天≈0.67，研究閘門需要≥119 個交易日），不是隨手選的常數。
 
+**木質／木率（`analysis.py`，2026-08）**：從 XScript 還原蘭弦「蘭質／蘭值」後演化成的自家版「籌碼×基本面」評分（不是選股訊號）。三純函數 + 三常數，常數是規則的單一權威版本 → `GET /api/scoring-rules` → 設定頁唯讀顯示，前端不得寫死（同 bands）。`蘭值=蘭質÷本業PE×100`（已兩處證實）。`lan_score(financials)`＝忠實還原 15 項（`LAN_SCORE_ITEMS` 合計必 15；充足性守衛只查用到的季別 index；`cash_content` 除零判 0）——**Stage 1 先鎖邏輯、未 wire**，Stage 2 接季報源後取代木質的財報分並可回算比對 CSV。`mu_score`＝木質＝財報分（Stage 1 用匯入 `lan_score`）＋籌碼四訊號各 +1（`MU_CHIP_ITEMS`），0–19。`mu_value`＝木率＝木質÷本業PE×100 ＋**品質閘**（木質<`MU_QUALITY_FLOOR`(10) 時 value 歸 0、raw 保留）。並存對照：`attach_mu(row)` 是唯一入口、`filtered_picks` 逐列呼叫，選股表在蘭值/蘭質旁加木率/木質；分數非漲跌 → 中性藍 `--info`、不碰紅綠/琥珀。細節與 Stage 2 四項改良見 CLAUDE.md 同名段落。
+
 ## Data-source quirks (would trip you up)
 - **TWSE**: ROC (民國) dates = year+1911. `T86` (per-stock 三大法人) is **上市 only**; OTC uses TPEx. Direct RWD endpoints take a `date` param.
 - **TAIFEX**: official CSV downloads (`dlFutDataDown`, `futContractsDateDown`) need **GET-cookie-then-POST**, ≤~30-day chunks, and `.decode("ms950")`.

@@ -273,6 +273,17 @@ Same flex container bites line-clamping: **`-webkit-line-clamp` does not work on
 - **報酬起算點是訊號日的次一交易日開盤**（`forward_return`），不是訊號日或次日收盤——訊號用的三大法人資料本來就是當日收盤後才公布，用當日或次日收盤當進場價是前視偏誤。
 - **顏色語彙沿用全站規則，沒有為這個新頁面破例**：五個研究狀態沒有一個用 `--up`/`--down` 或 `--accent`，`candidate_for_prospective`（統計上「最好」的結果）刻意用藍色 `--info` 而非綠色——綠色在本站語意是「跌」，但更根本的原因是**任何暖色系在這裡都會被讀成「可以買」**，而這正是整個模組要避免的事。
 
+### 木質／木率：自家版「籌碼 × 基本面」評分（`analysis.py`，2026-08）
+
+從 XQ XScript 完整還原了蘭弦（`gd.myftp.org/lb`）的「蘭質」與「蘭值」，使用者要把它演化成自己的「木質／木率」。分數不是選股訊號，只是把「財報體質」與「主力有沒有進場」放在同一格供判讀。三個純函數 + 三個常數（`analysis.py`，接在 `estimate_price_range` 後），常數是**規則的單一權威版本**——經 `GET /api/scoring-rules` 送到設定頁唯讀顯示，前端不得複製一份寫死（同 bands/Elliott 的規矩）。
+
+- **公式（已從兩個來源證實）**：`蘭值 = 蘭質 ÷ 本業PE × 100`（主頁台泥實證 6÷56×100≒11）。`本業PE`＝扣除業外的本益比。「蘭質」是 6 財報紅綠燈共 **15 項評分**（滿分 15），逐條藏在 XScript 的自訂函數 `Call_LQ` 裡（`Call_LP`＝本業PE、`Call_LE`＝推估季EPS，後者與 `estimate_price_range` 同一條階梯）。
+- **`lan_score(financials)`**：忠實還原那 15 項（嚴格 `>`／`<`、命中加分）。**Stage 1 先鎖邏輯、尚未 wire**（需季報源）；接上後可回算比對 CSV 的蘭質驗證整條管線，並取代木質的財報分。`financials`＝`{指標key: 最新在前的季度數列}`，`[4]`＝去年同季。充足性守衛**只查每個指標實際用到的 index**（`_LAN_USED`；revenue{0,1,4}、net_income{0..3}、capex{0..7}…），任一用到的位置越界/為 None → 回 None，未用到的缺值不影響。`cash_content` 遇 `Σ4(淨利)=0` 判 0 分而非擲例外；其餘照 XScript 原式（含「負/負可能 >1」的口徑怪癖，忠實對齊、非 bug）。15 項的權威清單是 `LAN_SCORE_ITEMS`（含配分，合計必為 15，測試鎖住）。
+- **`mu_score(lan_q, chips)` ＝木質**：財報分（Stage 1 用**匯入的蘭質** `chip_snapshot.lan_score`；Stage 2 換成 `lan_score()["score"]`）＋ 籌碼四訊號各 +1（`MU_CHIP_ITEMS`：大戶增比>0、人數降比<0、投信三日>0、外資三日>0），刻度 0–19（刻意換刻度）。`lan_q is None → None`（財報是主幹）；籌碼是傾斜，缺欄位＝該訊號中性 0、不整檔回 None。加成目前 **boost-only、權重可調**——設定頁揭露就是要讓使用者看過後再決定要不要改成帶負分。
+- **`mu_value(mu_q, lpe, floor=MU_QUALITY_FLOOR)` ＝木率**：`木質 ÷ 本業PE × 100`（沿用蘭值公式、只換品質分子）+ **品質閘**。`lpe<=0` 照 XScript 對無效 PE 給 0；**木質 < `MU_QUALITY_FLOOR`(10) 時 `value` 歸 0（不給便宜分，避開價值陷阱），但 `raw` 保留**——由呈現層決定要不要標「疑似價值陷阱」，不是把便宜這件事藏掉。
+- **並存對照（暫時；穩定後才取代蘭質/蘭值）**：`analysis.attach_mu(row)` 是木質/木率進入每一列的**唯一入口**，`filtered_picks` 逐列呼叫它，所以選股表（`#daily`/`#industry`）、族群 picks、公開總覽、CSV 上傳結果一次全有。**在後端算、不在 JS 算**（同 bands）。選股表在蘭值/蘭質旁多「木率/木質」兩欄；`muValueCell` 高分用**中性藍 `--info`**（非 `lanCell` 的紅——分數不是漲跌），品質閘擋掉的顯示灰字 `raw` ＋ `⚑`、`value` 以 0 參與排序自然沉底。
+- **Stage 2（延後，需先接季報源）**：接公開資訊觀測站/FinMind → 用 `lan_score()` 回算財報分取代匯入蘭質；四項實測缺陷改良當作對 `lan_score` 的**具名可測 delta**（(1) `rev_qoq`/`turn_qoq` 撞季節性 → 改「YoY 是否加速」；(2) `ocf_gt_ni3`+`cash_content` 現金品質重複計分 → 併成單一分級檢查；(3) 嚴格 `>` 的刀鋒 → 加死區；(4) `capex_expand` 方向可議 → 改自由現金流為正且成長）。新項目集與新滿分由測試鎖定，規則自動經 `/api/scoring-rules` 出現在設定頁。測試：`tests/test_analysis_scoring.py`（三函數 + 常數健檢）、`tests/test_api.py::test_scoring_rules_come_from_analysis_constants`（防前端另寫一份）。
+
 ## Data-source quirks (would trip you up)
 - **TWSE**: ROC (民國) dates = year+1911. `T86` (per-stock 三大法人) is **上市 only**; OTC uses TPEx. Direct RWD endpoints take a `date` param.
 - **TAIFEX**: official CSV downloads (`dlFutDataDown`, `futContractsDateDown`) need **GET-cookie-then-POST**, ≤~30-day chunks, and `.decode("ms950")`.

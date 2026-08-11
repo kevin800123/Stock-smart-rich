@@ -244,7 +244,7 @@ def stock_profile(code: str):
         row = c.execute(
             "SELECT * FROM chip_snapshot WHERE snap_date=? AND code=?", (dates[-1], code)
         ).fetchone()
-        chip = dict(row) if row else None
+        chip = analysis.attach_mu(dict(row)) if row else None  # 補木質/木率（同選股表，後端算）
     return {"code": code, "snap_date": dates[-1] if dates else None,
             "chip": chip, "valuation": _valuation_for(c, code)}
 
