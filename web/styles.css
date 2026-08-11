@@ -379,6 +379,22 @@ body[data-public] .status-bar { display: none; }
 .kpi-v { font-size: var(--fs-sm); font-weight: 700; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kpi-v .up { color: var(--up); }
 .kpi-v .down { color: var(--down); }
+/* 六格目前一路平鋪：前 4 格（加權指數／成交金額／漲跌家數／三大法人）是「今天發生了
+   什麼」的原始行情，後 2 格（綜合分數／資料狀態）是「這個頁面自己算出來的判讀」——
+   兩種性質不一樣，但視覺上完全等重，眼睛掃過去分不出段落。用既有的中性藍 --info
+   （同 rank-row hover／KPI 更新提醒那份語彙）給後兩格一點極淡的底色，不靠邊框或
+   分隔線（欄數會隨螢幕寬度換行，靠 nth-child 加左邊框在窄螢幕會斷在錯的地方；
+   底色是逐格套用，跟版面怎麼換行無關）。只是分組提示，不是新的狀態語彙。
+   ⚠️ 不能用負 margin 把底色撐出格子邊界來製造「連成一塊」的錯覺——手機 3 欄斷點
+   的 gap 只有 4px 8px（見下方 375px 那條），比桌機 --sp-3(12px) 窄很多，實測負
+   margin 6px 會讓相鄰格子的底色重疊 4px。也不能用 padding 加底色範圍：.kpi-item
+   是 grid item，同一列的格高由該列最高的項目決定（grid 預設 align-items:stretch），
+   幫 5、6 兩格加 padding 會讓它們變高，把整列格高一起撐高，1–4 格反而多出一段
+   說不出理由的空白。用 inset box-shadow 純粹畫色、不佔版面（box-shadow 不影響
+   layout），填滿格子既有的框、大小完全不變，四個斷點都安全。 */
+.kpi-item:nth-child(5), .kpi-item:nth-child(6) {
+  border-radius: var(--r); box-shadow: inset 0 0 0 100px rgba(112, 184, 255, .07);
+}
 
 @media (max-width: 900px) {
   .overview-top { flex-direction: column; }
@@ -421,12 +437,16 @@ body[data-public] .status-bar { display: none; }
 .ms-inst .ms-i-k { font-size: var(--fs-sm); color: var(--muted); }
 .ms-inst .ms-i-v { font-size: var(--fs-lg); font-weight: 700; white-space: nowrap; }
 .ms-inst .ms-i.total .ms-i-v { font-size: var(--fs-xl); }
-/* 一句判讀：指數方向 vs 內部廣度的關係。背離時才套 .alert（見下方「注意」語彙）。 */
-.ms-verdict { font-size: var(--fs-md); color: var(--label); margin-top: var(--sp-2); }
+/* 一句判讀：指數方向 vs 內部廣度的關係，是整個首屏唯一回答「今天健不健康」的句子，
+   但原本跟旁邊隨便一個 muted 說明字級／字色完全一樣（16px、--label、weight 400）——
+   眼睛沒有理由在這裡停下來。改用 --text（全站最亮的文字色）＋600 字重，讓它讀起來
+   像「結論」而不是「註解」。不是新色、不是新裝飾，只是把既有的強調字色借過來用在
+   它真正該用的地方。背離時才套 .alert（見下方「注意」語彙）——.alert 現在只需要疊
+   加它自己特有的 3 樣東西（背景／padding／琥珀外框），文字色與字重已經是基準值。 */
+.ms-verdict { font-size: var(--fs-md); font-weight: 600; color: var(--text); margin-top: var(--sp-2); }
 .ms-verdict:empty { display: none; }
-.ms-verdict.alert { display: inline-block; color: var(--text); font-weight: 600;
-  background: var(--sunken); border-radius: var(--r); padding: 4px 10px;
-  outline: 1px solid var(--accent); }
+.ms-verdict.alert { display: inline-block; background: var(--sunken); border-radius: var(--r);
+  padding: 4px 10px; outline: 1px solid var(--accent); }
 
 /* 「注意這格」的唯一語彙：琥珀外框。外框與填色是兩條正交的軸，所以它能疊在
    紅漲綠跌的卡片上而不打架——不必為了標注異常再引入第四個色相。
