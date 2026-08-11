@@ -12,6 +12,7 @@ from .db import (
     bulk_upsert_ohlc,
     bulk_upsert_stock_flow,
     get_ai_cache,
+    set_ai_cache,
     set_stock_source_coverage,
 )
 from .sources import tpex, twse
@@ -369,9 +370,21 @@ def _market_research(conn: sqlite3.Connection, market: str) -> dict:
     for ds, code, total in flow_rows:
         values[code][ds] = float(total)
         codes_by_date[ds].add(code)
-    ohlc = {(row[0], row[1]): (row[2], row[3]) for row in conn.execute(
-        "SELECT date, code, open, close FROM stock_ohlc WHERE open IS NOT NULL OR close IS NOT NULL"
-    ).fetchall()}
+    # forward_return() only ever looks up OHLC at dates already inside `dates` (it
+    # guards on signal_index+horizon >= len(dates) before looking anything up), so
+    # scoping this query to [dates[0], dates[-1]] is behavior-preserving by construction
+    # — both endpoints are load-bearing, not just the middle. This used to read the
+    # *entire* stock_ohlc table with no date filter at all; after the 2026-08 backfill
+    # fix that table actually holds hundreds of days of full-market history, and
+    # loading all of it on every research() call was slow enough to trip Zeabur's
+    # reverse-proxy timeout (502) on a single-worker deployment.
+    ohlc = {}
+    if dates:
+        ohlc = {(row[0], row[1]): (row[2], row[3]) for row in conn.execute(
+            "SELECT date, code, open, close FROM stock_ohlc "
+            "WHERE date>=? AND date<=? AND (open IS NOT NULL OR close IS NOT NULL)",
+            (dates[0], dates[-1]),
+        ).fetchall()}
     breadth = []
     alpha_by_horizon = {h: [] for h in HORIZONS}
     observations = 0
@@ -485,6 +498,16 @@ def classify_research(results: dict) -> dict:
 
 
 def research(conn: sqlite3.Connection) -> dict:
+    # coverage_report()'s data_version is already a content hash of the coverage
+    # state — the same data will always produce the same version, so it doubles as
+    # a cache key at no extra cost. Computed first (cheap: scans stock_source_coverage,
+    # not the full flow/OHLC tables) so a cache hit skips the expensive market scan
+    # entirely instead of just skipping the trailing lookup it used to be used for.
+    version = coverage_report(conn)["data_version"]
+    cache_key = f"stock_flow_research:{version}"
+    cached = get_ai_cache(conn, cache_key)
+    if cached is not None:
+        return cached
     twse_result = _market_research(conn, "TWSE")
     tpex_result = _market_research(conn, "TPEx")
     combined = _combined_research(twse_result, tpex_result)
@@ -492,9 +515,10 @@ def research(conn: sqlite3.Connection) -> dict:
     verdict = classify_research(results)
     for result in (twse_result, tpex_result):
         result.pop("_dates", None)
-    version = coverage_report(conn)["data_version"]
-    return {"generated_at": datetime.now().isoformat(timespec="seconds"),
-            "data_version": version, "windows": list(WINDOWS), "returns": list(HORIZONS),
-            "entry_rule": "訊號日次一交易日開盤", "results": results,
-            "verdict": verdict, "disclaimer": DISCLAIMER,
-            "candidate_warning": CANDIDATE_WARNING}
+    payload = {"generated_at": datetime.now().isoformat(timespec="seconds"),
+              "data_version": version, "windows": list(WINDOWS), "returns": list(HORIZONS),
+              "entry_rule": "訊號日次一交易日開盤", "results": results,
+              "verdict": verdict, "disclaimer": DISCLAIMER,
+              "candidate_warning": CANDIDATE_WARNING}
+    set_ai_cache(conn, cache_key, payload)
+    return payload

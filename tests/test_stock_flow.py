@@ -306,6 +306,63 @@ def test_turnover_cache_cannot_complete_the_other_market(tmp_path):
         (ds,)).fetchone() is None
 
 
+def test_research_caches_by_data_version_and_recomputes_when_coverage_changes(tmp_path, monkeypatch):
+    """research() 掃全市場很貴（回補修好之後資料量真的變大，這正是使用者遇到 502 的
+    原因），而 data_version 本來就是覆蓋狀態的雜湊——資料沒變就不必重跑，直接沿用
+    上一次的結果；資料真的變了（data_version 跟著變）才重新計算兩個市場。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    calls = {"n": 0}
+    real = stock_flow._market_research
+
+    def counted(conn_, market):
+        calls["n"] += 1
+        return real(conn_, market)
+
+    monkeypatch.setattr(stock_flow, "_market_research", counted)
+
+    r1 = stock_flow.research(conn)
+    assert calls["n"] == 2  # TWSE + TPEx，第一次真的算
+
+    r2 = stock_flow.research(conn)
+    assert calls["n"] == 2  # data_version 沒變 → 直接吃快取，不重算
+    assert r2 == r1
+
+    from stocks_power_rich.db import set_stock_source_coverage
+    # coverage_report()'s default window only looks back 220 days from *today* (real
+    # system date, since research()/coverage_report() aren't given an explicit `today`
+    # here) — a fixed past date could fall outside that cutoff and never affect
+    # data_version at all. date.today() is always inside the window.
+    set_stock_source_coverage(conn, date.today().isoformat(), "TWSE", "quotes", "complete", 1)
+    r3 = stock_flow.research(conn)
+    assert calls["n"] == 4  # 覆蓋狀態變了 → data_version 跟著變 → 兩市場都重算
+    assert r3["data_version"] != r1["data_version"]
+
+
+def test_market_research_ohlc_lookup_includes_both_window_boundary_dates(tmp_path):
+    """_market_research 原本用 `SELECT ... FROM stock_ohlc`（完全沒有日期範圍）——
+    掃全表，回補修好之後這張表可以有數百天全市場資料，是使用者回報 502 逾時的元兇。
+    改成只查 [dates[0], dates[-1]] 這個研究視窗實際用到的範圍；這條測試專門守住
+    「範圍要包含兩端點」這個邊界——少一端就會讓 forward_return 在視窗頭尾悄悄少算，
+    而不會有任何錯誤訊息（同這個 codebase 一貫在意的「安靜地錯」那類問題）。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    from stocks_power_rich.db import bulk_upsert_ohlc, bulk_upsert_stock_flow
+
+    # 65 個連續日期：外層迴圈要 i>=59（max(WINDOWS)-1）才開始處理，horizon=5 時
+    # i=59 剛好用到 dates[60]（進場）與 dates[64]（出場，也就是 dates[-1]，視窗尾端）。
+    dates = [(date(2026, 1, 1) + timedelta(days=n)).isoformat() for n in range(65)]
+    for ds in dates:
+        bulk_upsert_stock_flow(conn, ds, "TWSE", {"2330": {"institutional_total_lots": 1.0}})
+    # 進場價在 dates[60]、出場價在 dates[64]＝dates[-1]（視窗尾端，最容易被 off-by-one
+    # 漏掉的那一端）；沒有這兩筆，i=59 的 horizon=5 收益就會是 None，alpha 榜單全空。
+    bulk_upsert_ohlc(conn, dates[60], {"2330": {"open": 100}})
+    bulk_upsert_ohlc(conn, dates[64], {"2330": {"close": 110}})
+
+    result = stock_flow._market_research(conn, "TWSE")
+    assert result["alpha"]["ret5"]["n"] >= 1, "視窗尾端 dates[-1] 的收盤價沒被查到"
+
+
 def test_research_api_is_fixed_and_always_returns_disclaimer(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from fastapi.testclient import TestClient
