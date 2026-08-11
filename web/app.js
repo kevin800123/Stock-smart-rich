@@ -325,8 +325,10 @@ function irRenderCoverage(data) {
       const source = sources[sourceKey] || {};
       const failed = source.failed || [];
       const latestFailure = failed.length ? failed[failed.length - 1] : null;
+      const holidayNote = source.holiday_days
+        ? `<span class="muted small">（另 ${fmt(source.holiday_days, 0)} 天確認為非交易日，已排除）</span>` : "";
       return `<div class="ir-source">
-        <div class="ir-source-label"><span>${sourceLabel}</span><span>已覆蓋 ${fmt(source.complete_days || 0, 0)} 個交易日</span></div>
+        <div class="ir-source-label"><span>${sourceLabel}</span><span>已覆蓋 ${fmt(source.complete_days || 0, 0)} 個交易日${holidayNote}</span></div>
         <progress max="${Math.max(1, Number(source.expected_days || data.estimated_trading_days || 1))}" value="${Number(source.complete_days || 0)}" aria-label="${labels[market]}${sourceLabel}已覆蓋 ${Number(source.complete_days || 0)} 個交易日"></progress>
         ${latestFailure ? `<div class="ir-source-failure">${esc(latestFailure.date)}：${esc(latestFailure.error || "來源未回傳")}</div>` : ""}
       </div>`;

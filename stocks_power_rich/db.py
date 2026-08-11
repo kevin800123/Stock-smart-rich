@@ -325,9 +325,15 @@ def bulk_upsert_stock_flow(conn: sqlite3.Connection, date: str, market: str,
 def set_stock_source_coverage(conn: sqlite3.Connection, date: str, market: str,
                               source: str, status: str, row_count: int = 0,
                               error: str | None = None, updated_at: str | None = None) -> None:
-    """Record each market/source independently; one market never completes another."""
-    if status not in ("complete", "failed"):
-        raise ValueError("coverage status must be complete or failed")
+    """Record each market/source independently; one market never completes another.
+
+    "holiday" is a terminal status distinct from "failed": it means both markets
+    returned no quotes on this date across two separate backfill rounds, so it is
+    treated as a confirmed non-trading day (see stock_flow.backfill) rather than a
+    fetch error to retry.
+    """
+    if status not in ("complete", "failed", "holiday"):
+        raise ValueError("coverage status must be complete, failed, or holiday")
     stamp = updated_at or datetime.now().isoformat(timespec="seconds")
     conn.execute(
         "INSERT INTO stock_source_coverage "

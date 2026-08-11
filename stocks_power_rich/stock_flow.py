@@ -212,7 +212,10 @@ def backfill(conn: sqlite3.Connection, days: int = 220, max_fetch: int = 3,
     for ds in candidates:
         if len(processed) >= batch or scanned >= scan_limit:
             break
-        if all(state.get((ds, market, source)) == "complete"
+        # "holiday" is terminal alongside "complete" — a date confirmed as a non-trading
+        # day (see below) must never re-enter the scan; without this it would burn a
+        # scanned/API-call slot on every single future call, forever, for no reason.
+        if all(state.get((ds, market, source)) in ("complete", "holiday")
                for market in MARKETS for source in SOURCES):
             continue
         scanned += 1
@@ -228,6 +231,25 @@ def backfill(conn: sqlite3.Connection, days: int = 220, max_fetch: int = 3,
                 rows = {}
             quote_results[market] = bool(rows)
         if not known_trading and not any(quote_results.values()):
+            # Both markets came back empty and neither was ever confirmed trading on
+            # this date — almost certainly a holiday, but a transient network hiccup
+            # would look identical on the first observation (_fetch_quotes swallows
+            # exceptions into {} too). So this is a two-round confirmation, not a
+            # one-shot verdict: round 1 marks quotes "failed" (tier-0, retried first
+            # on the next call); only if round 2 is *also* empty on both markets do we
+            # commit to "holiday" across every (market, source) for this date. A single
+            # bad network moment self-heals on the retry instead of permanently losing
+            # a real trading day's data.
+            already_suspect = all(
+                state.get((ds, m, "quotes")) == "failed" for m in MARKETS)
+            if already_suspect:
+                for market in MARKETS:
+                    for source in SOURCES:
+                        set_stock_source_coverage(conn, ds, market, source, "holiday", 0)
+            else:
+                for market in MARKETS:
+                    set_stock_source_coverage(conn, ds, market, "quotes", "failed", 0,
+                                              "官方行情資料未回傳（可能為非交易日，將於下次重試後確認）")
             continue
         for market in MARKETS:
             if quote_results.get(market):
@@ -277,16 +299,23 @@ def coverage_report(conn: sqlite3.Connection, days: int = 220, batch_size: int =
         for source in SOURCES:
             items = by_key[(market, source)]
             complete = [row[0] for row in items if row[3] == "complete"]
+            holidays = {row[0] for row in items if row[3] == "holiday"}
             failed = [{"date": row[0], "error": row[5]} for row in items if row[3] == "failed"]
-            remaining = max(0, expected - len(complete))
+            # Confirmed non-trading days (see backfill's two-round holiday check) are
+            # excluded from the denominator, not just hidden from the gap list — without
+            # this, expected_days stays fixed at "every weekday including holidays" and
+            # completeness can never reach 100%, no matter how many times the user backfills.
+            effective_expected = max(0, expected - len(holidays))
+            remaining = max(0, effective_expected - len(complete))
             max_remaining = max(max_remaining, remaining)
             sources[source] = {
-                "complete_days": len(complete), "expected_days": expected,
-                "percent": round(len(complete) / expected * 100, 1) if expected else 0,
+                "complete_days": len(complete), "expected_days": effective_expected,
+                "percent": round(len(complete) / effective_expected * 100, 1) if effective_expected else 0,
                 "oldest": min(complete) if complete else None,
                 "latest": max(complete) if complete else None,
                 "failed": failed[-20:], "missing_days": remaining,
-                "gaps": [ds for ds in expected_dates if ds not in set(complete)],
+                "holiday_days": len(holidays),
+                "gaps": [ds for ds in expected_dates if ds not in set(complete) and ds not in holidays],
             }
         markets[market] = {"sources": sources}
     updated_at = max((row[6] for row in rows if row[6]), default=None)

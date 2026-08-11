@@ -110,6 +110,120 @@ def test_backfill_counts_trading_dates_and_keeps_market_failures_separate(tmp_pa
     assert ("TWSE", "quotes", "complete") in [tuple(row) for row in rows]
 
 
+def test_backfill_treats_double_market_empty_as_retry_before_confirming_holiday(tmp_path, monkeypatch):
+    """兩市場同一天都拿不到報價，第一輪只當成 failed（可能是暫時性錯誤），
+    第二輪還是拿不到才真的判定為國定假日——避免一次網路小抖動就永久判死一天。
+
+    days 內部下限是 60（見 backfill/coverage_report 的 max(60,...) 夾限），所以窗口裡
+    永遠不只一個候選日期。用「依實際傳入的日期參數計數」而非全域計數器，只驗證
+    today（優先序最高、每輪一定第一個被處理）這一天的呼叫次數，不管窗口裡其他
+    ~42 個日期發生什麼事。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    calls = {"twse": [], "tpex": []}
+
+    def empty_twse(day=None):
+        calls["twse"].append(day)
+        return {}
+
+    def empty_tpex(day=None):
+        calls["tpex"].append(day)
+        return {}
+
+    monkeypatch.setattr(stock_flow.twse, "fetch_stock_daily", empty_twse)
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily", empty_tpex)
+    monkeypatch.setattr(stock_flow.twse, "fetch_t86", lambda day=None: {})
+    monkeypatch.setattr(stock_flow.tpex, "fetch_tpex_insti", lambda day=None: {})
+    monkeypatch.setattr(stock_flow.twse, "fetch_margin_detail", lambda day=None: {})
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_margin", lambda day=None: {})
+
+    # today (2026-08-10) is the most recent weekday in any window, so it is always
+    # priority-sorted first among untouched (tier 2) or failed (tier 0) candidates —
+    # deterministic to target without needing a single-candidate window.
+    today = date(2026, 8, 10)
+    ds = today.isoformat()
+
+    # Round 1: first time seeing this date empty on both markets → failed, not holiday yet.
+    stock_flow.backfill(conn, days=1, max_fetch=1, today=today)
+    round1 = {row[0]: row[1] for row in conn.execute(
+        "SELECT source, status FROM stock_source_coverage WHERE date=? AND market='TWSE'", (ds,))}
+    assert round1.get("quotes") == "failed"
+    assert calls["twse"].count(today) == 1
+    assert calls["tpex"].count(today) == 1
+
+    # Round 2: today is now tier-0 (failed), so it is processed first again; still
+    # empty on both markets → now confirmed holiday across all sources.
+    stock_flow.backfill(conn, days=1, max_fetch=1, today=today)
+    round2 = {(row[0], row[1]): row[2] for row in conn.execute(
+        "SELECT market, source, status FROM stock_source_coverage WHERE date=?", (ds,))}
+    for market in stock_flow.MARKETS:
+        for source in stock_flow.SOURCES:
+            assert round2[(market, source)] == "holiday", (market, source, round2)
+    assert calls["twse"].count(today) == 2
+    assert calls["tpex"].count(today) == 2
+
+
+def test_backfill_never_refetches_a_confirmed_holiday_date(tmp_path, monkeypatch):
+    """一旦兩輪都確認是假日，之後的每次補下一批都不該再打一次官方 API 問同一天——
+    否則就是這次回報的『卡在同一批、永遠補不完』的根因：每次點擊都白白重打。
+
+    窗口下限 60 天，其他 ~42 個日期本來就該被正常抓取，所以不能斷言「完全零呼叫」，
+    只能斷言「today 這個已確認的假日，從沒被拿去問過官方 API」。"""
+    from stocks_power_rich.db import set_stock_source_coverage
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    today = date(2026, 8, 10)
+    ds = today.isoformat()
+    for market in stock_flow.MARKETS:
+        for source in stock_flow.SOURCES:
+            set_stock_source_coverage(conn, ds, market, source, "holiday", 0)
+
+    calls = []
+
+    def counted(day=None):
+        calls.append(day)
+        return {}
+
+    monkeypatch.setattr(stock_flow.twse, "fetch_stock_daily", counted)
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily", counted)
+    monkeypatch.setattr(stock_flow.twse, "fetch_t86", counted)
+    monkeypatch.setattr(stock_flow.tpex, "fetch_tpex_insti", counted)
+    monkeypatch.setattr(stock_flow.twse, "fetch_margin_detail", counted)
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_margin", counted)
+
+    stock_flow.backfill(conn, days=1, max_fetch=1, today=today)
+    assert today not in calls, "confirmed holiday date must be skipped before any fetch"
+    status = conn.execute(
+        "SELECT status FROM stock_source_coverage WHERE date=? AND market='TWSE' AND source='quotes'",
+        (ds,)).fetchone()[0]
+    assert status == "holiday", "must stay holiday, not get re-touched by this run"
+
+
+def test_coverage_report_excludes_confirmed_holidays_from_expected_and_gaps(tmp_path):
+    """假日一旦確認，就不該再算進『還缺幾天』——不然完整度永遠卡在某個百分比以下，
+    使用者看著『估計還需約 N 次』卻怎麼點都補不完。"""
+    from stocks_power_rich.db import set_stock_source_coverage
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    # days is floored to 60 internally; today=2026-08-10 gives 43 candidate weekdays
+    # in that window (verified via _weekdays). Marking exactly one of them "holiday"
+    # must shrink the denominator by exactly one, not just hide it from the gap list.
+    today = date(2026, 8, 10)
+    holiday_ds = today.isoformat()
+    for market in stock_flow.MARKETS:
+        for source in stock_flow.SOURCES:
+            set_stock_source_coverage(conn, holiday_ds, market, source, "holiday", 0)
+
+    report = stock_flow.coverage_report(conn, days=1, batch_size=3, today=today)
+    quotes = report["markets"]["TWSE"]["sources"]["quotes"]
+    assert holiday_ds not in quotes["gaps"]
+    assert quotes["holiday_days"] == 1
+    assert quotes["expected_days"] == 42
+    assert quotes["percent"] == 0
+
+
 def test_daily_update_fetches_each_shared_source_once(tmp_path, monkeypatch):
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)

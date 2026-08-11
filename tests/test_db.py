@@ -172,3 +172,16 @@ def test_stock_source_coverage_is_independent_by_market(tmp_path):
     rows = conn.execute(
         "SELECT market, status, attempts FROM stock_source_coverage ORDER BY market").fetchall()
     assert [tuple(row) for row in rows] == [("TPEx", "failed", 1), ("TWSE", "complete", 1)]
+
+
+def test_stock_source_coverage_accepts_holiday_status_rejects_garbage(tmp_path):
+    from stocks_power_rich.db import set_stock_source_coverage
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    set_stock_source_coverage(conn, "2026-08-08", "TWSE", "quotes", "holiday", 0)
+    status = conn.execute(
+        "SELECT status FROM stock_source_coverage WHERE date=?", ("2026-08-08",)).fetchone()[0]
+    assert status == "holiday"
+    with pytest.raises(ValueError):
+        set_stock_source_coverage(conn, "2026-08-08", "TWSE", "quotes", "bogus", 0)
