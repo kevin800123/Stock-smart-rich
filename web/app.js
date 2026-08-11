@@ -471,13 +471,32 @@ function renderInstResearchSegment() {
   requestAnimationFrame(() => { irRenderBreadth(result); irRenderAlpha(result); });
 }
 
+// 研究計算已改成後端背景執行（見 api/stock_flow.py：全市場計算太慢，同步跑會被反向
+// 代理逾時砍成 502）。每次 POST 只是「啟動或查詢」，回 status；computing 就每 3 秒再問
+// 一次，直到 ready。輪詢計時器記在 irPollTimer，重按時先清掉舊的，避免疊出多條輪詢。
+let irPollTimer = null;
 async function runInstResearch() {
+  if (irPollTimer) { clearTimeout(irPollTimer); irPollTimer = null; }
   irSetBusy("research", true, "正在依固定規則計算日期級命中、全母體報酬與 alpha…");
+  pollInstResearch();
+}
+
+async function pollInstResearch() {
   try {
     const response = await fetch(apiUrl("/api/stock-flow/research"), { method: "POST" });
     if (!response.ok) throw new Error(`研究 API ${response.status}`);
     const data = await response.json();
     if (data.busy) { irSetBusy("research", false, data.note || "系統忙碌，請稍後再試。"); return; }
+    if (data.status === "computing") {
+      irSetBusy("research", true, data.note || "研究計算進行中，完成後會自動顯示…");
+      irPollTimer = setTimeout(pollInstResearch, 3000);
+      return;
+    }
+    if (data.status === "error") {
+      irSetBusy("research", false, `研究計算失敗：${data.error || "未知錯誤"}。再按一次可重試。`);
+      return;
+    }
+    // status === "ready"：data 內含完整報告（generated_at／results／verdict…）
     instReport = data;
     $("ir-empty").hidden = true;
     $("ir-report").hidden = false; // 必須先解除 hidden，ECharts 才能取得真實尺寸
@@ -486,7 +505,7 @@ async function runInstResearch() {
     $("ir-disclaimer").textContent = data.disclaimer || $("ir-disclaimer").textContent;
     irSetVerdict(data.verdict);
     renderInstResearchSegment();
-    irSetBusy("research", false, "研究報告已完成；資料更新後不會自動重算。" );
+    irSetBusy("research", false, "研究報告已完成；資料更新後不會自動重算。");
   } catch (e) {
     irSetBusy("research", false, `研究計算失敗：${e.message}。請稍後重試。`);
   }

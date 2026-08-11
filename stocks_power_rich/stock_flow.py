@@ -497,14 +497,30 @@ def classify_research(results: dict) -> dict:
             "message": CANDIDATE_WARNING}
 
 
+def data_version(conn: sqlite3.Connection) -> str:
+    """The coverage-state content hash. Cheap (scans only stock_source_coverage) and
+    doubles as the research cache key, so the API layer can dedup/serve cache without
+    touching the full flow/OHLC tables. Single source shared by research() and the
+    background job runner."""
+    return coverage_report(conn)["data_version"]
+
+
+def research_cache_key(version: str) -> str:
+    return f"stock_flow_research:{version}"
+
+
+def cached_research(conn: sqlite3.Connection) -> dict | None:
+    """Return the already-computed report for the current data version, or None.
+    Read-only and fast — never triggers the expensive full-market scan."""
+    return get_ai_cache(conn, research_cache_key(data_version(conn)))
+
+
 def research(conn: sqlite3.Connection) -> dict:
-    # coverage_report()'s data_version is already a content hash of the coverage
-    # state — the same data will always produce the same version, so it doubles as
-    # a cache key at no extra cost. Computed first (cheap: scans stock_source_coverage,
-    # not the full flow/OHLC tables) so a cache hit skips the expensive market scan
-    # entirely instead of just skipping the trailing lookup it used to be used for.
-    version = coverage_report(conn)["data_version"]
-    cache_key = f"stock_flow_research:{version}"
+    # data_version is a content hash of the coverage state — the same data always
+    # produces the same version, so it doubles as the cache key. Computed first
+    # (cheap) so a cache hit skips the expensive per-market scan entirely.
+    version = data_version(conn)
+    cache_key = research_cache_key(version)
     cached = get_ai_cache(conn, cache_key)
     if cached is not None:
         return cached

@@ -363,7 +363,20 @@ def test_market_research_ohlc_lookup_includes_both_window_boundary_dates(tmp_pat
     assert result["alpha"]["ret5"]["n"] >= 1, "視窗尾端 dates[-1] 的收盤價沒被查到"
 
 
-def test_research_api_is_fixed_and_always_returns_disclaimer(tmp_path, monkeypatch):
+def _poll_research(client, tries=50, delay=0.1):
+    """研究改成背景執行緒計算，首個 POST 回 status:computing；輪詢到 ready 再回報告。
+    空資料下計算是毫秒級，這個小迴圈很快就會拿到結果，不會 flaky。"""
+    import time
+    for _ in range(tries):
+        data = client.post("/api/stock-flow/research").json()
+        if data.get("status") == "computing":
+            time.sleep(delay)
+            continue
+        return data
+    raise AssertionError("research never left 'computing' within the poll budget")
+
+
+def test_research_api_backgrounds_then_returns_disclaimer(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from fastapi.testclient import TestClient
     from stocks_power_rich.main import create_app
@@ -372,10 +385,78 @@ def test_research_api_is_fixed_and_always_returns_disclaimer(tmp_path, monkeypat
     coverage = client.get("/api/stock-flow/coverage?days=220").json()
     assert coverage["days"] == 220
     assert set(coverage["markets"]) == {"TWSE", "TPEx"}
-    report = client.post("/api/stock-flow/research").json()
+
+    first = client.post("/api/stock-flow/research").json()
+    assert first["status"] in ("computing", "ready")  # 立刻回應，不同步阻塞
+
+    report = _poll_research(client)
+    assert report["status"] == "ready"
     assert report["verdict"]["code"] == "insufficient_data"
     assert report["disclaimer"] == stock_flow.DISCLAIMER
     assert report["candidate_warning"] == stock_flow.CANDIDATE_WARNING
+
+
+def test_research_serves_cache_as_ready_without_spawning_a_job(tmp_path, monkeypatch):
+    """快取已有當前 data_version 的結果時，POST 直接回 ready，且不啟動任何背景計算——
+    這正是背景化之後『重複點擊近乎瞬間』的路徑。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from fastapi.testclient import TestClient
+    from stocks_power_rich.main import create_app
+    from stocks_power_rich.api import stock_flow as api_stock_flow
+    from stocks_power_rich.db import get_connection, init_db, set_ai_cache
+
+    dbfile = str(tmp_path / "t.sqlite")
+    seed = get_connection(dbfile)
+    init_db(seed)
+    version = stock_flow.data_version(seed)
+    set_ai_cache(seed, stock_flow.research_cache_key(version),
+                 {"data_version": version, "verdict": {"code": "insufficient_data"},
+                  "disclaimer": stock_flow.DISCLAIMER})
+
+    spawned = {"n": 0}
+    monkeypatch.setattr(api_stock_flow, "_run_research_job",
+                        lambda *a, **k: spawned.__setitem__("n", spawned["n"] + 1))
+
+    data = TestClient(create_app()).post("/api/stock-flow/research").json()
+    assert data["status"] == "ready"
+    assert data["verdict"]["code"] == "insufficient_data"
+    assert spawned["n"] == 0, "cache hit must not start a background job"
+
+
+def test_research_reports_then_clears_background_error(tmp_path, monkeypatch):
+    """背景計算失敗要能被下一次請求如實回報（而不是靜靜卡在 computing），回報後清除、
+    讓再按一次能重試——失敗不寫快取（不把失敗永久化，同全站快取守則）。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from fastapi.testclient import TestClient
+    from stocks_power_rich.main import create_app
+    from stocks_power_rich.api import stock_flow as api_stock_flow
+    from stocks_power_rich.db import get_connection, init_db
+
+    dbfile = str(tmp_path / "t.sqlite")
+    conn2 = get_connection(dbfile)
+    init_db(conn2)
+    version = stock_flow.data_version(conn2)
+
+    # 1) 背景 job 真的失敗：錯誤記進 _research_errors、running 清乾淨、快取沒被寫入。
+    monkeypatch.setattr(stock_flow, "research",
+                        lambda c: (_ for _ in ()).throw(RuntimeError("kaboom")))
+    api_stock_flow._research_running.add(version)
+    try:
+        api_stock_flow._run_research_job(version, dbfile)
+        assert api_stock_flow._research_errors.get(version) == "kaboom"
+        assert version not in api_stock_flow._research_running
+        assert stock_flow.cached_research(get_connection(dbfile)) is None
+
+        # 2) 下一次請求把錯誤如實回報，並清除（不是靜靜卡在 computing）。回報後 _research_errors
+        #    不再有這個 version，代表再按一次就會走「無錯誤、未執行 → 重新啟動」的重試路徑。
+        client = TestClient(create_app())
+        r1 = client.post("/api/stock-flow/research").json()
+        assert r1["status"] == "error"
+        assert "kaboom" in r1["error"]
+        assert version not in api_stock_flow._research_errors  # 已清，下次即重試
+    finally:
+        api_stock_flow._research_running.discard(version)
+        api_stock_flow._research_errors.pop(version, None)
 
 
 def test_institutional_research_frontend_covers_verdicts_mobile_and_stale_states():
