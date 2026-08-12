@@ -103,6 +103,107 @@ def backfill_financials(conn, max_batches: int = 4, batch_size: int = 50) -> dic
     return {"filled": filled, "remaining": remaining, "universe": len(universe)}
 
 
+# sub-task 2：完整報表（比率清單沒有的原始科目，見 sources/financials.py::REPORT_ITEMS）。
+# 深度取自各指標實際需要的季數上限：pretax_income 2 季／opex,income_tax 4 季／capex 8 季
+# （對照 analysis._LAN_USED 與 Call_LE 的 highest(...,4)），同一報表只抓一次滿足其下所有指標。
+_REPORT_DEPTH = {"IncomeStatement": 4, "CashflowStatement": 8}
+
+
+def _default_report_anchor() -> tuple:
+    """預設從「最近一個已結束的日曆季」往回抓——本季幾乎必然還沒公布（見 financials.py 的
+    ys 說明：45 天申報期限，實測 2026Q2 在 8/12 仍查無資料）。鍵off 真實日曆 datetime.now()
+    （同 run_update「刪未來列」的既有規矩，不受抓到的資料日期影響）。
+    """
+    today = datetime.now()
+    cur_season = (today.month - 1) // 3 + 1
+    year, season = today.year, cur_season - 1
+    if season == 0:
+        season, year = 4, year - 1
+    return year, season
+
+
+def _report_pending_codes(conn, universe: list) -> list:
+    n_items = len(financials.REPORT_ITEMS)
+    placeholders = ",".join("?" * n_items)
+    have = dict(conn.execute(
+        f"SELECT code, COUNT(DISTINCT indicator) FROM stock_financials "
+        f"WHERE indicator IN ({placeholders}) GROUP BY code",
+        list(financials.REPORT_ITEMS),
+    ).fetchall())
+    return [c for c in universe if have.get(c, 0) < n_items]
+
+
+def backfill_report_financials(conn, anchor_year: int | None = None, anchor_season: int | None = None,
+                               max_batches: int = 4, batch_size: int = 30) -> dict:
+    """全市場逐檔完整報表回補（sub-task 2：pretax_income／opex／income_tax／capex）。
+
+    母體與 pending 判定同 backfill_financials（缺任一指標仍算 pending）。每批代號依報表分組
+    抓取（IncomeStatement 一次滿足 pretax_income/opex/income_tax，CashflowStatement 滿足
+    capex），同一報表跨季重複呼叫，**先收集完整季度序列再一次性反推單季**
+    （`financials.decumulate_quarterly`）——不能季度各自獨立處理，因為反推需要「上一季」
+    的累計值。**實際抓取深度是 `_REPORT_DEPTH+1`**：要交付 N 季可用的單季值，最舊那一季
+    的單季值＝該季累計－上一季累計，若只抓 N 季，最舊一季缺「上一季」基準，own 值必為
+    None 被濾掉，實測 8 季只換到 6 季能用；多抓一季墊底才能把 N 季全部填滿（墊底那季自己
+    通常也順便可用，屬額外資料非缺陷）。最新一季若尚未公布（見 fetch_report 的 ys 說明），
+    該季自然拿不到資料、略過，不落地假值、也不當機。
+    """
+    ay, aseason = (anchor_year, anchor_season) if anchor_year and anchor_season else _default_report_anchor()
+    universe = _financials_universe(conn)
+    pending = _report_pending_codes(conn, universe)
+
+    filled = 0
+    for b in range(max(1, max_batches)):
+        batch = pending[b * batch_size:(b + 1) * batch_size]
+        if not batch:
+            break
+        raw: dict = {}  # (code, key) -> {季別: 累計值}
+        for report, depth in _REPORT_DEPTH.items():
+            # 目標是蒐集到 depth+1 個「有資料」的季度（+1 是墊底：最舊那季的單季值＝該季
+            # 累計－上一季累計，需要多一季基準才反推得出，否則最舊一季必為 None 被濾掉）。
+            # 用「持續往回抓直到蒐集滿」而非固定季數，是因為 anchor 本身那季常常還沒公布
+            # （見 fetch_report 的 ys 說明）——若固定抓 depth+1 個季別標籤，遇到 anchor 空
+            # 就會少一次有效抓取，實測因此仍然只換到 depth-1 季能用。安全上限 depth+6
+            # 次嘗試，避免報表整個掛掉時無限迴圈。
+            # got 只計「這季真的抓到我要的科目」，不能只看 parsed 是否非空——實測踩到
+            # 一種過渡態：最新一季 parsed 有資料，卻沒有我要的那個科目（如現金流量表科目
+            # 還沒填齊、損益數字先出來），這種季度算進 got 會讓真正有用的季度少一筆。
+            got = 0
+            y, s = ay, aseason
+            for _ in range(depth + 6):
+                if got >= depth + 1:
+                    break
+                q = f"{y}Q{s}"
+                s -= 1
+                if s == 0:
+                    s, y = 4, y - 1
+                try:
+                    _actual_q, parsed = financials.fetch_report(batch, report, int(q[:4]), int(q[5]))
+                except Exception:  # noqa: BLE001 — 單季失敗不影響其餘
+                    parsed = {}
+                hit = False
+                for code, labels in parsed.items():
+                    for key, (rep2, label) in financials.REPORT_ITEMS.items():
+                        if rep2 == report and label in labels:
+                            raw.setdefault((code, key), {})[q] = labels[label]
+                            hit = True
+                if hit:
+                    got += 1
+                time.sleep(0.2)  # 禮貌節流
+
+        by_indicator: dict = {}
+        for (code, key), series in raw.items():
+            decum = financials.decumulate_quarterly(series)
+            vals = {q: v for q, v in decum.items() if v is not None}
+            if vals:
+                by_indicator.setdefault(key, {})[code] = vals
+        for key, by_code in by_indicator.items():
+            bulk_upsert_financials(conn, key, by_code)
+        filled += len(batch)
+
+    remaining = len(_report_pending_codes(conn, universe))
+    return {"filled": filled, "remaining": remaining, "universe": len(universe)}
+
+
 def _refresh_monthly_revenue(conn) -> dict:
     """月營收（上市/上櫃），兩市場獨立抓取與寫入、互不影響。
 

@@ -290,6 +290,132 @@ def test_backfill_financials_retries_codes_missing_some_indicators(tmp_path, mon
     assert get_financial_series(conn, "2330", "revenue") == [("2026Q1", 1.0)]
 
 
+def test_backfill_report_financials_decumulates_and_stores_by_indicator(tmp_path, monkeypatch):
+    """sub-task 2：完整報表逐季回補。IncomeStatement 一次抓 4 季（覆蓋 pretax_income/opex/
+    income_tax 各自需要的深度）、CashflowStatement 一次抓 8 季（capex 需要 8 季）；累計值
+    要先反推成單季才落地（同真實 TSMC 2025 全年數字驗證過的 decumulate_quarterly）。"""
+    from stocks_power_rich.db import bulk_upsert_revenue, get_financial_series
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    bulk_upsert_revenue(conn, "TWSE", {"2330": {"year_month": "2026-07", "report_date": "2026-08-11", "yoy_pct": 1.0}})
+
+    # 模擬 IncomeStatement／CashflowStatement 累計值（只用整數方便手算）。實際 fetch 深度是
+    # depth+1（見 backfill_report_financials：最舊一季的單季值要靠多抓一季累計值當基準才
+    # 算得出來，故這裡也多給一季墊底，讓 depth 季的 own 值全部能算出來）。
+    income_cum = {"2026Q1": 100.0, "2025Q4": 400.0, "2025Q3": 280.0, "2025Q2": 150.0,
+                  "2025Q1": 50.0}
+    cashflow_cum = {"2026Q1": 10.0, "2025Q4": 80.0, "2025Q3": 65.0, "2025Q2": 45.0,
+                    "2025Q1": 20.0, "2024Q4": 90.0, "2024Q3": 70.0, "2024Q2": 48.0,
+                    "2024Q1": 30.0}
+    calls = []
+
+    def fake_fetch_report(codes, report, year, season):
+        calls.append((tuple(codes), report, year, season))
+        q = f"{year}Q{season}"
+        if report == "IncomeStatement":
+            if q not in income_cum:
+                return (q, {})
+            return (q, {c: {"稅前淨利（淨損）": income_cum[q], "營業費用合計": income_cum[q] / 2,
+                            "所得稅費用（利益）合計": income_cum[q] / 10} for c in codes})
+        if q not in cashflow_cum:
+            return (q, {})
+        return (q, {c: {"取得不動產、廠房及設備": -cashflow_cum[q]} for c in codes})
+
+    monkeypatch.setattr(updater.financials, "fetch_report", fake_fetch_report)
+
+    res = updater.backfill_report_financials(conn, anchor_year=2026, anchor_season=1,
+                                              max_batches=1, batch_size=50)
+    assert res["filled"] == 1
+
+    # IncomeStatement 抓了 5 季（4 季要交付＋1 季墊底）、CashflowStatement 抓了 9 季（8+1）
+    income_calls = [c for c in calls if c[1] == "IncomeStatement"]
+    cash_calls = [c for c in calls if c[1] == "CashflowStatement"]
+    assert len(income_calls) == 5 and len(cash_calls) == 9
+
+    # pretax_income 反推單季：2025Q4 own = 400-280 = 120；2026Q1 own = 100（新年度重置）
+    pretax = dict(get_financial_series(conn, "2330", "pretax_income"))
+    assert pretax["2026Q1"] == 100.0
+    assert pretax["2025Q4"] == 120.0
+    assert pretax["2025Q3"] == 130.0  # 280-150
+
+    # capex 反推單季（原始值取負號，反推後仍保留負號代表流出）
+    capex = dict(get_financial_series(conn, "2330", "capex"))
+    assert capex["2026Q1"] == -10.0          # Q1 own＝自己
+    assert capex["2025Q4"] == -15.0          # -(80-65)
+    assert capex["2025Q1"] == -20.0          # 2025Q1 own＝自己（新年度重置，不與 2024Q4 相減）
+    # depth=8 要交付到 2024Q2；多抓的 2024Q1 墊底讓它的 own 值算得出來，不會因為
+    # 「缺上一季基準」被過濾掉（這正是本測試要鎖住的 +1 深度 bug 修正）
+    assert capex["2024Q2"] == -18.0          # -(48-30)
+    # 9 筆而非 8：墊底那季（2024Q1）自己本身也算得出 own 值（season=1，own＝自己），
+    # 順便可用，不是缺陷——只是「至少 8 季可用」這個承諾之外的額外資料
+    assert len(capex) == 9
+
+    # opex/income_tax 也各自落地
+    opex = dict(get_financial_series(conn, "2330", "opex"))
+    assert opex["2026Q1"] == 50.0            # 100/2
+
+
+def test_backfill_report_financials_skips_unpublished_quarter(tmp_path, monkeypatch):
+    """最新一季尚未公布（完整報表回空）→ 略過該季，不落地假資料、也不當機。"""
+    from stocks_power_rich.db import bulk_upsert_revenue, get_financial_series
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    bulk_upsert_revenue(conn, "TWSE", {"2330": {"year_month": "2026-07", "report_date": "2026-08-11", "yoy_pct": 1.0}})
+
+    def fake_fetch_report(codes, report, year, season):
+        q = f"{year}Q{season}"
+        if q == "2026Q2":  # 最新一季尚未公布
+            return (q, {})
+        return (q, {c: {"稅前淨利（淨損）": 10.0, "營業費用合計": 5.0,
+                        "所得稅費用（利益）合計": 1.0, "取得不動產、廠房及設備": -3.0} for c in codes})
+
+    monkeypatch.setattr(updater.financials, "fetch_report", fake_fetch_report)
+    updater.backfill_report_financials(conn, anchor_year=2026, anchor_season=2,
+                                       max_batches=1, batch_size=50)
+    pretax = dict(get_financial_series(conn, "2330", "pretax_income"))
+    assert "2026Q2" not in pretax  # 尚未公布那季沒進去，不是整個序列都空
+    # 但抓得到的其他季仍正常入庫（anchor 往回數第 2 季＝2026Q1，本例回傳固定 10.0）
+    assert pretax.get("2026Q1") == 10.0
+
+
+def test_backfill_report_financials_quarter_with_data_but_missing_target_label_does_not_count(
+        tmp_path, monkeypatch):
+    """實測踩到的真實情況：最新一季 parsed 不是空的（有資料），但**沒有我要的那個科目**
+    （現金流量表的『取得不動產、廠房及設備』——像是損益數字先出來、現金流量表科目還沒填齊
+    的過渡態）。這種季度不能算進『已蒐集到 depth+1 個有用季度』，否則會讓真正有 capex
+    資料的季度少一筆、最舊一季反推單季時缺基準被濾掉（實測：depth=8 只換到 7 季能用）。
+    """
+    from stocks_power_rich.db import bulk_upsert_revenue, get_financial_series
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    bulk_upsert_revenue(conn, "TWSE", {"2330": {"year_month": "2026-07", "report_date": "2026-08-11", "yoy_pct": 1.0}})
+
+    # capex 需要 8 季；2026Q2 有資料但缺 capex 科目，2026Q1~2024Q1 給 9 季乾淨累計值
+    # （單調遞增，模擬真實累計性質；用小整數方便手算）
+    cashflow_cum = {"2026Q1": 90.0, "2025Q4": 80.0, "2025Q3": 65.0, "2025Q2": 45.0,
+                    "2025Q1": 20.0, "2024Q4": 90.0, "2024Q3": 70.0, "2024Q2": 48.0,
+                    "2024Q1": 30.0}
+
+    def fake_fetch_report(codes, report, year, season):
+        q = f"{year}Q{season}"
+        if report == "IncomeStatement":
+            return (q, {c: {"稅前淨利（淨損）": 1.0, "營業費用合計": 1.0,
+                            "所得稅費用（利益）合計": 1.0} for c in codes})
+        if q == "2026Q2":
+            return (q, {c: {"某個不相干科目": 999.0} for c in codes})  # 有資料，但沒有 capex 科目
+        if q not in cashflow_cum:
+            return (q, {})
+        return (q, {c: {"取得不動產、廠房及設備": -cashflow_cum[q]} for c in codes})
+
+    monkeypatch.setattr(updater.financials, "fetch_report", fake_fetch_report)
+    updater.backfill_report_financials(conn, anchor_year=2026, anchor_season=2,
+                                       max_batches=1, batch_size=50)
+    capex = dict(get_financial_series(conn, "2330", "capex"))
+    # depth=8 一定要換到 8 季能用，「2026Q2 有資料但缺科目」不能頂替一個有效名額
+    assert len(capex) >= 8
+    assert capex["2024Q2"] == -18.0  # -(48-30)，最舊一季要靠多抓的 2024Q1 才反推得出
+
+
 def test_backfill_ohlc_otc_floor_circuit_breaker(tmp_path, monkeypatch):
     """上櫃到官方歷史底線（一直回空）→ 連續失敗熔斷，配額讓給上市續補；
     上市達標且同輪上市有成功抓取 → otc_exhausted=True 且 done=True（不再無限重試）。"""

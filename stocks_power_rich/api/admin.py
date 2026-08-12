@@ -184,6 +184,25 @@ def financials_backfill(max_batches: int = 4, batch_size: int = 50):
     finally:
         _backfill_lock.release()
 
+@router.get("/financials/backfill-report")
+def financials_backfill_report(anchor_year: int = 0, anchor_season: int = 0,
+                                max_batches: int = 4, batch_size: int = 30):
+    """全市場逐檔完整報表回補（mopsfin HTML 報表，sub-task 2：稅前淨利／營業費用／
+    所得稅費用／資本支出，見 CLAUDE.md「季報財務」段）。anchor_year/season 不帶時
+    自動抓「最近一個已結束的日曆季」；重複呼叫直到 remaining 不再下降（非直到 0，
+    金融業等本就沒有現金流量表資本支出科目的代號會永遠 pending，屬預期）。
+    """
+    if not _backfill_lock.acquire(blocking=False):
+        return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
+    try:
+        return updater.backfill_report_financials(
+            conn(),
+            anchor_year=anchor_year or None, anchor_season=anchor_season or None,
+            max_batches=max(1, min(max_batches, 20)),
+            batch_size=max(1, min(batch_size, 30)))
+    finally:
+        _backfill_lock.release()
+
 @router.get("/ohlc/backfill")
 def ohlc_backfill(days: int = 377, max_fetch: int = 60, reset: int = 0):
     if not _backfill_lock.acquire(blocking=False):

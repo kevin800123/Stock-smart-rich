@@ -45,6 +45,45 @@ def custody_change(cur: dict | None, prev: dict | None) -> dict:
     return out
 
 
+def estimate_quarterly_eps(monthly_revenue: list, gross_margin: list, opex: list,
+                            tax: list, shares) -> float | None:
+    """推估季EPS（XQ 的 Call_LE，CSV「推估獲利」欄位）：反推自使用者提供的 XS 原始碼
+
+    （完整推導、單位換算依據、與台積電 2026Q1 真實數字驗證見 tests/test_analysis_call_le.py）。
+
+    monthly_revenue：最新在前的月營收(億元)，至少 6 筆＝本季 3 個月＋上季 3 個月。
+    gross_margin：最新在前的季毛利率(%)，至少 2 筆＝本季、上季。
+    opex／tax：最新在前的季營業費用／所得稅費用(百萬元)，各至少 4 筆，XS 取近 4 季
+    「最高」而非最新——保守估計，寧可高估成本也不要低估獲利。
+    shares：發行股數（不是張數）。任一輸入不足筆數、缺值(None)、或 shares 非正 → 回 None
+    （同 estimate_price_range／margin_maintenance 的「算不出回 None」慣例，不擲例外）。
+    """
+    if (monthly_revenue is None or len(monthly_revenue) < 6
+            or any(v is None for v in monthly_revenue[:6])
+            or gross_margin is None or len(gross_margin) < 2
+            or any(v is None for v in gross_margin[:2])
+            or opex is None or len(opex) < 4 or any(v is None for v in opex[:4])
+            or tax is None or len(tax) < 4 or any(v is None for v in tax[:4])
+            or shares is None or shares <= 0):
+        return None
+
+    this_q_revenue = sum(monthly_revenue[0:3])
+    prior_q_revenue = sum(monthly_revenue[3:6])
+    quarter_revenue = this_q_revenue * 100  # 億元 → 百萬元
+
+    margin_now, margin_prev = gross_margin[0], gross_margin[1]
+    if margin_now > margin_prev and this_q_revenue > prior_q_revenue:
+        margin = round((margin_now + margin_prev) / 2, 2)
+    else:
+        margin = min(margin_now, margin_prev)
+
+    max_opex = max(opex[0:4])
+    max_tax = max(tax[0:4])
+
+    net_income = (quarter_revenue * (margin / 100) - max_opex - max_tax) * 1_000_000  # 百萬元 → 元
+    return round(net_income / shares, 3)
+
+
 def turnover_ma(values: list, n: int = 10) -> list:
     """逐點回傳「到該點為止最近 n 個有效值」的均值，長度與輸入相同、不足 n 筆給 None。
 
