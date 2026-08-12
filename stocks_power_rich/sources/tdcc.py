@@ -30,11 +30,21 @@ def _num(s):
         return None
 
 
+_LOW_TO_HIGH_LEVELS = {str(i) for i in range(1, 16)}  # 分級 1~15（不含合計列）
+
+
 def _aggregate_levels(levels) -> dict:
-    """levels＝[(分級序, 人數, 占比%), ...] → {big1000_pct, big400_pct, big_holders}。
-    千張大戶＝級15；400張↑＝級12~15（兩來源共用，語意一致）。"""
-    d = {"big1000_pct": 0.0, "big400_pct": 0.0, "big_holders": 0}
+    """levels＝[(分級序, 人數, 占比%), ...] → {big1000_pct, big400_pct, big_holders, total_holders}。
+    千張大戶＝級15；400張↑＝級12~15；總持股人數＝級1~15加總（兩來源共用，語意一致）。
+
+    總持股人數刻意用「加總 1~15」而非讀取「合計」列——opendata 的合計列是第 17 級、
+    智能網 HTML 是第 16 級，兩個來源編號不一致；加總法不依賴任一來源的合計列編號，
+    對兩邊都成立（已用真實 2330 資料驗證：分級 1~15 加總＝合計列人數，見 CLAUDE.md）。
+    """
+    d = {"big1000_pct": 0.0, "big400_pct": 0.0, "big_holders": 0, "total_holders": 0}
     for lvl, holders, pct in levels:
+        if lvl in _LOW_TO_HIGH_LEVELS:
+            d["total_holders"] += int(holders)
         if lvl == "15":               # 千張大戶
             d["big1000_pct"] += pct
             d["big400_pct"] += pct
@@ -43,7 +53,8 @@ def _aggregate_levels(levels) -> dict:
             d["big400_pct"] += pct
     return {"big1000_pct": round(d["big1000_pct"], 2),
             "big400_pct": round(d["big400_pct"], 2),
-            "big_holders": d["big_holders"]}
+            "big_holders": d["big_holders"],
+            "total_holders": d["total_holders"]}
 
 
 def parse_custody_distribution(text: str) -> dict:

@@ -40,6 +40,18 @@ def _highest_bar(vals, n):
     return 0
 
 
+def percent_r(highs, lows, closes, n=55):
+    """PercentR(n)：收盤在近 n 天高低區間的百分位（0~100）。區間無波動（高=低）時回 0。
+
+    單一權威版本——杯柄型態的 %R(55) 品質濾網與 analysis.w55_signal() 都呼叫這支，
+    不各自重算一份（同 Elliott wave／bands 的規矩，避免兩份公式漂移）。
+    """
+    high_n = _highest(highs, n)
+    low_n = _lowest(lows, n)
+    rng = high_n - low_n
+    return (closes[-1] - low_n) / rng * 100 if rng else 0.0
+
+
 def cup_handle(highs, lows, closes, min_r: float = MIN_R_DEFAULT) -> dict | None:
     """符合亞當杯柄（XS 基礎條件＋品質濾網）→ 回傳畫線錨點 dict，否則 None。
     陣列需 >= 377 根且等長；min_r 為 %R(55) 門檻（預設 70）。"""
@@ -48,13 +60,11 @@ def cup_handle(highs, lows, closes, min_r: float = MIN_R_DEFAULT) -> dict | None
         return None
     v2 = _highest(highs, LOOKBACK)          # 左緣：近 377 天最高
     v3 = _highest(highs, 55)                # 右緣：近 55 天最高
-    low55 = _lowest(lows, 55)
-    rng = v3 - low55
-    percent_r = (closes[-1] - low55) / rng * 100 if rng else 0.0
+    pr = percent_r(highs, lows, closes, 55)
     cond1 = (v2 > v3
              and _highest(highs, 13) < v3
              and _lowest(lows, 8) > _lowest(lows, 21)
-             and percent_r >= min_r)
+             and pr >= min_r)
     hb377 = _highest_bar(highs, LOOKBACK)
     hb55 = _highest_bar(highs, 55)
     cond2 = hb377 - hb55 > 55
@@ -76,7 +86,7 @@ def cup_handle(highs, lows, closes, min_r: float = MIN_R_DEFAULT) -> dict | None
         "left_idx": left_idx, "left_price": v2,           # 趨勢線起點（左緣）
         "right_idx": right_idx, "right_price": v3,         # 趨勢線終點（右緣）
         "resistance": v3,                                  # 壓力線價位
-        "percent_r": round(percent_r, 1),
+        "percent_r": round(pr, 1),
         "cup_depth_pct": round(depth * 100, 1),            # 杯深%
         "dist_pct": round((v3 - closes[-1]) / v3 * 100, 1) if v3 else None,  # 收盤距壓力%
     }

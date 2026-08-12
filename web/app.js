@@ -840,6 +840,7 @@ async function loadSettings() {
     ].map(([k, v]) => `<div class="stat"><div class="stat-k">${k}</div><div class="stat-v">${v}</div></div>`).join("");
   } catch (e) { /* 忽略 */ }
   renderScoringRules();
+  renderStage2Sources();
 }
 
 // 木質/木率 評分規則（唯讀）。規則文字全來自後端 /api/scoring-rules——單一權威版本，
@@ -862,6 +863,24 @@ async function renderScoringRules() {
       + `<div class="sr-sub">品質閘：${esc(v.gate)}</div></div>`
       + `<div class="sr-card sr-pending"><div class="sr-h">${esc(l.name)}<span class="sr-tag">待接季報源</span></div>`
       + `<div class="sr-desc">${esc(l.note)}</div><ul class="sr-list sr-cols">${items}</ul></div>`;
+  } catch (e) { box.innerHTML = ""; }
+}
+
+// Stage 2（脫離 XQ 的公開資料層）資料來源與計算方式（唯讀）。文字全來自後端
+// /api/stage2-sources——同 renderScoringRules 的規矩，門檻數字不在前端另外寫死。
+// 三片都還沒接進選股結果，卡片一律用 sr-pending 樣式（同蘭質那張「待接」卡的語彙）。
+async function renderStage2Sources() {
+  const box = $("set-stage2");
+  if (!box) return;
+  try {
+    const r = await getJSON("/api/stage2-sources");
+    box.innerHTML = (r.items || []).map((it) => {
+      const sources = (it.sources || []).map((s) => `<li>${esc(s)}</li>`).join("");
+      return `<div class="sr-card sr-pending"><div class="sr-h">${esc(it.name)}<span class="sr-tag">尚未接進選股</span></div>`
+        + `<div class="sr-desc">${esc(it.formula)}</div>`
+        + `<div class="sr-sub">資料來源</div><ul class="sr-list">${sources}</ul>`
+        + `<div class="sr-sub">${esc(it.verified)}</div></div>`;
+    }).join("");
   } catch (e) { box.innerHTML = ""; }
 }
 

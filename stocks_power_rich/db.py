@@ -173,6 +173,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     for col in ("volume_lots", "amount_twd"):
         if col not in ohlc_existing:
             conn.execute(f"ALTER TABLE stock_ohlc ADD COLUMN {col} REAL")
+    custody_existing = {r[1] for r in conn.execute("PRAGMA table_info(custody_dist)").fetchall()}
+    if "total_holders" not in custody_existing:
+        conn.execute("ALTER TABLE custody_dist ADD COLUMN total_holders REAL")
     # 一次性資料修正：jpy 語意由「日圓兌台幣(~0.2)」改為「美元兌日圓(~150)」，清掉舊語意殘值
     conn.execute("UPDATE market_daily SET jpy=NULL, jpy_chg=NULL WHERE jpy IS NOT NULL AND jpy < 10")
     conn.commit()
@@ -281,16 +284,47 @@ def latest_custody_week(conn: sqlite3.Connection):
 
 
 def bulk_upsert_custody(conn: sqlite3.Connection, week: str, data: dict) -> int:
-    rows = [(week, code, v.get("big1000_pct"), v.get("big400_pct"), v.get("big_holders"))
+    rows = [(week, code, v.get("big1000_pct"), v.get("big400_pct"), v.get("big_holders"),
+             v.get("total_holders"))
             for code, v in data.items()]
     conn.executemany(
-        "INSERT INTO custody_dist (week, code, big1000_pct, big400_pct, big_holders) VALUES (?,?,?,?,?) "
-        "ON CONFLICT(week, code) DO UPDATE SET big1000_pct=excluded.big1000_pct, "
-        "big400_pct=excluded.big400_pct, big_holders=excluded.big_holders",
+        "INSERT INTO custody_dist (week, code, big1000_pct, big400_pct, big_holders, total_holders) "
+        "VALUES (?,?,?,?,?,?) ON CONFLICT(week, code) DO UPDATE SET "
+        "big1000_pct=excluded.big1000_pct, big400_pct=excluded.big400_pct, "
+        "big_holders=excluded.big_holders, total_holders=excluded.total_holders",
         rows,
     )
     conn.commit()
     return len(rows)
+
+
+def custody_change_map(conn: sqlite3.Connection, as_of: str | None = None) -> dict:
+    """全市場 {代號: {big_holder_ratio, holder_drop_ratio}}——公式見 analysis.custody_change()。
+
+    集保逐週全市場批次寫入（見 updater._accumulate_custody），同一週所有代號共用同一個
+    week 值，因此「最近兩週」是對整張表找、不必逐代號找——不同代號各自缺列（該代號當週
+    未列入分散表）時自然不進回傳結果，不必特別處理。不足兩週可比資料時回空 dict。
+    """
+    cutoff = as_of or "9999-99-99"
+    weeks = [r[0] for r in conn.execute(
+        "SELECT DISTINCT week FROM custody_dist WHERE week<=? ORDER BY week DESC LIMIT 2",
+        (cutoff,)).fetchall()]
+    if len(weeks) < 2:
+        return {}
+    this_week, last_week = weeks
+
+    def _rows(week):
+        return {code: {"big400_pct": b400, "total_holders": th} for code, b400, th in conn.execute(
+            "SELECT code, big400_pct, total_holders FROM custody_dist WHERE week=?", (week,))}
+
+    cur, prev = _rows(this_week), _rows(last_week)
+    from . import analysis
+    out = {}
+    for code, cur_row in cur.items():
+        if code not in prev:
+            continue
+        out[code] = analysis.custody_change(cur_row, prev[code])
+    return out
 
 
 def bulk_upsert_ohlc(conn: sqlite3.Connection, date: str, rows: dict) -> int:

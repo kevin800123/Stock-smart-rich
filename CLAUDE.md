@@ -361,6 +361,37 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - **並存**：目前只有 `sources/revenue.py`（fetch/parse）＋ `db.py`（`stock_revenue_monthly`/`bulk_upsert_revenue`/`get_latest_revenue`/`revenue_yoy_map`）＋ `updater._refresh_monthly_revenue`（掛進 `run_update`，兩市場獨立 try/except、互不影響），**`analysis.filtered_picks` 完全沒有改動**，仍讀 XQ CSV 匯入的 `rev_yoy`。之後接進去（計畫裡的 2e）前，可以先用 `revenue_yoy_map()` 對照 XQ 匯入值多天，確認兩邊數字兜得起來再切換。
 - **實測驗證**（非 mock，對真實端點跑一次）：兩市場合計入庫 1959 檔；2330 台積電 `yoy_pct=44.69%` 與手動查驗官方數字一致；`revenue_yoy_map()` 全市場 1445 檔年增為正、506 檔為負。
 
+### W55 翻多訊號：Stage 2 第二片（`analysis.w55_signal`，2026-08）
+
+`filtered_picks` 的另一個硬閘 `w55`，同樣來自 XQ CSV，這裡獨立重建。**這次不需要新資料源**——用 App 已經在收集的 `stock_ohlc`（官方 TWSE/TPEx OHLC）即可算，且公式在 `patterns.py` 的杯柄型態偵測裡已經寫好、測過。
+
+- **反推公式與門檻，不是查文件得來的。** CSV 裡沒有任何地方寫明 W55 的定義，只能從真實資料反推：先看 `55高`/`55低` 這兩個關聯欄位——`55高=1` 一律對應 `W55=1`（實測 10/10）、`55低=1` 一律對應 `W55=0`（實測 5/5），且 `55高`/`55低` 從未同時為 1，符合「今日創 55 日新高/新低」的布林旗標語意。但 `W55=1` 的比例達 45%（799/1763 檔），遠高於「創新高」的 3.6%（64/1763），代表 W55 是更寬鬆的條件，不只是「今日創新高」。這與記憶中該 CSV 的 XS 腳本片段 `Call_5W=PercentR(55)-50` 的方向一致，於是假設 **W55 = 1 iff PercentR(55) > 50**（收盤站上近 55 天高低區間中點）。
+- **用真實歷史股價交叉驗證，不是憑猜測定案。** 拿 8 檔股票（2330/2317/1101/1102/1435/1444/1213/1220）用 yfinance 抓 2026-06-30 前 55 天 OHLC，自行算出 PercentR(55)，與同日 CSV 的 W55 值逐一比對：**8/8 全部對上**（如 2330 算出 77.89 對 W55=1、1101 算出 23.26 對 W55=0）。yfinance 的收盤價與 XQ/蘭弦的實際成交價有幾 % 落差（資料商口徑差異，見「不要拿外部數字校準」那條的同類提醒），但方向性訊號（站上/站下中點）在 8 個樣本裡都夠穩健、沒有翻轉——這正是用「相對位置」而非「絕對數字」當訊號的好處。
+- **公式沒有重寫第二份**：`patterns.py` 新增 `percent_r(highs, lows, closes, n=55)`，從 `cup_handle()` 內部抽出來（原本內聯計算，杯柄型態的 %R(55)≥70 品質濾網與這裡的 %R(55)>50 二元旗標本質上是同一條公式、只是門檻與用途不同）。`analysis.w55_signal(highs, lows, closes)` 呼叫這支共用函式，資料不足 55 根或三陣列長度不一致時回 `None`（同 `margin_maintenance`/`estimate_price_range` 的「算不出回 None」慣例）。
+- **邊界值 `>` 是延續 XS 慣例的假設，不是從樣本驗證出來的**：連續價格精確落在 `PercentR(55)==50.000...` 的機率趨近於零，8 個實測樣本沒有一個踩在邊界上，所以 `>` 對 `>=` 的選擇無法用實測反推，只能沿用「XS 條件式通常寫 `>0` 而非 `>=0`」的慣例——`tests/test_analysis_w55.py::test_w55_signal_exactly_at_midpoint_is_bearish` 的註解如實記錄這是假設而非實證。
+- **並存**：`w55_signal()` 尚未接進 `filtered_picks`（同月營收年增的並存策略），也沒有新增 DB 欄位或 bulk 查詢——這片刻意只交付「純函式」（計畫裡 2c 的原始範圍），全市場批次計算留給 2e 整合階段一起做。
+
+### 大戶增比／人數降比：Stage 2 第三片（`analysis.custody_change`，2026-08）
+
+`filtered_picks` 最後一個吃 CSV 的欄位。這片與前兩片不同——**使用者直接提供了 XS 原始碼**，不必像 W55 那樣從資料反推公式，但公式本身牽涉到目前完全沒存的一個欄位，仍需要實測驗證。
+
+- **原始 XS**：
+  ```
+  VALUE21=GetField("大戶持股比例","W",param:=400)-GetField("大戶持股比例","W",param:=400)[1];
+  VALUE22=((GetField("總持股人數","W")-GetField("總持股人數","W")[1])/GetField("總持股人數","W")[1])*100;
+  ```
+  `[1]` 是「上一週」。VALUE21（大戶增比）＝本週 400 張以上大戶持股比例 − 上週（**百分點差**），對應現有 `custody_dist.big400_pct` 逐週相減，**不需要新欄位**。VALUE22（人數降比）＝((本週總持股人數 − 上週) / 上週) × 100（**相對百分比變化**）。
+- **關鍵發現：「總持股人數」不是大戶人數，是全體股東人數**——這個欄位 `custody_dist` 完全沒存（只有 `big_holders`＝千張大戶人數）。TDCC 集保戶股權分散表每個代號會列 15 個持股分級（級距由小到大）＋一個「合計」列，「總持股人數」＝全體股東，不分級距。**兩個資料來源的合計列分級序號不一樣**：opendata（`getOD.ashx`）的合計在第 **17** 級，智能網 HTML 的合計在第 **16** 級（`parse_custody_ownership_html` 舊註解「級16 合計自動略過」）——如果直接讀「合計」列會依來源寫兩套邏輯還容易挑錯級數。改用**加總分級 1~15 的人數**，兩個來源都適用、不依賴任一方的合計列編號：實測即時抓 2330 的分級 1~15 人數加總＝3,080,236，與 opendata 該筆資料本身第 17 級「合計」列的人數完全一致，證明加總法正確。
+- **`_aggregate_levels()`（`sources/tdcc.py`）新增 `total_holders`**（加總分級 1~15，明確排除任何非 1~15 的分級序如合計列），兩個來源（opendata CSV／智能網 HTML）共用同一支，語意保持一致。
+- **實測交叉驗證（真實歷史資料，非 mock）**：用智能網爬蟲（`fetch_custody_history`，見下方 TDCC 段落的 CSRF token 輪替注意事項）抓 1101／1102／2317／2330 四檔股票 2026-06-26 與 2026-06-18 兩週資料，代入公式與同日（2026-06-30）CSV 的實際大戶增比／人數降比逐一比對：**人數降比 4/4 精確吻合**；**大戶增比 3/4 精確吻合，2317 差 0.01**（TDCC 官方頁面本身只顯示到小數點後 2 位，兩個已四捨五入的百分比相減，最後一位偶爾有 0.01 誤差，非公式錯誤——人數降比因為是整數人數相除、不受這個誤差影響）。整條 DB 路徑（`bulk_upsert_custody` 兩週 → `custody_change_map`）也重跑過一次同樣的真實數字，結果與純函式測試一致。
+- **`custody_dist` 表新增 `total_holders REAL`**（lazy migration，同 `stock_ohlc` 的 `volume_lots`/`amount_twd` 做法）。`bulk_upsert_custody` 一併寫入；`_accumulate_custody`（updater.py）完全不用改——它已經把 `_aggregate_levels()` 的整包結果丟給 `bulk_upsert_custody`，新欄位自然跟著流過去。
+- **`db.py::custody_change_map(conn, as_of=None)`**：全市場一次算出 `{代號: {big_holder_ratio, holder_drop_ratio}}`。因為集保是**整週批次寫入**（同一週所有代號共用同一個 `week` 值），「最近兩週」對整張表找一次即可，不必逐代號各自找最近兩週——比月營收的 `revenue_yoy_map`（逐檔 report_date 可能不同）簡單。核心算式抽成純函式 `analysis.custody_change(cur, prev)`（`db.py` 內用區域 import 呼叫，刻意不放頂層——`db.py` 是資料層，`analysis.py` 在它之上，頂層 import 會反過來讓資料層依賴分析層，用區域 import 避免打亂既有的單向依賴關係）。任一週缺列、或上週總持股人數為 0（除以零）都回 `None`，兩個算式互相獨立、不互相拖累。
+- **並存**：`custody_change_map()` 尚未接進 `filtered_picks`（同前兩片的並存策略），2e 整合階段才會用到。
+
+### Stage 2 資料來源（設定頁，2026-08）
+
+三片（月營收年增/W55/大戶增比人數降比）完成後，使用者要求在「設定」頁列出計算方式與資料來源，方便日後檢視——沿用**評分規則**（木質/木率）那套既有的「唯讀、規則來自後端」慣例，不是另開一套。`GET /api/stage2-sources`（`api/admin.py`，緊接在 `/scoring-rules` 之後）回傳三片各自的 `sources`/`formula`/`verified`；門檻文字用 `f"{analysis.W55_THRESHOLD:g}"` 組出，不在端點裡寫死 `50`（同 `/scoring-rules` 的防漂移規矩，`tests/test_api.py::test_stage2_sources_reflects_w55_threshold_and_marks_not_wired` 鎖住這件事）。前端 `renderStage2Sources()`（`web/app.js`）緊跟在 `renderScoringRules()` 後呼叫，容器 `#set-stage2` 直接沿用既有的 `.scoring-rules`/`.sr-card` CSS——三張卡全部給 `.sr-pending` 樣式（同蘭質那張「待接季報源」卡的語彙），因為三片都還沒接進 `filtered_picks`。**`wired_to_picks: false` 與每張卡的「尚未接進選股」標籤是刻意的**：這一頁本質是「開發進度揭露」，如果只列公式不標「還沒生效」，使用者容易誤以為選股結果已經改變。
+
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.

@@ -17,6 +17,9 @@ def test_parse_custody_distribution():
     assert d["big1000_pct"] == 70.0          # 千張大戶（分級15）
     assert d["big400_pct"] == 73.0           # 分級 12+13+14+15
     assert d["big_holders"] == 30            # 千張大戶人數
+    # 總持股人數＝分級 1~15 加總（本例只有 12~15）；第 17 級是 opendata 的合計列，
+    # 不計入加總（100+80+50+30=260，與合計列本身的人數巧合相等，驗證加總法正確）
+    assert d["total_holders"] == 260
 
 
 # TDCC 智能網股權分散表 HTML（單股單週）——欄位：分級序 / 級距 / 人數 / 股數 / 占比%。
@@ -38,12 +41,15 @@ def test_parse_custody_ownership_html():
     assert d["big1000_pct"] == 84.91         # 級15 占比
     assert d["big400_pct"] == 87.67          # 級12+13+14+15
     assert d["big_holders"] == 1477          # 千張大戶人數
+    # 總持股人數＝分級 1~15 加總（本例含級11~15）；級16「合計」自動排除
+    assert d["total_holders"] == 1345 + 567 + 351 + 219 + 1477
 
 
 def test_html_and_csv_aggregation_are_equivalent():
     """智能網 HTML 與 opendata CSV 走同一套 15 分級聚合，語意一致。"""
     csv_txt = (
         "資料日期,證券代號,持股分級,人數,股數,占比%\n"
+        "20260717,2330  ,11,1345,377776220,1.45\n"
         "20260717,2330  ,12,567,277573821,1.07\n"
         "20260717,2330  ,13,351,244033255,0.94\n"
         "20260717,2330  ,14,219,195510892,0.75\n"

@@ -6,6 +6,44 @@
 
 import math
 
+from . import patterns
+
+W55_THRESHOLD = 50.0  # PercentR(55) 門檻：反推自 8 檔真實股票與 XQ CSV 的 W55 值全部對上（見 CLAUDE.md）
+
+
+def w55_signal(highs: list, lows: list, closes: list) -> float | None:
+    """W55 翻多訊號：PercentR(55) > 50 → 1.0（多方），否則 0.0（空方）；資料不足回 None。
+
+    公式沿用 patterns.percent_r()（杯柄型態品質濾網也是同一支），不重算一份——
+    兩者本質上是同一個「收盤在近 55 天高低區間的百分位」，只是使用情境不同
+    （這裡是二元翻多旗標，杯柄那邊是 ≥70 的品質門檻）。
+    """
+    n = len(highs)
+    if n < 55 or len(lows) != n or len(closes) != n:
+        return None
+    return 1.0 if patterns.percent_r(highs, lows, closes, 55) > W55_THRESHOLD else 0.0
+
+
+def custody_change(cur: dict | None, prev: dict | None) -> dict:
+    """大戶增比／人數降比：反推自使用者提供的 XS（見 tests/test_analysis_custody.py 的完整
+    公式與真實資料驗證紀錄）。cur/prev＝相鄰兩週 custody_dist 列的 {big400_pct, total_holders}。
+
+    大戶增比＝本週 big400_pct－上週（百分點差）；人數降比＝總持股人數相對變化%
+    （負值＝股東人數減少＝籌碼集中，散戶減越多分數越高，同本模組頂部的訊號核心）。
+    任一週缺列、或該欄位缺值都回 None；上週總持股人數為 0 時人數降比回 None（避免除以零），
+    但大戶增比若兩週該欄位都有值仍照算（兩者是獨立算式，不互相拖累）。
+    """
+    out = {"big_holder_ratio": None, "holder_drop_ratio": None}
+    if not cur or not prev:
+        return out
+    b400_now, b400_prev = cur.get("big400_pct"), prev.get("big400_pct")
+    if b400_now is not None and b400_prev is not None:
+        out["big_holder_ratio"] = round(b400_now - b400_prev, 2)
+    th_now, th_prev = cur.get("total_holders"), prev.get("total_holders")
+    if th_now is not None and th_prev:
+        out["holder_drop_ratio"] = round((th_now - th_prev) / th_prev * 100, 2)
+    return out
+
 
 def turnover_ma(values: list, n: int = 10) -> list:
     """逐點回傳「到該點為止最近 n 個有效值」的均值，長度與輸入相同、不足 n 筆給 None。

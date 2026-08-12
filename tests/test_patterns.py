@@ -19,6 +19,20 @@ def _make_cup_handle(close=89.0, handle_dip=84.0, cup_dip_idx=200):
     return highs, lows, closes
 
 
+def test_percent_r_matches_cup_handle_result():
+    """percent_r() 是從 cup_handle() 抽出來的共用公式，兩邊算出來要一致（單一權威版本）。
+    cup_handle() 回傳時會 round(pr, 1)，這裡驗證的是同一個未四捨五入的原始值。"""
+    highs, lows, closes = _make_cup_handle()
+    assert round(patterns.percent_r(highs, lows, closes, 55), 1) == 83.3
+
+
+def test_percent_r_zero_range_returns_zero():
+    highs = [10.0] * 60
+    lows = [10.0] * 60
+    closes = [10.0] * 60
+    assert patterns.percent_r(highs, lows, closes, 55) == 0.0
+
+
 def test_cup_handle_detects_and_anchors():
     highs, lows, closes = _make_cup_handle()
     sig = patterns.cup_handle(highs, lows, closes)

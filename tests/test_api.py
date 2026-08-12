@@ -190,6 +190,20 @@ def test_scoring_rules_come_from_analysis_constants(tmp_path, monkeypatch):
     assert sum(it["points"] for it in r["lan_score"]["items"]) == 15
 
 
+def test_stage2_sources_reflects_w55_threshold_and_marks_not_wired(tmp_path, monkeypatch):
+    """Stage 2 三片（月營收/W55/大戶）並存對照頁：門檻文字必須引用 analysis.W55_THRESHOLD
+    （同 scoring-rules 的防漂移規矩），且要如實標示尚未接進 filtered_picks，不能誤導使用者。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich import analysis
+
+    r = TestClient(create_app()).get("/api/stage2-sources").json()
+    assert r["wired_to_picks"] is False
+    keys = {it["key"] for it in r["items"]}
+    assert keys == {"revenue", "w55", "custody"}
+    w55_item = next(it for it in r["items"] if it["key"] == "w55")
+    assert f"{analysis.W55_THRESHOLD:g}" in w55_item["formula"]
+
+
 def test_dashboard_pulse_is_none_without_enough_market_data(tmp_path, monkeypatch):
     """沒有 market_daily 資料時，儀表板半圓錶要顯示「資料不足」而不是硬湊出的分數。"""
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))

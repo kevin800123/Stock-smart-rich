@@ -252,6 +252,42 @@ def get_scoring_rules():
         },
     }
 
+@router.get("/stage2-sources")
+def get_stage2_sources():
+    """Stage 2：脫離 XQ 的公開資料來源與計算方式（唯讀，供設定頁檢視）。
+
+    三片皆已完成、公式皆用真實資料交叉驗證過（非猜測），但都刻意尚未接進
+    filtered_picks——選股結果目前仍讀 XQ CSV 匯入值（並存對照，見 CLAUDE.md 對應段落）。
+    門檻文字引用 analysis.py 的常數，不在此複製一份寫死（同 scoring-rules 的規矩）。
+    """
+    return {
+        "wired_to_picks": False,
+        "note": "以下三項與 XQ CSV 並存對照，目前選股結果（filtered_picks）仍讀 CSV 匯入值，尚未切換。",
+        "items": [
+            {
+                "key": "revenue", "name": "月營收年增",
+                "sources": ["TWSE OpenAPI（t187ap05_L，上市）", "TPEx OpenAPI（mopsfin_t187ap05_O，上櫃）"],
+                "formula": "官方公布的「去年同月增減(%)」，逐檔逐月存進 stock_revenue_monthly"
+                           "（歷史累積，端點本身沒有回溯查詢，只給當下最新已公告的月份）",
+                "verified": "實測兩市場合計 1959 檔一次到位；2330 台積電年增 44.69% 與官方數字一致",
+            },
+            {
+                "key": "w55", "name": "W55 翻多訊號",
+                "sources": ["stock_ohlc（本站已累積的官方 TWSE/TPEx 日 K 線）"],
+                "formula": f"PercentR(55) > {analysis.W55_THRESHOLD:g}（收盤站上近 55 天高低區間中點）",
+                "verified": "8 檔真實股票用歷史股價反推 PercentR(55)，與同日 XQ CSV 的 W55 值 8/8 全部對上",
+            },
+            {
+                "key": "custody", "name": "大戶增比／人數降比",
+                "sources": ["TDCC 集保戶股權分散表（custody_dist，逐週累積）"],
+                "formula": "大戶增比＝400張以上大戶持股比例週對週百分點差；"
+                           "人數降比＝全體股東人數（非大戶人數）週對週相對變化%",
+                "verified": "4 檔真實股票用歷史集保週資料驗證：人數降比 4/4 精確吻合，"
+                            "大戶增比 3/4 精確吻合（1 檔差 0.01，官方顯示位數捨入誤差）",
+            },
+        ],
+    }
+
 
 @router.post("/settings")
 def update_settings(request: Request, payload: dict = Body(...)):

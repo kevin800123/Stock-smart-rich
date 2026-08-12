@@ -226,3 +226,32 @@ def test_bulk_upsert_revenue_keys_by_year_month_and_code(tmp_path):
     assert ymap["2330"] == 30.0
     ymap_as_of = revenue_yoy_map(conn, as_of="2026-08-20")
     assert ymap_as_of["2330"] == 44.70
+
+
+def test_bulk_upsert_custody_stores_total_holders_and_change_map_computes_diff(tmp_path):
+    from stocks_power_rich.db import bulk_upsert_custody, custody_change_map
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(custody_dist)")}
+    assert "total_holders" in columns
+
+    bulk_upsert_custody(conn, "2026-06-18", {
+        "1101": {"big1000_pct": 51.23, "big400_pct": 55.41, "big_holders": 412, "total_holders": 516680},
+    })
+    bulk_upsert_custody(conn, "2026-06-26", {
+        "1101": {"big1000_pct": 51.34, "big400_pct": 55.52, "big_holders": 410, "total_holders": 514507},
+        "1102": {"big1000_pct": 79.48, "big400_pct": 81.8, "big_holders": 200, "total_holders": 103241},
+    })
+    row = conn.execute(
+        "SELECT total_holders FROM custody_dist WHERE week=? AND code=?",
+        ("2026-06-26", "1101")).fetchone()
+    assert row[0] == 514507.0
+
+    # 1101 兩週都有資料才算得出差；1102 只有一週（上週缺）→ 不進 map（不是回 None，而是不存在該代號）
+    cmap = custody_change_map(conn)
+    assert cmap["1101"] == {"big_holder_ratio": 0.11, "holder_drop_ratio": -0.42}
+    assert "1102" not in cmap
+
+    # as_of 卡在兩週資料之前 → 不足兩週可比 → 全空
+    assert custody_change_map(conn, as_of="2026-06-20") == {}
