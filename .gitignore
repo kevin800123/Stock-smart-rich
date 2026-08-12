@@ -19,3 +19,8 @@ data/csv/
 # Codex 在 CI 裡跑就直接是空的，"正本" 的説法也就無從查證。2026-08 已改進版控。
 .agents/
 docs/line-richmenu/
+
+# scripts/upload_xq.ps1 本機上傳器：狀態檔含最近一次上傳的檔名/時間戳，
+# run_upload.ps1 是使用者從 upload_xq.example.ps1 複製、可能填了真實密碼的複本。
+scripts/.upload_xq_state.json
+scripts/run_upload.ps1
