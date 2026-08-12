@@ -223,6 +223,73 @@ def test_refresh_monthly_revenue_one_market_failing_does_not_block_other(tmp_pat
     assert counts == {"TWSE": 0, "TPEx": 1}
 
 
+def test_backfill_financials_batches_pending_codes_and_is_resumable(tmp_path, monkeypatch):
+    """全市場逐檔季報回補：以月營收表的代號為母體，一次處理一批、可續傳（同 ohlc/inst 回補）。
+    每批對每個 RATIO_ITEMS 指標各打一次 mopsfin，已抓過的代號跳過。"""
+    from stocks_power_rich.db import bulk_upsert_revenue, get_financial_series
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    # 母體＝月營收表的代號（bare code，與 mopsfin 一致）
+    bulk_upsert_revenue(conn, "TWSE", {
+        c: {"year_month": "2026-07", "report_date": "2026-08-11", "yoy_pct": 1.0}
+        for c in ["2330", "2317", "2454"]
+    })
+
+    calls = []
+
+    def fake_fetch(codes, indicator):
+        calls.append((tuple(codes), indicator))
+        # 回每個 code 一季假值，值用指標長度區分以便斷言
+        return {c: {"2026Q1": float(len(indicator))} for c in codes}
+
+    monkeypatch.setattr(updater.financials, "fetch_financial_ratio", fake_fetch)
+
+    # batch_size=2 → 第一次只處理 2 檔（2330,2317），剩 2454
+    res = updater.backfill_financials(conn, max_batches=1, batch_size=2)
+    assert res["filled"] == 2 and res["remaining"] == 1
+    # 每個指標各打一次（一批 8 指標）
+    assert len({ind for _codes, ind in calls}) == len(updater.financials.RATIO_ITEMS)
+    assert get_financial_series(conn, "2330", "roe") == [("2026Q1", 3.0)]  # len("roe")=3
+
+    # 再呼叫一次 → 補完 2454
+    res2 = updater.backfill_financials(conn, max_batches=1, batch_size=2)
+    assert res2["filled"] == 1 and res2["remaining"] == 0
+    assert get_financial_series(conn, "2454", "debt_ratio") == [("2026Q1", 10.0)]  # len=10
+
+    # 全補完後再呼叫 → 無 pending、不再打 mopsfin
+    calls.clear()
+    res3 = updater.backfill_financials(conn, max_batches=5, batch_size=50)
+    assert res3["remaining"] == 0 and res3["filled"] == 0 and calls == []
+
+
+def test_backfill_financials_retries_codes_missing_some_indicators(tmp_path, monkeypatch):
+    """半 populated 不能算完成：某指標暫時性回空 → 該代號缺一個指標 → 下次呼叫要再打它，
+    把缺的補上（避免『有任一列就跳過』把暫時失敗永久化，同 codebase 一貫的教訓）。"""
+    from stocks_power_rich.db import bulk_upsert_revenue, get_financial_series
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    bulk_upsert_revenue(conn, "TWSE", {"2330": {"year_month": "2026-07", "report_date": "2026-08-11", "yoy_pct": 1.0}})
+
+    fail_revenue = {"on": True}
+
+    def flaky(codes, indicator):
+        if indicator == "revenue" and fail_revenue["on"]:
+            return {}  # 第一輪 revenue 暫時性失敗
+        return {c: {"2026Q1": 1.0} for c in codes}
+
+    monkeypatch.setattr(updater.financials, "fetch_financial_ratio", flaky)
+
+    res1 = updater.backfill_financials(conn, max_batches=1, batch_size=50)
+    assert res1["remaining"] == 1  # 2330 缺 revenue → 仍算 pending
+    assert get_financial_series(conn, "2330", "revenue") == []
+    assert get_financial_series(conn, "2330", "roe") == [("2026Q1", 1.0)]
+
+    fail_revenue["on"] = False  # 第二輪 revenue 恢復
+    res2 = updater.backfill_financials(conn, max_batches=1, batch_size=50)
+    assert res2["remaining"] == 0
+    assert get_financial_series(conn, "2330", "revenue") == [("2026Q1", 1.0)]
+
+
 def test_backfill_ohlc_otc_floor_circuit_breaker(tmp_path, monkeypatch):
     """上櫃到官方歷史底線（一直回空）→ 連續失敗熔斷，配額讓給上市續補；
     上市達標且同輪上市有成功抓取 → otc_exhausted=True 且 done=True（不再無限重試）。"""

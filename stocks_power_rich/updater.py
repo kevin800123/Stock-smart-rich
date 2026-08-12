@@ -9,6 +9,7 @@ from datetime import date as _date, datetime, timedelta
 
 from .db import (
     bulk_upsert_custody,
+    bulk_upsert_financials,
     bulk_upsert_ohlc,
     bulk_upsert_revenue,
     custody_week_exists,
@@ -20,7 +21,7 @@ from .db import (
     upsert_tx_history,
 )
 from . import analysis, stock_flow
-from .sources import fred, intl, nasdaq, revenue, taifex, tdcc, tpex, twse
+from .sources import financials, fred, intl, nasdaq, revenue, taifex, tdcc, tpex, twse
 
 
 def _accumulate_custody(conn) -> str | None:
@@ -41,6 +42,65 @@ def _accumulate_custody(conn) -> str | None:
         return None
     bulk_upsert_custody(conn, week, data)
     return week
+
+
+def _financials_universe(conn) -> list:
+    """季報回補的代號母體：優先用月營收表（bare code、上市櫃全含、與 mopsfin 一致），
+    退回籌碼快照（去掉 .TW/.TWO 後綴）。回排序後的清單，讓分批順序穩定、可續傳。"""
+    codes = [r[0] for r in conn.execute(
+        "SELECT DISTINCT code FROM stock_revenue_monthly").fetchall()]
+    if not codes:
+        codes = [str(r[0]).split(".")[0] for r in conn.execute(
+            "SELECT DISTINCT code FROM chip_snapshot").fetchall() if r[0]]
+    return sorted(set(codes))
+
+
+def _financials_incomplete(conn, universe: list) -> list:
+    """母體中「還缺至少一個 RATIO_ITEMS 指標」的代號（維持母體順序，分批穩定）。
+
+    以「缺任一指標」判定 pending 而非「有任一列就算完成」——某指標暫時性回空時，該代號會
+    留在 pending、下次呼叫再補，避免把暫時失敗永久化（本 codebase 一貫的教訓）。代價是
+    金融業本就沒有的指標（如銀行的存貨週轉率）會讓那些代號永遠 pending，故端點契約是
+    「重複呼叫直到 remaining 不再下降」而非「直到 0」（同 chips/margin 回補的既有慣例）。
+    """
+    n_ind = len(financials.RATIO_ITEMS)
+    have = {code: cnt for code, cnt in conn.execute(
+        "SELECT code, COUNT(DISTINCT indicator) FROM stock_financials GROUP BY code")}
+    return [c for c in universe if have.get(c, 0) < n_ind]
+
+
+def backfill_financials(conn, max_batches: int = 4, batch_size: int = 50) -> dict:
+    """全市場逐檔季報財務回補（sub-task 1 的 8 個乾淨 JSON 指標）。
+
+    母體＝_financials_universe；pending＝缺任一指標的代號（見 _financials_incomplete）。
+    一次處理 max_batches 批、每批 batch_size 檔，每批對 RATIO_ITEMS 每個指標各打一次
+    mopsfin（一次帶整批代號）；請求間 sleep 0.2 秒禮貌節流（實測 8 連打偶爾有單筆暫時性
+    回空）。**重複呼叫直到 remaining 不再下降**（非直到 0——金融業缺週轉率等指標的代號會
+    永遠 pending，屬預期）。
+
+    mopsfin 一次可帶多代號（實測 50 檔一次到位），故全市場約 (1900/50)×8 ≈ 300 個請求；
+    財報一季才更新一次，屬偶爾手動觸發的回補、不進每日 run_update。
+    """
+    universe = _financials_universe(conn)
+    pending = _financials_incomplete(conn, universe)
+
+    filled = 0
+    for b in range(max(1, max_batches)):
+        batch = pending[b * batch_size:(b + 1) * batch_size]
+        if not batch:
+            break
+        for indicator in financials.RATIO_ITEMS:
+            try:
+                by_code = financials.fetch_financial_ratio(batch, indicator)
+            except Exception:  # noqa: BLE001 — 單一指標失敗不影響其餘
+                by_code = {}
+            if by_code:
+                bulk_upsert_financials(conn, indicator, by_code)
+            time.sleep(0.2)  # 禮貌節流，降低連打造成的暫時性回空
+        filled += len(batch)
+
+    remaining = len(_financials_incomplete(conn, universe))
+    return {"filled": filled, "remaining": remaining, "universe": len(universe)}
 
 
 def _refresh_monthly_revenue(conn) -> dict:

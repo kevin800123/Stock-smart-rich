@@ -141,6 +141,17 @@ def init_db(conn: sqlite3.Connection) -> None:
         "note TEXT, PRIMARY KEY(year_month, code))"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_revenue_code ON stock_revenue_monthly(code, year_month)")
+    # 季報財務比率/金額（mopsfin「財務比較E點通」；tall 格式，一列一個 (季別,代號,指標)）。
+    # tall 而非 wide 是刻意的——指標之後還會增加（sub-task 2 的 pretax_income/capex），
+    # tall 加指標零 schema 變動；季別字串如 "2026Q1"（來源就是這格式，不轉 ISO 免得跟月營收
+    # 的 year_month 混淆）。
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS stock_financials ("
+        "quarter TEXT, code TEXT, indicator TEXT, value REAL, "
+        "PRIMARY KEY(quarter, code, indicator))"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_financials_lookup "
+                 "ON stock_financials(code, indicator, quarter)")
     # 交易帳本（實單/模擬單；fee_pct=來回費用%，NULL=用預設 0.585）
     conn.execute("CREATE TABLE IF NOT EXISTS trades ("
                  "id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT, name TEXT, shares INTEGER, "
@@ -397,6 +408,35 @@ def bulk_upsert_revenue(conn: sqlite3.Connection, market: str, rows: dict) -> in
     )
     conn.commit()
     return len(data)
+
+
+def bulk_upsert_financials(conn: sqlite3.Connection, indicator: str, by_code: dict) -> int:
+    """季報財務批次入庫。by_code＝{代號: {季別: 值}}（sources.financials.parse_ratio_series 的輸出）。
+
+    覆寫同一 (季別,代號,指標) 是冪等（同一季被重新抓到就更新值）；季別一換是新列，逐季累積。
+    """
+    rows = [(q, code, indicator, v)
+            for code, series in by_code.items()
+            for q, v in series.items() if v is not None]
+    if not rows:
+        return 0
+    conn.executemany(
+        "INSERT INTO stock_financials (quarter, code, indicator, value) VALUES (?,?,?,?) "
+        "ON CONFLICT(quarter, code, indicator) DO UPDATE SET value=excluded.value",
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def get_financial_series(conn: sqlite3.Connection, code: str, indicator: str) -> list:
+    """單一代號單一指標的季度數列，回 [(季別, 值), ...]，季別由新到舊（最新在前）。
+
+    季別字串 "YYYYQn" 字典序即時間序（同年同季位數固定），故 ORDER BY quarter DESC 正確。
+    """
+    return [(q, v) for q, v in conn.execute(
+        "SELECT quarter, value FROM stock_financials WHERE code=? AND indicator=? "
+        "ORDER BY quarter DESC", (code, indicator))]
 
 
 def get_latest_revenue(conn: sqlite3.Connection, code: str, as_of: str | None = None) -> dict | None:

@@ -168,6 +168,22 @@ def inst_backfill(days: int = 60, max_fetch: int = 15):
     finally:
         _backfill_lock.release()
 
+@router.get("/financials/backfill")
+def financials_backfill(max_batches: int = 4, batch_size: int = 50):
+    """全市場逐檔季報財務回補（mopsfin，sub-task 1 的 8 個乾淨 JSON 指標）。
+
+    母體取月營收表代號（需先跑過月營收，即每日 run_update 會做的）；已補過的代號跳過，
+    重複呼叫直到 remaining=0。財報一季才更新一次，故非每日排程、屬偶爾手動觸發。
+    """
+    if not _backfill_lock.acquire(blocking=False):
+        return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
+    try:
+        return updater.backfill_financials(
+            conn(), max_batches=max(1, min(max_batches, 20)),
+            batch_size=max(1, min(batch_size, 50)))
+    finally:
+        _backfill_lock.release()
+
 @router.get("/ohlc/backfill")
 def ohlc_backfill(days: int = 377, max_fetch: int = 60, reset: int = 0):
     if not _backfill_lock.acquire(blocking=False):

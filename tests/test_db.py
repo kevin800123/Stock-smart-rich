@@ -255,3 +255,32 @@ def test_bulk_upsert_custody_stores_total_holders_and_change_map_computes_diff(t
 
     # as_of 卡在兩週資料之前 → 不足兩週可比 → 全空
     assert custody_change_map(conn, as_of="2026-06-20") == {}
+
+
+def test_bulk_upsert_financials_stores_by_quarter_and_reads_series(tmp_path):
+    from stocks_power_rich.db import bulk_upsert_financials, get_financial_series
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(stock_financials)")}
+    assert {"quarter", "code", "indicator", "value"} <= columns
+
+    n = bulk_upsert_financials(conn, "roe", {
+        "2330": {"2025Q4": 9.63, "2026Q1": 10.06},
+        "2317": {"2026Q1": 2.88},
+    })
+    assert n == 3  # 2330 兩季 + 2317 一季
+
+    # 覆寫同一 (quarter, code, indicator) 不新增列
+    bulk_upsert_financials(conn, "roe", {"2330": {"2026Q1": 10.10}})
+    count = conn.execute("SELECT COUNT(*) FROM stock_financials").fetchone()[0]
+    assert count == 3
+
+    # 讀回「最新在前」的季度數列（供之後接 lan_score 用）
+    series = get_financial_series(conn, "2330", "roe")
+    assert series == [("2026Q1", 10.10), ("2025Q4", 9.63)]  # 季別由新到舊
+
+    # 不同 indicator 各自獨立
+    bulk_upsert_financials(conn, "debt_ratio", {"2330": {"2026Q1": 24.5}})
+    assert get_financial_series(conn, "2330", "debt_ratio") == [("2026Q1", 24.5)]
+    assert get_financial_series(conn, "2330", "roe") == [("2026Q1", 10.10), ("2025Q4", 9.63)]

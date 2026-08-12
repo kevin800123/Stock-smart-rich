@@ -388,6 +388,18 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - **`db.py::custody_change_map(conn, as_of=None)`**：全市場一次算出 `{代號: {big_holder_ratio, holder_drop_ratio}}`。因為集保是**整週批次寫入**（同一週所有代號共用同一個 `week` 值），「最近兩週」對整張表找一次即可，不必逐代號各自找最近兩週——比月營收的 `revenue_yoy_map`（逐檔 report_date 可能不同）簡單。核心算式抽成純函式 `analysis.custody_change(cur, prev)`（`db.py` 內用區域 import 呼叫，刻意不放頂層——`db.py` 是資料層，`analysis.py` 在它之上，頂層 import 會反過來讓資料層依賴分析層，用區域 import 避免打亂既有的單向依賴關係）。任一週缺列、或上週總持股人數為 0（除以零）都回 `None`，兩個算式互相獨立、不互相拖累。
 - **並存**：`custody_change_map()` 尚未接進 `filtered_picks`（同前兩片的並存策略），2e 整合階段才會用到。
 
+### 季報財務：Stage 2 第四片，sub-task 1（`sources/financials.py`，2026-08）
+
+木質的「財報分」（`lan_score()` 蘭質 15 項）需要 10 個季報指標，這是脫離 XQ 工程量最大的一塊，分兩個 sub-task。**sub-task 1（本片）交付其中 8 個能以乾淨 JSON 取得的指標**；稅前淨利與資本支出需 HTML 報表，留給 sub-task 2。
+
+- **資料源查證的關鍵轉折**：先掃 TWSE OpenAPI 全部 143 個端點，確認它**有損益表（t187ap06）、資產負債表（t187ap07）但沒有現金流量表**，資產負債表也沒拆出應收/存貨明細——所以營運現金流、應收/存貨週轉率都算不出來，只靠 OpenAPI 的 15 項裡只有 6 項做得出來。轉而找到**同屬證交所的官方子系統「財務比較E點通」`mopsfin.twse.com.tw`**，它把這些比率**預先算好**、上市櫃通吃。使用者明確要求不引入 FinMind（第三方），這個官方來源正好補上缺口。
+- **端點特性（全部實測）**：`POST /compare/data`（form-urlencoded）→ **免 CSRF、免 session、憑證正常不必 verify=False**（curl 不帶 `-k` 即 200）。回應 `xaxisList`（季別 "2013Q1"…）＋ `graphData[i].data`＝`[xIndex, value, 型別]`（型別 "C"＝合併報表），**單次請求給 13 年季度歷史**。**一次可帶多個 `companyId`**（實測 50 檔一次到位，`showNameList` 順序對應回代號）→ 全市場回補只要約 (1900/50)×8 ≈ **300 個請求**，而非逐檔逐指標的 15,000 個。
+- **8 個乾淨 JSON 指標**（`RATIO_ITEMS`，lan_score key → mopsfin 代碼）：revenue→`Revenue`、gross_margin→`GrossMargin`、net_income→`NetProfit`、ocf→`OperatingCashflow`、debt_ratio→`DebtRatio`、roe→`ROE`、ar_turnover→`AccountsReceivableTurnover`、inv_turnover→`InventoryTurnover`。實測 2330 值與網站相符（ROE 10.06%、毛利率 66.25%）。
+- **累計 vs 單季（重要，本片刻意不處理）**：Revenue／OperatingCashflow 這類金額在 MOPS 是**年度累計**（Q2＝H1、Q3＝前三季…），而 `lan_score` 的季增/四季加總邏輯預期**單季**值。資料層忠實存原始季度序列，累計→單季換算留給接線階段（同 revenue 那片「只存不判讀」原則）。
+- **儲存**：`stock_financials` 表**tall 格式**（`(quarter, code, indicator)` 主鍵，一列一格）——指標之後還會增加（sub-task 2 的 pretax/capex），tall 加指標零 schema 變動。季別存原始 `"2026Q1"` 字串（字典序即時間序），不轉 ISO 免與月營收 `year_month` 混淆。`bulk_upsert_financials`／`get_financial_series`（回「最新在前」數列）。
+- **回補**（`GET /api/financials/backfill?max_batches=4&batch_size=50`，`updater.backfill_financials`）：母體取月營收表代號（bare code、與 mopsfin 一致；退回 chip_snapshot 去後綴）。**pending 判定用「缺任一指標」而非「有任一列就算完成」**——這是踩過一次才修對的：e2e 時某檔的 revenue 暫時性回空，若用「有列即完成」會讓它永遠補不到缺的指標（本 codebase 一貫的「半 populated 標完成」坑）。代價是金融業本就沒有的指標（銀行的存貨週轉率）會讓那些代號永遠 pending，故契約是**「重複呼叫直到 remaining 不再下降」而非直到 0**（同 chips/margin 回補既有慣例）。請求間 `sleep(0.2)` 禮貌節流。財報一季才更新一次，故**不進每日 run_update**、屬偶爾手動觸發。
+- **並存**：`stock_financials` 尚未接進 `lan_score`／`filtered_picks`（同前幾片）。設定頁的「Stage 2 資料來源」暫不列這片，等 sub-task 2（capex/pretax）補齊、木質財報分真的算得出來再一起揭露，免得使用者誤以為木質已改用自算財報分。
+
 ### Stage 2 資料來源（設定頁，2026-08）
 
 三片（月營收年增/W55/大戶增比人數降比）完成後，使用者要求在「設定」頁列出計算方式與資料來源，方便日後檢視——沿用**評分規則**（木質/木率）那套既有的「唯讀、規則來自後端」慣例，不是另開一套。`GET /api/stage2-sources`（`api/admin.py`，緊接在 `/scoring-rules` 之後）回傳三片各自的 `sources`/`formula`/`verified`；門檻文字用 `f"{analysis.W55_THRESHOLD:g}"` 組出，不在端點裡寫死 `50`（同 `/scoring-rules` 的防漂移規矩，`tests/test_api.py::test_stage2_sources_reflects_w55_threshold_and_marks_not_wired` 鎖住這件事）。前端 `renderStage2Sources()`（`web/app.js`）緊跟在 `renderScoringRules()` 後呼叫，容器 `#set-stage2` 直接沿用既有的 `.scoring-rules`/`.sr-card` CSS——三張卡全部給 `.sr-pending` 樣式（同蘭質那張「待接季報源」卡的語彙），因為三片都還沒接進 `filtered_picks`。**`wired_to_picks: false` 與每張卡的「尚未接進選股」標籤是刻意的**：這一頁本質是「開發進度揭露」，如果只列公式不標「還沒生效」，使用者容易誤以為選股結果已經改變。
