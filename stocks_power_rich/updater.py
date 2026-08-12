@@ -10,6 +10,7 @@ from datetime import date as _date, datetime, timedelta
 from .db import (
     bulk_upsert_custody,
     bulk_upsert_ohlc,
+    bulk_upsert_revenue,
     custody_week_exists,
     get_setting,
     latest_custody_week,
@@ -19,7 +20,7 @@ from .db import (
     upsert_tx_history,
 )
 from . import analysis, stock_flow
-from .sources import fred, intl, nasdaq, taifex, tdcc, tpex, twse
+from .sources import fred, intl, nasdaq, revenue, taifex, tdcc, tpex, twse
 
 
 def _accumulate_custody(conn) -> str | None:
@@ -40,6 +41,24 @@ def _accumulate_custody(conn) -> str | None:
         return None
     bulk_upsert_custody(conn, week, data)
     return week
+
+
+def _refresh_monthly_revenue(conn) -> dict:
+    """月營收（上市/上櫃），兩市場獨立抓取與寫入、互不影響。
+
+    端點本身只給「當下最新已公告的月份」（見 sources/revenue.py），沒有歷史查詢，所以
+    這裡每次呼叫都直接覆寫，不像 _accumulate_custody 那樣需要「偵測到新一週才抓」的節流
+    ——同一個月被重複覆寫是無害的冪等操作，換來不必自己判斷「現在是否有新月份」。
+    回傳 {"TWSE": 入庫檔數, "TPEx": 入庫檔數}，任一市場失敗記 0 而非讓例外中斷另一市場。
+    """
+    counts = {}
+    for market, fetch in (("TWSE", revenue.fetch_twse_revenue), ("TPEx", revenue.fetch_otc_revenue)):
+        try:
+            rows = fetch()
+            counts[market] = bulk_upsert_revenue(conn, market, rows) if rows else 0
+        except Exception:  # noqa: BLE001 — 單一市場失敗不影響另一市場
+            counts[market] = 0
+    return counts
 
 
 def _iso_to_date(s):
@@ -678,6 +697,14 @@ def run_update(conn, intl_tickers: dict) -> dict:
             success.append(f"tdcc_custody:{wk}")
     except Exception as e:  # noqa: BLE001
         failed.append({"source": "tdcc", "name": "custody", "error": str(e)})
+
+    # 月營收：兩市場獨立抓取，任一失敗不影響另一（見 _refresh_monthly_revenue docstring）
+    rev_counts = _refresh_monthly_revenue(conn)
+    for market, n in rev_counts.items():
+        if n:
+            success.append(f"revenue_{market.lower()}:{n}")
+        else:
+            failed.append({"source": market.lower(), "name": "revenue", "error": "查無資料或抓取失敗"})
 
     # 台指期歷史日K（期交所官方下載），刷新近期
     try:

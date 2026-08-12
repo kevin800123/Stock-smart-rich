@@ -21,6 +21,8 @@ def test_run_update_collects_and_tolerates_failure(tmp_path, monkeypatch):
 
     monkeypatch.setattr(updater.taifex, "fetch_tx_history", lambda *a, **k: [])
     monkeypatch.setattr(updater.tdcc, "fetch_custody_distribution", lambda: {"week_date": None, "data": {}})
+    monkeypatch.setattr(updater.revenue, "fetch_twse_revenue", lambda: {})
+    monkeypatch.setattr(updater.revenue, "fetch_otc_revenue", lambda: {})
 
     def boom(*a, **k):
         raise RuntimeError("network down")
@@ -172,6 +174,53 @@ def test_accumulate_custody_stores_new_week_then_skips(tmp_path, monkeypatch):
     n = conn.execute("SELECT COUNT(*) FROM custody_dist WHERE week=?", (wk,)).fetchone()[0]
     assert n == 2
     assert updater._accumulate_custody(conn) is None  # 本週已有 → 跳過
+
+
+def test_refresh_monthly_revenue_stores_both_markets(tmp_path, monkeypatch):
+    """兩個市場各自失敗互不影響（同 stock_source_coverage 的既有精神），且回傳兩市場共入了幾檔。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    monkeypatch.setattr(updater.revenue, "fetch_twse_revenue", lambda: {
+        "2330": {"name": "台積電", "industry": "半導體業", "year_month": "2026-07",
+                 "report_date": "2026-08-11", "revenue": 100.0, "revenue_prev_month": 90.0,
+                 "revenue_last_year": 80.0, "mom_pct": 11.1, "yoy_pct": 25.0,
+                 "revenue_accum": 500.0, "revenue_accum_last_year": 400.0,
+                 "accum_yoy_pct": 25.0, "note": None},
+    })
+    monkeypatch.setattr(updater.revenue, "fetch_otc_revenue", lambda: {
+        "1240": {"name": "茂生農經", "industry": "農業科技", "year_month": "2026-07",
+                 "report_date": "2026-08-11", "revenue": 10.0, "revenue_prev_month": 9.0,
+                 "revenue_last_year": 8.0, "mom_pct": 11.1, "yoy_pct": 13.2,
+                 "revenue_accum": 50.0, "revenue_accum_last_year": 40.0,
+                 "accum_yoy_pct": 13.2, "note": None},
+    })
+    counts = updater._refresh_monthly_revenue(conn)
+    assert counts == {"TWSE": 1, "TPEx": 1}
+    twse_row = conn.execute(
+        "SELECT market, yoy_pct FROM stock_revenue_monthly WHERE code='2330'").fetchone()
+    assert tuple(twse_row) == ("TWSE", 25.0)
+    otc_row = conn.execute(
+        "SELECT market, yoy_pct FROM stock_revenue_monthly WHERE code='1240'").fetchone()
+    assert tuple(otc_row) == ("TPEx", 13.2)
+
+
+def test_refresh_monthly_revenue_one_market_failing_does_not_block_other(tmp_path, monkeypatch):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+
+    def boom():
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(updater.revenue, "fetch_twse_revenue", boom)
+    monkeypatch.setattr(updater.revenue, "fetch_otc_revenue", lambda: {
+        "1240": {"name": "茂生農經", "industry": "農業科技", "year_month": "2026-07",
+                 "report_date": "2026-08-11", "revenue": 10.0, "revenue_prev_month": 9.0,
+                 "revenue_last_year": 8.0, "mom_pct": 11.1, "yoy_pct": 13.2,
+                 "revenue_accum": 50.0, "revenue_accum_last_year": 40.0,
+                 "accum_yoy_pct": 13.2, "note": None},
+    })
+    counts = updater._refresh_monthly_revenue(conn)
+    assert counts == {"TWSE": 0, "TPEx": 1}
 
 
 def test_backfill_ohlc_otc_floor_circuit_breaker(tmp_path, monkeypatch):
@@ -597,6 +646,8 @@ def test_run_update_writes_session_aligned_intl_not_live_snapshot(tmp_path, monk
     monkeypatch.setattr(updater.taifex, "fetch_tx_history", lambda *a, **k: [])
     monkeypatch.setattr(updater.tdcc, "fetch_custody_distribution",
                         lambda: {"week_date": None, "data": {}})
+    monkeypatch.setattr(updater.revenue, "fetch_twse_revenue", lambda: {})
+    monkeypatch.setattr(updater.revenue, "fetch_otc_revenue", lambda: {})
     # sox 走 Nasdaq（見 _backfill_intl_nasdaq）：有「D 之前那一場」。n225 走 FRED
     # （見 _backfill_intl_fred），只有 D 之前，沒有 D 當天（亞股尚未收盤）。
     # kospi 走 TradingView 帶日期快照，這裡模擬抓不到。

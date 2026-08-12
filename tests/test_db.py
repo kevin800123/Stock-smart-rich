@@ -185,3 +185,44 @@ def test_stock_source_coverage_accepts_holiday_status_rejects_garbage(tmp_path):
     assert status == "holiday"
     with pytest.raises(ValueError):
         set_stock_source_coverage(conn, "2026-08-08", "TWSE", "quotes", "bogus", 0)
+
+
+def test_bulk_upsert_revenue_keys_by_year_month_and_code(tmp_path):
+    from stocks_power_rich.db import bulk_upsert_revenue, get_latest_revenue, revenue_yoy_map
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    rows = {
+        "2330": {"name": "台積電", "industry": "半導體業", "year_month": "2026-07",
+                 "report_date": "2026-08-11", "revenue": 467580548.0,
+                 "revenue_prev_month": 442679969.0, "revenue_last_year": 323165707.0,
+                 "mom_pct": 5.6, "yoy_pct": 44.68, "revenue_accum": 2872064238.0,
+                 "revenue_accum_last_year": 2096211240.0, "accum_yoy_pct": 37.0, "note": None},
+    }
+    n = bulk_upsert_revenue(conn, "TWSE", rows)
+    assert n == 1
+
+    # 同一年月重複覆寫（每日排程重複呼叫是正常行為）不應該產生第二列
+    rows["2330"]["yoy_pct"] = 44.70
+    bulk_upsert_revenue(conn, "TWSE", rows)
+    count = conn.execute("SELECT COUNT(*) FROM stock_revenue_monthly").fetchone()[0]
+    assert count == 1
+
+    # 新的一個月是新的一列，舊資料仍保留（累積歷史，不是覆寫）
+    rows2 = {"2330": {**rows["2330"], "year_month": "2026-08", "report_date": "2026-09-10",
+                      "yoy_pct": 30.0}}
+    bulk_upsert_revenue(conn, "TWSE", rows2)
+    count = conn.execute("SELECT COUNT(*) FROM stock_revenue_monthly").fetchone()[0]
+    assert count == 2
+
+    latest = get_latest_revenue(conn, "2330")
+    assert latest["year_month"] == "2026-08" and latest["yoy_pct"] == 30.0
+
+    # as_of 卡在 8 月報表公告前 → 只看得到 7 月那筆（不能用還沒公告的資料回推過去）
+    as_of = get_latest_revenue(conn, "2330", as_of="2026-08-20")
+    assert as_of["year_month"] == "2026-07" and as_of["yoy_pct"] == 44.70
+
+    ymap = revenue_yoy_map(conn)
+    assert ymap["2330"] == 30.0
+    ymap_as_of = revenue_yoy_map(conn, as_of="2026-08-20")
+    assert ymap_as_of["2330"] == 44.70

@@ -129,6 +129,18 @@ def init_db(conn: sqlite3.Connection) -> None:
         "attempts INTEGER DEFAULT 0, last_error TEXT, updated_at TEXT, "
         "PRIMARY KEY(date, market, source))"
     )
+    # 月營收（MOPS t187ap05，上市/上櫃共用格式）；PK 含 year_month 是刻意的——這個端點
+    # 只給「最新一次已公告的月份」，每天呼叫都會重複覆寫同一個 year_month（無害），但月份
+    # 一換就是新的一列，讓歷史逐月累積而非只留最新一筆（同 stock_ohlc/stock_flow_daily
+    # 逐日累積的道理，只是週期換成月）。
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS stock_revenue_monthly ("
+        "year_month TEXT, code TEXT, market TEXT, name TEXT, industry TEXT, report_date TEXT, "
+        "revenue REAL, revenue_prev_month REAL, revenue_last_year REAL, mom_pct REAL, "
+        "yoy_pct REAL, revenue_accum REAL, revenue_accum_last_year REAL, accum_yoy_pct REAL, "
+        "note TEXT, PRIMARY KEY(year_month, code))"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_revenue_code ON stock_revenue_monthly(code, year_month)")
     # 交易帳本（實單/模擬單；fee_pct=來回費用%，NULL=用預設 0.585）
     conn.execute("CREATE TABLE IF NOT EXISTS trades ("
                  "id INTEGER PRIMARY KEY AUTOINCREMENT, code TEXT, name TEXT, shares INTEGER, "
@@ -320,6 +332,74 @@ def bulk_upsert_stock_flow(conn: sqlite3.Connection, date: str, market: str,
     )
     conn.commit()
     return len(data)
+
+
+def bulk_upsert_revenue(conn: sqlite3.Connection, market: str, rows: dict) -> int:
+    """月營收批次入庫。rows＝{code: {...}}（sources.revenue.parse_monthly_revenue 的輸出）。
+
+    PK 含每列自己的 year_month（而非呼叫端傳入單一日期）——同一次回應裡不同公司的申報
+    進度可能跨月交界（多數已是新月份、少數還沒公告完就仍是舊月份），不能假設整批同月。
+    缺 year_month 的列（理論上不會發生，防禦性略過）不落地，避免 PK 出現 NULL。
+    """
+    cols = ("market", "name", "industry", "report_date", "revenue", "revenue_prev_month",
+            "revenue_last_year", "mom_pct", "yoy_pct", "revenue_accum",
+            "revenue_accum_last_year", "accum_yoy_pct", "note")
+    data = [
+        (v.get("year_month"), code, market, v.get("name"), v.get("industry"),
+         v.get("report_date"), v.get("revenue"), v.get("revenue_prev_month"),
+         v.get("revenue_last_year"), v.get("mom_pct"), v.get("yoy_pct"),
+         v.get("revenue_accum"), v.get("revenue_accum_last_year"), v.get("accum_yoy_pct"),
+         v.get("note"))
+        for code, v in rows.items() if v.get("year_month")
+    ]
+    if not data:
+        return 0
+    assignments = ", ".join(f"{col}=excluded.{col}" for col in cols)
+    conn.executemany(
+        "INSERT INTO stock_revenue_monthly (year_month, code, " + ", ".join(cols) + ") "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(year_month, code) DO UPDATE SET "
+        + assignments,
+        data,
+    )
+    conn.commit()
+    return len(data)
+
+
+def get_latest_revenue(conn: sqlite3.Connection, code: str, as_of: str | None = None) -> dict | None:
+    """單一代號「已知最新」月營收列，可用 as_of 限定只看該日之前已公告的月份（不回推未來）。"""
+    if as_of:
+        row = conn.execute(
+            "SELECT year_month, report_date, revenue, yoy_pct, accum_yoy_pct FROM stock_revenue_monthly "
+            "WHERE code=? AND report_date<=? ORDER BY year_month DESC LIMIT 1",
+            (code, as_of),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT year_month, report_date, revenue, yoy_pct, accum_yoy_pct FROM stock_revenue_monthly "
+            "WHERE code=? ORDER BY year_month DESC LIMIT 1",
+            (code,),
+        ).fetchone()
+    if not row:
+        return None
+    return {"year_month": row[0], "report_date": row[1], "revenue": row[2],
+            "yoy_pct": row[3], "accum_yoy_pct": row[4]}
+
+
+def revenue_yoy_map(conn: sqlite3.Connection, as_of: str | None = None) -> dict:
+    """全市場 {代號: 最新已知營收年增%}，as_of 限定只看該日之前已公告的月份。
+
+    用相關子查詢取每個代號「report_date<=as_of 範圍內 year_month 最大」的那一列——
+    不是 MAX(yoy_pct)，是先選對月份再取那個月的 yoy_pct。
+    """
+    cutoff = as_of or "9999-99-99"
+    rows = conn.execute(
+        "SELECT r1.code, r1.yoy_pct FROM stock_revenue_monthly r1 "
+        "WHERE r1.report_date<=? AND r1.year_month=("
+        "  SELECT MAX(r2.year_month) FROM stock_revenue_monthly r2"
+        "  WHERE r2.code=r1.code AND r2.report_date<=?)",
+        (cutoff, cutoff),
+    ).fetchall()
+    return {code: yoy for code, yoy in rows if yoy is not None}
 
 
 def set_stock_source_coverage(conn: sqlite3.Connection, date: str, market: str,
