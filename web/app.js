@@ -905,20 +905,47 @@ function dod(cur, prev) {
   const pct = (prev !== 0 && Math.sign(prev) === Math.sign(cur)) ? chg / Math.abs(prev) * 100 : null;
   return { chg, pct };
 }
-// 位階直接寫成「近 N 日位階 P% · 高/中/低位」，取代沒有圖例的細軌與刻度。
+// 位階直接寫成「近 N 日位階 P% · 高/中/低位」，並以中性資訊色填滿到 P%。
 // 高低只描述樣本中的相對位置，不借紅綠表達好壞；樣本數仍完整留在可見文字與 tooltip。
 function rankHtml(rk) {
   if (!rk) return "";
   const zone = rk.p >= 80 ? "高位" : rk.p <= 20 ? "低位" : "中位";
-  return `<div class="card-rank" title="近 ${rk.n} 日位階 ${rk.p}%（${rk.n} 筆有效資料）">`
+  return `<div class="card-rank" style="--rank-p:${rk.p}%" title="近 ${rk.n} 日位階 ${rk.p}%（${rk.n} 筆有效資料）">`
     + `<span>近 ${rk.n} 日位階</span><strong>${rk.p}%</strong><span>· ${zone}</span></div>`;
 }
-// 卡片外殼：把 alert（琥珀外框）與位階標籤收在一處，五個卡片建構式共用。
+// 近 7 個交易日的迷你柱狀圖。法人買賣超用每日淨額；存量／指數用相鄰有效日增減，
+// 避免把「餘額本來就很大」誤讀成近期趨勢很強。柱高只比較同一張卡內的 7 筆資料。
+const TREND_DAYS = 7;
+function trendHtml(hist, key, opts = {}) {
+  const rows = (hist || []).filter((r) => r && r.date && r[key] != null && Number.isFinite(Number(r[key])));
+  let points = rows.map((r) => ({ date: r.date, value: Number(r[key]) * (opts.scale || 1) }));
+  if (opts.delta) {
+    points = points.slice(1).map((r, i) => ({ date: r.date, value: r.value - points[i].value }));
+  }
+  points = points.slice(-TREND_DAYS);
+  if (points.length < 2) return "";
+  const maxAbs = Math.max(...points.map((p) => Math.abs(p.value))) || 1;
+  const digits = opts.digits == null ? (maxAbs < 10 ? 2 : maxAbs < 100 ? 1 : 0) : opts.digits;
+  const unit = opts.unit || "";
+  const bars = points.map((p) => {
+    const cls = p.value > 0 ? "up" : p.value < 0 ? "down" : "flat";
+    const h = p.value === 0 ? 2 : Math.max(3, Math.round(Math.abs(p.value) / maxAbs * 13));
+    const sign = p.value > 0 ? "+" : "";
+    const tip = `${p.date.slice(5)} ${sign}${fmt(p.value, digits)}${unit}`;
+    return `<span class="card-trend-bar ${cls}" style="--bar-h:${h}px" title="${esc(tip)}"></span>`;
+  }).join("");
+  const first = points[0].date.slice(5), last = points[points.length - 1].date.slice(5);
+  const label = opts.label || (opts.delta ? "近7日增減" : "近7日走勢");
+  const aria = `${label}，${points.map((p) => `${p.date.slice(5)} ${p.value > 0 ? "+" : ""}${fmt(p.value, digits)}${unit}`).join("、")}`;
+  return `<div class="card-trend"><div class="card-trend-head"><span>${esc(label)}</span><span>${first}—${last}</span></div>`
+    + `<div class="card-trend-bars" style="--trend-n:${points.length}" role="img" aria-label="${esc(aria)}">${bars}</div></div>`;
+}
+// 卡片外殼：把 alert（琥珀外框）、趨勢與位階收在一處，五個卡片建構式共用。
 let lastAlerts = [];
-function cardWrap(inner, title, rk, alert) {
+function cardWrap(inner, title, rk, alert, trend = "") {
   if (alert && typeof alert === "object") lastAlerts.push(alert);
   const attr = title ? ` title="${esc(title)}"` : "";
-  return `<div class="card stat-cell${alert ? " alert" : ""}"${attr}>${inner}${rankHtml(rk)}</div>`;
+  return `<div class="card stat-cell${alert ? " alert" : ""}${trend ? " has-trend" : ""}"${attr}>${inner}${trend}${rankHtml(rk)}</div>`;
 }
 // 修飾語（淨多/淨空/散戶偏多）獨立成一行小字。原本它跟數字同為 26px 擠在 .card-val 裡，
 // 175px 的卡片放不下就把單位「口」擠到第二行；而且真正的讀數是數字，修飾語只是標籤，
@@ -931,36 +958,36 @@ function metricRow(value, sub = "", cls = "") {
   return `<div class="card-metric"><div class="card-val${cls ? " " + cls : ""}">${value}</div>${sub}</div>`;
 }
 // 帶修飾語的數值卡（多空比）：標籤一行、數字一行，不讓兩者擠在同一級
-function qualCard(label, q, value, chg, pct, rk = null, alert = false) {
+function qualCard(label, q, value, chg, pct, rk = null, alert = false, trend = "") {
   const sub = chg == null ? ""
     : `<div class="card-chg ${chgClass(chg)}">${chgText(chg)}${pctTag(pct)}</div>`;
   return cardWrap(`<div class="card-label">${label}</div>${qual(q)}`
-    + metricRow(value, sub), "", rk, alert);
+    + metricRow(value, sub), "", rk, alert, trend);
 }
 // label, value, chg(可空), pct(可空), unit；rk=位階物件（可空），alert=是否標為異常讀數
-function card(label, value, chg, pct, unit = "", title = "", rk = null, alert = false, extra = "") {
+function card(label, value, chg, pct, unit = "", title = "", rk = null, alert = false, extra = "", trend = "") {
   let sub = "";
   if (chg !== undefined && chg !== null) sub = `<div class="card-chg ${chgClass(chg)}">${chgText(chg)}${pctTag(pct)}</div>`;
   else if (pct !== undefined && pct !== null) sub = `<div class="card-chg ${chgClass(pct)}">${pct > 0 ? "▲" : pct < 0 ? "▼" : ""}${fmt(Math.abs(pct), 2)}%</div>`;
-  return cardWrap(`<div class="card-label">${label}</div>${metricRow(value + unit, sub)}${note(extra)}`, title, rk, alert);
+  return cardWrap(`<div class="card-label">${label}</div>${metricRow(value + unit, sub)}${note(extra)}`, title, rk, alert, trend);
 }
 // 未平倉口數卡：依淨多/淨空上色（紅多綠空），附「較昨日」增減口數與百分比
-function oiCard(label, v, prev, rk = null, alert = false) {
+function oiCard(label, v, prev, rk = null, alert = false, trend = "") {
   if (v === null || v === undefined) return `<div class="card stat-cell"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   const cls = v > 0 ? "up" : v < 0 ? "down" : "flat";
   const q = v > 0 ? "淨多" : v < 0 ? "淨空" : "";
   const head = `${fmt(Math.abs(v), 0)}<span class="card-unit">口</span>`;
   const { chg, pct } = dod(v, prev);
-  const sub = chg == null ? "" : `<div class="card-chg ${chgClass(chg)}">較昨 ${chg > 0 ? "+" : ""}${fmt(chg, 0)} 口${pctTag(pct)}</div>`;
-  return cardWrap(`<div class="card-label">${label}</div>${qual(q)}${metricRow(head, sub, cls)}`, "", rk, alert);
+  const sub = chg == null ? "" : `<div class="card-chg ${chgClass(chg)}" title="較昨日 ${chg > 0 ? "+" : ""}${fmt(chg, 0)} 口">${chgText(chg)} 口${pctTag(pct)}</div>`;
+  return cardWrap(`<div class="card-label">${label}</div>${qual(q)}${metricRow(head, sub, cls)}`, "", rk, alert, trend);
 }
 // 買賣超/淨額卡：當日淨流量，數值依正負上色，附「較昨日」增減金額
 // （淨流量基數會翻號、趨近 0，算百分比會失真，故只給金額增減、不給 %）
-function flowCard(label, v, prev, unit = "", rk = null, alert = false) {
+function flowCard(label, v, prev, unit = "", rk = null, alert = false, trend = "") {
   if (v === null || v === undefined) return `<div class="card stat-cell"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   const chg = prev == null ? null : v - prev;
   const sub = chg == null ? "" : `<div class="card-chg ${chgClass(chg)}">較昨 ${chg > 0 ? "+" : ""}${fmt(chg)}${unit}</div>`;
-  return cardWrap(`<div class="card-label">${label}</div>${metricRow(fmt(v) + unit, sub, chgClass(v))}`, "", rk, alert);
+  return cardWrap(`<div class="card-label">${label}</div>${metricRow(fmt(v) + unit, sub, chgClass(v))}`, "", rk, alert, trend);
 }
 // 餘額卡（融資/融券）：當日尚未公布（晚間才出）時，退而顯示最近一筆有資料的交易日，並標註日期
 // amtKey＝該餘額對應的金額欄；est=true 代表那是我們用現價估的，不是官方數字（融券沒有官方金額）
@@ -982,8 +1009,9 @@ function balanceCard(label, srcRow, curDate, balKey, chgKey, hist = [], amtKey =
     : `${est ? "市值" : "金額"} ${fmt(amt, 1)} 億${est ? "（估）" : ""}`
       + (amtChg == null ? "" : `　${amtChg > 0 ? "▲" : "▼"}${fmt(Math.abs(amtChg), 1)}`);
   const alert = cardAlert(balKey, label, srcRow[balKey], fmt(srcRow[balKey], 0), rk, "tw");
+  const trend = trendHtml(hist, chgKey, { label: "近7日增減", unit: "張", digits: 0 });
   return card(lbl, fmt(srcRow[balKey], 0), srcRow[chgKey], pctOf(srcRow[balKey], srcRow[chgKey]),
-    "", "", rk, alert, extra);
+    "", "", rk, alert, extra, trend);
 }
 // 融資維持率卡：DB 未存官方逐日漲跌（不像融資/融券有 margin_chg/short_chg 現成值），
 // 故從 hist 找 srcRow 當日之前最近一筆有值的交易日自行算較昨——比較基準是 srcRow 自己的日期，
@@ -1030,7 +1058,8 @@ function marginMaintCard(hist, srcRow, curDate, opts) {
     reason: `追繳線 ${fmt(call, 0)}%` + (rel == null ? "" : `；相對兩平 ${rel > 0 ? "+" : ""}${fmt(rel, 1)}%`),
     tier: 1, rank: rk, group: "tw",
   } : false;
-  return card(lbl, fmt(v, 1) + "%", chg, pctOf(v, chg), "", tip, rk, alert, extra);
+  const trend = trendHtml(hist, col, { delta: true, label: "近7日增減", unit: "%", digits: 1 });
+  return card(lbl, fmt(v, 1) + "%", chg, pctOf(v, chg), "", tip, rk, alert, extra, trend);
 }
 // 10 日均量卡：大盤量能的「絕對水位」（既有的爆量/量縮判定看的是相對變化，兩者互補）。
 // 讀數就是均量本身，不在卡面上放「距 8000 億 ±X%」——8000 只是一條參考線，把它
@@ -1055,8 +1084,9 @@ function volMaCard(hist, m, prev) {
     key: "turnover_ma10", label, display: `${fmt(v, 0)} 億`,
     reason: `低於 ${fmt(lo, 0)} 億量能觀察線`, tier: 1, rank: rk, group: "tw",
   } : false;
+  const trend = trendHtml(hist, "turnover_ma10", { delta: true, label: "近7日增減", unit: "億", digits: 0 });
   return card(label, fmt(v, 0), chg, pct, '<span class="card-unit">億</span>', tip,
-    rk, alert);
+    rk, alert, "", trend);
 }
 // 市場內部儀表：指數（方向）＋三大法人（資金）。中間的漲跌家數由 loadBreadth 填 #breadth，
 // 三者並列才看得出「指數持平但下跌家數遠多於上漲」這種內部背離。
@@ -1252,9 +1282,12 @@ function renderCards(m, prev = {}, hist = []) {
   const trust = rankedAlert("inst_trust", "投信買賣超", m.inst_trust, `${fmt(m.inst_trust)} 億`, "tw");
   const dealer = rankedAlert("inst_dealer", "自營買賣超", m.inst_dealer, `${fmt(m.inst_dealer)} 億`, "tw");
   $("cards-tw").innerHTML = [
-    flowCard("外資買賣超", m.inst_foreign, prev.inst_foreign, " 億", foreign.rk, foreign.alert),
-    flowCard("投信買賣超", m.inst_trust, prev.inst_trust, " 億", trust.rk, trust.alert),
-    flowCard("自營買賣超", m.inst_dealer, prev.inst_dealer, " 億", dealer.rk, dealer.alert),
+    flowCard("外資買賣超", m.inst_foreign, prev.inst_foreign, " 億", foreign.rk, foreign.alert,
+      trendHtml(hist, "inst_foreign", { label: "近7日淨額", unit: "億", digits: 1 })),
+    flowCard("投信買賣超", m.inst_trust, prev.inst_trust, " 億", trust.rk, trust.alert,
+      trendHtml(hist, "inst_trust", { label: "近7日淨額", unit: "億", digits: 1 })),
+    flowCard("自營買賣超", m.inst_dealer, prev.inst_dealer, " 億", dealer.rk, dealer.alert,
+      trendHtml(hist, "inst_dealer", { label: "近7日淨額", unit: "億", digits: 1 })),
     // 融資金額是官方數字；融券金額官方不發布，只能以現價估算，故標「估」
     balanceCard("融資餘額(張)", marginRow, m.date, "margin_balance", "margin_chg", hist, "margin_value", false, "margin_value_chg"),
     balanceCard("融券餘額(張)", marginRow, m.date, "short_balance", "short_chg", hist, "short_mv", true),
@@ -1272,12 +1305,18 @@ function renderCards(m, prev = {}, hist = []) {
   const retailTmf = rankedAlert("retail_ls_tmf", "微台散戶多空比", m.retail_ls_tmf, ls(m.retail_ls_tmf), "fut");
   const vix = rankedAlert("vix", "VIX 恐慌指數", m.vix, fmt(m.vix), "fut");
   $("cards-fut").innerHTML = [
-    card("台指期", fmt(m.tx_price), m.tx_chg, pctOf(m.tx_price, m.tx_chg)),
-    oiCard("外資台指淨未平倉", m.tx_foreign_oi, prev.tx_foreign_oi, foreignOi.rk, foreignOi.alert),
-    oiCard("散戶小台淨未平倉", m.retail_oi_mtx, prev.retail_oi_mtx, retailOi.rk, retailOi.alert),
-    qualCard("小台散戶多空比", lsQual(m.retail_ls_mtx), ls(m.retail_ls_mtx), lsm.chg, lsm.pct, retailMtx.rk, retailMtx.alert),
-    qualCard("微台散戶多空比", lsQual(m.retail_ls_tmf), ls(m.retail_ls_tmf), lst.chg, lst.pct, retailTmf.rk, retailTmf.alert),
-    card("VIX 恐慌指數", fmt(m.vix), chgPts(m.vix, m.vix_chg), m.vix_chg, "", "", vix.rk, vix.alert),
+    card("台指期", fmt(m.tx_price), m.tx_chg, pctOf(m.tx_price, m.tx_chg), "", "", null, false, "",
+      trendHtml(hist, "tx_price", { delta: true, label: "近7日漲跌", unit: "點", digits: 0 })),
+    oiCard("外資台指淨未平倉", m.tx_foreign_oi, prev.tx_foreign_oi, foreignOi.rk, foreignOi.alert,
+      trendHtml(hist, "tx_foreign_oi", { delta: true, label: "近7日增減", unit: "口", digits: 0 })),
+    oiCard("散戶小台淨未平倉", m.retail_oi_mtx, prev.retail_oi_mtx, retailOi.rk, retailOi.alert,
+      trendHtml(hist, "retail_oi_mtx", { delta: true, label: "近7日增減", unit: "口", digits: 0 })),
+    qualCard("小台散戶多空比", lsQual(m.retail_ls_mtx), ls(m.retail_ls_mtx), lsm.chg, lsm.pct, retailMtx.rk, retailMtx.alert,
+      trendHtml(hist, "retail_ls_mtx", { delta: true, scale: 100, label: "近7日增減", unit: "%", digits: 1 })),
+    qualCard("微台散戶多空比", lsQual(m.retail_ls_tmf), ls(m.retail_ls_tmf), lst.chg, lst.pct, retailTmf.rk, retailTmf.alert,
+      trendHtml(hist, "retail_ls_tmf", { delta: true, scale: 100, label: "近7日增減", unit: "%", digits: 1 })),
+    card("VIX 恐慌指數", fmt(m.vix), chgPts(m.vix, m.vix_chg), m.vix_chg, "", "", vix.rk, vix.alert, "",
+      trendHtml(hist, "vix", { delta: true, label: "近7日增減", digits: 2 })),
   ].join("");
   // 國際市場刻意不給位階條：價格的 45 日位階訊號薄弱，畫了只是裝飾，
   // 反而稀釋位階條在籌碼欄位上的意義。

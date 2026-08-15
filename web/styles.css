@@ -509,14 +509,23 @@ body[data-public] .status-bar { display: none; }
    紅漲綠跌的卡片上而不打架——不必為了標注異常再引入第四個色相。
    只用在兩處：背離的判讀句、異常讀數的卡片。 */
 .card.alert { outline: 1px solid var(--accent); outline-offset: -1px; }
-/* 位階標籤：直接顯示比較期間、百分位與高／中／低位。使用中性資訊色，不把位階誤讀成漲跌。 */
+/* 位階色塊：填色長度就是百分位，文字仍直接顯示期間與高／中／低位。使用中性資訊色，
+   不把位階誤讀成漲跌；極端值的「注意」語意仍只由卡片琥珀外框負責。 */
 .card-rank {
-  order: 5; display: inline-flex; align-items: baseline; gap: 4px; align-self: flex-start;
-  max-width: 100%; margin-top: 7px; padding: 3px 6px; border-radius: var(--r);
-  background: rgba(112, 184, 255, .07); color: var(--muted); font-size: var(--fs-xs);
+  order: 5; position: relative; isolation: isolate; overflow: hidden;
+  display: inline-flex; align-items: baseline; gap: 4px; align-self: stretch;
+  max-width: 100%; min-height: 23px; margin-top: 7px; padding: 4px 7px;
+  border: 1px solid rgba(112, 184, 255, .16); border-radius: var(--r);
+  background: rgba(112, 184, 255, .06); color: var(--label); font-size: var(--fs-xs);
   line-height: 1.2; white-space: nowrap; cursor: help;
 }
-.card-rank strong { color: var(--label); font-weight: 700; }
+.card-rank::before {
+  content: ""; position: absolute; z-index: 0; inset: 0 auto 0 0;
+  width: max(8px, var(--rank-p)); background: rgba(61, 139, 219, .3);
+  border-right: 1px solid rgba(112, 184, 255, .38);
+}
+.card-rank > * { position: relative; z-index: 1; }
+.card-rank strong { color: var(--text); font-weight: 800; }
 
 /* 標題有兩階：.section-head（這一段回答什麼問題）＞ .group-title（單一區塊）。
    層級全靠字級／字重／亮度／留白拉開，不加新裝飾——本頁的視覺重點已經花在
@@ -659,8 +668,33 @@ body[data-public] .status-bar { display: none; }
   min-width: 0; gap: var(--space-sm); margin-top: 9px;
 }
 .card-metric .card-val { flex: 0 1 auto; margin: 0; }
-.card-metric .card-chg { flex: 0 0 auto; align-self: baseline; margin: 0; white-space: nowrap; font-size: var(--font-size-data); text-align: right; }
+.card-metric .card-chg {
+  flex: 0 0 auto; align-self: baseline; margin: 0; white-space: nowrap;
+  font-size: 17px; font-weight: 700; line-height: 1.15; text-align: right;
+}
 .card-qual + .card-metric { margin-top: 5px; }
+.card-trend { order: 4; min-width: 0; margin-top: 8px; }
+.card-trend-head {
+  display: flex; justify-content: space-between; gap: 8px; margin-bottom: 2px;
+  color: var(--muted); font-size: 10px; line-height: 1.2; white-space: nowrap;
+}
+.card-trend-head span:last-child { font-variant-numeric: tabular-nums; }
+.card-trend-bars {
+  position: relative; display: grid; grid-template-columns: repeat(var(--trend-n), minmax(0, 1fr));
+  align-items: stretch; gap: 3px; height: 30px; overflow: hidden;
+}
+.card-trend-bars::after {
+  content: ""; position: absolute; z-index: 0; left: 0; right: 0; top: 50%;
+  border-top: 1px solid var(--border-default);
+}
+.card-trend-bar { position: relative; z-index: 1; min-width: 0; }
+.card-trend-bar::before {
+  content: ""; position: absolute; left: 12%; right: 12%; height: var(--bar-h);
+  min-height: 2px; border-radius: 2px 2px 0 0;
+}
+.card-trend-bar.up::before { bottom: 50%; background: var(--up); }
+.card-trend-bar.down::before { top: 50%; background: var(--down); border-radius: 0 0 2px 2px; }
+.card-trend-bar.flat::before { top: calc(50% - 1px); background: var(--flat); border-radius: 1px; }
 .up { color: var(--up); }
 .down { color: var(--down); }
 .flat { color: var(--muted); }
