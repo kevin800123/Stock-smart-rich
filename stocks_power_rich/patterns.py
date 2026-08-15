@@ -14,6 +14,7 @@
   ・接近突破口：收盤 ≥ 壓力(右緣) × 0.90——距壓力 10% 以上的訊號沒有交易價值
 符合時畫：趨勢線（左緣→右緣）＋壓力線（右緣水平延伸到今日）。
 """
+import math
 
 LOOKBACK = 377      # 需要的最少 K 棒數
 MIN_R_DEFAULT = 70.0  # %R 預設門檻（前端可調 50~90；盤中哨兵/前瞻測試固定用此預設）
@@ -151,7 +152,7 @@ def atr(highs, lows, closes, n: int = 14) -> float | None:
     if m < n + 1 or len(lows) != m or len(closes) != m:
         return None
     window = highs[-(n + 1):] + lows[-(n + 1):] + closes[-(n + 1):]
-    if any(v is None for v in window):
+    if any(v is None or v != v or not math.isfinite(v) for v in window):
         return None
     trs = [max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
            for i in range(m - n, m)]

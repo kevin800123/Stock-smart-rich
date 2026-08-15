@@ -64,6 +64,44 @@ def test_forward_return_starts_at_next_trading_day_open():
     assert stock_flow.forward_return(ohlc, dates, 0, 5, "2330") == 50.0
 
 
+def test_forward_return_rejects_nan_and_infinity():
+    """NaN/Inf 的 OHLC 值不能通過 `is None` 守衛（NaN 不是 None、也不等於 0），一路帶進
+    報酬 → alpha → payload，最後被 FastAPI 的 allow_nan=False 序列化器擋成 500（而且會
+    連同壞快取一起永久化）。這是 kline 端點踩過的同一個坑，這裡守住 forward_return 這一關。"""
+    import math
+    dates = ["2026-01-02", "2026-01-05", "2026-01-06"]
+    nan = float("nan")
+    assert stock_flow.forward_return({(dates[1], "X"): (nan, 1), (dates[2], "X"): (1, 2)},
+                                     dates, 0, 2, "X") is None          # 進場價 NaN
+    assert stock_flow.forward_return({(dates[1], "X"): (10, 1), (dates[2], "X"): (1, nan)},
+                                     dates, 0, 2, "X") is None          # 出場價 NaN
+    assert stock_flow.forward_return({(dates[1], "X"): (math.inf, 1), (dates[2], "X"): (1, 2)},
+                                     dates, 0, 2, "X") is None          # Inf 也擋
+    # 正常值仍照算，不誤傷
+    value = stock_flow.forward_return(
+        {(dates[1], "X"): (10, 1), (dates[2], "X"): (1, 12)}, dates, 0, 2, "X")
+    assert math.isclose(value, 20.0)
+
+
+def test_research_payload_is_strict_json_serializable_even_with_nan_ohlc(tmp_path):
+    """重現 production 的 500：某檔命中股在出場日的 OHLC 是 NaN（來源偶爾會給半根壞 bar），
+    NaN 一路帶進 alpha、進 payload，FastAPI 用 allow_nan=False 序列化時就炸成 500，且壞
+    payload 已寫進快取→每次重按都 500。修好後 research() 的輸出必須能過 allow_nan=False。"""
+    import json
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc, bulk_upsert_stock_flow
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    dates = [(date(2026, 1, 1) + timedelta(days=n)).isoformat() for n in range(65)]
+    for ds in dates:                                    # 單一檔在每天都有法人買超 → 命中
+        bulk_upsert_stock_flow(conn, ds, "TWSE", {"2330": {"institutional_total_lots": 1.0}})
+    bulk_upsert_ohlc(conn, dates[60], {"2330": {"open": 100}})          # 進場價正常
+    bulk_upsert_ohlc(conn, dates[64], {"2330": {"close": float("nan")}})  # 出場價是 NaN
+
+    payload = stock_flow.research(conn)
+    json.dumps(payload, allow_nan=False)  # 這行等同 FastAPI 的序列化；壞就 raise ValueError
+
+
 def test_coverage_uses_220_calendar_days_and_estimates_batches(tmp_path):
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)

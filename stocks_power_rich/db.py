@@ -1,6 +1,7 @@
 """SQLite 資料層：建立 schema、每日大盤快照與籌碼快照的 upsert/查詢。"""
 import glob
 import json
+import math
 import os
 import sqlite3
 from datetime import datetime
@@ -511,6 +512,10 @@ def get_all_ohlc(conn: sqlite3.Connection, min_bars: int = 1) -> dict:
     out: dict[str, dict] = {}
     for code, d, h, l, c in conn.execute(
             "SELECT code, date, high, low, close FROM stock_ohlc ORDER BY code, date"):
+        # SQLite 會把部分 NaN 寫成 NULL；其他來源也可能留下 NaN/Inf。型態計算要求
+        # H/L/C 同列完整，所以整根壞 bar 略過，並保持三條價格序列與日期對齊。
+        if any(v is None or v != v or not math.isfinite(v) for v in (h, l, c)):
+            continue
         s = out.setdefault(code, {"dates": [], "highs": [], "lows": [], "closes": []})
         s["dates"].append(d); s["highs"].append(h); s["lows"].append(l); s["closes"].append(c)
     return {code: s for code, s in out.items() if len(s["dates"]) >= min_bars}

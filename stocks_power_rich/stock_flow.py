@@ -354,7 +354,8 @@ def forward_return(ohlc: dict, dates: list[str], signal_index: int,
         return None
     entry = ohlc.get((dates[signal_index + 1], code), (None, None))[0]
     close = ohlc.get((dates[signal_index + horizon], code), (None, None))[1]
-    if entry in (None, 0) or close is None:
+    if (entry in (None, 0) or close is None
+            or not math.isfinite(entry) or not math.isfinite(close)):
         return None
     return (close / entry - 1) * 100
 

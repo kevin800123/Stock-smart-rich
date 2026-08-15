@@ -104,6 +104,7 @@ def test_atr_true_range_includes_gaps():
     assert patterns.atr([12.0, 9.0], [10.0, 8.5], [11.0, 8.6], n=1) == 2.5
     assert patterns.atr([10.0], [9.0], [9.5], n=14) is None       # 不足 n+1 根
     assert patterns.atr([10.0, None], [9.0, 8.0], [9.5, 8.5], n=1) is None  # 缺值防呆
+    assert patterns.atr([10.0, float("nan")], [9.0, 8.0], [9.5, 8.5], n=1) is None
 
 
 def test_screen_runs_over_multiple_codes():
