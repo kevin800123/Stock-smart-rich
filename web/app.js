@@ -917,7 +917,7 @@ let lastAlerts = [];
 function cardWrap(inner, title, rk, alert) {
   if (alert && typeof alert === "object") lastAlerts.push(alert);
   const attr = title ? ` title="${esc(title)}"` : "";
-  return `<div class="card${alert ? " alert" : ""}"${attr}>${inner}${railHtml(rk)}</div>`;
+  return `<div class="card stat-cell${alert ? " alert" : ""}"${attr}>${inner}${railHtml(rk)}</div>`;
 }
 // 修飾語（淨多/淨空/散戶偏多）獨立成一行小字。原本它跟數字同為 26px 擠在 .card-val 裡，
 // 175px 的卡片放不下就把單位「口」擠到第二行；而且真正的讀數是數字，修飾語只是標籤，
@@ -941,7 +941,7 @@ function card(label, value, chg, pct, unit = "", title = "", rk = null, alert = 
 }
 // 未平倉口數卡：依淨多/淨空上色（紅多綠空），附「較昨日」增減口數與百分比
 function oiCard(label, v, prev, rk = null, alert = false) {
-  if (v === null || v === undefined) return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+  if (v === null || v === undefined) return `<div class="card stat-cell"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   const cls = v > 0 ? "up" : v < 0 ? "down" : "flat";
   const q = v > 0 ? "淨多" : v < 0 ? "淨空" : "";
   const head = `${fmt(Math.abs(v), 0)}<span class="card-unit">口</span>`;
@@ -952,7 +952,7 @@ function oiCard(label, v, prev, rk = null, alert = false) {
 // 買賣超/淨額卡：當日淨流量，數值依正負上色，附「較昨日」增減金額
 // （淨流量基數會翻號、趨近 0，算百分比會失真，故只給金額增減、不給 %）
 function flowCard(label, v, prev, unit = "", rk = null, alert = false) {
-  if (v === null || v === undefined) return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+  if (v === null || v === undefined) return `<div class="card stat-cell"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   const chg = prev == null ? null : v - prev;
   const sub = chg == null ? "" : `<div class="card-chg ${chgClass(chg)}">較昨 ${chg > 0 ? "+" : ""}${fmt(chg)}${unit}</div>`;
   return cardWrap(`<div class="card-label">${label}</div><div class="card-val ${chgClass(v)}">${fmt(v)}${unit}</div>${sub}`, "", rk, alert);
@@ -961,7 +961,7 @@ function flowCard(label, v, prev, unit = "", rk = null, alert = false) {
 // amtKey＝該餘額對應的金額欄；est=true 代表那是我們用現價估的，不是官方數字（融券沒有官方金額）
 function balanceCard(label, srcRow, curDate, balKey, chgKey, hist = [], amtKey = "", est = false, amtChgKey = "") {
   if (!srcRow || srcRow[balKey] === null || srcRow[balKey] === undefined) {
-    return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+    return `<div class="card stat-cell"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   }
   const stale = srcRow.date && srcRow.date !== curDate;
   const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
@@ -1004,7 +1004,7 @@ function marginMaintCard(hist, srcRow, curDate, opts) {
   const band = (lastBands[col] || {});
   const even = band.breakeven, call = band.call;
   if (!srcRow || srcRow[col] === null || srcRow[col] === undefined) {
-    return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+    return `<div class="card stat-cell"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   }
   const stale = srcRow.date && srcRow.date !== curDate;
   const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
@@ -1039,7 +1039,7 @@ function volMaCard(hist, m, prev) {
   const lo = (lastBands.turnover_ma10 || {}).low;
   const label = "10日均量";
   if (v === null || v === undefined) {
-    return `<div class="card"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+    return `<div class="card stat-cell"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   }
   const { chg, pct } = dod(v, prev && prev.turnover_ma10);
   const tip = `近 10 個交易日成交金額的平均（上市，證交所 FMTQIK 官方值）。`
@@ -1138,9 +1138,7 @@ function renderTodayFocus() {
     items.join("") + more;
 }
 
-// ===== 置頂 KPI 條：捲到頁面任何位置都還看得到主指標。=====
-// 桌機維持直接放在 .overview-top 後面的設計；手機折成兩列後，和詳細版重複的
-// 項目變多，因此僅在手機於 .overview-top 還在 .content 可視範圍時暫時隱藏。
+// ===== 置頂 KPI 條：Decision Band 捲出後才接棒，任何寬度都不和首屏摘要重複。=====
 // 資料來自三個既有的模組層變數（lastLatest／lastBreadth／lastPulse），三者由不同
 // API 各自到位，所以三個載入點都呼叫本函式一次（同 renderVerdict 的既有作法），
 // 缺哪一塊就讓那一格顯示「—」，不等全部到齊。
@@ -1177,28 +1175,21 @@ function renderKpiSticky() {
   kpiPrevValues = items.map(([, v]) => v);
 }
 
-const MOBILE_KPI_MEDIA = window.matchMedia("(max-width: 600px)");
-let mobileKpiObserver = null;
-function syncMobileKpiSticky() {
+let kpiObserver = null;
+function syncKpiSticky() {
   const kpi = $("kpi-sticky");
   const overviewTop = document.querySelector(".overview-top");
   const scroller = document.querySelector(".content");
   if (!kpi || !overviewTop || !scroller) return;
-  if (mobileKpiObserver) mobileKpiObserver.disconnect();
-  if (!MOBILE_KPI_MEDIA.matches) {
-    kpi.classList.remove("hidden");
-    mobileKpiObserver = null;
-    return;
-  }
+  if (kpiObserver) kpiObserver.disconnect();
   // 先隱藏避免 observer 的首次 callback 前閃出；用 display:none 不佔首屏版位。
   kpi.classList.add("hidden");
-  mobileKpiObserver = new IntersectionObserver(([entry]) => {
+  kpiObserver = new IntersectionObserver(([entry]) => {
     kpi.classList.toggle("hidden", entry.isIntersecting);
   }, { root: scroller, threshold: 0 });
-  mobileKpiObserver.observe(overviewTop);
+  kpiObserver.observe(overviewTop);
 }
-MOBILE_KPI_MEDIA.addEventListener("change", syncMobileKpiSticky);
-syncMobileKpiSticky();
+syncKpiSticky();
 
 // 某欄位在近 N 日的百分位。位階條只在樣本夠時才畫得有意義——n<15 的欄位（如目前
 // 只有 7 筆有值的融資維持率）畫出來是雜訊，寧可不畫，改由固定門檻判定。
@@ -2943,11 +2934,15 @@ const COLLAPSE_KEY = (key) => `spr:collapse:${key}`;
 // 手機總覽首訪只保留最常先看的台股大盤與法人排行；僅供沒有既有偏好時判斷，
 // 絕不寫入 localStorage，避免這個行動版預設同步成桌機的收合狀態。
 const MOBILE_OPEN = new Set(["tw", "rank"]);
+// 桌機首訪先保留決策資料，把需要主動研究的長圖表收起；只套 class、不寫入偏好。
+const DESKTOP_COLLAPSED = new Set(["combo", "intl", "movers"]);
 function initCollapsibleGroups() {
+  const mobile = window.matchMedia("(max-width: 600px)").matches;
   document.querySelectorAll("#view-overview .card-group[data-key]").forEach((g) => {
     const saved = localStorage.getItem(COLLAPSE_KEY(g.dataset.key));
     if (saved === "1" ||
-        (saved === null && window.matchMedia("(max-width: 600px)").matches && !MOBILE_OPEN.has(g.dataset.key))) {
+        (saved === null && mobile && !MOBILE_OPEN.has(g.dataset.key)) ||
+        (saved === null && !mobile && DESKTOP_COLLAPSED.has(g.dataset.key))) {
       g.classList.add("collapsed");
     }
   });

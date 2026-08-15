@@ -315,11 +315,14 @@ body[data-public] .status-bar { display: none; }
 /* ===== 指標卡 ===== */
 /* ===== 市場內部儀表：把「指數方向」與「內部廣度」「法人資金」放進同一個讀數。
    分開放在不同區塊時，剛好藏住「指數持平但下跌家數遠多於上漲」這種背離判讀。 ===== */
-/* 市場儀表板＋市場內部：兩張卡並排，儀表板佔約 1/3、市場內部吃剩下的寬度。
-   .overview-top 取代 .market-strip 原本「.view 的第一個直接子項」的角色，
-   所以 flex:0 0 auto 搬到這裡（同一份直向 flex 語意：只是換了誰在最外層）。 */
-.overview-top { display: flex; align-items: stretch; gap: var(--sp-4); flex-wrap: wrap; flex: 0 0 auto; }
-.overview-top .market-strip { flex: 2 1 420px; }   /* 蓋掉下面 .market-strip 自己的 flex:0 0 auto */
+/* Decision Band：總分、行情與判讀依同一條 12 欄節奏組成一個決策表面，不再是兩張
+   高度互相拉扯的大卡。三區用髮絲分隔，避免卡中卡與首屏大片空白。 */
+.overview-top {
+  display: grid; grid-template-columns: minmax(220px, 3fr) minmax(420px, 6fr) minmax(220px, 3fr);
+  align-items: stretch; gap: 0; min-width: 0; overflow: hidden; flex: 0 0 auto;
+  background: linear-gradient(120deg, var(--panel-raised), var(--panel));
+  border: 1px solid var(--border-strong); border-radius: var(--r-lg); box-shadow: var(--shadow-panel);
+}
 
 /* ===== 市場儀表板：把 ss_trader.market_checklist() 濃縮成一個半圓錶＋四個分項 =====
    刻意不用紅／綠：那兩色在本站鎖給「行情漲跌」，且上市慣例紅漲綠跌——如果拿綠色
@@ -328,10 +331,9 @@ body[data-public] .status-bar { display: none; }
    （偏強／中性／偏弱…）而不是換色相——同「總分不做成進出訊號」的取捨：
    顏色只負責「這是這張卡的視覺重心」，不負責「好/壞」。 */
 .pulse-card {
-  background: linear-gradient(120deg, var(--panel-raised), var(--panel)); border: 1px solid var(--border-strong);
-  border-radius: var(--r-lg); padding: 14px 16px; box-shadow: var(--shadow-panel);
+  padding: 14px 16px;
   display: flex; flex-direction: column; gap: var(--sp-2);
-  flex: 1 1 300px; min-width: 260px; max-width: 380px;
+  min-width: 0;
 }
 .pulse-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--sp-2); }
 .pulse-title { font-size: var(--fs-md); font-weight: 700; color: var(--text); }
@@ -340,15 +342,23 @@ body[data-public] .status-bar { display: none; }
    44%×H + 58 + 23 ≤ H。改動 radius／center／offsetCenter 任一個都要重算這個高度。 */
 .pulse-gauge-chart { width: 100%; height: 176px; }
 .pulse-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2); }
-.pulse-item { background: var(--sunken); border-radius: var(--r); padding: 6px 10px; min-width: 0; }
+.pulse-item { background: var(--sunken); border-radius: var(--r); padding: 7px 9px; min-width: 0; }
 .pulse-item-k { display: block; font-size: var(--fs-xs); color: var(--muted); white-space: nowrap; }
 .pulse-item-v { font-size: var(--fs-md); font-weight: 700; color: var(--text); }
 .pulse-item-label { font-size: var(--fs-xs); color: var(--label); margin-left: 4px; }
 /* 資料不足時（採計項數低於門檻）分項顯示「—」而非硬湊的數字，用弱化字色標出來，
    不用琥珀外框——那個語彙專屬「異常讀數」，資料不足是另一件事，混用會稀釋兩者。 */
 .pulse-item.na .pulse-item-v { color: var(--muted); font-weight: 600; }
-.pulse-compose { margin-top: var(--sp-2); border-top: 1px solid var(--border-subtle); padding-top: var(--sp-2); }
+.pulse-compose { grid-column: 1 / -1; margin: 0; border-top: 1px solid var(--border-subtle); padding: 12px 16px 14px; }
 .pulse-compose .table-wrap { max-height: 260px; overflow-y: auto; }
+
+.decision-context {
+  min-width: 0; padding: 16px; border-left: 1px solid var(--border-subtle);
+  display: flex; flex-direction: column; justify-content: center; gap: var(--sp-4);
+}
+.decision-context .ms-inst { display: block; }
+.decision-context .ms-i.total { padding-bottom: var(--sp-3); border-bottom: 1px solid var(--border-subtle); }
+.decision-context .pulse-grid { gap: 6px; }
 
 /* 置頂 KPI 條：sticky 的定位基準是最近的捲動祖先，也就是 .content（overflow-y:auto），
    不是 .view 本身——.view 是 overflow:visible，捲動一律交給 .content（見該規則的既有
@@ -428,37 +438,52 @@ body[data-public] .status-bar { display: none; }
   border-radius: var(--r); box-shadow: inset 0 0 0 100px rgba(112, 184, 255, .07);
 }
 
-@media (max-width: 900px) {
-  .overview-top { flex-direction: column; }
-  /* **方向一轉，flex-basis 就從「寬度」變成「高度」。** `.market-strip` 的
-     `flex: 2 1 420px`（本意是「並排時佔 2 份、最小 420px 寬」）在直排時把它撐成
-     **420px 高**——實測內容只有 242px，多出來的 178px 全是空白，而且外層的
-     `align-items: center` 會把 wrap 出來的兩行各自置中，看起來完全像「間距沒調好」，
-     於是很容易跑去改 padding／gap，但那些值都是對的。`.pulse-card` 的 `flex: 1 1 300px`
-     同理。直排時一律把高度交還給內容。 */
-  .overview-top .market-strip, .pulse-card { flex: 0 0 auto; }
-  /* **`max-width: 100%` 不能寫成 `none`。** `.overview-top` 是 `flex-wrap: wrap` 的**直排**
-     容器，多行 flex 的 `align-items: stretch` 是把項目拉到「該 flex line 的 cross size」，
-     而那條線的寬度由項目自己的 max-content 決定——**不是容器寬度**。所以只要卡片內容
-     有一塊很寬的東西，卡片就會整個撐出去：實測手機按下「展開組成」後，裡面那張檢核表
-     （說明欄是 `white-space: nowrap` 的長句）min-content 710px，`.pulse-card` 當場從
-     352px 變成 **745px**，儀表、四個分項、標題整排被推出畫面外——就是使用者說的「格式跑掉」。
-     桌機沒事只是因為基礎規則有 `max-width: 380px` 壓著，這裡把它改成 `none` 就等於拆掉
-     唯一的護欄。注意 `min-width: 0` 治不了這個：自動最小尺寸那條規則只作用在**主軸**，
-     這裡撐開的是交叉軸。（此問題早於手機版改版，用舊的 `flex: 1 1 300px` 實測同樣 745px。） */
-  .pulse-card { max-width: 100%; }
+@media (max-width: 1050px) {
+  .overview-top { grid-template-columns: minmax(220px, 5fr) minmax(0, 7fr); }
+  .decision-context {
+    grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--border-subtle);
+    display: grid; grid-template-columns: minmax(200px, 1fr) minmax(0, 2fr); align-items: center;
+  }
+  .decision-context .ms-i.total { padding: 0; border: 0; }
+  .decision-context .pulse-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .kpi-sticky { grid-template-columns: repeat(3, minmax(0, 1fr)); row-gap: 6px; }
+}
+@media (max-width: 700px) {
+  .overview-top { grid-template-columns: minmax(132px, 2fr) minmax(0, 3fr); }
+  .pulse-card { padding: 12px 10px; }
+  .pulse-head { display: block; }
+  .pulse-title { font-size: var(--fs-sm); }
+  .pulse-head .help-link { display: block; margin-top: 4px; font-size: var(--fs-xs); }
+  .market-strip { padding: 12px; }
+  .ms-index { gap: 5px 7px; }
+  .ms-index .ms-label { flex-basis: 100%; }
+  .ms-index .ms-val { font-size: 28px; }
+  .ms-index .ms-chg { font-size: var(--fs-sm); }
+  .breadth-nums { gap: 5px 8px; }
+  .breadth-bar { height: 18px; }
+  .ms-verdict { font-size: var(--fs-sm); }
+  .decision-context {
+    grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--border-subtle);
+    display: grid; grid-template-columns: minmax(120px, 1fr) minmax(0, 2fr); align-items: center;
+  }
+  .decision-context .ms-i.total { padding: 0; border: 0; }
+  .decision-context .pulse-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 360px) {
+  .overview-top { grid-template-columns: minmax(0, 1fr); }
+  .market-strip { border-left: 0; border-top: 1px solid var(--border-subtle); }
+  .decision-context { grid-column: auto; display: flex; align-items: stretch; }
+  .decision-context .ms-i.total { padding-bottom: var(--sp-3); border-bottom: 1px solid var(--border-subtle); }
 }
 @media (max-width: 500px) {
   .kpi-sticky { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 .market-strip {
-  background: linear-gradient(120deg, var(--panel-raised), var(--panel)); border: 1px solid var(--border-strong); border-radius: var(--r-lg);
-  padding: 18px 20px; display: flex; align-items: center; box-shadow: var(--shadow-panel);
-  gap: var(--sp-5); flex-wrap: wrap;
+  min-width: 0; padding: 18px 20px; border-left: 1px solid var(--border-subtle);
+  display: flex; align-items: center;
 }
-.ms-main { flex: 1 1 400px; min-width: 0; }
+.ms-main { width: 100%; min-width: 0; }
 .ms-index { display: flex; align-items: baseline; gap: var(--sp-3); flex-wrap: wrap; }
 .ms-index .ms-label { font-size: var(--fs-sm); color: var(--muted); }
 .ms-index .ms-val { font-size: var(--fs-hero); font-weight: 700; line-height: 1.1; }
@@ -499,7 +524,7 @@ body[data-public] .status-bar { display: none; }
    （曾試過 .section-head:first-of-type 減少間距——:first-of-type 是比對元素型別(div)
    而非 class，#view-overview 的第一個 div 是 .market-strip，該規則永遠不會命中。） */
 .section-head { display: flex; align-items: baseline; gap: var(--sp-3); flex-wrap: wrap;
-  margin: var(--sp-5) 0 var(--sp-1); }
+  margin: var(--sp-2) 0 calc(-1 * var(--sp-1)); }
 .sh-title { font-size: var(--fs-lg); font-weight: 700; color: var(--text); letter-spacing: 1px; }
 .sh-desc { font-size: var(--fs-sm); color: var(--muted); }
 
@@ -560,8 +585,11 @@ body[data-public] .status-bar { display: none; }
    hover 抬升的互動單元），邊框降到髮絲級——bg-step 與陰影已經足夠把卡片跟底色分開，
    一條清楚的邊框只是第三票。.card.alert 用的是 outline 不是 border（見下方），
    兩者互不影響，邊框變安靜後琥珀外框反而更醒目。不動間距、不動任何一張卡的資訊密度。 */
-.card-group { background: rgba(16, 26, 40, 0.72); border: 1px solid var(--border-subtle); border-radius: var(--r-lg); padding: 16px; }
-.group-title { display: inline-block; font-size: var(--fs-md); color: var(--label); font-weight: 600; margin-bottom: var(--sp-3); border-left: 3px solid var(--info); padding: 0 2px 2px 9px; }
+.card-group { background: rgba(16, 26, 40, 0.72); border: 1px solid var(--border-subtle); border-radius: var(--r-lg); padding: 12px; }
+.group-title {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  font-size: var(--fs-md); color: var(--label); font-weight: 600; margin-bottom: var(--sp-2);
+}
 /* 收合：點標題列收合／展開，狀態存 localStorage（見 app.js initCollapsibleGroups）。
    只用 CSS 隱藏「標題以外的所有直接子項」，不管該區塊內部長什麼樣（卡片網格／
    排行榜／圖表都一樣一行處理），不必為每種區塊內容各寫一條收合規則。
@@ -628,6 +656,31 @@ body[data-public] .status-bar { display: none; }
 .down { color: var(--down); }
 .flat { color: var(--muted); }
 
+/* StatBoard / StatCell：密集讀數是一張表，不是 8 張彼此競爭的卡。容器統一處理圓角與
+   邊界；cell 只保留一層色階和 1px 分隔，hover 不位移，掃視時數字不會跳。 */
+.stat-board {
+  grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px;
+  overflow: hidden; background: var(--border-subtle); border: 1px solid var(--border-subtle);
+  border-radius: calc(var(--r-lg) - 2px); font-variant-numeric: tabular-nums;
+}
+.stat-board--tw { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+.stat-board--fut { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.stat-board--opt { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.stat-board--intl { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.stat-board > .stat-cell {
+  min-height: 92px; padding: 9px 11px; border: 0; border-radius: 0;
+  background: var(--bg-card); box-shadow: none;
+  transition: background-color var(--dur-base) var(--ease-out);
+}
+.stat-board > .stat-cell:hover { transform: none; background: var(--bg-card-hover); box-shadow: none; }
+.stat-board > .stat-cell .card-val { margin: 9px 0 var(--space-xs); }
+.stat-board > .stat-cell .card-qual + .card-val { margin-top: 5px; }
+.stat-board > .muted { grid-column: 1 / -1; padding: 14px; background: var(--bg-card); }
+
+@media (max-width: 1180px) {
+  .stat-board--tw, .stat-board--intl { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+
 
 /* ===== 漲跌家數 ===== */
 .breadth-nums { display: flex; align-items: center; gap: 10px 16px; flex-wrap: wrap; font-size: var(--fs-sm); font-weight: 700; margin-bottom: 7px; }
@@ -638,7 +691,7 @@ body[data-public] .status-bar { display: none; }
 .bd-lim.up { background: var(--up-dim); color: #f0a0a0; }
 .bd-lim.down { background: var(--down-dim); color: #7ee2a0; }
 .breadth-bar { display: flex; height: 22px; border-radius: var(--r); overflow: hidden; border: 1px solid var(--border); }
-.breadth-bar .seg { height: 100%; transition: width var(--dur-med) var(--ease-out); }
+.breadth-bar .seg { height: 100%; }
 .breadth-bar .seg.up { background: var(--up); }
 .breadth-bar .seg.flat { background: var(--flat); }
 .breadth-bar .seg.down { background: var(--down); }
@@ -1384,6 +1437,7 @@ a.stock:hover { text-decoration: underline; }
 
   /* 卡片固定 2 欄；並排區塊一律直排 */
   .card-grid, .cards { grid-template-columns: repeat(2, 1fr); gap: 7px; }
+  .stat-board { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; }
   .card-val { font-size: 19px; }
   .rank-split { flex-direction: column; gap: 4px; }
   .chart-side { gap: 12px; }

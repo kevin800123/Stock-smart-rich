@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=20260815-ui1" />
   <script src="/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -84,18 +84,16 @@
 
       <!-- ===== 總覽 ===== -->
       <section id="view-overview" class="view active dashboard-view">
-        <div class="overview-top">
+        <div class="overview-top decision-band">
           <!-- 市場儀表板：把 ss_trader.market_checklist() 濃縮成一個總分＋四個分項，
                放在總覽最上方當主角（使用者要求，參考另一 App 的市場脈搏總覽）。
                展開後看到的是 Ss 方法論的檢核清單，帶免責聲明——與「操盤手」頁同一份文字。 -->
-          <div class="pulse-card">
+          <div class="pulse-card decision-score">
             <div class="pulse-head">
               <span class="pulse-title">市場儀表板</span>
               <button id="pulse-expand" class="help-link" type="button">展開組成 ▾</button>
             </div>
             <div id="pulse-gauge" class="pulse-gauge-chart"></div>
-            <div id="pulse-grid" class="pulse-grid"></div>
-            <div id="pulse-compose" class="pulse-compose hidden"></div>
           </div>
           <!-- 市場內部：指數方向與內部廣度並列，一眼看出「指數漲但家數跌」這類背離 -->
           <div class="market-strip">
@@ -104,19 +102,15 @@
               <div id="breadth"></div>
               <div id="ms-verdict" class="ms-verdict"></div>
             </div>
-            <div id="ms-inst" class="ms-inst"></div>
           </div>
+          <div class="decision-context">
+            <div id="ms-inst" class="ms-inst"></div>
+            <div id="pulse-grid" class="pulse-grid"></div>
+          </div>
+          <div id="pulse-compose" class="pulse-compose hidden"></div>
         </div>
-        <!-- 置頂 KPI 條：桌機維持直接放在這裡，頂端和詳細版重疊一行後自然 sticky。
-             手機實測會折成兩列、重複 6 項並佔首屏 11%，所以 app.js 只在 <=600px
-             等 .overview-top 捲出 .content 後才顯示它。 -->
+        <!-- 置頂 KPI 條只在 Decision Band 捲出視野後出現，任何寬度都不和首屏摘要重複。 -->
         <div id="kpi-sticky" class="kpi-sticky"></div>
-        <div id="today-focus" class="today-focus"></div>
-        <!-- 三則新聞標題：每個市場一則。資料只來自 /api/news/headlines，那支**只讀
-             已存在的快取**、不抓取也不打 Gemini（見 api/news.py::headlines_logic）——
-             免費層一天只有 20 次，總覽不該為了一格順帶資訊就吃掉一次。
-             整塊沒有資料時 renderNewsStrip 會把它藏起來，不留空殼。 -->
-        <div id="news-strip" class="news-strip" hidden></div>
         <!-- 兩階層：section-head（這一段回答什麼問題）＞ group-title（單一區塊）。
              分組照本站自己的世界觀：籌碼解釋行情，所以「誰在動錢」與「價格長什麼樣」
              各成一段，而不是把 8 個同權重的區塊平鋪。 -->
@@ -126,11 +120,17 @@
         <!-- 台股大盤 span-full：8 張指標卡是這幾組裡最多的，塞進窄欄會被壓成 2 欄、
              內部多出一倍列數，反而更高（實測 352→670px）；期貨籌碼／期權情緒卡數較少
              (6／4)，兩兩相鄰時交給下面 auto-flow 的網格自然併成一列，不必手動排版。 -->
-        <div class="card-group span-full" data-key="tw"><div class="group-title">台股大盤 <span id="breadth-note" class="muted small"></span></div><div id="cards-tw" class="cards"></div></div>
+        <div class="card-group span-full" data-key="tw"><div class="group-title">台股大盤 <span id="breadth-note" class="muted small"></span></div><div id="cards-tw" class="cards stat-board stat-board--tw"></div></div>
+        <div id="today-focus" class="today-focus"></div>
+        <!-- 三則新聞標題：每個市場一則。資料只來自 /api/news/headlines，那支**只讀
+             已存在的快取**、不抓取也不打 Gemini（見 api/news.py::headlines_logic）——
+             免費層一天只有 20 次，總覽不該為了一格順帶資訊就吃掉一次。
+             整塊沒有資料時 renderNewsStrip 會把它藏起來，不留空殼。 -->
+        <div id="news-strip" class="news-strip" hidden></div>
         <!-- 7 ＋ 5 ＝ 12：期貨籌碼 6 張、期權情緒 4 張，這個比例讓兩邊都排成 2 列卡片，
              高度自然齊平。等寬(6/6)的話期權情緒只有 1 列多、會被拉高留下近 200px 空白。 -->
-        <div class="card-group span-7" data-key="fut"><div class="group-title">期貨籌碼</div><div id="cards-fut" class="cards"></div></div>
-        <div class="card-group span-5" data-key="opt"><div class="group-title">期權情緒・大額交易人 <span id="opt-note" class="muted small"></span></div><div id="cards-opt" class="cards"></div></div>
+        <div class="card-group span-7" data-key="fut"><div class="group-title">期貨籌碼</div><div id="cards-fut" class="cards stat-board stat-board--fut"></div></div>
+        <div class="card-group span-5" data-key="opt"><div class="group-title">期權情緒・大額交易人 <span id="opt-note" class="muted small"></span></div><div id="cards-opt" class="cards stat-board stat-board--opt"></div></div>
         <div class="card-group span-full" data-key="rank">
           <div class="group-title">法人買賣超排行 <span id="rank-note" class="muted small"></span></div>
           <div class="chart-toolbar">
@@ -170,7 +170,7 @@
         <div class="card-group span-3" data-key="gainers"><div class="group-title">漲幅排行 <span id="movers-rank-note" class="muted small"></span></div><div id="rank-gainers" class="mover-list"></div></div>
         <div class="card-group span-3" data-key="losers"><div class="group-title">跌幅排行</div><div id="rank-losers" class="mover-list"></div></div>
         <!-- 國際市場改整列：6 張卡一次排開成一列（約 150px 高），比窄欄下的 3 列矮得多。 -->
-        <div class="card-group span-full" data-key="intl"><div class="group-title">國際市場</div><div id="cards-intl" class="cards"></div></div>
+        <div class="card-group span-full" data-key="intl"><div class="group-title">國際市場</div><div id="cards-intl" class="cards stat-board stat-board--intl"></div></div>
         <div class="card-group span-full" data-key="movers"><div class="group-title">權值股貢獻大盤點數 <span id="movers-note" class="muted small"></span></div><div id="movers" class="mv-grid"></div></div>
         <!-- 熱力圖預設只顯示緊湊的「產業強弱」橫條（最大單一區塊 820px 的主因），
              展開後才畫完整 treemap——兩者共用同一份 avg 計算（見 app.js loadSectors），
@@ -553,6 +553,6 @@
     </main>
   </div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=20260815-ui1"></script>
 </body>
 </html>
