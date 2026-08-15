@@ -905,13 +905,14 @@ function dod(cur, prev) {
   const pct = (prev !== 0 && Math.sign(prev) === Math.sign(cur)) ? chg / Math.abs(prev) * 100 : null;
   return { chg, pct };
 }
-// 位階直接寫成「近 N 日位階 P% · 高/中/低位」，並以中性資訊色填滿到 P%。
-// 高低只描述樣本中的相對位置，不借紅綠表達好壞；樣本數仍完整留在可見文字與 tooltip。
+// 位階拆成「比較期間」與「百分位／區間」兩個文字層級，不用長度映射百分比，
+// 避免被誤讀成完成進度。高低只描述樣本中的相對位置，不借紅綠表達好壞。
 function rankHtml(rk) {
   if (!rk) return "";
   const zone = rk.p >= 80 ? "高位" : rk.p <= 20 ? "低位" : "中位";
-  return `<div class="card-rank" style="--rank-p:${rk.p}%" title="近 ${rk.n} 日位階 ${rk.p}%（${rk.n} 筆有效資料）">`
-    + `<span>近 ${rk.n} 日位階</span><strong>${rk.p}%</strong><span>· ${zone}</span></div>`;
+  return `<div class="card-rank" title="近 ${rk.n} 日位階 ${rk.p}%（${rk.n} 筆有效資料）" aria-label="近 ${rk.n} 日位階 ${rk.p}%，${zone}">`
+    + `<span class="card-rank-period">近 ${rk.n} 日位階</span>`
+    + `<span class="card-rank-badge"><strong>${rk.p}%</strong><span>${zone}</span></span></div>`;
 }
 // 近 7 個交易日的迷你柱狀圖。法人買賣超用每日淨額；存量／指數用相鄰有效日增減，
 // 避免把「餘額本來就很大」誤讀成近期趨勢很強。柱高只比較同一張卡內的 7 筆資料。

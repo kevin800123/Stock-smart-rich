@@ -20,14 +20,17 @@ def test_frontend_card_alert_guards():
     assert js.count("lastAlerts = []") >= 1
     assert 'class="card-metric"' in js
     assert 'class="card-rank"' in js
+    assert 'class="card-rank-period"' in js
+    assert 'class="card-rank-badge"' in js
     assert "function trendHtml(" in js
     assert 'class="card-trend-bars"' in js
-    assert 'style="--rank-p:${rk.p}%"' in js
+    assert "--rank-p" not in js
     assert "function compactDeltaHtml(" in js
     assert "compactDeltaHtml(chg, null, unit)" in js
     assert "compactDeltaHtml(chg, pct, compactUnit)" in js
     assert 'compactDeltaHtml(chg, pct, " 口")' in js
-    assert ".card-rank::before" in css
+    assert ".card-rank::before" not in css
+    assert ".card-rank-badge" in css
     assert ".card-trend-bar.up::before" in css
     assert "@media (max-width: 1240px)" in css
     assert ".stat-board--tw { grid-template-columns: repeat(3, minmax(0, 1fr)); }" in css
@@ -1267,10 +1270,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260815-ui5"' in html.text
-    assert 'href="/styles.css?v=20260815-ui5"' in html.text
-    assert 'src="app.js?v=20260815-ui5"' not in html.text
-    assert 'href="styles.css?v=20260815-ui5"' not in html.text
+    assert 'src="/app.js?v=20260815-ui6"' in html.text
+    assert 'href="/styles.css?v=20260815-ui6"' in html.text
+    assert 'src="app.js?v=20260815-ui6"' not in html.text
+    assert 'href="styles.css?v=20260815-ui6"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",

@@ -509,23 +509,22 @@ body[data-public] .status-bar { display: none; }
    紅漲綠跌的卡片上而不打架——不必為了標注異常再引入第四個色相。
    只用在兩處：背離的判讀句、異常讀數的卡片。 */
 .card.alert { outline: 1px solid var(--accent); outline-offset: -1px; }
-/* 位階色塊：填色長度就是百分位，文字仍直接顯示期間與高／中／低位。使用中性資訊色，
-   不把位階誤讀成漲跌；極端值的「注意」語意仍只由卡片琥珀外框負責。 */
+/* 位階狀態章：比較期間與判讀結果分離，不用長度映射百分比，避免長條被誤讀成進度。
+   中性資訊色不搶行情紅綠；極端值的「注意」語意仍只由卡片琥珀外框負責。 */
 .card-rank {
-  order: 5; position: relative; isolation: isolate; overflow: hidden;
-  display: inline-flex; align-items: baseline; gap: 4px; align-self: stretch;
-  max-width: 100%; min-height: 23px; margin-top: 7px; padding: 4px 7px;
-  border: 1px solid rgba(112, 184, 255, .16); border-radius: var(--r);
-  background: rgba(112, 184, 255, .06); color: var(--label); font-size: var(--fs-xs);
-  line-height: 1.2; white-space: nowrap; cursor: help;
+  order: 5; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  align-self: stretch; max-width: 100%; min-height: 25px; margin-top: 7px;
+  color: var(--muted); font-size: var(--fs-xs); line-height: 1.2; white-space: nowrap;
+  cursor: help;
 }
-.card-rank::before {
-  content: ""; position: absolute; z-index: 0; inset: 0 auto 0 0;
-  width: max(8px, var(--rank-p)); background: rgba(61, 139, 219, .3);
-  border-right: 1px solid rgba(112, 184, 255, .38);
+.card-rank-period { overflow: hidden; text-overflow: ellipsis; }
+.card-rank-badge {
+  display: inline-flex; align-items: baseline; gap: 6px; flex: 0 0 auto;
+  padding: 4px 8px; border-radius: 5px;
+  background: rgba(61, 139, 219, .28); color: #b9d8f8;
+  box-shadow: inset 0 0 0 1px rgba(112, 184, 255, .18);
 }
-.card-rank > * { position: relative; z-index: 1; }
-.card-rank strong { color: var(--text); font-weight: 800; }
+.card-rank-badge strong { color: var(--text); font-weight: 800; }
 
 /* 標題有兩階：.section-head（這一段回答什麼問題）＞ .group-title（單一區塊）。
    層級全靠字級／字重／亮度／留白拉開，不加新裝飾——本頁的視覺重點已經花在
