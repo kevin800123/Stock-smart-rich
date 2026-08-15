@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260815-ui1" />
+  <link rel="stylesheet" href="styles.css?v=20260815-ui2" />
   <script src="/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -117,9 +117,8 @@
         <div class="section-head">
           <span class="sh-title">籌碼</span><span class="sh-desc">誰在買、買了多少</span>
         </div>
-        <!-- 台股大盤 span-full：8 張指標卡是這幾組裡最多的，塞進窄欄會被壓成 2 欄、
-             內部多出一倍列數，反而更高（實測 352→670px）；期貨籌碼／期權情緒卡數較少
-             (6／4)，兩兩相鄰時交給下面 auto-flow 的網格自然併成一列，不必手動排版。 -->
+        <!-- 台股大盤用 4×2：長標題、主值、補充金額與較昨變化都能完整呼吸，不把 8 種
+             不等長內容硬壓成一列。總高度接近原本單列被換行撐高的高度，資訊卻清楚許多。 -->
         <div class="card-group span-full" data-key="tw"><div class="group-title">台股大盤 <span id="breadth-note" class="muted small"></span></div><div id="cards-tw" class="cards stat-board stat-board--tw"></div></div>
         <div id="today-focus" class="today-focus"></div>
         <!-- 三則新聞標題：每個市場一則。資料只來自 /api/news/headlines，那支**只讀
@@ -127,10 +126,10 @@
              免費層一天只有 20 次，總覽不該為了一格順帶資訊就吃掉一次。
              整塊沒有資料時 renderNewsStrip 會把它藏起來，不留空殼。 -->
         <div id="news-strip" class="news-strip" hidden></div>
-        <!-- 7 ＋ 5 ＝ 12：期貨籌碼 6 張、期權情緒 4 張，這個比例讓兩邊都排成 2 列卡片，
-             高度自然齊平。等寬(6/6)的話期權情緒只有 1 列多、會被拉高留下近 200px 空白。 -->
-        <div class="card-group span-7" data-key="fut"><div class="group-title">期貨籌碼</div><div id="cards-fut" class="cards stat-board stat-board--fut"></div></div>
-        <div class="card-group span-5" data-key="opt"><div class="group-title">期權情緒・大額交易人 <span id="opt-note" class="muted small"></span></div><div id="cards-opt" class="cards stat-board stat-board--opt"></div></div>
+        <!-- 期貨與期權的內容密度不同，各自滿版單列；避免兩個區塊被同一 grid row 強迫等高，
+             內容較少的期權區塊因此留下大面積空白。 -->
+        <div class="card-group span-full" data-key="fut"><div class="group-title">期貨籌碼</div><div id="cards-fut" class="cards stat-board stat-board--fut"></div></div>
+        <div class="card-group span-full" data-key="opt"><div class="group-title">期權情緒・大額交易人 <span id="opt-note" class="muted small"></span></div><div id="cards-opt" class="cards stat-board stat-board--opt"></div></div>
         <div class="card-group span-full" data-key="rank">
           <div class="group-title">法人買賣超排行 <span id="rank-note" class="muted small"></span></div>
           <div class="chart-toolbar">

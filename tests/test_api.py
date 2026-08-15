@@ -1253,9 +1253,9 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
     assert 'src="/app.js?v=20260815-ui1"' in html.text
-    assert 'href="/styles.css?v=20260815-ui1"' in html.text
+    assert 'href="/styles.css?v=20260815-ui2"' in html.text
     assert 'src="app.js?v=20260815-ui1"' not in html.text
-    assert 'href="styles.css?v=20260815-ui1"' not in html.text
+    assert 'href="styles.css?v=20260815-ui2"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",
