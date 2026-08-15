@@ -24,7 +24,14 @@ def trades_add(payload: dict = Body(...)):
     name = str(payload.get("name") or "").strip()
     if not name:
         from .helpers import _industry_map, _otc_names
-        name = _industry_map(c).get(code, {}).get("name") or _otc_names(c).get(code) or code
+        row = c.execute(
+            "SELECT name FROM chip_snapshot WHERE code IN (?, ?) "
+            "AND name IS NOT NULL AND name<>'' ORDER BY snap_date DESC LIMIT 1",
+            (code, f"{code}.TW"),
+        ).fetchone()
+        name = ((row[0] if row else None)
+                or _industry_map(c).get(code, {}).get("name")
+                or _otc_names(c).get(code) or code)
     entry_date = str(payload.get("entry_date") or "").strip() or None
     note = str(payload.get("note") or "").strip() or None
     try:
