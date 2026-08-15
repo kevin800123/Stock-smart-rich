@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260815-ui7" />
+  <link rel="stylesheet" href="styles.css?v=20260815-ui8" />
   <script src="/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -192,32 +192,53 @@
       </section>
 
       <!-- ===== 選股清單 ===== -->
-      <section id="view-picks" class="view">
-        <div class="toolbar">
-          <label class="file-label">
-            <input type="file" id="csv" accept=".csv,.xlsx,.xlsm" hidden />
-            📤 上傳今日檔（CSV/Excel）
-          </label>
-          <button id="btn-latest" class="file-label">📂 讀取資料夾最新檔</button>
-          <label class="date-pick">資料日期 <select id="date-select"></select></label>
-          <button id="btn-export" class="file-label">⬇ 匯出 Excel</button>
-          <span id="upload-info" class="muted"></span>
-        </div>
-        <div class="picks-split">
-          <div class="picks-side">
-            <div class="pane-title">細產業統計</div>
-            <div id="industry" class="table-wrap fill"></div>
+      <section id="view-picks" class="view picks-view">
+        <div class="picks-command">
+          <div class="picks-command-copy">
+            <div class="picks-title-row">
+              <h2>籌碼／基本選股</h2>
+              <label class="date-pick">資料日期 <select id="date-select"></select></label>
+            </div>
+            <p>W55翻多 ＋ 大戶增比&gt;0 ＋ 營收年增&gt;0 ＋ 推估EPS&gt;0；依蘭值排序。</p>
           </div>
-          <div class="picks-main">
-            <div class="pane-title">籌碼/基本選股　<span id="sub-filter" class="muted"></span></div>
-            <div class="muted small">W55翻多 ＋ 大戶增比&gt;0 ＋ 營收年增&gt;0 ＋ 推估EPS&gt;0，依蘭值排序（點欄位排序、點細產業聯動）</div>
-            <div class="picks-filter">
-              <span class="muted small">再篩選</span>
+          <div class="picks-actions toolbar" aria-label="選股資料操作">
+            <label class="file-label picks-action picks-action-primary">
+              <input type="file" id="csv" accept=".csv,.xlsx,.xlsm" hidden />
+              <span class="picks-label-full">上傳今日檔</span><span class="picks-label-short">上傳</span>
+              <span class="picks-action-meta">CSV/Excel</span>
+            </label>
+            <button id="btn-latest" class="file-label picks-action"><span class="picks-label-full">讀取資料夾最新檔</span><span class="picks-label-short">讀取最新</span></button>
+            <button id="btn-export" class="file-label picks-action">匯出 Excel</button>
+          </div>
+          <div class="picks-command-foot">
+            <div class="picks-summary" aria-label="選股摘要" aria-live="polite">
+              <span><b id="picks-total">—</b> 原始候選</span>
+              <span><b id="picks-filtered">—</b> 篩選後</span>
+              <span><b id="picks-industries">—</b> 細產業</span>
+            </div>
+            <div class="picks-filter" aria-label="候選清單再篩選">
+              <span class="picks-filter-label">再篩選</span>
               <label class="picks-filter-item">蘭質 ≥ <input type="number" id="f-lan-score" class="mini-input" step="1" min="0" placeholder="不限" /></label>
               <label class="picks-filter-item">本益比 ≥ <input type="number" id="f-lpe" class="mini-input" step="1" min="0" placeholder="不限" /></label>
               <a href="#" id="clear-picks-filter" class="help-link">清除</a>
             </div>
-            <div id="daily" class="table-wrap fill"></div>
+            <span id="upload-info" class="picks-feedback" role="status" aria-live="polite"></span>
+          </div>
+        </div>
+        <div class="picks-split">
+          <aside class="picks-side">
+            <div class="pane-heading">
+              <div><h3>細產業</h3><p>點選後聯動候選清單</p></div>
+              <span id="industry-count" class="pane-count">—</span>
+            </div>
+            <div id="industry" class="table-wrap fill picks-industry"><div class="table-empty">載入中…</div></div>
+          </aside>
+          <div class="picks-main">
+            <div class="pane-heading">
+              <div><h3>候選清單</h3><p>點欄位排序；點股票開啟個股分析</p></div>
+              <span id="sub-filter" class="pane-filter"></span>
+            </div>
+            <div id="daily" class="table-wrap fill"><div class="table-empty">載入中…</div></div>
           </div>
         </div>
       </section>
@@ -552,6 +573,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260815-ui7"></script>
+  <script src="app.js?v=20260815-ui8"></script>
 </body>
 </html>

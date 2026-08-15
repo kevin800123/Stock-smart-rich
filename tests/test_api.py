@@ -57,6 +57,33 @@ def test_frontend_card_alert_guards():
     assert render_cards < reset < early_return
 
 
+def test_frontend_picks_workspace_structure():
+    web = Path(__file__).parents[1] / "web"
+    html = (web / "index.html").read_text(encoding="utf-8")
+    js = (web / "app.js").read_text(encoding="utf-8")
+    css = (web / "styles.css").read_text(encoding="utf-8")
+
+    assert '<section id="view-picks" class="view picks-view">' in html
+    assert 'class="picks-command"' in html
+    assert 'class="picks-summary"' in html
+    for el_id in ("picks-total", "picks-filtered", "picks-industries", "industry-count"):
+        assert f'id="{el_id}"' in html
+    assert 'id="upload-info" class="picks-feedback" role="status" aria-live="polite"' in html
+    assert "function renderPickSummary(" in js
+    assert 'data-col="${c.key}"' in js
+    assert 'aria-sort="${sortDir}"' in js
+    assert 'col-${c.tier}' in js
+    assert 'class="clickrow${active ? " is-active" : ""}"' in js
+    assert '<thead>${head}</thead><tbody>${body}</tbody>' in js
+    assert ".picks-command" in css
+    assert ".picks-summary" in css
+    assert "#daily table { min-width: 930px; }" in css
+    assert "#daily .col-primary" in css
+    assert "#industry tr.is-active td" in css
+    assert "#industry tbody { display: flex" in css
+    assert "@media (max-width: 1100px)" in css
+
+
 def test_dashboard_and_upload(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     monkeypatch.chdir(tmp_path)
@@ -1284,10 +1311,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260815-ui7"' in html.text
-    assert 'href="/styles.css?v=20260815-ui7"' in html.text
-    assert 'src="app.js?v=20260815-ui7"' not in html.text
-    assert 'href="styles.css?v=20260815-ui7"' not in html.text
+    assert 'src="/app.js?v=20260815-ui8"' in html.text
+    assert 'href="/styles.css?v=20260815-ui8"' in html.text
+    assert 'src="app.js?v=20260815-ui8"' not in html.text
+    assert 'href="styles.css?v=20260815-ui8"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",

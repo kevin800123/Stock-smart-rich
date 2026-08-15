@@ -2574,7 +2574,7 @@ function muValueCell(r) {
 
 const sortState = {};
 function renderSortable(elId, columns, rows, emptyMsg, onRowClick) {
-  if (!rows || !rows.length) { $(elId).innerHTML = `<div class="muted">${emptyMsg || "無資料"}</div>`; return; }
+  if (!rows || !rows.length) { $(elId).innerHTML = `<div class="table-empty"><strong>${emptyMsg || "無資料"}</strong><span>${elId === "daily" ? "調整再篩選條件、細產業或資料日期後重試。" : "目前沒有可統計的細產業。"}</span></div>`; return; }
   const st = sortState[elId] || {};
   const data = rows.slice();
   if (st.key) {
@@ -2587,9 +2587,20 @@ function renderSortable(elId, columns, rows, emptyMsg, onRowClick) {
   }
   // c.numeric 原本只餵排序比較，渲染端從沒讀過它——數字欄一直是左對齊，8+ 欄的選股表
   // 尤其明顯。共用渲染器改一處，所有吃 numeric:true 的表格（選股／細產業…）一起對齊。
-  const head = "<tr>" + columns.map((c) => `<th class="sortable${c.numeric ? " num" : ""}" data-sort="${c.key}">${c.label}${st.key === c.key ? (st.asc ? " ▲" : " ▼") : ""}</th>`).join("") + "</tr>";
-  const body = data.map((r, i) => `<tr data-i="${i}"${onRowClick ? ' class="clickrow"' : ""}>` + columns.map((c) => `<td${c.numeric ? ' class="num"' : ""}>${c.render ? c.render(r) : fmt(r[c.key], c.dp === undefined ? 2 : c.dp)}</td>`).join("") + "</tr>").join("");
-  $(elId).innerHTML = `<table>${head}${body}</table>`;
+  const head = "<tr>" + columns.map((c) => {
+    const sorted = st.key === c.key, sortDir = sorted ? (st.asc ? "ascending" : "descending") : "none";
+    const classes = ["sortable", c.numeric ? "num" : "", c.tier ? `col-${c.tier}` : "", sorted ? "is-sorted" : ""].filter(Boolean).join(" ");
+    return `<th class="${classes}" data-col="${c.key}" data-sort="${c.key}" aria-sort="${sortDir}">${c.label}${sorted ? `<span class="sort-mark">${st.asc ? "▲" : "▼"}</span>` : ""}</th>`;
+  }).join("") + "</tr>";
+  const body = data.map((r, i) => {
+    const active = elId === "industry" && r.sub_industry === subFilter;
+    const rowAttr = onRowClick ? ` class="clickrow${active ? " is-active" : ""}" aria-selected="${active}"` : "";
+    return `<tr data-i="${i}"${rowAttr}>` + columns.map((c) => {
+      const classes = [c.numeric ? "num" : "", c.tier ? `col-${c.tier}` : ""].filter(Boolean).join(" ");
+      return `<td${classes ? ` class="${classes}"` : ""} data-col="${c.key}">${c.render ? c.render(r) : fmt(r[c.key], c.dp === undefined ? 2 : c.dp)}</td>`;
+    }).join("") + "</tr>";
+  }).join("");
+  $(elId).innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
   $(elId).querySelectorAll("th.sortable").forEach((th) => th.addEventListener("click", () => {
     const key = th.dataset.sort, cur = sortState[elId] || {};
     sortState[elId] = { key, asc: cur.key === key ? !cur.asc : false };
@@ -2600,10 +2611,10 @@ function renderSortable(elId, columns, rows, emptyMsg, onRowClick) {
 
 const PICK_COLS = [
   { key: "code", label: "股票", render: (r) => stockLink(r.code, r.name) },
-  { key: "lan_value", label: "蘭值", numeric: true, render: (r) => lanCell(r.lan_value) },
-  { key: "mu_value", label: "木率", numeric: true, render: muValueCell },
-  { key: "lan_score", label: "蘭質", numeric: true, dp: 1 },
-  { key: "mu_score", label: "木質", numeric: true, dp: 0 },
+  { key: "lan_value", label: "蘭值", numeric: true, tier: "primary", render: (r) => lanCell(r.lan_value) },
+  { key: "mu_value", label: "木率", numeric: true, tier: "primary", render: muValueCell },
+  { key: "lan_score", label: "蘭質", numeric: true, tier: "support", dp: 1 },
+  { key: "mu_score", label: "木質", numeric: true, tier: "support", dp: 0 },
   { key: "lpe", label: "本益比", numeric: true },
   { key: "est_profit", label: "推估EPS", numeric: true },
   { key: "rev_yoy", label: "營收年增%", numeric: true, dp: 1 },
@@ -2633,16 +2644,26 @@ function computeSubindustry(picks) {
 function renderSubFilterChip(valueFiltered) {
   const el = $("sub-filter");
   if (subFilter) {
-    el.innerHTML = `篩選：<b>${esc(subFilter)}</b>（${valueFiltered.filter((p) => p.sub_industry === subFilter).length} 檔） <a href="#" id="clear-sub">✕ 全部</a>`;
-    const clr = $("clear-sub"); if (clr) clr.addEventListener("click", (e) => { e.preventDefault(); subFilter = null; renderDailyView(); });
-  } else { el.innerHTML = `共 ${valueFiltered.length} 檔`; }
+    const n = valueFiltered.filter((p) => p.sub_industry === subFilter).length;
+    el.innerHTML = `<span class="active-filter"><span>${esc(subFilter)}</span><b>${n}</b><button id="clear-sub" type="button" aria-label="清除細產業篩選">×</button></span>`;
+    const clr = $("clear-sub"); if (clr) clr.addEventListener("click", () => { subFilter = null; renderDailyView(); });
+  } else { el.innerHTML = '<span class="all-filter">全部產業</span>'; }
 }
 function renderDaily(picks) { if (!sortState.daily) sortState.daily = { key: "lan_value", asc: false }; renderSortable("daily", PICK_COLS, picks, "無符合條件的個股"); }
+function renderPickSummary(total, filtered, industries) {
+  $("picks-total").textContent = total;
+  $("picks-filtered").textContent = filtered;
+  $("picks-industries").textContent = industries;
+  $("industry-count").textContent = `共 ${industries} 個`;
+}
 function renderDailyView() {
   const valueFiltered = currentPicks.filter(passesValueFilter);
+  const industries = computeSubindustry(valueFiltered);
+  const visible = subFilter ? valueFiltered.filter((p) => p.sub_industry === subFilter) : valueFiltered;
   renderSubFilterChip(valueFiltered);
-  renderIndustry(computeSubindustry(valueFiltered));
-  renderDaily(subFilter ? valueFiltered.filter((p) => p.sub_industry === subFilter) : valueFiltered);
+  renderPickSummary(currentPicks.length, visible.length, industries.length);
+  renderIndustry(industries);
+  renderDaily(visible);
 }
 function renderIndustry(subind) {
   if (!sortState.industry) sortState.industry = { key: "count", asc: false };
@@ -2659,14 +2680,14 @@ async function loadDaily(date) {
     currentPicks = d.picks || []; subFilter = null; resetPickFilters();
     renderDailyView();
     if (d.snap_date) $("date-select").value = d.snap_date;
-  } catch (e) { /* 忽略 */ }
+  } catch (e) { $("upload-info").innerHTML = `<span class="err-text">載入選股資料失敗：${esc(e.message)}</span>`; }
 }
 async function loadDates() {
   try {
     const dates = (await getJSON("/api/snapshots")).dates || [];
     $("date-select").innerHTML = dates.map((d) => `<option value="${d}">${d}</option>`).join("");
     await loadDaily(dates[dates.length - 1]);
-  } catch (e) { /* 忽略 */ }
+  } catch (e) { $("upload-info").innerHTML = `<span class="err-text">載入資料日期失敗：${esc(e.message)}</span>`; }
 }
 
 // ========== 跨週 ==========

@@ -1057,15 +1057,55 @@ button.file-label { font: inherit; }
 .date-pick select { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: var(--r); padding: 7px 10px; font-size: var(--fs-sm); }
 .stock-input { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: var(--r); padding: 8px 12px; font-size: var(--fs-sm); width: 320px; }
 
-/* ===== 選股清單並排 ===== */
-.picks-split { display: flex; gap: 16px; flex: 1; min-height: 0; }
-.picks-side { flex: 0 0 280px; display: flex; flex-direction: column; min-height: 0; }
+/* ===== 籌碼／基本選股工作台 ===== */
+.picks-view { gap: 12px; }
+.picks-command {
+  display: grid; grid-template-columns: minmax(300px, 1fr) auto; gap: 10px 20px;
+  padding: 12px 14px; flex: 0 0 auto;
+  background: rgba(15, 25, 39, .9); border: 1px solid var(--border-default); border-radius: var(--r-lg);
+}
+.picks-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 16px; }
+.picks-title-row h2 { margin: 0; color: var(--text-primary); font-size: var(--fs-lg); letter-spacing: -.015em; }
+.picks-command-copy p { margin: 4px 0 0; color: var(--muted); font-size: var(--fs-xs); line-height: 1.45; }
+.picks-actions { justify-content: flex-end; gap: 8px; }
+.picks-action { min-height: 38px; padding: 7px 12px; white-space: nowrap; }
+.picks-action-meta { margin-left: 3px; color: var(--muted); font-size: var(--fs-xs); }
+.picks-label-short { display: none; }
+.picks-action-primary { border-color: rgba(112, 184, 255, .62); background: #12263d; font-weight: 750; }
+.picks-action-primary:hover { border-color: var(--info); }
+.picks-command-foot {
+  grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px;
+  padding-top: 9px; border-top: 1px solid var(--border-subtle);
+}
+.picks-summary { display: flex; align-items: center; gap: 0; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
+.picks-summary span { padding: 0 10px; border-right: 1px solid var(--border-default); }
+.picks-summary span:first-child { padding-left: 0; }
+.picks-summary span:last-child { border-right: 0; }
+.picks-summary b { margin-right: 3px; color: var(--text-primary); font-size: var(--fs-md); font-weight: 850; }
+.picks-feedback { flex: 1 1 220px; min-width: 0; color: var(--muted); font-size: var(--fs-xs); text-align: right; }
+.picks-split { display: flex; gap: 12px; flex: 1; min-height: 0; }
+.picks-side { flex: 0 0 250px; display: flex; flex-direction: column; min-height: 0; }
 .picks-main { flex: 1; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.picks-view .table-wrap, .picks-actions { scrollbar-width: thin; scrollbar-color: var(--border-default) transparent; }
+.picks-view .table-wrap::-webkit-scrollbar, .picks-actions::-webkit-scrollbar { width: 6px; height: 6px; }
+.picks-view .table-wrap::-webkit-scrollbar-track, .picks-actions::-webkit-scrollbar-track { background: transparent; }
+.picks-view .table-wrap::-webkit-scrollbar-thumb, .picks-actions::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 999px; }
+.pane-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; margin-bottom: 7px; min-height: 38px; }
+.pane-heading h3 { margin: 0; color: var(--text-primary); font-size: var(--fs-md); }
+.pane-heading p { margin: 2px 0 0; color: var(--muted); font-size: var(--fs-xs); }
+.pane-count, .all-filter { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
+.active-filter { display: inline-flex; align-items: center; gap: 6px; padding: 3px 5px 3px 8px; background: rgba(112, 184, 255, .14); color: #b9d8f8; border-radius: 5px; font-size: var(--fs-xs); }
+.active-filter b { color: var(--text-primary); }
+.active-filter button { width: 22px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: rgba(112, 184, 255, .12); color: var(--info); cursor: pointer; }
 .pane-title { font-size: var(--fs-md); color: var(--label); margin-bottom: 6px; font-weight: 600; }
 /* 籌碼選股再篩選列：蘭質/本益比門檻（前端即時收斂檔數） */
-.picks-filter { display: flex; align-items: center; gap: var(--sp-3); flex-wrap: wrap; margin-bottom: var(--sp-2); }
+.picks-filter { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; }
+.picks-filter-label { color: var(--label); font-size: var(--fs-xs); font-weight: 700; }
 .picks-filter-item { font-size: var(--fs-sm); color: var(--muted); display: flex; align-items: center; gap: 6px; }
-.mini-input { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: var(--r); padding: 6px 8px; font-size: var(--fs-sm); width: 64px; }
+.mini-input { background: var(--sunken); color: var(--text); border: 1px solid var(--border); border-radius: var(--r); padding: 5px 8px; font-size: var(--fs-sm); width: 64px; }
+.table-empty { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; padding: 24px; color: var(--muted); text-align: center; }
+.table-empty strong { color: var(--label); font-size: var(--fs-sm); }
+.table-empty span { max-width: 44ch; font-size: var(--fs-xs); }
 
 /* ===== 表格 ===== */
 /* flex-shrink:0：.view 是 flex column，頁面內容超高時未掛 .fill 的表格（交易帳本未平倉/已平倉）
@@ -1224,6 +1264,7 @@ tr.clickrow { cursor: pointer; }
 
 /* 高密度選股清單：範圍只限 #daily / #industry，其他表格暫不改動。 */
 #daily table, #industry table { font-size: var(--font-size-table); }
+#daily table { min-width: 930px; }
 #daily th, #industry th {
   position: sticky; top: 0; z-index: 2;
   padding: var(--space-sm) var(--space-md);
@@ -1240,6 +1281,16 @@ tr.clickrow { cursor: pointer; }
   background: rgba(112, 184, 255, 0.10); box-shadow: none;
 }
 #daily tbody tr:hover td:first-child, #industry tbody tr:hover td:first-child { box-shadow: inset 3px 0 0 var(--info); }
+#daily .col-primary { background: rgba(112, 184, 255, .075); font-weight: 850; }
+#daily .col-support { color: var(--text-primary); font-weight: 700; }
+#daily th.col-primary { color: #c5e1ff; }
+#daily th.is-sorted { color: var(--info); box-shadow: inset 0 -2px 0 var(--info); }
+#daily th[data-col="mu_value"], #daily td[data-col="mu_value"],
+#daily th[data-col="mu_score"], #daily td[data-col="mu_score"] { border-right: 1px solid var(--border-default); }
+.sort-mark { margin-left: 5px; color: var(--info); font-size: 9px; }
+#daily a.stock { font-size: var(--fs-sm); font-weight: 750; }
+#industry tr.is-active td { background: rgba(112, 184, 255, .16); color: var(--text-primary); font-weight: 750; }
+#industry tr.is-active td:first-child { box-shadow: inset 3px 0 0 var(--info); }
 
 /* 漲跌欄位優先保留台股語意；支援值直接放 td 或包在子元素兩種既有輸出。 */
 #daily td.up, #daily td.down, #daily td .up, #daily td .down {
@@ -1311,6 +1362,27 @@ a.stock:hover { text-decoration: underline; }
 .sr-list.sr-cols li { break-inside: avoid; }
 .sr-pt { color: var(--info); font-weight: 700; }
 
+/* 選股頁在窄桌機先切成單欄，避免 240px 側欄把候選表壓成不足 500px。 */
+@media (max-width: 1100px) {
+  .picks-command { grid-template-columns: 1fr; }
+  .picks-actions { justify-content: flex-start; overflow-x: auto; flex-wrap: nowrap; padding-bottom: 2px; }
+  .picks-command-foot { grid-column: 1; }
+  .picks-feedback { flex-basis: 100%; text-align: left; }
+  .picks-split { flex-direction: column; }
+  .picks-side { flex: 0 0 auto; max-height: none; }
+  .picks-side .pane-heading { min-height: 0; margin-bottom: 5px; }
+  .picks-side .pane-heading p { display: none; }
+  #industry.table-wrap { flex: 0 0 auto; overflow-x: auto; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+  #industry table { display: block; width: max-content; min-width: 100%; }
+  #industry thead { display: none; }
+  #industry tbody { display: flex; gap: 6px; padding: 1px 0 5px; }
+  #industry tbody tr { display: flex; flex: 0 0 auto; overflow: hidden; border: 1px solid var(--border-default); border-radius: 5px; background: var(--bg-card); }
+  #industry tbody td { display: block; padding: 6px 7px; border: 0; background: transparent; }
+  #industry tbody td + td { padding-left: 2px; color: var(--muted); }
+  #industry tbody tr:hover td, #industry tbody tr:nth-child(even) td { background: transparent; }
+  #industry tbody tr.is-active td { background: rgba(112, 184, 255, .16); }
+}
+
 /* 平板：側欄收成圖示、並排改直排 */
 @media (max-width: 860px) {
   .app { grid-template-columns: 56px 1fr; }
@@ -1319,8 +1391,6 @@ a.stock:hover { text-decoration: underline; }
   /* 56px 圖示模式放不下文字標題 → 收起，群組間改細分隔線區隔 */
   .nav-group-title { display: none; }
   .nav-group + .nav-group { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border); }
-  .picks-split { flex-direction: column; }
-  .picks-side { flex-basis: auto; max-height: 30vh; }
   .chart-row { flex-direction: column; }
   .chart-side { flex-direction: row; flex-wrap: wrap; flex-basis: auto; }
 }
@@ -1363,6 +1433,23 @@ a.stock:hover { text-decoration: underline; }
   .content { flex: 1; min-height: 0; }
   /* 底部留白 = 分頁列高度 ＋ iPhone 底部指示條（safe-area），不夠的話最後一列會被蓋住 */
   .view { padding: 12px 12px calc(62px + env(safe-area-inset-bottom, 0px)); }
+  .picks-view { gap: 9px; }
+  .picks-command { padding: 10px; gap: 8px; }
+  .picks-title-row { justify-content: space-between; gap: 6px; }
+  .picks-title-row h2 { font-size: var(--fs-md); }
+  .picks-command-copy p { line-height: 1.4; }
+  .picks-actions { overflow-x: visible; }
+  .picks-action { min-height: 40px; }
+  .picks-label-full { display: none; }
+  .picks-label-short { display: inline; }
+  .picks-action-meta { display: none; }
+  .picks-command-foot { gap: 8px 12px; padding-top: 8px; }
+  .picks-summary { flex: 1 1 100%; }
+  .picks-summary span { flex: 1; padding-inline: 7px; text-align: center; }
+  .picks-summary span:first-child { padding-left: 0; }
+  .picks-filter { flex-wrap: nowrap; overflow-x: auto; width: 100%; padding-bottom: 2px; }
+  .picks-filter-item { white-space: nowrap; }
+  .pane-heading { min-height: 34px; }
   .table-wrap.fill-half { max-height: 60vh; }
 
   /* 左側欄 → 固定底部分頁列。
@@ -1522,6 +1609,8 @@ a.stock:hover { text-decoration: underline; }
     box-shadow: inset -1px 0 0 var(--border-strong), inset 0 -1px 0 var(--border-strong),
                 0 4px 9px rgba(0, 0, 0, 0.16);
   }
+  #industry tbody tr td:first-child { position: static; box-shadow: none; }
+  #industry tbody tr td:first-child::after { content: none; }
 
   /* 卡片固定 2 欄；並排區塊一律直排 */
   .card-grid, .cards { grid-template-columns: repeat(2, 1fr); gap: 7px; }
