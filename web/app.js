@@ -905,19 +905,20 @@ function dod(cur, prev) {
   const pct = (prev !== 0 && Math.sign(prev) === Math.sign(cur)) ? chg / Math.abs(prev) * 100 : null;
   return { chg, pct };
 }
-// 位階條：一條細軌 + 目前值所在的百分位刻度。tooltip 誠實標示樣本數，因為各欄位的
-// 有效天數差很多（融資維持率遠少於散戶多空比），不標的話會讓人以為都是同一個基準。
-function railHtml(rk) {
+// 位階直接寫成「近 N 日位階 P% · 高/中/低位」，取代沒有圖例的細軌與刻度。
+// 高低只描述樣本中的相對位置，不借紅綠表達好壞；樣本數仍完整留在可見文字與 tooltip。
+function rankHtml(rk) {
   if (!rk) return "";
-  return `<div class="card-rail" title="近 ${rk.n} 日位階 ${rk.p}%（${rk.n} 筆有效資料）">`
-    + `<i style="left:${rk.p}%"></i></div>`;
+  const zone = rk.p >= 80 ? "高位" : rk.p <= 20 ? "低位" : "中位";
+  return `<div class="card-rank" title="近 ${rk.n} 日位階 ${rk.p}%（${rk.n} 筆有效資料）">`
+    + `<span>近 ${rk.n} 日位階</span><strong>${rk.p}%</strong><span>· ${zone}</span></div>`;
 }
-// 卡片外殼：把 alert（琥珀外框）與位階條收在一處，五個卡片建構式共用。
+// 卡片外殼：把 alert（琥珀外框）與位階標籤收在一處，五個卡片建構式共用。
 let lastAlerts = [];
 function cardWrap(inner, title, rk, alert) {
   if (alert && typeof alert === "object") lastAlerts.push(alert);
   const attr = title ? ` title="${esc(title)}"` : "";
-  return `<div class="card stat-cell${alert ? " alert" : ""}"${attr}>${inner}${railHtml(rk)}</div>`;
+  return `<div class="card stat-cell${alert ? " alert" : ""}"${attr}>${inner}${rankHtml(rk)}</div>`;
 }
 // 修飾語（淨多/淨空/散戶偏多）獨立成一行小字。原本它跟數字同為 26px 擠在 .card-val 裡，
 // 175px 的卡片放不下就把單位「口」擠到第二行；而且真正的讀數是數字，修飾語只是標籤，
@@ -925,19 +926,23 @@ function cardWrap(inner, title, rk, alert) {
 function qual(text) { return text ? `<div class="card-qual">${text}</div>` : ""; }
 // 補充資訊（金額、相對兩平…）。放在漲跌之後，不與主數值爭位置。
 function note(text) { return text ? `<div class="card-note">${text}</div>` : ""; }
+// 主值與日變化是同一個判讀單位，桌機放在同一條 Metric Row；窄螢幕才由 CSS 自適應堆疊。
+function metricRow(value, sub = "", cls = "") {
+  return `<div class="card-metric"><div class="card-val${cls ? " " + cls : ""}">${value}</div>${sub}</div>`;
+}
 // 帶修飾語的數值卡（多空比）：標籤一行、數字一行，不讓兩者擠在同一級
 function qualCard(label, q, value, chg, pct, rk = null, alert = false) {
   const sub = chg == null ? ""
     : `<div class="card-chg ${chgClass(chg)}">${chgText(chg)}${pctTag(pct)}</div>`;
   return cardWrap(`<div class="card-label">${label}</div>${qual(q)}`
-    + `<div class="card-val">${value}</div>${sub}`, "", rk, alert);
+    + metricRow(value, sub), "", rk, alert);
 }
 // label, value, chg(可空), pct(可空), unit；rk=位階物件（可空），alert=是否標為異常讀數
 function card(label, value, chg, pct, unit = "", title = "", rk = null, alert = false, extra = "") {
   let sub = "";
   if (chg !== undefined && chg !== null) sub = `<div class="card-chg ${chgClass(chg)}">${chgText(chg)}${pctTag(pct)}</div>`;
   else if (pct !== undefined && pct !== null) sub = `<div class="card-chg ${chgClass(pct)}">${pct > 0 ? "▲" : pct < 0 ? "▼" : ""}${fmt(Math.abs(pct), 2)}%</div>`;
-  return cardWrap(`<div class="card-label">${label}</div><div class="card-val">${value}${unit}</div>${sub}${note(extra)}`, title, rk, alert);
+  return cardWrap(`<div class="card-label">${label}</div>${metricRow(value + unit, sub)}${note(extra)}`, title, rk, alert);
 }
 // 未平倉口數卡：依淨多/淨空上色（紅多綠空），附「較昨日」增減口數與百分比
 function oiCard(label, v, prev, rk = null, alert = false) {
@@ -947,7 +952,7 @@ function oiCard(label, v, prev, rk = null, alert = false) {
   const head = `${fmt(Math.abs(v), 0)}<span class="card-unit">口</span>`;
   const { chg, pct } = dod(v, prev);
   const sub = chg == null ? "" : `<div class="card-chg ${chgClass(chg)}">較昨 ${chg > 0 ? "+" : ""}${fmt(chg, 0)} 口${pctTag(pct)}</div>`;
-  return cardWrap(`<div class="card-label">${label}</div>${qual(q)}<div class="card-val ${cls}">${head}</div>${sub}`, "", rk, alert);
+  return cardWrap(`<div class="card-label">${label}</div>${qual(q)}${metricRow(head, sub, cls)}`, "", rk, alert);
 }
 // 買賣超/淨額卡：當日淨流量，數值依正負上色，附「較昨日」增減金額
 // （淨流量基數會翻號、趨近 0，算百分比會失真，故只給金額增減、不給 %）
@@ -955,7 +960,7 @@ function flowCard(label, v, prev, unit = "", rk = null, alert = false) {
   if (v === null || v === undefined) return `<div class="card stat-cell"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   const chg = prev == null ? null : v - prev;
   const sub = chg == null ? "" : `<div class="card-chg ${chgClass(chg)}">較昨 ${chg > 0 ? "+" : ""}${fmt(chg)}${unit}</div>`;
-  return cardWrap(`<div class="card-label">${label}</div><div class="card-val ${chgClass(v)}">${fmt(v)}${unit}</div>${sub}`, "", rk, alert);
+  return cardWrap(`<div class="card-label">${label}</div>${metricRow(fmt(v) + unit, sub, chgClass(v))}`, "", rk, alert);
 }
 // 餘額卡（融資/融券）：當日尚未公布（晚間才出）時，退而顯示最近一筆有資料的交易日，並標註日期
 // amtKey＝該餘額對應的金額欄；est=true 代表那是我們用現價估的，不是官方數字（融券沒有官方金額）

@@ -509,15 +509,18 @@ body[data-public] .status-bar { display: none; }
    紅漲綠跌的卡片上而不打架——不必為了標注異常再引入第四個色相。
    只用在兩處：背離的判讀句、異常讀數的卡片。 */
 .card.alert { outline: 1px solid var(--accent); outline-offset: -1px; }
-/* 位階條：細軌 + 目前值的百分位刻度。只畫在樣本 ≥15 天的欄位上（見 app.js RAIL_MIN_N），
-   否則幾個點的「位階」是雜訊。tooltip 標樣本數，因為各欄位有效天數差很多。 */
-.card-rail { position: relative; height: 2px; margin-top: 7px; background: var(--border); border-radius: 1px; cursor: help; }
-.card-rail i { position: absolute; top: -2px; width: 2px; height: 6px; margin-left: -1px; background: var(--label); border-radius: 1px; }
-.card.alert .card-rail i { background: var(--accent); width: 3px; }
+/* 位階標籤：直接顯示比較期間、百分位與高／中／低位。使用中性資訊色，不把位階誤讀成漲跌。 */
+.card-rank {
+  order: 5; display: inline-flex; align-items: baseline; gap: 4px; align-self: flex-start;
+  max-width: 100%; margin-top: 7px; padding: 3px 6px; border-radius: var(--r);
+  background: rgba(112, 184, 255, .07); color: var(--muted); font-size: var(--fs-xs);
+  line-height: 1.2; white-space: nowrap; cursor: help;
+}
+.card-rank strong { color: var(--label); font-weight: 700; }
 
 /* 標題有兩階：.section-head（這一段回答什麼問題）＞ .group-title（單一區塊）。
    層級全靠字級／字重／亮度／留白拉開，不加新裝飾——本頁的視覺重點已經花在
-   判讀句與位階條上，標題再搶就變成兩個都不突出。
+   判讀句與位階標籤上，標題再搶就變成兩個都不突出。
    琥珀在此刻意缺席：--accent 只表「你在這裡」與「注意這格」，拿來裝飾標題會稀釋那兩個意思。 */
 /* 每個 section-head 上方一律留 --sp-5：第一個緊接 AI 摘要，那個間距正好把
    「結論」與下面的「證據」分開，所以不需要為它另設例外。
@@ -651,7 +654,13 @@ body[data-public] .status-bar { display: none; }
 .card-unit { font-size: var(--fs-sm); font-weight: 400; margin-left: 3px; }
 .card-note { order: 3; font-size: var(--font-size-xs); color: var(--text-muted); margin-top: 3px; white-space: nowrap; }
 .card-chg { order: 4; align-self: flex-end; font-size: var(--font-size-sm); margin-top: var(--space-xs); }
-.card-rail { order: 5; }
+.card-metric {
+  order: 2; display: flex; align-items: baseline; justify-content: space-between;
+  min-width: 0; gap: var(--space-sm); margin-top: 9px;
+}
+.card-metric .card-val { flex: 0 1 auto; margin: 0; }
+.card-metric .card-chg { flex: 0 0 auto; align-self: baseline; margin: 0; white-space: nowrap; font-size: var(--font-size-data); text-align: right; }
+.card-qual + .card-metric { margin-top: 5px; }
 .up { color: var(--up); }
 .down { color: var(--down); }
 .flat { color: var(--muted); }
@@ -664,7 +673,7 @@ body[data-public] .status-bar { display: none; }
   border-radius: calc(var(--r-lg) - 2px); font-variant-numeric: tabular-nums;
 }
 .stat-board--tw { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.stat-board--fut { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.stat-board--fut { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .stat-board--opt { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .stat-board--intl { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .stat-board > .stat-cell {
@@ -673,8 +682,8 @@ body[data-public] .status-bar { display: none; }
   transition: background-color var(--dur-base) var(--ease-out);
 }
 .stat-board > .stat-cell:hover { transform: none; background: var(--bg-card-hover); box-shadow: none; }
-.stat-board > .stat-cell .card-val { margin: 9px 0 var(--space-xs); }
-.stat-board > .stat-cell .card-qual + .card-val { margin-top: 5px; }
+.stat-board > .stat-cell > .card-val { margin: 9px 0 var(--space-xs); }
+.stat-board > .stat-cell > .card-qual + .card-val { margin-top: 5px; }
 .stat-board > .muted { grid-column: 1 / -1; padding: 14px; background: var(--bg-card); }
 
 @media (max-width: 1180px) {
@@ -684,6 +693,7 @@ body[data-public] .status-bar { display: none; }
 }
 @media (max-width: 1000px) {
   .stat-board--tw, .stat-board--intl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat-board--fut { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 
@@ -1444,6 +1454,8 @@ a.stock:hover { text-decoration: underline; }
   .card-grid, .cards { grid-template-columns: repeat(2, 1fr); gap: 7px; }
   .stat-board { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; }
   .card-val { font-size: 19px; }
+  .stat-board .card-metric { flex-direction: column; align-items: stretch; gap: 4px; }
+  .stat-board .card-metric .card-chg { align-self: flex-end; }
   .rank-split { flex-direction: column; gap: 4px; }
   .chart-side { gap: 12px; }
 
