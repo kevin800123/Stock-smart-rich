@@ -909,10 +909,12 @@ function dod(cur, prev) {
 // 避免被誤讀成完成進度。高低只描述樣本中的相對位置，不借紅綠表達好壞。
 function rankHtml(rk) {
   if (!rk) return "";
-  const zone = rk.p >= 80 ? "高位" : rk.p <= 20 ? "低位" : "中位";
-  return `<div class="card-rank" title="近 ${rk.n} 日位階 ${rk.p}%（${rk.n} 筆有效資料）" aria-label="近 ${rk.n} 日位階 ${rk.p}%，${zone}">`
+  const zone = rk.p >= 80 ? { key: "high", label: "高位" }
+    : rk.p <= 20 ? { key: "low", label: "低位" }
+      : { key: "mid", label: "中位" };
+  return `<div class="card-rank" title="近 ${rk.n} 日位階 ${rk.p}%（${rk.n} 筆有效資料）" aria-label="近 ${rk.n} 日位階 ${rk.p}%，${zone.label}">`
     + `<span class="card-rank-period">近 ${rk.n} 日位階</span>`
-    + `<span class="card-rank-badge"><strong>${rk.p}%</strong><span>${zone}</span></span></div>`;
+    + `<span class="card-rank-badge rank-${zone.key}"><strong>${rk.p}%</strong><span>${zone.label}</span></span></div>`;
 }
 // 近 7 個交易日的迷你柱狀圖。法人買賣超用每日淨額；存量／指數用相鄰有效日增減，
 // 避免把「餘額本來就很大」誤讀成近期趨勢很強。柱高只比較同一張卡內的 7 筆資料。
@@ -943,10 +945,21 @@ function trendHtml(hist, key, opts = {}) {
 }
 // 卡片外殼：把 alert（琥珀外框）、趨勢與位階收在一處，五個卡片建構式共用。
 let lastAlerts = [];
-function cardWrap(inner, title, rk, alert, trend = "") {
+// 核心指標由同一份清單決定視覺權重，避免各 render call 各自塞 class 後日後漂移。
+const KEY_METRICS = [
+  "外資買賣超", "融資餘額(張)", "融資維持率（上市）", "融資維持率（上櫃）",
+  "外資台指淨未平倉", "微台散戶多空比",
+];
+function keyMetricClass(label) {
+  return KEY_METRICS.some((key) => String(label || "").startsWith(key)) ? " key-metric" : "";
+}
+function emptyStatCard(label) {
+  return `<div class="card stat-cell${keyMetricClass(label)}"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+}
+function cardWrap(inner, title, rk, alert, trend = "", label = "") {
   if (alert && typeof alert === "object") lastAlerts.push(alert);
   const attr = title ? ` title="${esc(title)}"` : "";
-  return `<div class="card stat-cell${alert ? " alert" : ""}${trend ? " has-trend" : ""}"${attr}>${inner}${trend}${rankHtml(rk)}</div>`;
+  return `<div class="card stat-cell${keyMetricClass(label)}${alert ? " alert" : ""}${trend ? " has-trend" : ""}"${attr}>${inner}${trend}${rankHtml(rk)}</div>`;
 }
 // 修飾語（淨多/淨空/散戶偏多）獨立成一行小字。原本它跟數字同為 26px 擠在 .card-val 裡，
 // 175px 的卡片放不下就把單位「口」擠到第二行；而且真正的讀數是數字，修飾語只是標籤，
@@ -970,7 +983,7 @@ function qualCard(label, q, value, chg, pct, rk = null, alert = false, trend = "
   const sub = chg == null ? ""
     : `<div class="card-chg ${chgClass(chg)}">${chgText(chg)}${pctTag(pct)}</div>`;
   return cardWrap(`<div class="card-label">${label}</div>${qual(q)}`
-    + metricRow(value, sub), "", rk, alert, trend);
+    + metricRow(value, sub), "", rk, alert, trend, label);
 }
 // label, value, chg(可空), pct(可空), unit；compactUnit 非 null 時改用單行精簡變化。
 function card(label, value, chg, pct, unit = "", title = "", rk = null, alert = false, extra = "", trend = "", compactUnit = null) {
@@ -979,31 +992,31 @@ function card(label, value, chg, pct, unit = "", title = "", rk = null, alert = 
     ? compactDeltaHtml(chg, pct, compactUnit)
     : `<div class="card-chg ${chgClass(chg)}">${chgText(chg)}${pctTag(pct)}</div>`;
   else if (pct !== undefined && pct !== null) sub = `<div class="card-chg ${chgClass(pct)}">${pct > 0 ? "▲" : pct < 0 ? "▼" : ""}${fmt(Math.abs(pct), 2)}%</div>`;
-  return cardWrap(`<div class="card-label">${label}</div>${metricRow(value + unit, sub)}${note(extra)}`, title, rk, alert, trend);
+  return cardWrap(`<div class="card-label">${label}</div>${metricRow(value + unit, sub)}${note(extra)}`, title, rk, alert, trend, label);
 }
 // 未平倉口數卡：依淨多/淨空上色（紅多綠空），附「較昨日」增減口數與百分比
 function oiCard(label, v, prev, rk = null, alert = false, trend = "") {
-  if (v === null || v === undefined) return `<div class="card stat-cell"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+  if (v === null || v === undefined) return emptyStatCard(label);
   const cls = v > 0 ? "up" : v < 0 ? "down" : "flat";
   const q = v > 0 ? "淨多" : v < 0 ? "淨空" : "";
   const head = `${fmt(Math.abs(v), 0)}<span class="card-unit">口</span>`;
   const { chg, pct } = dod(v, prev);
   const sub = compactDeltaHtml(chg, pct, " 口");
-  return cardWrap(`<div class="card-label">${label}</div>${qual(q)}${metricRow(head, sub, cls)}`, "", rk, alert, trend);
+  return cardWrap(`<div class="card-label">${label}</div>${qual(q)}${metricRow(head, sub, cls)}`, "", rk, alert, trend, label);
 }
 // 買賣超/淨額卡：當日淨流量，數值依正負上色，附「較昨日」增減金額
 // （淨流量基數會翻號、趨近 0，算百分比會失真，故只給金額增減、不給 %）
 function flowCard(label, v, prev, unit = "", rk = null, alert = false, trend = "") {
-  if (v === null || v === undefined) return `<div class="card stat-cell"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+  if (v === null || v === undefined) return emptyStatCard(label);
   const chg = prev == null ? null : v - prev;
   const sub = compactDeltaHtml(chg, null, unit);
-  return cardWrap(`<div class="card-label">${label}</div>${metricRow(fmt(v) + unit, sub, chgClass(v))}`, "", rk, alert, trend);
+  return cardWrap(`<div class="card-label">${label}</div>${metricRow(fmt(v) + unit, sub, chgClass(v))}`, "", rk, alert, trend, label);
 }
 // 餘額卡（融資/融券）：當日尚未公布（晚間才出）時，退而顯示最近一筆有資料的交易日，並標註日期
 // amtKey＝該餘額對應的金額欄；est=true 代表那是我們用現價估的，不是官方數字（融券沒有官方金額）
 function balanceCard(label, srcRow, curDate, balKey, chgKey, hist = [], amtKey = "", est = false, amtChgKey = "") {
   if (!srcRow || srcRow[balKey] === null || srcRow[balKey] === undefined) {
-    return `<div class="card stat-cell"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+    return emptyStatCard(label);
   }
   const stale = srcRow.date && srcRow.date !== curDate;
   const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
@@ -1047,7 +1060,7 @@ function marginMaintCard(hist, srcRow, curDate, opts) {
   const band = (lastBands[col] || {});
   const even = band.breakeven, call = band.call;
   if (!srcRow || srcRow[col] === null || srcRow[col] === undefined) {
-    return `<div class="card stat-cell"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
+    return emptyStatCard(label);
   }
   const stale = srcRow.date && srcRow.date !== curDate;
   const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");

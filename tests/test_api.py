@@ -12,6 +12,7 @@ def test_frontend_card_alert_guards():
     web = Path(__file__).parents[1] / "web"
     js = (web / "app.js").read_text(encoding="utf-8")
     css = (web / "styles.css").read_text(encoding="utf-8")
+    html = (web / "index.html").read_text(encoding="utf-8")
 
     assert js.count("rank.p >= 90") == 1
     for fn in ("alertReason", "relToBreakeven", "isMaintAlert", "isVolMaAlert"):
@@ -21,7 +22,11 @@ def test_frontend_card_alert_guards():
     assert 'class="card-metric"' in js
     assert 'class="card-rank"' in js
     assert 'class="card-rank-period"' in js
-    assert 'class="card-rank-badge"' in js
+    assert 'class="card-rank-badge rank-${zone.key}"' in js
+    assert 'key: "high", label: "高位"' in js
+    assert 'key: "low", label: "低位"' in js
+    assert ".card-rank-badge.rank-high {\n  background: var(--up-soft)" in css
+    assert ".card-rank-badge.rank-low {\n  background: rgba(112, 184, 255, .2); color: var(--info)" in css
     assert "function trendHtml(" in js
     assert 'class="card-trend-bars"' in js
     assert "--rank-p" not in js
@@ -31,6 +36,15 @@ def test_frontend_card_alert_guards():
     assert 'compactDeltaHtml(chg, pct, " 口")' in js
     assert ".card-rank::before" not in css
     assert ".card-rank-badge" in css
+    for label in ("外資買賣超", "融資餘額(張)", "融資維持率（上市）", "融資維持率（上櫃）",
+                  "外資台指淨未平倉", "微台散戶多空比"):
+        assert f'"{label}"' in js
+    assert "const KEY_METRICS = [" in js
+    assert '" key-metric"' in js
+    assert ".stat-board > .stat-cell.key-metric" in css
+    assert '<div class="overview-briefing span-full">' in html
+    assert ".overview-briefing" in css
+    assert "grid-template-columns: minmax(340px, .9fr) minmax(0, 1.6fr)" in css
     assert ".card-trend-bar.up::before" in css
     assert "@media (max-width: 1240px)" in css
     assert ".stat-board--tw { grid-template-columns: repeat(3, minmax(0, 1fr)); }" in css
@@ -1270,10 +1284,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260815-ui6"' in html.text
-    assert 'href="/styles.css?v=20260815-ui6"' in html.text
-    assert 'src="app.js?v=20260815-ui6"' not in html.text
-    assert 'href="styles.css?v=20260815-ui6"' not in html.text
+    assert 'src="/app.js?v=20260815-ui7"' in html.text
+    assert 'href="/styles.css?v=20260815-ui7"' in html.text
+    assert 'src="app.js?v=20260815-ui7"' not in html.text
+    assert 'href="styles.css?v=20260815-ui7"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",

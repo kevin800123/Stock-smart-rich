@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260815-ui6" />
+  <link rel="stylesheet" href="styles.css?v=20260815-ui7" />
   <script src="/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -120,12 +120,12 @@
         <!-- 台股大盤用 4×2：長標題、主值、補充金額與較昨變化都能完整呼吸，不把 8 種
              不等長內容硬壓成一列。總高度接近原本單列被換行撐高的高度，資訊卻清楚許多。 -->
         <div class="card-group span-full" data-key="tw"><div class="group-title">台股大盤 <span id="breadth-note" class="muted small"></span></div><div id="cards-tw" class="cards stat-board stat-board--tw"></div></div>
-        <div id="today-focus" class="today-focus"></div>
-        <!-- 三則新聞標題：每個市場一則。資料只來自 /api/news/headlines，那支**只讀
-             已存在的快取**、不抓取也不打 Gemini（見 api/news.py::headlines_logic）——
-             免費層一天只有 20 次，總覽不該為了一格順帶資訊就吃掉一次。
-             整塊沒有資料時 renderNewsStrip 會把它藏起來，不留空殼。 -->
-        <div id="news-strip" class="news-strip" hidden></div>
+        <!-- 今日重點與三則新聞都是盤前／盤後快速掃讀資訊，合成同一條 briefing band，
+             避免兩個內容很薄的容器各自佔滿整列。新聞仍只讀既有快取，不抓取也不打 Gemini。 -->
+        <div class="overview-briefing span-full">
+          <div id="today-focus" class="today-focus"></div>
+          <div id="news-strip" class="news-strip" hidden></div>
+        </div>
         <!-- 期貨與期權的內容密度不同，各自滿版單列；避免兩個區塊被同一 grid row 強迫等高，
              內容較少的期權區塊因此留下大面積空白。 -->
         <div class="card-group span-full" data-key="fut"><div class="group-title">期貨籌碼</div><div id="cards-fut" class="cards stat-board stat-board--fut"></div></div>
@@ -552,6 +552,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260815-ui6"></script>
+  <script src="app.js?v=20260815-ui7"></script>
 </body>
 </html>

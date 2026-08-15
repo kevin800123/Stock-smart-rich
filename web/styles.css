@@ -371,11 +371,19 @@ body[data-public] .status-bar { display: none; }
 }
 .kpi-sticky:empty { display: none; }
 
-/* 今日重點沿用新聞條的低調容器；條目本身不另做卡片或琥珀標記。 */
-.today-focus {
-  display: grid; gap: 8px;
+/* 今日重點與新聞同屬「現在值得知道什麼」，共用一條資訊帶；桌機分欄、窄螢幕再直排。 */
+.overview-briefing {
+  display: grid; grid-template-columns: minmax(340px, .9fr) minmax(0, 1.6fr);
+  min-width: 0; overflow: hidden;
   background: rgba(16, 26, 40, 0.72); border: 1px solid rgba(58, 82, 112, 0.7);
-  border-radius: var(--r-lg); padding: 10px 12px;
+  border-radius: var(--r-lg);
+}
+.overview-briefing:has(.today-focus:empty):has(.news-strip[hidden]) { display: none; }
+.overview-briefing:has(.news-strip[hidden]) .today-focus,
+.overview-briefing:has(.today-focus:empty) .news-strip { grid-column: 1 / -1; border: 0; }
+.today-focus {
+  display: grid; align-content: center; gap: 6px; min-width: 0;
+  padding: 10px 14px; border-right: 1px solid var(--border-subtle);
 }
 #today-focus:empty { display: none; }
 .today-focus-head { display: flex; align-items: baseline; gap: 8px; }
@@ -392,8 +400,7 @@ body[data-public] .status-bar { display: none; }
    （_MARKET_META），不另外發明色塊或標籤。 */
 .news-strip {
   display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--sp-2);
-  background: rgba(16, 26, 40, 0.72); border: 1px solid rgba(58, 82, 112, 0.7);
-  border-radius: var(--r-lg); padding: 10px 12px;
+  align-content: center; min-width: 0; padding: 10px 14px;
 }
 .news-strip[hidden] { display: none; }
 .nsi { display: flex; align-items: baseline; gap: 7px; min-width: 0;
@@ -521,10 +528,18 @@ body[data-public] .status-bar { display: none; }
 .card-rank-badge {
   display: inline-flex; align-items: baseline; gap: 6px; flex: 0 0 auto;
   padding: 4px 8px; border-radius: 5px;
-  background: rgba(61, 139, 219, .28); color: #b9d8f8;
-  box-shadow: inset 0 0 0 1px rgba(112, 184, 255, .18);
+  background: rgba(125, 141, 166, .1); color: var(--label);
+  box-shadow: inset 0 0 0 1px rgba(125, 141, 166, .18);
 }
-.card-rank-badge strong { color: var(--text); font-weight: 800; }
+.card-rank-badge.rank-high {
+  background: var(--up-soft); color: #ffc5cc;
+  box-shadow: inset 0 0 0 1px rgba(255, 99, 117, .42);
+}
+.card-rank-badge.rank-low {
+  background: rgba(112, 184, 255, .2); color: var(--info);
+  box-shadow: inset 0 0 0 1px rgba(112, 184, 255, .4);
+}
+.card-rank-badge strong { color: inherit; font-weight: 850; }
 
 /* 標題有兩階：.section-head（這一段回答什麼問題）＞ .group-title（單一區塊）。
    層級全靠字級／字重／亮度／留白拉開，不加新裝飾——本頁的視覺重點已經花在
@@ -576,8 +591,7 @@ body[data-public] .status-bar { display: none; }
    而非逐一加 class，因為它們的「必須滿版」是結構性的、不會有例外。 */
 #view-overview.active .overview-top,
 #view-overview.active #kpi-sticky,
-#view-overview.active #today-focus,
-#view-overview.active #news-strip,
+#view-overview.active .overview-briefing,
 #view-overview.active .section-head,
 #view-overview.active .chart-row,
 #view-overview.active .ai-head,
@@ -715,6 +729,14 @@ body[data-public] .status-bar { display: none; }
   transition: background-color var(--dur-base) var(--ease-out);
 }
 .stat-board > .stat-cell:hover { transform: none; background: var(--bg-card-hover); box-shadow: none; }
+.stat-board > .stat-cell.key-metric {
+  background: #182842;
+  box-shadow: inset 0 0 0 1px rgba(112, 184, 255, .16);
+}
+.stat-board > .stat-cell.key-metric:hover { background: #1c2f4b; }
+.stat-cell.key-metric .card-label { color: var(--text-primary); font-size: 15px; font-weight: 800; }
+.stat-cell.key-metric .card-val { font-size: clamp(23px, 1.7vw, 26px); font-weight: 850; }
+.stat-cell.key-metric .card-chg { font-weight: 800; }
 .stat-board > .stat-cell > .card-val { margin: 9px 0 var(--space-xs); }
 .stat-board > .stat-cell > .card-qual + .card-val { margin-top: 5px; }
 .stat-board > .muted { grid-column: 1 / -1; padding: 14px; background: var(--bg-card); }
@@ -735,6 +757,12 @@ body[data-public] .status-bar { display: none; }
 }
 @media (max-width: 1100px) {
   .stat-board--tw { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .overview-briefing { grid-template-columns: 1fr; }
+  .overview-briefing .today-focus {
+    grid-column: 1; border-right: 0; border-bottom: 1px solid var(--border-subtle);
+  }
+  .overview-briefing .news-strip { grid-column: 1; }
+  .overview-briefing:has(.news-strip[hidden]) .today-focus { border-bottom: 0; }
 }
 @media (max-width: 1000px) {
   .stat-board--intl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
