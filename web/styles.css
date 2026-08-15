@@ -720,13 +720,25 @@ body[data-public] .status-bar { display: none; }
 .stat-board > .stat-cell > .card-qual + .card-val { margin-top: 5px; }
 .stat-board > .muted { grid-column: 1 / -1; padding: 14px; background: var(--bg-card); }
 
+/* 長數值卡在中間寬度不能從 4 欄直接撐到 1000px 才切 2 欄：實測極端資料
+   （453.51 億／▼303.44 億、8,918,284／▼51,555 張）在 1200px viewport 的
+   4 欄卡片仍會溢出。先切 3 欄保留密度，再於 1100px 切 2 欄。 */
+@media (max-width: 1240px) {
+  .stat-board--tw { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+/* 期貨未平倉同時包含淨部位與日增減，字串比一般卡片長；實測 1181px 的 3 欄仍溢出。 */
+@media (max-width: 1200px) {
+  .stat-board--fut { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 1180px) {
-  .stat-board--tw, .stat-board--intl { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-  .stat-board--fut { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .stat-board--intl { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .stat-board--opt { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+@media (max-width: 1100px) {
+  .stat-board--tw { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 1000px) {
-  .stat-board--tw, .stat-board--intl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .stat-board--intl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .stat-board--fut { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 

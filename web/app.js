@@ -957,6 +957,13 @@ function note(text) { return text ? `<div class="card-note">${text}</div>` : "";
 function metricRow(value, sub = "", cls = "") {
   return `<div class="card-metric"><div class="card-val${cls ? " " + cls : ""}">${value}</div>${sub}</div>`;
 }
+// 四欄卡片用的精簡日變化：卡面只留方向、絕對值與單位，完整「較昨日＋百分比」放 title。
+// 這不是刪資料，而是把次要資訊移到按需層，避免長數字跨進隔壁卡片或被迫拆成兩行。
+function compactDeltaHtml(chg, pct, unit = "") {
+  if (chg == null) return "";
+  const full = `較昨日 ${chg > 0 ? "+" : ""}${fmt(chg)}${unit}${pctTag(pct)}`;
+  return `<div class="card-chg compact ${chgClass(chg)}" title="${esc(full)}">${chgText(chg)}${unit}</div>`;
+}
 // 帶修飾語的數值卡（多空比）：標籤一行、數字一行，不讓兩者擠在同一級
 function qualCard(label, q, value, chg, pct, rk = null, alert = false, trend = "") {
   const sub = chg == null ? ""
@@ -964,10 +971,12 @@ function qualCard(label, q, value, chg, pct, rk = null, alert = false, trend = "
   return cardWrap(`<div class="card-label">${label}</div>${qual(q)}`
     + metricRow(value, sub), "", rk, alert, trend);
 }
-// label, value, chg(可空), pct(可空), unit；rk=位階物件（可空），alert=是否標為異常讀數
-function card(label, value, chg, pct, unit = "", title = "", rk = null, alert = false, extra = "", trend = "") {
+// label, value, chg(可空), pct(可空), unit；compactUnit 非 null 時改用單行精簡變化。
+function card(label, value, chg, pct, unit = "", title = "", rk = null, alert = false, extra = "", trend = "", compactUnit = null) {
   let sub = "";
-  if (chg !== undefined && chg !== null) sub = `<div class="card-chg ${chgClass(chg)}">${chgText(chg)}${pctTag(pct)}</div>`;
+  if (chg !== undefined && chg !== null) sub = compactUnit !== null
+    ? compactDeltaHtml(chg, pct, compactUnit)
+    : `<div class="card-chg ${chgClass(chg)}">${chgText(chg)}${pctTag(pct)}</div>`;
   else if (pct !== undefined && pct !== null) sub = `<div class="card-chg ${chgClass(pct)}">${pct > 0 ? "▲" : pct < 0 ? "▼" : ""}${fmt(Math.abs(pct), 2)}%</div>`;
   return cardWrap(`<div class="card-label">${label}</div>${metricRow(value + unit, sub)}${note(extra)}`, title, rk, alert, trend);
 }
@@ -978,7 +987,7 @@ function oiCard(label, v, prev, rk = null, alert = false, trend = "") {
   const q = v > 0 ? "淨多" : v < 0 ? "淨空" : "";
   const head = `${fmt(Math.abs(v), 0)}<span class="card-unit">口</span>`;
   const { chg, pct } = dod(v, prev);
-  const sub = chg == null ? "" : `<div class="card-chg ${chgClass(chg)}" title="較昨日 ${chg > 0 ? "+" : ""}${fmt(chg, 0)} 口">${chgText(chg)} 口${pctTag(pct)}</div>`;
+  const sub = compactDeltaHtml(chg, pct, " 口");
   return cardWrap(`<div class="card-label">${label}</div>${qual(q)}${metricRow(head, sub, cls)}`, "", rk, alert, trend);
 }
 // 買賣超/淨額卡：當日淨流量，數值依正負上色，附「較昨日」增減金額
@@ -986,7 +995,7 @@ function oiCard(label, v, prev, rk = null, alert = false, trend = "") {
 function flowCard(label, v, prev, unit = "", rk = null, alert = false, trend = "") {
   if (v === null || v === undefined) return `<div class="card stat-cell"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
   const chg = prev == null ? null : v - prev;
-  const sub = chg == null ? "" : `<div class="card-chg ${chgClass(chg)}">較昨 ${chg > 0 ? "+" : ""}${fmt(chg)}${unit}</div>`;
+  const sub = compactDeltaHtml(chg, null, unit);
   return cardWrap(`<div class="card-label">${label}</div>${metricRow(fmt(v) + unit, sub, chgClass(v))}`, "", rk, alert, trend);
 }
 // 餘額卡（融資/融券）：當日尚未公布（晚間才出）時，退而顯示最近一筆有資料的交易日，並標註日期
@@ -1011,7 +1020,7 @@ function balanceCard(label, srcRow, curDate, balKey, chgKey, hist = [], amtKey =
   const alert = cardAlert(balKey, label, srcRow[balKey], fmt(srcRow[balKey], 0), rk, "tw");
   const trend = trendHtml(hist, chgKey, { label: "近7日增減", unit: "張", digits: 0 });
   return card(lbl, fmt(srcRow[balKey], 0), srcRow[chgKey], pctOf(srcRow[balKey], srcRow[chgKey]),
-    "", "", rk, alert, extra, trend);
+    "", "", rk, alert, extra, trend, " 張");
 }
 // 融資維持率卡：DB 未存官方逐日漲跌（不像融資/融券有 margin_chg/short_chg 現成值），
 // 故從 hist 找 srcRow 當日之前最近一筆有值的交易日自行算較昨——比較基準是 srcRow 自己的日期，
