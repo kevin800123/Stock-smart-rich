@@ -1727,19 +1727,25 @@ async function loadRankPrice() {
   const el = $("rankprice"); if (!el) return;
   try {
     const d = await getJSON(`/api/rank/price?market=${rankMarket}&n=30`);
-    const note = $("rankprice-note");
-    if (note) {
-      const anyLive = (d.items || []).some((i) => i.time);
-      const avgBase = d.avg_sessions ? `　近 ${d.avg_sessions} 日均額（不含今日）` : "";
-      note.textContent = (anyLive ? `（證交所即時，${d.fetched_at ? d.fetched_at.slice(11, 16) : ""} 更新` : "（收盤價") + avgBase + "）";
+    const items = d.items || [];
+    const anyLive = items.some((i) => i.time);
+    const src = $("rank-source"), cnt = $("rank-count"), feed = $("rankprice-note");
+    if (cnt) cnt.textContent = items.length || "—";
+    if (src) {
+      const avgBase = d.avg_sessions ? ` · 較 10 日均不含今日（近 ${d.avg_sessions} 日）` : "";
+      src.textContent = (anyLive ? `證交所即時 · ${d.fetched_at ? d.fetched_at.slice(11, 16) : ""} 更新` : "收盤價") + avgBase;
     }
-    if (!d.items || !d.items.length) { el.innerHTML = '<div class="muted">尚無資料（需先跑過 OHLC 回補）</div>'; return; }
+    if (feed) feed.textContent = "停留本頁每 10 秒自動更新";
+    if (!items.length) {
+      el.innerHTML = '<div class="table-empty"><strong>尚無高價股資料</strong><span>需先於「系統」跑過 OHLC 回補，取得個股價量後才會出現排行。</span></div>';
+      return;
+    }
     const head = "<tr><th>#</th><th>股票</th><th class=\"num\">股價／漲跌</th>" +
       "<th class=\"num\">成交量(張)</th><th class=\"num\">成交額(億)</th>" +
       "<th class=\"num\">成交額較10日均</th><th class=\"num\">周轉率</th>" +
       "<th class=\"num\" title=\"官方公布法人淨買賣股數，以現價換算；非成交金額原始值\">法人淨額(億)</th>" +
       "<th title=\"依法人淨額、成交額較10日均與周轉率分類；非投資建議\">資金訊號</th></tr>";
-    const body = d.items.map((it, i) => {
+    const body = items.map((it, i) => {
       const cls = it.chg > 0 ? "up" : it.chg < 0 ? "down" : "flat";
       // 盤中官方成交金額尚未發布 → 後端用 量×現價 估算，標「~」並在 tooltip 說明
       const amt = it.amount == null ? "—"
@@ -1768,8 +1774,11 @@ async function loadRankPrice() {
         `<td class="num">${inst}</td>` +
         `<td>${signal}</td></tr>`;
     }).join("");
-    el.innerHTML = `<table>${head}${body}</table>`;
-  } catch (e) { el.innerHTML = '<div class="muted">載入失敗：' + esc(e.message) + "</div>"; }
+    el.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+  } catch (e) {
+    el.innerHTML = '<div class="table-empty"><strong>載入失敗</strong><span>' + esc(e.message) + "</span></div>";
+    const feed = $("rankprice-note"); if (feed) feed.textContent = "更新失敗，將於下次自動更新重試";
+  }
 }
 function startRankPolling() {                   // 台股每 10 秒（MIS 便宜，後端 TTL 8 秒）
   if (rankTimer) return;                        // 防重複註冊
