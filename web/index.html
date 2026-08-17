@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260817-ui9" />
+  <link rel="stylesheet" href="styles.css?v=20260817-ui10" />
   <script src="/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -303,13 +303,25 @@
       </section>
 
       <!-- ===== 自選股 ===== -->
-      <section id="view-watch" class="view">
-        <div class="toolbar">
-          <input type="text" id="watch-input" class="stock-input" placeholder="輸入股號加入自選（如 2330）後按 Enter" />
-          <button id="watch-add" class="file-label">＋ 加入</button>
-          <span class="muted small">追蹤個股是否在選股榜、在榜次數、自進榜報酬（依已上傳的 CSV 快照計算）；點股號開 K 線</span>
+      <section id="view-watch" class="view picks-view">
+        <div class="picks-command">
+          <div class="picks-command-copy">
+            <div class="picks-title-row"><h2>自選股追蹤</h2></div>
+            <p>追蹤個股是否在選股榜、在榜次數與自進榜報酬（依已上傳的 CSV 快照計算）；點股號開 K 線，點「估價」展開單季 EPS 推估。</p>
+          </div>
+          <div class="picks-actions toolbar" aria-label="自選股操作">
+            <input type="text" id="watch-input" class="stock-input" placeholder="輸入股號加入（如 2330）後按 Enter" />
+            <button id="watch-add" class="file-label picks-action">＋ 加入</button>
+          </div>
+          <div class="picks-command-foot">
+            <div class="picks-summary" aria-label="自選股摘要" aria-live="polite">
+              <span><b id="watch-count">—</b> 檔自選</span>
+              <span id="watch-onboard">—</span>
+            </div>
+            <span id="watch-info" class="picks-feedback" role="status" aria-live="polite"></span>
+          </div>
         </div>
-        <div id="watch-table" class="table-wrap fill"></div>
+        <div id="watch-table" class="table-wrap fill"><div class="table-empty">載入中…</div></div>
       </section>
 
       <!-- ===== 杯柄選股 ===== -->
@@ -583,6 +595,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260817-ui9"></script>
+  <script src="app.js?v=20260817-ui10"></script>
 </body>
 </html>

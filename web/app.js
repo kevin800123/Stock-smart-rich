@@ -2180,9 +2180,16 @@ async function loadWatchlist() {
   if (!el) return;
   try {
     const d = await getJSON("/api/watchlist");
-    if (!d.stocks || !d.stocks.length) { el.innerHTML = '<div class="muted small">尚無自選股，輸入股號加入。</div>'; return; }
+    const stocks = d.stocks || [];
+    const cnt = $("watch-count"), onb = $("watch-onboard");
+    if (cnt) cnt.textContent = stocks.length || "—";
+    if (onb) onb.textContent = stocks.length ? `${stocks.filter((s) => s.in_latest).length} 檔在今日榜` : "—";
+    if (!stocks.length) {
+      el.innerHTML = '<div class="table-empty"><strong>尚無自選股</strong><span>在上方輸入股號（如 2330）後按 Enter 加入，即可追蹤它在選股榜的表現與自進榜報酬。</span></div>';
+      return;
+    }
     const num = (v, d = 2) => `<td class="num">${v == null ? "—" : fmt(v, d)}</td>`;
-    const rows = d.stocks.map((s) => {
+    const rows = stocks.map((s) => {
       const onb = s.in_latest ? '<span class="status new">在榜</span>' : '<span class="status out">未在榜</span>';
       const ret = s.ret_pct == null ? "—" : `<span class="${s.ret_pct > 0 ? "up" : s.ret_pct < 0 ? "down" : ""}">${s.ret_pct > 0 ? "+" : ""}${fmt(s.ret_pct, 2)}%</span>`;
       const ch = s.chip || {};
@@ -2192,12 +2199,15 @@ async function loadWatchlist() {
         estPanelHtml(s);
     }).join("");
     const rh = (t) => `<th class="num">${t}</th>`;
-    el.innerHTML = `<table><tr><th>股票</th><th>今日選股榜</th>${rh("在榜次數")}<th>進榜日</th>${rh("自進榜報酬")}${rh("收盤")}${rh("蘭值")}${rh("本益比")}${rh("推估EPS")}${rh("營收年增%")}${rh("人數降比")}${rh("大戶增比")}<th></th></tr>${rows}</table>`;
+    const head = `<tr><th>股票</th><th>今日選股榜</th>${rh("在榜次數")}<th>進榜日</th>${rh("自進榜報酬")}${rh("收盤")}${rh("蘭值")}${rh("本益比")}${rh("推估EPS")}${rh("營收年增%")}${rh("人數降比")}${rh("大戶增比")}<th></th></tr>`;
+    el.innerHTML = `<table><thead>${head}</thead><tbody>${rows}</tbody></table>`;
     if (openEstCode) {
       const row = document.getElementById(`est-row-${openEstCode}`);
       if (row) { row.classList.remove("hidden"); recalcEstPanel(openEstCode); }
     }
-  } catch (e) { el.innerHTML = '<div class="muted small">載入失敗</div>'; }
+  } catch (e) {
+    el.innerHTML = '<div class="table-empty"><strong>載入失敗</strong><span>' + esc(e.message) + "</span></div>";
+  }
 }
 async function addWatch() {
   const v = ($("watch-input").value || "").trim();
