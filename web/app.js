@@ -519,7 +519,7 @@ async function loadTrades() {
     $("tr-date").value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   }
   try { renderTrades(await getJSON("/api/trades")); }
-  catch (e) { $("tr-open").innerHTML = '<span class="muted small">載入失敗</span>'; }
+  catch (e) { $("tr-open").innerHTML = '<div class="table-empty"><strong>載入失敗</strong><span>' + esc(e.message) + "</span></div>"; }
 }
 function renderTrades(d) {
   const cls = (v) => (v > 0 ? "up" : v < 0 ? "down" : "");
@@ -535,21 +535,23 @@ function renderTrades(d) {
     ["平均勝過大盤", pct(s.avg_alpha)],
   ].map(([k, v]) => `<div class="stat"><div class="stat-k">${k}</div><div class="stat-v">${v == null ? "—" : v}</div></div>`).join("");
   const ts = d.trades || [], op = ts.filter(t => t.status === "open"), cl = ts.filter(t => t.status === "closed");
+  if ($("tr-open-count")) $("tr-open-count").textContent = `${op.length} 筆`;
+  if ($("tr-closed-count")) $("tr-closed-count").textContent = `${cl.length} 筆`;
   $("tr-open").innerHTML = op.length
-    ? `<table><tr><th>股票</th><th>進場日</th><th ${num()}>進場價</th><th ${num()}>股數</th><th ${num()}>現價</th><th ${num()}>未實現%</th><th ${num()}>未實現損益</th><th ${num()}>同期大盤</th><th></th></tr>`
+    ? `<table><thead><tr><th>股票</th><th>進場日</th><th ${num()}>進場價</th><th ${num()}>股數</th><th ${num()}>現價</th><th ${num()}>未實現%</th><th ${num()}>未實現損益</th><th ${num()}>同期大盤</th><th></th></tr></thead><tbody>`
       + op.map(t => `<tr title="${esc(t.note || "")}"><td>${stockLink(t.code, t.name)}</td><td>${esc(t.entry_date)}</td>`
         + `<td ${num()}>${fmt(t.entry_price, 2)}</td><td ${num()}>${fmt(t.shares, 0)}</td><td ${num()}>${t.mark == null ? "—" : fmt(t.mark, 2)}</td>`
         + `<td ${num(cls(t.net_pct))}>${pct(t.net_pct)}</td><td ${num(cls(t.pnl))}>${money(t.pnl)}</td>`
-        + `<td ${num()}>${pct(t.mkt_pct)}</td><td><button class="file-label tr-close" data-id="${t.id}">平倉</button> <button class="file-label tr-del" data-id="${t.id}">刪</button></td></tr>`).join("") + "</table>"
-    : '<span class="muted small">無未平倉部位（上方「＋記一筆」開始記錄）</span>';
+        + `<td ${num()}>${pct(t.mkt_pct)}</td><td><button class="file-label tr-close" data-id="${t.id}">平倉</button> <button class="file-label tr-del" data-id="${t.id}">刪</button></td></tr>`).join("") + "</tbody></table>"
+    : '<div class="table-empty"><strong>無未平倉部位</strong><span>用上方「＋記一筆」加入一筆買進（模擬單也記），賣出時再按該筆「平倉」。</span></div>';
   $("tr-closed").innerHTML = cl.length
-    ? `<table><tr><th>股票</th><th>持有期間</th><th ${num()}>進→出</th><th ${num()}>股數</th><th ${num()}>淨報酬</th><th ${num()}>損益</th><th ${num()}>同期大盤</th><th ${num()}>勝過大盤</th><th></th></tr>`
+    ? `<table><thead><tr><th>股票</th><th>持有期間</th><th ${num()}>進→出</th><th ${num()}>股數</th><th ${num()}>淨報酬</th><th ${num()}>損益</th><th ${num()}>同期大盤</th><th ${num()}>勝過大盤</th><th></th></tr></thead><tbody>`
       + cl.map(t => `<tr title="${esc(t.note || "")}"><td>${stockLink(t.code, t.name)}</td><td>${esc(t.entry_date)} → ${esc(t.exit_date)}</td>`
         + `<td ${num()}>${fmt(t.entry_price, 2)} → ${fmt(t.exit_price, 2)}</td><td ${num()}>${fmt(t.shares, 0)}</td>`
         + `<td ${num(cls(t.net_pct))}>${pct(t.net_pct)}</td><td ${num(cls(t.pnl))}>${money(t.pnl)}</td>`
         + `<td ${num()}>${pct(t.mkt_pct)}</td><td ${num(cls(t.alpha))}>${pct(t.alpha)}</td>`
-        + `<td><button class="file-label tr-del" data-id="${t.id}">刪</button></td></tr>`).join("") + "</table>"
-    : '<span class="muted small">尚無已平倉交易</span>';
+        + `<td><button class="file-label tr-del" data-id="${t.id}">刪</button></td></tr>`).join("") + "</tbody></table>"
+    : '<div class="table-empty"><strong>尚無已平倉交易</strong><span>平掉一筆未平倉部位後，績效統計才會開始累積。</span></div>';
 }
 async function trTableClick(e) {
   const cbtn = e.target.closest(".tr-close"), dbtn = e.target.closest(".tr-del");

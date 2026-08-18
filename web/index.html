@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260817-ui10" />
+  <link rel="stylesheet" href="styles.css?v=20260817-ui11" />
   <script src="/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -462,24 +462,29 @@
       </section>
 
       <!-- ===== 交易帳本 ===== -->
-      <section id="view-trades" class="view">
-        <div class="toolbar">
-          <span class="pane-title" style="margin:0">交易帳本</span>
-          <span class="muted small">記錄實單/模擬單，用真實數據驗證這套選股到底賺不賺錢</span>
+      <section id="view-trades" class="view picks-view">
+        <div class="picks-command">
+          <div class="picks-command-copy">
+            <div class="picks-title-row"><h2>交易帳本</h2></div>
+            <p>記錄實單與模擬單，用真實績效驗證這套選股到底賺不賺錢；報酬皆為扣費後淨值，未平倉以最新收盤估值。</p>
+          </div>
+          <div class="picks-command-foot">
+            <div class="toolbar" style="flex-wrap:wrap;flex:1 1 100%" aria-label="新增交易">
+              <input type="text" id="tr-code" class="stock-input" placeholder="代號 如2330" style="width:100px" />
+              <input type="number" id="tr-shares" class="stock-input" placeholder="股數(1張=1000)" style="width:120px" />
+              <input type="date" id="tr-date" class="stock-input" style="width:140px" />
+              <input type="number" id="tr-price" class="stock-input" placeholder="進場價" step="0.01" style="width:90px" />
+              <input type="text" id="tr-note" class="stock-input" placeholder="備註（如：杯柄突破）" style="width:170px" />
+              <button id="btn-tr-add" class="file-label picks-action">＋記一筆</button>
+              <span id="tr-status" class="picks-feedback" role="status" aria-live="polite"></span>
+            </div>
+          </div>
         </div>
-        <div class="toolbar" style="flex-wrap:wrap">
-          <input type="text" id="tr-code" class="stock-input" placeholder="代號 如2330" style="width:100px" />
-          <input type="number" id="tr-shares" class="stock-input" placeholder="股數(1張=1000)" style="width:120px" />
-          <input type="date" id="tr-date" class="stock-input" style="width:140px" />
-          <input type="number" id="tr-price" class="stock-input" placeholder="進場價" step="0.01" style="width:90px" />
-          <input type="text" id="tr-note" class="stock-input" placeholder="備註（如：杯柄突破）" style="width:170px" />
-          <button id="btn-tr-add" class="file-label">＋記一筆</button>
-          <span id="tr-status" class="muted small"></span>
-        </div>
+        <div class="pane-heading"><div><h3>績效統計</h3><p>皆為扣費後淨值；已平倉滿 20～30 筆統計才有參考意義</p></div></div>
         <div id="tr-stats" class="stats-grid" style="max-width:none"></div>
-        <div class="ai-head"><span>未平倉</span></div>
+        <div class="pane-heading"><div><h3>未平倉</h3><p>以資料庫最新收盤估值，非即時報價</p></div><span id="tr-open-count" class="pane-count">—</span></div>
         <div id="tr-open" class="table-wrap"></div>
-        <div class="ai-head"><span>已平倉</span></div>
+        <div class="pane-heading"><div><h3>已平倉</h3></div><span id="tr-closed-count" class="pane-count">—</span></div>
         <div id="tr-closed" class="table-wrap"></div>
         <div class="wave-help">
           <b>怎麼用</b><br/>
@@ -595,6 +600,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260817-ui10"></script>
+  <script src="app.js?v=20260817-ui11"></script>
 </body>
 </html>
