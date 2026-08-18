@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260817-ui11" />
+  <link rel="stylesheet" href="styles.css?v=20260817-ui12" />
   <script src="/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -244,22 +244,32 @@
       </section>
 
       <!-- ===== 個股查詢 ===== -->
-      <section id="view-stock" class="view">
-        <div class="toolbar">
-          <input type="text" id="stock-input" class="stock-input" placeholder="輸入股號（如 2330 或 2330.TW）後按 Enter" />
-          <button id="stock-go" class="file-label">查詢</button>
-          <div class="kline-tf">
-            <button class="ktf" data-iv="1h">時</button>
-            <button class="ktf active" data-iv="1d">日</button>
-            <button class="ktf" data-iv="1wk">週</button>
-            <button class="ktf" data-iv="1mo">月</button>
+      <section id="view-stock" class="view picks-view">
+        <div class="picks-command">
+          <div class="picks-command-copy">
+            <div class="picks-title-row"><h2>個股查詢</h2></div>
+            <p>輸入代號查價量、三大法人與集保大戶趨勢；K 線可切換週期與艾略特波浪。</p>
           </div>
-          <label class="wave-toggle"><input type="checkbox" id="stock-wave-chk" /> 艾略特波浪</label>
-          <!-- 轉折% 滑桿原本只在總覽的 K 線列裡，但 wavePct 是全站共用的變數、個股波浪
-               也吃它——總覽那列刪掉後若不搬過來，個股的波浪靈敏度就永遠卡在預設 5%。 -->
-          <span class="wave-pct"><input type="range" id="wave-pct" min="2" max="15" step="1" value="5" /><span id="wave-pct-val">轉折 5%</span></span>
-          <a href="#" id="wave-help-toggle" class="help-link">ⓘ 波浪說明</a>
-          <span id="stock-note" class="muted"></span>
+          <div class="picks-actions toolbar" aria-label="個股查詢">
+            <input type="text" id="stock-input" class="stock-input" placeholder="輸入股號（如 2330 或 2330.TW）後按 Enter" />
+            <button id="stock-go" class="file-label picks-action">查詢</button>
+          </div>
+          <div class="picks-command-foot">
+            <div class="toolbar" style="flex-wrap:wrap;gap:8px 14px" aria-label="K 線設定">
+              <div class="kline-tf">
+                <button class="ktf" data-iv="1h">時</button>
+                <button class="ktf active" data-iv="1d">日</button>
+                <button class="ktf" data-iv="1wk">週</button>
+                <button class="ktf" data-iv="1mo">月</button>
+              </div>
+              <label class="wave-toggle"><input type="checkbox" id="stock-wave-chk" /> 艾略特波浪</label>
+              <!-- 轉折% 滑桿原本只在總覽的 K 線列裡，但 wavePct 是全站共用的變數、個股波浪
+                   也吃它——總覽那列刪掉後若不搬過來，個股的波浪靈敏度就永遠卡在預設 5%。 -->
+              <span class="wave-pct"><input type="range" id="wave-pct" min="2" max="15" step="1" value="5" /><span id="wave-pct-val">轉折 5%</span></span>
+              <a href="#" id="wave-help-toggle" class="help-link">ⓘ 波浪說明</a>
+              <span id="stock-note" class="muted"></span>
+            </div>
+          </div>
         </div>
         <div id="wave-help" class="wave-help hidden">
           <b>艾略特波浪</b>：一個趨勢通常「上漲 5 浪、下跌 3 浪」。
@@ -505,11 +515,16 @@
            未來要看前瞻測試數據時把 view 加回即可，資料無缺口。 -->
 
       <!-- ===== 操盤手（多操盤手方法論檢核） ===== -->
-      <section id="view-traders" class="view">
-        <div class="toolbar">
-          <span class="pane-title" style="margin:0">🧭 操盤手</span>
-          <span id="trader-tabs" class="trader-tabs"></span>
-          <span id="trader-date" class="muted small"></span>
+      <section id="view-traders" class="view picks-view">
+        <div class="picks-command">
+          <div class="picks-command-copy">
+            <div class="picks-title-row"><h2>操盤手</h2></div>
+            <p>用不同操盤手的方法論檢核當日盤面；每套規則為量化清單，非投資建議。</p>
+          </div>
+          <div class="picks-actions toolbar" aria-label="操盤手選擇">
+            <span id="trader-tabs" class="trader-tabs"></span>
+            <span id="trader-date" class="muted small"></span>
+          </div>
         </div>
         <div id="trader-tagline" class="muted small" style="margin:2px 0 6px"></div>
         <div id="trader-sections">載入中…</div>
@@ -560,13 +575,18 @@
       </section>
 
       <!-- ===== 每日財經新聞 ===== -->
-      <section id="view-news" class="view">
-        <div class="toolbar">
-          <span class="pane-title" style="margin:0">📰 每日財經新聞</span>
-          <button id="btn-news-refresh" class="file-label">🔄 更新摘要</button>
-          <span id="news-date" class="muted small"></span>
+      <section id="view-news" class="view picks-view">
+        <div class="picks-command">
+          <div class="picks-command-copy">
+            <div class="picks-title-row"><h2>每日財經新聞</h2></div>
+            <p>台股／美股／日股新聞由 AI 統整重點，下方三欄保留各市場原始標題與來源連結。</p>
+          </div>
+          <div class="picks-actions toolbar" aria-label="新聞操作">
+            <button id="btn-news-refresh" class="file-label picks-action">🔄 更新摘要</button>
+            <span id="news-date" class="muted small"></span>
+          </div>
         </div>
-        <div class="ai-head"><span>AI 財經摘要</span><span id="news-source" class="muted small"></span></div>
+        <div class="pane-heading"><div><h3>AI 財經摘要</h3></div><span id="news-source" class="pane-count">—</span></div>
         <div id="news-summary" class="ai-box">載入中…</div>
         <div class="rank-split news-split">
           <div class="rank-col"><div class="rank-h">台股新聞</div><div id="news-tw"></div></div>
@@ -600,6 +620,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260817-ui11"></script>
+  <script src="app.js?v=20260817-ui12"></script>
 </body>
 </html>
