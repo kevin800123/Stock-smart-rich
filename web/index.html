@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260817-ui12" />
+  <link rel="stylesheet" href="styles.css?v=20260817-ui13" />
   <script src="/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -304,11 +304,21 @@
       </section>
 
       <!-- ===== 族群輪動 ===== -->
-      <section id="view-rotation" class="view">
-        <div class="pane-title">族群輪動　近 N 日類股漲跌%（依累計強弱排序，紅漲綠跌）<span id="rotation-note" class="muted small"></span></div>
+      <section id="view-rotation" class="view picks-view">
+        <div class="picks-command">
+          <div class="picks-command-copy">
+            <div class="picks-title-row"><h2>族群輪動</h2></div>
+            <p>近 N 日各類股累計漲跌%（依強弱排序，紅漲綠跌），看資金在族群間的輪動。</p>
+          </div>
+          <div class="picks-command-foot">
+            <span id="rotation-note" class="picks-feedback" role="status" aria-live="polite"></span>
+          </div>
+        </div>
         <div id="rotation" class="table-wrap fill-half"></div>
-        <div class="pane-title" style="margin-top:10px">交叉選股　你的籌碼/基本選股 × 當日族群<span id="cross-note" class="muted small"></span></div>
-        <div class="muted small">同一族群把命中個股聚在一起，依族群當日漲跌排序；點股號開 K 線。需先在「籌碼/基本選股」載入當日 CSV。</div>
+        <div class="pane-heading">
+          <div><h3>交叉選股</h3><p>你的籌碼／基本選股 × 當日族群，同族群聚合、依當日漲跌排序，點股號開 K 線；需先在「籌碼／基本選股」載入當日 CSV。</p></div>
+          <span id="cross-note" class="pane-count">—</span>
+        </div>
         <div id="cross"></div>
       </section>
 
@@ -532,12 +542,16 @@
       </section>
 
       <!-- ===== 海期監控 ===== -->
-      <section id="view-osfut" class="view">
-        <div class="toolbar">
-          <span class="pane-title" style="margin:0">海期監控</span>
-          <button id="btn-osfut-refresh" class="file-label">🔄 更新報價</button>
-          <span id="osfut-time" class="muted small"></span>
-          <span class="muted small">每日 07:30／21:30 排程更新（非即時；按鈕可手動強制重抓一次）</span>
+      <section id="view-osfut" class="view picks-view">
+        <div class="picks-command">
+          <div class="picks-command-copy">
+            <div class="picks-title-row"><h2>海期監控</h2></div>
+            <p>國際期貨與指數報價，每日 07:30／21:30 排程更新（非即時，按鈕可手動強制重抓一次）；資料來自 TradingView 公開資料。</p>
+          </div>
+          <div class="picks-actions toolbar" aria-label="海期操作">
+            <button id="btn-osfut-refresh" class="file-label picks-action">🔄 更新報價</button>
+            <span id="osfut-time" class="muted small"></span>
+          </div>
         </div>
         <div id="osfut"></div>
       </section>
@@ -567,10 +581,21 @@
       </section>
 
       <!-- ===== 跨週 ＋ AI ===== -->
-      <section id="view-weekly" class="view">
-        <div class="pane-title">跨週變化（本週 vs 上週）<span id="weekly-dates" class="muted"></span></div>
+      <section id="view-weekly" class="view picks-view">
+        <div class="picks-command">
+          <div class="picks-command-copy">
+            <div class="picks-title-row"><h2>跨週變化</h2></div>
+            <p>本週 vs 上週的籌碼變化（新進榜／加速／退榜）；下方 AI 籌碼分析師在 CSV 匯入後自動生成。</p>
+          </div>
+          <div class="picks-command-foot">
+            <span id="weekly-dates" class="picks-feedback" role="status" aria-live="polite"></span>
+          </div>
+        </div>
         <div id="weekly" class="table-wrap fill-half"></div>
-        <div class="ai-head"><span>AI 籌碼分析師 <span id="csv-summary-date" class="muted small"></span> <span class="muted small">（CSV 匯入後自動生成）</span></span></div>
+        <div class="pane-heading">
+          <div><h3>AI 籌碼分析師</h3><p>CSV 匯入後自動生成</p></div>
+          <span id="csv-summary-date" class="pane-count"></span>
+        </div>
         <div id="csv-summary" class="ai-box">載入中…</div>
       </section>
 
@@ -620,6 +645,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260817-ui12"></script>
+  <script src="app.js?v=20260817-ui13"></script>
 </body>
 </html>
