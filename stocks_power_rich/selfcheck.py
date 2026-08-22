@@ -49,9 +49,14 @@ def build_selfcheck(conn, date: str | None) -> dict:
 
     out_rows = []
     for code, name, csv_yoy, csv_w55, csv_bhr, csv_est in rows_csv:
-        self_yoy = yoy.get(code)
-        self_w55 = _self_w55(ohlc.get(code), date)
-        self_bhr = (custody.get(code) or {}).get("big_holder_ratio")
+        # chip_snapshot 的 code 帶 .TW/.TWO 後綴（XQ CSV 一律加 .TW），但自算來源
+        # （月營收 revenue_yoy_map／集保 custody_change_map／OHLC get_all_ohlc）一律 bare
+        # code——不去後綴，每一列 join 都 miss、全部「尚無自算」（production 實況）。
+        # 去後綴是本 codebase 既有慣例（updater._financials_universe、api/* 皆 .split(".")[0]）。
+        bare = str(code).split(".")[0]
+        self_yoy = yoy.get(bare)
+        self_w55 = _self_w55(ohlc.get(bare), date)
+        self_bhr = (custody.get(bare) or {}).get("big_holder_ratio")
         vals = {
             "rev_yoy": (csv_yoy, self_yoy),
             "w55": (csv_w55, self_w55),

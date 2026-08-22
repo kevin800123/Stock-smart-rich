@@ -55,6 +55,27 @@ def test_build_selfcheck_live_fields_and_blocked_fields(tmp_path):
     assert out["coverage"]["w55"]["total"] == 2
 
 
+def test_build_selfcheck_strips_tw_suffix_before_self_source_lookup(tmp_path):
+    """迴歸（production 全 0/N）：chip_snapshot 的 code 帶 .TW 後綴（XQ CSV 一律加 .TW），
+    但自算來源（OHLC／月營收／集保）一律 bare code。join 前若不去後綴，每一列都 miss →
+    所有欄位永遠「尚無自算」（正是 production 實況）。本測試刻意讓兩邊格式不一致，鎖住修正。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    conn.execute("INSERT INTO chip_snapshot(snap_date,code,name,w55) "
+                 "VALUES('2026-08-20','2330.TW','台積電',1.0)")   # 後綴碼
+    ds = [(date(2026, 6, 1) + timedelta(days=n)).isoformat() for n in range(60)]
+    for i, d in enumerate(ds):                                    # bare code、遞增 → w55=1
+        conn.execute("INSERT INTO stock_ohlc(code,date,high,low,close) VALUES('2330',?,?,?,?)",
+                     (d, 100 + i, 99 + i, 100 + i))
+    conn.commit()
+    out = selfcheck.build_selfcheck(conn, "2026-08-20")
+    row = out["rows"][0]
+    assert row["code"] == "2330.TW"                       # 顯示／個股連結仍用原始後綴碼
+    assert row["fields"]["w55"]["self"] == 1.0            # 去後綴後 join 命中 → 自算成功
+    assert row["fields"]["w55"]["status"] == "match"      # CSV w55=1 與自算 1 一致
+    assert out["coverage"]["w55"]["computable"] == 1
+
+
 def test_build_selfcheck_defaults_to_latest_snap_date(tmp_path):
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
