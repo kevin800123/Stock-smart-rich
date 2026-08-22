@@ -25,17 +25,31 @@
 
 ## 範圍
 
-### 比對的 5 個欄位
+### 比對的 6 個欄位
 
-| 欄位（顯示名） | chip_snapshot 欄 | 自算來源 | 現況 |
+**方向（使用者定案）**：終點指標比**木質/木率**，不比蘭質/蘭值。蘭質/蘭值是蘭弦專有、永不重現，
+使用者要「全放自己的」，所以對照頁驗證的是**要取代它們的自家指標木質/木率**，蘭值不列為欄位
+（蘭質仍是「自算木質」內部的財報分輸入，只是不單獨顯示成對照欄）。
+
+| 欄位（顯示名） | 基準（CSV 側） | 自算來源 | 現況 |
 |---|---|---|---|
-| 營收年增 | `rev_yoy` | `db.revenue_yoy_map(conn, as_of=date)` | ✅ 現可對（月營收端點全市場當月即到） |
-| W55 | `w55` | `analysis.w55_signal(highs, lows, closes)`（讀 `stock_ohlc` 到基準日） | ✅ 現可對（OHLC 已為杯柄回補） |
-| 大戶增比 | `big_holder_ratio` | `db.custody_change_map(conn, as_of=date)` | ⚠️ 需 ≥2 週集保才有 week-over-week 差 |
-| 推估EPS | `est_profit` | `analysis.estimate_quarterly_eps(...)` | ❌ 需 6 個月月營收；現多為 None → 標「還在等」 |
-| 蘭值 | `lan_value` | `analysis.lan_score(financials)` ÷ 自算本業PE × 100 | ❌ **雙重依賴**：需季報財務（算蘭質）**且**需自算本業PE（＝現價 ÷ 自算年化EPS，後者又吃 6 月月營收）；任一未成熟即 None → 標「還在等」 |
+| 營收年增 | `chip_snapshot.rev_yoy` | `db.revenue_yoy_map(conn, as_of=date)` | ✅ 現可對（月營收端點全市場當月即到） |
+| W55 | `chip_snapshot.w55` | `analysis.w55_signal(highs, lows, closes)`（讀 `stock_ohlc` 到基準日） | ✅ 現可對（OHLC 已為杯柄回補） |
+| 大戶增比 | `chip_snapshot.big_holder_ratio` | `db.custody_change_map(conn, as_of=date)` | ⚠️ 需 ≥2 週集保才有 week-over-week 差 |
+| 推估EPS | `chip_snapshot.est_profit` | `analysis.estimate_quarterly_eps(...)` | ❌ 需 6 個月月營收；現多為 None → 標「還在等」 |
+| 木質 | `analysis.attach_mu(csv_row).mu_score` | `analysis.attach_mu(self_row).mu_score` | ❌ 三重依賴（見下）；現多為 None → 標「還在等」 |
+| 木率 | `analysis.attach_mu(csv_row).mu_value` | `analysis.attach_mu(self_row).mu_value` | ❌ 同木質（木率＝木質÷本業PE×100，再多吃自算本業PE） |
 
-- 5 欄全上（使用者選）。未成熟的欄一律顯示「—」＋ hover 說明還需要什麼資料。
+- **木質/木率的 CSV 基準不是存在表裡的欄**：`chip_snapshot` 沒有 `mu_score`/`mu_value` 欄，
+  它們由 `attach_mu` 即時算。所以「CSV 側木質」＝把 `attach_mu` 套在 CSV 的 chip_snapshot 列上
+  （＝現在選股表顯示的木質）；「自算側木質」＝把 `attach_mu` 套在**自算組出的列**上。
+- **自算木質的三重依賴**（也是對照頁要凸顯的「還缺哪一片」）：
+  1. 財報分（自算蘭質）← `lan_score(financials)`，需季報財務成熟；
+  2. 大戶增比 / 人數降比 ← 已自算（集保）✅；
+  3. **投信三日 / 外資三日 ← 目前還沒有自算來源**（Stage 2 尚未做這一片）。
+  → 三者其一未成熟，自算木質即 None、標「尚無自算」。這正好讓對照頁把「要全放自己的還缺什麼」
+  顯示出來（缺一片：投信/外資三日自算來源；缺成熟度：季報＋6 月月營收）。
+- 6 欄全上（使用者選）。未成熟的欄一律顯示「—」＋ hover 說明還需要什麼資料。
 - **基準日期可選**（使用者選）：任意已匯入 CSV 的 `snap_date`，預設最新。
 
 ### 明確不做
@@ -57,13 +71,13 @@
 **容差常數（單一權威，寫在 `analysis.py` 頂部具名常數；同 ss_trader/scoring-rules 規矩，前端不得複製）**
 ```
 SELFCHECK_TOL = {
-  "rev_yoy": 0.5,             # 百分點
-  "big_holder_ratio": 0.05,  # 百分點
-  "est_profit": None,        # 相對 5% → 用 SELFCHECK_REL 表達
-  "lan_value": 1.0,          # 絕對
+  "rev_yoy": 0.5,            # 百分點（絕對）
+  "big_holder_ratio": 0.05, # 百分點（絕對）
+  "mu_score": 1.0,          # 木質 0–19 小整數刻度（絕對）
+  "mu_value": 1.0,          # 木率（絕對）
 }
 SELFCHECK_REL = {"est_profit": 0.05}   # 相對容差（|self-csv|/|csv| ≤ 5%）
-# w55 不入表 → 完全相等
+# w55 不入 TOL 表 → 完全相等才算一致
 ```
 - 之後要調容差改這裡即可，並經 API 揭露（見下）讓前端唯讀顯示，不寫死。
 
@@ -82,7 +96,12 @@ SELFCHECK_REL = {"est_profit": 0.05}   # 相對容差（|self-csv|/|csv| ≤ 5%�
   - `big_holder_ratio` ← `custody_change_map(conn, as_of=date)`（一次全市場，dict 查表）
   - `w55` ← 取該 code 在 `stock_ohlc` 中 `date` 及之前的 highs/lows/closes（≥55 根）餵 `w55_signal`
   - `est_profit` ← `estimate_quarterly_eps(...)`（多為 None）
-  - `lan_value` ← `lan_score(financials)` + 本業PE（多為 None）
+  - `mu_score`/`mu_value`（木質/木率）← 組一個**全自算的 row**（自算蘭質＝`lan_score(financials)["score"]`
+    當財報分、自算大戶增比/人數降比、自算投信三日/外資三日），呼叫 `attach_mu(self_row)` 取
+    `mu_score`/`mu_value`。**投信三日/外資三日目前無自算來源** → 這兩個籌碼訊號取不到即整個自算木質
+    回 None（不可拿 CSV 值頂替，否則不是「全自算」，會讓對照失真）。實作階段：`selfcheck.py` 內先做
+    一支小的「自算籌碼四訊號」組裝，投信/外資三日缺就回 None；此片（自算投信/外資三日）本身是
+    Stage 2 的**下一個 slice**，本案不做、但對照頁會顯示它缺席。
 - 逐欄位 `selfcheck_compare`，組出：
   ```
   {
@@ -112,7 +131,7 @@ SELFCHECK_REL = {"est_profit": 0.05}   # 相對容差（|self-csv|/|csv| ≤ 5%�
 - 新 `<section id="view-selfcheck" class="view picks-view">`：
   - `.picks-command`：h2「選股自算對照」＋一句定位＋日期下拉（`#selfcheck-date`）＋
     覆蓋率摘要（`.picks-command-foot`，每欄「可自算 N/M・中位數差 x」）＋ `aria-live` 狀態。
-  - `#selfcheck-table`（`.table-wrap fill`）：一列一檔，欄＝股票＋5 欄。
+  - `#selfcheck-table`（`.table-wrap fill`）：一列一檔，欄＝股票＋6 欄（營收年增／W55／大戶增比／推估EPS／木質／木率）。
   - 每格：自算值 + 小狀態記號（✓/~/—）；`title`（hover tooltip）顯示「CSV: x ／ 自算: y ／ 差 z」。
   - 未成熟欄顯示「—」，hover 說明「需 N 個月月營收」「需回補季報財務」。
   - 空/載入/錯誤狀態走既有 `.table-empty` 元件。
@@ -129,7 +148,8 @@ SELFCHECK_REL = {"est_profit": 0.05}   # 相對容差（|self-csv|/|csv| ≤ 5%�
     → ai_cache 命中？回快取
     → 否則 build_selfcheck(conn, D):
         chip_snapshot[D]（CSV 基準）
-        × revenue_yoy_map / custody_change_map / w55_signal / estimate_quarterly_eps / lan_score
+        × revenue_yoy_map / custody_change_map / w55_signal / estimate_quarterly_eps
+          / attach_mu(自算 row，內含 lan_score 財報分＋自算籌碼四訊號) → 木質/木率
         → 逐欄 selfcheck_compare → rows + coverage
       寫 ai_cache → 回傳
   → 前端渲染表格（值 + 狀態記號 + hover 細節）+ 覆蓋率摘要
@@ -138,7 +158,7 @@ SELFCHECK_REL = {"est_profit": 0.05}   # 相對容差（|self-csv|/|csv| ≤ 5%�
 ## 測試
 
 - `tests/test_analysis_selfcheck.py`：`selfcheck_compare` 各欄容差邊界（含 self=None → self_na、
-  csv=None → csv_na、W55 二元、相對容差 est_profit、絕對容差 lan_value）；`build_selfcheck`
+  csv=None → csv_na、W55 二元、相對容差 est_profit、絕對容差 mu_score/mu_value）；`build_selfcheck`
   以 monkeypatch 掉 map/純函式，驗證組裝與 coverage 計算（含全 None 欄的 median 為 null）。
 - `tests/test_api.py`：端點 TestClient + 暫存 DB，塞一天 chip_snapshot、monkeypatch 自算來源，
   驗證回傳結構、快取命中、容差揭露來自 `analysis` 常數（防前端另寫一份，同 scoring-rules 慣例）。
@@ -151,13 +171,16 @@ SELFCHECK_REL = {"est_profit": 0.05}   # 相對容差（|self-csv|/|csv| ≤ 5%�
   快取」；若實測單次計算逼近 Zeabur 代理逾時，再比照 stock_flow research 改背景執行緒（不預先
   過度工程）。
 - **本機資料 vs production**：本機 `stock_revenue_monthly`/`stock_financials` 累積不足 → est_profit/
-  lan 多為 None，屬預期；驗證「尚無自算」路徑正好。三個現可對的欄（rev_yoy/w55/big_holder_ratio）
+  木質/木率 多為 None，屬預期；驗證「尚無自算」路徑正好。三個現可對的欄（rev_yoy/w55/big_holder_ratio）
   要在有資料的情況下驗證至少數檔數值兜得起來。
-- **蘭質是蘭弦專有指標**：自算的 `lan_score` 是「忠實還原」但口徑不必逐位對齊 CSV（同 CLAUDE.md
-  「不要拿外部數字校準」的提醒）；容差 ±1 是給「大方向對不對」用的，不是要求逐位相同。
+- **木質是自家指標、其財報分（自算蘭質）不必逐位對齊 CSV**：`lan_score` 是「忠實還原」蘭弦邏輯，
+  但口徑差異固定存在（同 CLAUDE.md「不要拿外部數字校準」的提醒）；木質容差 ±1 是給「大方向對不對」
+  用的，不是要求逐位相同。木質/木率對照的價值是「自算版跟現行 CSV 版的判讀方向一不一致」，不是逐位吻合。
 
 ## 不在此案
 
 - 真正把自算接進 `filtered_picks`／零 CSV 切換（未來 2f）。
+- **自算投信三日／外資三日**（木質籌碼四訊號缺的最後一片）——本案只在對照頁顯示它缺席，
+  實際做這片自算來源是 Stage 2 的下一個 slice，另案。
 - 調整任何選股公式、資料源、既有 API schema。
 - 設定頁的 UI 標準化（另案）。
