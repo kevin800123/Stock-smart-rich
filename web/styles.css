@@ -1082,6 +1082,11 @@ button.file-label { font: inherit; }
 .picks-summary span:first-child { padding-left: 0; }
 .picks-summary span:last-child { border-right: 0; }
 .picks-summary b { margin-right: 3px; color: var(--text-primary); font-size: var(--fs-md); font-weight: 850; }
+/* 選股自算對照的狀態記號：不用紅綠（鎖給行情）；一致＝中性、有差異＝既有琥珀語彙 */
+.sc-badge { display:inline-block; min-width:1.2em; text-align:center; font-weight:700; }
+.sc-ok  { color: var(--muted); }
+.sc-diff{ color: #e0a23c; }         /* 琥珀＝注意這格 */
+.sc-na  { color: var(--border-strong); }
 .picks-feedback { flex: 1 1 220px; min-width: 0; color: var(--muted); font-size: var(--fs-xs); text-align: right; }
 .picks-split { display: flex; gap: 12px; flex: 1; min-height: 0; }
 .picks-side { flex: 0 0 250px; display: flex; flex-direction: column; min-height: 0; }

@@ -247,6 +247,7 @@ function showView(name) {
   if (name === "watch") loadWatchlist();
   if (name === "trades") loadTrades();
   if (name === "traders") loadTraders();
+  if (name === "selfcheck") loadSelfcheck();
   if (name === "inst-research") {
     loadInstResearchCoverage();
     instBreadthChart && instBreadthChart.resize();
@@ -565,6 +566,51 @@ async function trTableClick(e) {
     if (!confirm("確定刪除這筆交易？（不可復原）")) return;
     const r = await fetch(`/api/trades/${dbtn.dataset.id}`, { method: "DELETE" }).then((x) => x.json());
     if (r.ok) renderTrades(r); else alert(r.error || "刪除失敗");
+  }
+}
+
+// ========== 選股自算對照（CSV 匯入值 vs App 自算值，只讀） ==========
+const SC_FIELDS = [
+  ["rev_yoy", "營收年增"], ["w55", "W55"], ["big_holder_ratio", "大戶增比"],
+  ["est_profit", "推估EPS"], ["mu_score", "木質"], ["mu_value", "木率"],
+];
+const SC_MARK = { match: ["✓", "sc-ok"], diff: ["~", "sc-diff"], self_na: ["—", "sc-na"], csv_na: ["·", "sc-na"] };
+let scBlocked = {};
+
+async function loadSelfcheck() {
+  const el = $("selfcheck-table"); if (!el) return;
+  const dsel = $("selfcheck-date");
+  try {
+    const d = await getJSON(`/api/picks/selfcheck${dsel.value ? "?date=" + dsel.value : ""}`);
+    scBlocked = d.blocked_reason || {};
+    if (!dsel.dataset.filled) {
+      dsel.innerHTML = (d.dates || []).map((x) => `<option>${x}</option>`).join("");
+      dsel.value = d.date; dsel.dataset.filled = "1";
+    }
+    // 覆蓋率摘要
+    $("selfcheck-coverage").innerHTML = SC_FIELDS.map(([k, label]) => {
+      const c = (d.coverage || {})[k] || {};
+      const md = c.median_abs_diff == null ? "" : `・中位差 ${fmt(c.median_abs_diff, 2)}`;
+      return `<span>${label} <b>${c.computable || 0}/${c.total || 0}</b>${md}</span>`;
+    }).join("");
+    if (!d.rows || !d.rows.length) {
+      el.innerHTML = '<div class="table-empty"><strong>尚無資料</strong><span>選一個已匯入 CSV 的日期；或先在「籌碼／基本選股」上傳當日檔。</span></div>';
+      return;
+    }
+    const head = "<tr><th>股票</th>" + SC_FIELDS.map(([, l]) => `<th class="num">${l}</th>`).join("") + "</tr>";
+    const body = d.rows.map((r) => "<tr><td>" + stockLink(r.code, r.name) + "</td>" +
+      SC_FIELDS.map(([k]) => {
+        const cell = r.fields[k] || {}; const [glyph, cls] = SC_MARK[cell.status] || SC_MARK.csv_na;
+        const selfTxt = cell.self == null ? "—" : fmt(cell.self, 2);
+        let tip;
+        if (cell.status === "self_na") tip = scBlocked[k] || "尚無自算資料";
+        else tip = `CSV: ${cell.csv == null ? "—" : fmt(cell.csv, 2)} ／ 自算: ${selfTxt}` +
+          (cell.csv != null && cell.self != null ? ` ／ 差 ${fmt(cell.self - cell.csv, 2)}` : "");
+        return `<td class="num" title="${esc(tip)}">${selfTxt} <span class="sc-badge ${cls}">${glyph}</span></td>`;
+      }).join("") + "</tr>").join("");
+    el.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+  } catch (e) {
+    el.innerHTML = '<div class="table-empty"><strong>載入失敗</strong><span>' + esc(e.message) + "</span></div>";
   }
 }
 
@@ -2918,6 +2964,7 @@ document.querySelectorAll(".nav").forEach((n) => n.addEventListener("click", () 
 $("csv").addEventListener("change", (e) => { if (e.target.files[0]) uploadCsv(e.target.files[0]); });
 $("btn-latest").addEventListener("click", importLatest);
 $("date-select").addEventListener("change", (e) => loadDaily(e.target.value));
+$("selfcheck-date").addEventListener("change", loadSelfcheck);
 const _numOrNull = (v) => { const s = String(v).trim(); if (!s) return null; const n = parseFloat(s); return isFinite(n) ? n : null; };
 $("f-lan-score").addEventListener("input", (e) => { lanMin = _numOrNull(e.target.value); renderDailyView(); });
 $("f-lpe").addEventListener("input", (e) => { lpeMin = _numOrNull(e.target.value); renderDailyView(); });

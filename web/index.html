@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260817-ui13" />
+  <link rel="stylesheet" href="styles.css?v=20260817-ui14" />
   <script src="/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -65,6 +65,7 @@
         <a class="nav" data-view="weekly" data-short="跨週AI"><span class="ico">📅</span><span class="lbl">跨週 ＋ AI</span></a>
         <a class="nav" data-view="traders" data-short="操盤手"><span class="ico">🧭</span><span class="lbl">操盤手</span></a>
         <a class="nav" data-view="inst-research" data-short="法人研究"><span class="ico">🧪</span><span class="lbl">法人研究</span></a>
+        <a class="nav" data-view="selfcheck" data-short="對照"><span class="ico">⚖️</span><span class="lbl">選股自算對照</span></a>
         <a class="nav" data-view="trades" data-short="帳本"><span class="ico">📒</span><span class="lbl">交易帳本</span></a>
       </div>
       <div class="nav-group nav-group-sys">
@@ -599,6 +600,23 @@
         <div id="csv-summary" class="ai-box">載入中…</div>
       </section>
 
+      <!-- ===== 選股自算對照 ===== -->
+      <section id="view-selfcheck" class="view picks-view">
+        <div class="picks-command">
+          <div class="picks-command-copy">
+            <div class="picks-title-row"><h2>選股自算對照</h2></div>
+            <p>逐欄位比對「CSV 匯入值」與「App 自算值」，驗證零 CSV 選股的可信度；差異滑鼠移過去看細節。此頁只讀，不影響選股。</p>
+          </div>
+          <div class="picks-actions toolbar" aria-label="對照設定">
+            <label class="date-pick">基準日期 <select id="selfcheck-date"></select></label>
+          </div>
+          <div class="picks-command-foot">
+            <div id="selfcheck-coverage" class="picks-summary" aria-label="覆蓋率" aria-live="polite"></div>
+          </div>
+        </div>
+        <div id="selfcheck-table" class="table-wrap fill"><div class="table-empty">載入中…</div></div>
+      </section>
+
       <!-- ===== 每日財經新聞 ===== -->
       <section id="view-news" class="view picks-view">
         <div class="picks-command">
@@ -645,6 +663,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260817-ui13"></script>
+  <script src="app.js?v=20260817-ui14"></script>
 </body>
 </html>
