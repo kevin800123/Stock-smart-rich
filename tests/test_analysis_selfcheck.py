@@ -32,3 +32,9 @@ def test_selfcheck_compare_csv_none_is_csv_na():
 def test_selfcheck_compare_mu_score_absolute_one():
     assert analysis.selfcheck_compare("mu_score", 12.0, 13.0) == "match"   # 差 1.0 = 邊界內
     assert analysis.selfcheck_compare("mu_score", 12.0, 13.01) == "diff"
+
+
+def test_selfcheck_compare_est_profit_zero_csv_baseline_falls_back_to_exact():
+    # est_profit relative tolerance with csv==0: can't divide → exact-match fallback
+    assert analysis.selfcheck_compare("est_profit", 0.0, 0.0) == "match"
+    assert analysis.selfcheck_compare("est_profit", 0.0, 1.0) == "diff"

@@ -574,7 +574,7 @@ const SC_FIELDS = [
   ["rev_yoy", "營收年增"], ["w55", "W55"], ["big_holder_ratio", "大戶增比"],
   ["est_profit", "推估EPS"], ["mu_score", "木質"], ["mu_value", "木率"],
 ];
-const SC_MARK = { match: ["✓", "sc-ok"], diff: ["~", "sc-diff"], self_na: ["—", "sc-na"], csv_na: ["·", "sc-na"] };
+const SC_MARK = { match: ["✓", "sc-ok"], diff: ["~", "sc-diff"], self_na: ["", "sc-na"], csv_na: ["", "sc-na"] };
 let scBlocked = {};
 
 async function loadSelfcheck() {
