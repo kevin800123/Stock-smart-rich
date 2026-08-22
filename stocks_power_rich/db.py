@@ -310,17 +310,37 @@ def bulk_upsert_custody(conn: sqlite3.Connection, week: str, data: dict) -> int:
     return len(rows)
 
 
+CUSTODY_WEEK_MIN_FRAC = 0.5   # 略過「殘缺週」的相對門檻：見 custody_compare_weeks
+
+
+def custody_compare_weeks(conn: sqlite3.Connection, as_of: str | None = None) -> list:
+    """挑出算大戶增比要用的『最近兩週完整集保週』（新到舊），略過殘缺週。
+
+    集保全市場批次一週約 4000 檔（updater._accumulate_custody），但逐檔集保回補
+    （fetch_custody_history）會把「單一檔」寫進全市場批次尚未公布的週——實測 production
+    最新週只有 1 檔、前一週 4028 檔。若照「最近兩週」硬取，最新那個殘缺週會讓兩週交集
+    只剩那幾檔、大戶增比幾乎全滅。改用相對門檻：某週 big400_pct 檔數若不到近期最大週的
+    CUSTODY_WEEK_MIN_FRAC，就當殘缺週跳過。小樣本（測試）因各週檔數相近而不受影響。
+    """
+    cutoff = as_of or "9999-99-99"
+    counts = conn.execute(
+        "SELECT week, COUNT(*) FROM custody_dist WHERE week<=? AND big400_pct IS NOT NULL "
+        "GROUP BY week ORDER BY week DESC LIMIT 10", (cutoff,)).fetchall()
+    if not counts:
+        return []
+    mx = max(c for _, c in counts)
+    return [w for w, c in counts if c >= mx * CUSTODY_WEEK_MIN_FRAC][:2]
+
+
 def custody_change_map(conn: sqlite3.Connection, as_of: str | None = None) -> dict:
     """全市場 {代號: {big_holder_ratio, holder_drop_ratio}}——公式見 analysis.custody_change()。
 
     集保逐週全市場批次寫入（見 updater._accumulate_custody），同一週所有代號共用同一個
     week 值，因此「最近兩週」是對整張表找、不必逐代號找——不同代號各自缺列（該代號當週
-    未列入分散表）時自然不進回傳結果，不必特別處理。不足兩週可比資料時回空 dict。
+    未列入分散表）時自然不進回傳結果，不必特別處理。用的兩週由 custody_compare_weeks 決定
+    （會略過逐檔回補造成的殘缺週）；不足兩週可比資料時回空 dict。
     """
-    cutoff = as_of or "9999-99-99"
-    weeks = [r[0] for r in conn.execute(
-        "SELECT DISTINCT week FROM custody_dist WHERE week<=? ORDER BY week DESC LIMIT 2",
-        (cutoff,)).fetchall()]
+    weeks = custody_compare_weeks(conn, as_of)
     if len(weeks) < 2:
         return {}
     this_week, last_week = weeks

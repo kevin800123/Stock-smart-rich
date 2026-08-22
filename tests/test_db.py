@@ -257,6 +257,27 @@ def test_bulk_upsert_custody_stores_total_holders_and_change_map_computes_diff(t
     assert custody_change_map(conn, as_of="2026-06-20") == {}
 
 
+def test_custody_change_map_skips_sparse_partial_week(tmp_path):
+    """迴歸（production 大戶增比全滅）：最新一週若是逐檔集保回補寫進的『殘缺週』（僅少數檔，
+    因為全市場批次還沒公布那週），不可拿它當比較週——否則兩週交集只剩那幾檔。應改用最近
+    兩週『完整』集保週（實測 production：最新週 1 檔、前一週 4028 檔 → 大戶增比只亮 1 檔）。"""
+    from stocks_power_rich.db import bulk_upsert_custody, custody_change_map
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    full = {c: {"big400_pct": 50.0, "total_holders": 1000} for c in ("1101", "1102", "1103", "1104")}
+    bulk_upsert_custody(conn, "2026-08-07", full)
+    bulk_upsert_custody(conn, "2026-08-14",
+                        {c: {"big400_pct": 51.0, "total_holders": 1000} for c in full})
+    bulk_upsert_custody(conn, "2026-08-21", {"1101": {"big400_pct": 99.0, "total_holders": 1000}})  # 殘缺週
+
+    cmap = custody_change_map(conn, as_of="2026-08-22")
+    # 應改用 08-14 vs 08-07（各 4 檔），不是拿殘缺的 08-21 → 四檔都算得出，
+    # 且 1101 增比＝51−50＝1.0（不是 99−51 那種被殘缺週污染的值）。
+    assert set(cmap.keys()) == {"1101", "1102", "1103", "1104"}
+    assert cmap["1101"]["big_holder_ratio"] == 1.0
+
+
 def test_bulk_upsert_financials_stores_by_quarter_and_reads_series(tmp_path):
     from stocks_power_rich.db import bulk_upsert_financials, get_financial_series
 

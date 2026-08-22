@@ -39,10 +39,7 @@ def _custody_diag(conn, date: str | None) -> dict:
     """集保診斷：大戶增比要 as_of 前最近兩週都有 big400_pct 才算得出來。回報用了哪兩週、
     各週 big400_pct 非空檔數、兩週交集——讓 production 頁面直接看出集保覆蓋不足在哪
     （這正是「大戶增比只亮少數檔」的原因，非 code bug）。"""
-    cutoff = date or "9999-99-99"
-    weeks = [r[0] for r in conn.execute(
-        "SELECT DISTINCT week FROM custody_dist WHERE week<=? ORDER BY week DESC LIMIT 2",
-        (cutoff,)).fetchall()]
+    weeks = db.custody_compare_weeks(conn, date)   # 與 custody_change_map 同一組週（已略過殘缺週）
     if len(weeks) < 2:
         return {"weeks": weeks, "this_n": None, "prev_n": None, "overlap": 0}
 
