@@ -35,6 +35,25 @@ def _self_w55(ohlc_code: dict | None, as_of: str):
     return analysis.w55_signal(hi, lo, cl)
 
 
+def _custody_diag(conn, date: str | None) -> dict:
+    """集保診斷：大戶增比要 as_of 前最近兩週都有 big400_pct 才算得出來。回報用了哪兩週、
+    各週 big400_pct 非空檔數、兩週交集——讓 production 頁面直接看出集保覆蓋不足在哪
+    （這正是「大戶增比只亮少數檔」的原因，非 code bug）。"""
+    cutoff = date or "9999-99-99"
+    weeks = [r[0] for r in conn.execute(
+        "SELECT DISTINCT week FROM custody_dist WHERE week<=? ORDER BY week DESC LIMIT 2",
+        (cutoff,)).fetchall()]
+    if len(weeks) < 2:
+        return {"weeks": weeks, "this_n": None, "prev_n": None, "overlap": 0}
+
+    def _bset(w):
+        return {r[0] for r in conn.execute(
+            "SELECT code FROM custody_dist WHERE week=? AND big400_pct IS NOT NULL", (w,))}
+
+    a, b = _bset(weeks[0]), _bset(weeks[1])
+    return {"weeks": weeks, "this_n": len(a), "prev_n": len(b), "overlap": len(a & b)}
+
+
 def build_selfcheck(conn, date: str | None) -> dict:
     dates = _snap_dates(conn)
     if date is None:
@@ -93,4 +112,5 @@ def build_selfcheck(conn, date: str | None) -> dict:
         "blocked_reason": dict(BLOCKED_REASON),
         "tolerances": {"SELFCHECK_TOL": analysis.SELFCHECK_TOL, "SELFCHECK_REL": analysis.SELFCHECK_REL},
         "rows": out_rows, "coverage": coverage,
+        "custody_diag": _custody_diag(conn, date),
     }

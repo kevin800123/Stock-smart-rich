@@ -571,8 +571,8 @@ async function trTableClick(e) {
 
 // ========== 選股自算對照（CSV 匯入值 vs App 自算值，只讀） ==========
 const SC_FIELDS = [
-  ["rev_yoy", "營收年增"], ["w55", "W55"], ["big_holder_ratio", "大戶增比"],
-  ["est_profit", "推估EPS"], ["mu_score", "木質"], ["mu_value", "木率"],
+  ["rev_yoy", "營收年增（%）"], ["w55", "W55（0/1）"], ["big_holder_ratio", "大戶增比（%）"],
+  ["est_profit", "推估EPS（元）"], ["mu_score", "木質（分）"], ["mu_value", "木率"],
 ];
 const SC_MARK = { match: ["✓", "sc-ok"], diff: ["~", "sc-diff"], self_na: ["", "sc-na"], csv_na: ["", "sc-na"] };
 let scBlocked = {};
@@ -587,11 +587,22 @@ async function loadSelfcheck() {
       dsel.innerHTML = (d.dates || []).map((x) => `<option>${x}</option>`).join("");
       dsel.value = d.date; dsel.dataset.filled = "1";
     }
-    // 覆蓋率摘要
+    // 覆蓋率摘要（大戶增比另附集保診斷：用了哪兩週、交集幾檔——大戶增比只亮少數檔時看這裡）
+    const cd = d.custody_diag || {};
     $("selfcheck-coverage").innerHTML = SC_FIELDS.map(([k, label]) => {
       const c = (d.coverage || {})[k] || {};
       const md = c.median_abs_diff == null ? "" : `・中位差 ${fmt(c.median_abs_diff, 2)}`;
-      return `<span>${label} <b>${c.computable || 0}/${c.total || 0}</b>${md}</span>`;
+      let extra = "", tip = "";
+      if (k === "big_holder_ratio" && Array.isArray(cd.weeks)) {
+        if (cd.weeks.length < 2) {
+          extra = `・集保僅 ${cd.weeks.length} 週`;
+          tip = "大戶增比需最近兩週集保才算得出來；目前不足兩週";
+        } else {
+          extra = `・集保兩週交集 ${cd.overlap}`;
+          tip = `集保週 ${cd.weeks[0]}（big400 ${cd.this_n} 檔） / ${cd.weeks[1]}（${cd.prev_n} 檔），兩週交集 ${cd.overlap} 檔`;
+        }
+      }
+      return `<span${tip ? ` title="${esc(tip)}"` : ""}>${label} <b>${c.computable || 0}/${c.total || 0}</b>${md}${extra}</span>`;
     }).join("");
     if (!d.rows || !d.rows.length) {
       el.innerHTML = '<div class="table-empty"><strong>尚無資料</strong><span>選一個已匯入 CSV 的日期；或先在「籌碼／基本選股」上傳當日檔。</span></div>';

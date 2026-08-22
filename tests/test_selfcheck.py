@@ -76,6 +76,33 @@ def test_build_selfcheck_strips_tw_suffix_before_self_source_lookup(tmp_path):
     assert out["coverage"]["w55"]["computable"] == 1
 
 
+def test_build_selfcheck_custody_diag_two_weeks(tmp_path):
+    """大戶增比要靠 as_of 前最近兩週集保；診斷回報用了哪兩週＋big400_pct 交集檔數，
+    讓 production 頁面直接看得出集保覆蓋（為何大戶增比只亮少數檔）。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    conn.execute("INSERT INTO chip_snapshot(snap_date,code,name) VALUES('2026-08-20','2330.TW','台積電')")
+    for w in ("2026-08-14", "2026-08-07"):
+        for code in ("2330", "1101"):
+            conn.execute("INSERT INTO custody_dist(week,code,big400_pct,total_holders) VALUES(?,?,?,?)",
+                         (w, code, 50.0, 1000.0))
+    conn.commit()
+    diag = selfcheck.build_selfcheck(conn, "2026-08-20")["custody_diag"]
+    assert diag["weeks"] == ["2026-08-14", "2026-08-07"]
+    assert diag["overlap"] == 2
+
+
+def test_build_selfcheck_custody_diag_flags_single_week(tmp_path):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    conn.execute("INSERT INTO chip_snapshot(snap_date,code,name) VALUES('2026-08-20','2330.TW','台積電')")
+    conn.execute("INSERT INTO custody_dist(week,code,big400_pct,total_holders) VALUES('2026-08-14','2330',50.0,1000.0)")
+    conn.commit()
+    diag = selfcheck.build_selfcheck(conn, "2026-08-20")["custody_diag"]
+    assert len(diag["weeks"]) == 1
+    assert diag["overlap"] == 0
+
+
 def test_build_selfcheck_defaults_to_latest_snap_date(tmp_path):
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
