@@ -2647,3 +2647,30 @@ def test_rank_movers_clamps_n_and_survives_empty_quotes(tmp_path, monkeypatch):
 
     body = client.get("/api/rank/movers?n=999").json()      # 上限夾到 20，不可炸
     assert body["up"] == [] and body["down"] == [] and body["n"] == 0
+
+
+def test_picks_selfcheck_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    import stocks_power_rich.selfcheck as sc
+
+    monkeypatch.setattr(sc, "build_selfcheck",
+                         lambda conn, date: {"date": date or "2026-08-20", "fields": sc.FIELDS,
+                                             "rows": [], "coverage": {}, "dates": ["2026-08-20"],
+                                             "blocked_reason": {}, "tolerances": {}})
+    client = TestClient(create_app())
+    r = client.get("/api/picks/selfcheck?date=2026-08-20")
+    assert r.status_code == 200
+    assert r.json()["date"] == "2026-08-20"
+    assert r.json()["fields"] == sc.FIELDS
+
+
+def test_picks_selfcheck_tolerances_come_from_analysis(tmp_path, monkeypatch):
+    """容差必須來自 analysis.SELFCHECK_TOL/REL，不得在端點另寫一份（同 bands 的防漂移規矩）。
+    build_selfcheck 即使沒有資料也一律填 tolerances（見 selfcheck.py），故不必先灌資料。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich import analysis
+
+    client = TestClient(create_app())
+    r = client.get("/api/picks/selfcheck")
+    assert r.status_code == 200
+    assert r.json()["tolerances"]["SELFCHECK_TOL"] == analysis.SELFCHECK_TOL

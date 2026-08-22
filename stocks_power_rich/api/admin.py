@@ -17,7 +17,7 @@ from .helpers import (
 )
 from ..db import get_setting, set_setting, get_snapshot_dates, get_tx_history, get_ai_cache, backup_db
 from ..config import load_config
-from .. import updater, gemini, analysis
+from .. import updater, gemini, analysis, selfcheck
 
 router = APIRouter(prefix="/api")
 
@@ -202,6 +202,17 @@ def financials_backfill_report(anchor_year: int = 0, anchor_season: int = 0,
             batch_size=max(1, min(batch_size, 30)))
     finally:
         _backfill_lock.release()
+
+@router.get("/picks/selfcheck")
+def picks_selfcheck(date: str = ""):
+    """選股自算對照：逐欄位 CSV 值 vs 自算值。只讀，不改 filtered_picks。
+
+    不帶 date → 用最新 snap_date（由 build_selfcheck 決定）。
+    """
+    c = conn()
+    d = date or None
+    # 效能次階段：W55 全市場掃描若逼近逾時，再加 data_version 快取（見 plan/spec）——目前每次計算，正確與只讀優先。
+    return selfcheck.build_selfcheck(c, d)
 
 @router.get("/ohlc/backfill")
 def ohlc_backfill(days: int = 377, max_fetch: int = 60, reset: int = 0):
