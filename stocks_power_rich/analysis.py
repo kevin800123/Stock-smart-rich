@@ -84,6 +84,45 @@ def estimate_quarterly_eps(monthly_revenue: list, gross_margin: list, opex: list
     return round(net_income / shares, 3)
 
 
+# ======================================================================
+# 選股自算對照（picks self-check）：CSV 匯入值 vs App 自算值 的逐欄容差判定。
+# 容差是「規則的單一權威版本」——經 /api/picks/selfcheck 揭露給設定/對照頁唯讀，
+# 前端不得複製一份寫死（同 scoring-rules/bands 的規矩）。
+# ======================================================================
+SELFCHECK_TOL = {          # 絕對容差
+    "rev_yoy": 0.5,        # 百分點
+    "big_holder_ratio": 0.05,  # 百分點
+    "mu_score": 1.0,       # 木質 0–19 小整數刻度
+    "mu_value": 1.0,       # 木率
+}
+SELFCHECK_REL = {"est_profit": 0.05}   # 相對容差 |self-csv|/|csv| ≤ 5%
+# w55 不入表 → 完全相等才算一致
+
+
+def selfcheck_compare(field: str, csv_v, self_v) -> str:
+    """逐欄位比對 CSV 值與自算值 → "match" / "diff" / "self_na" / "csv_na"。
+
+    自算值為 None（資料未成熟/無來源）→ "self_na"（前端標「尚無自算」，不算不一致）。
+    CSV 值為 None（該檔 CSV 端也沒這欄）→ "csv_na"（無從比對）。
+    w55 為二元、完全相等才 match；est_profit 走相對容差；其餘走絕對容差。
+    """
+    if csv_v is None:
+        return "csv_na"
+    if self_v is None:
+        return "self_na"
+    if field == "w55":
+        return "match" if csv_v == self_v else "diff"
+    if field in SELFCHECK_REL:
+        denom = abs(csv_v)
+        if denom == 0:
+            return "match" if csv_v == self_v else "diff"
+        return "match" if abs(self_v - csv_v) / denom <= SELFCHECK_REL[field] else "diff"
+    tol = SELFCHECK_TOL.get(field)
+    if tol is None:
+        return "match" if csv_v == self_v else "diff"
+    return "match" if abs(self_v - csv_v) <= tol else "diff"
+
+
 def turnover_ma(values: list, n: int = 10) -> list:
     """逐點回傳「到該點為止最近 n 個有效值」的均值，長度與輸入相同、不足 n 筆給 None。
 
