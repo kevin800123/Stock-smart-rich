@@ -93,12 +93,15 @@ SELFCHECK_TOL = {          # 絕對容差
     "rev_yoy": 0.5,        # 百分點
     "big_holder_ratio": 0.05,  # 百分點
     "holder_drop_ratio": 0.5,  # 人數降比（總持股人數相對變化%），比大戶增比鬆（值域較大）
-    "trust_3d": 3.0,       # 投信近3日淨買超（張）：與 XQ 同為官方 T86 張數淨額，抓四捨五入級
-    "foreign_3d": 3.0,     # 外資近3日淨買超（張）。窗口若與 XQ 交易日對不齊會整批 diff→看 median_abs_diff
     "mu_score": 1.0,       # 木質 0–19 小整數刻度
     "mu_value": 1.0,       # 木率
 }
 SELFCHECK_REL = {"est_profit": 0.05}   # 相對容差 |self-csv|/|csv| ≤ 5%
+# 隨量級寬容 (下限張, 比例)：match if |self-csv| ≤ max(下限, 比例×|csv|)。外資/投信近3日是
+# 張數淨額、量級跨度大（外資可達數萬張、投信常近 0）：實測我方自算＝官方 T86，與 XQ 的
+# CSV 僅 feed 級 sub-% 差異（外資中位差 80 張 ≒ 0.3%），用固定 3 張絕對容差會把正確的大值
+# 全判 diff。相對容差吸收大值噪音、下限守住小值，真正偏差很多（>比例）才 diff。
+SELFCHECK_ABS_REL = {"trust_3d": (5.0, 0.02), "foreign_3d": (5.0, 0.02)}
 # w55 不入表 → 完全相等才算一致
 
 
@@ -107,7 +110,8 @@ def selfcheck_compare(field: str, csv_v, self_v) -> str:
 
     自算值為 None（資料未成熟/無來源）→ "self_na"（前端標「尚無自算」，不算不一致）。
     CSV 值為 None（該檔 CSV 端也沒這欄）→ "csv_na"（無從比對）。
-    w55 為二元、完全相等才 match；est_profit 走相對容差；其餘走絕對容差。
+    w55 為二元、完全相等才 match；est_profit 走相對容差；trust_3d/foreign_3d 走隨量級
+    寬容（max(下限, 比例×|csv|)）；其餘走絕對容差。
     """
     if csv_v is None:
         return "csv_na"
@@ -120,6 +124,9 @@ def selfcheck_compare(field: str, csv_v, self_v) -> str:
         if denom == 0:
             return "match" if csv_v == self_v else "diff"
         return "match" if abs(self_v - csv_v) / denom <= SELFCHECK_REL[field] else "diff"
+    if field in SELFCHECK_ABS_REL:
+        floor, rel = SELFCHECK_ABS_REL[field]
+        return "match" if abs(self_v - csv_v) <= max(floor, rel * abs(csv_v)) else "diff"
     tol = SELFCHECK_TOL.get(field)
     if tol is None:
         return "match" if csv_v == self_v else "diff"

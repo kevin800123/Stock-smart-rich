@@ -394,7 +394,8 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 木質的籌碼四訊號（`MU_CHIP_ITEMS`）缺的最後兩個：大戶增比／人數降比已有（上一片），這片補**投信近3日／外資近3日淨買超**。**不需要新資料源**——`stock_flow_daily` 每檔逐日 `trust_lots`/`foreign_lots`（來自 `parse_t86`/`tpex`，**已 /1000 取整成張、帶正負號**，買超+賣超−）本來就由每日 `run_update` 的 `stock_flow.update_day` 在存。
 
 - **`db.institutional_3d_map(conn, as_of=None)`**：全市場 `{代號: {trust_3d, foreign_3d}}`＝`date<=as_of` 且有法人資料的**最近 3 個交易日** `trust_lots`/`foreign_lots` 加總。窗口用「對整張表找最近 3 個 distinct date」（兩市場共用交易日曆，同 `custody_change_map` 的作法，不逐檔找）；**某檔某日缺列＝當日 0**（`COALESCE`，T86 未列出即當日無三大法人淨買賣，不整檔排除）。無資料回空。**這是換算張數的加總、非金額**——來源已 /1000，與外部金額口徑不可直接比，但 XQ 的 `投三`/`外三` 本身也是張數淨額，故 selfcheck 對得起來（口徑一致、僅四捨五入級差異）。純算式只是「窗內加總」、沒有可抽出的權威公式，故整支放 `db.py`、以真 DB 測（同 `custody_change_map`，不像 `custody_change` 那樣有純函式）。
-- **接進 selfcheck 的兩欄（`投信3日`/`外資3日`）**，對照 `chip_snapshot.trust_3d`/`foreign_3d`（CSV `投三`/`外三`）。容差 `SELFCHECK_TOL` 各 3 張（同官方 T86、抓四捨五入級）——**但窗口若與 XQ 的交易日對不齊會整批 diff**，那是時效訊號不是容差問題，看 `median_abs_diff` 判定。前端 `SC_SIGNED`：正紅負綠、強度隨量級（同大戶增比）。
+- **接進 selfcheck 的兩欄（`投信3日`/`外資3日`）**，對照 `chip_snapshot.trust_3d`/`foreign_3d`（CSV `投三`/`外三`）。前端 `SC_SIGNED`：正紅負綠、強度隨量級（同大戶增比）。
+- **容差用「隨量級寬容」`SELFCHECK_ABS_REL`（下限 5 張, 比例 2%）＝ `max(5, 0.02×|csv|)`，不是固定絕對容差**——這是實測校準出來的：初版用固定 3 張，外資幾乎整排判 diff。追查發現**我方自算＝官方 T86**（逐檔 3 日加總，實測 1101=23,345、1102=31,339、1216=37,018 與 raw T86 逐位元相符），而與 XQ 的 `外三` **中位差僅 80 張 ≒ 0.3%**（外資量級達數萬張），是 feed 級 sub-% 差異、非錯誤。**投信中位差 0 只是因為投信量級近 0**，不是「投信比較準」。固定 3 張對「量級可達數萬」的外資天生過嚴，改相對容差吸收大值噪音、下限守小值，真正偏很多（>2%）才 diff。**曾誤判為「含/不含外資自營商」口徑差**，實測推翻：`外資自營商買賣超` 3 日加總在**全部 1089 檔上市股皆為 0**（近乎休眠的通道），故「改含自營」對數字零影響（no-op）；canonical 外資＝`外陸資(不含自營)+外資自營商`，但因後者恆 0，兩者相等。教訓：**大量級數量用固定絕對容差本來就會假性全 diff，先確認自算＝官方再決定容差形狀，不要一看到整排 diff 就假設是口徑錯**。
 - **並存**：`institutional_3d_map()` 只接進 selfcheck 對照，**尚未接進 `filtered_picks`／木質自算**（同前幾片）。木質自算還缺「自算財報分」（`lan_score`，需 production 跑季報回補）＋把這四個籌碼訊號一起餵進 `mu_score`——屬 2e 整合。
 
 ### 季報財務：Stage 2 第四片，sub-task 1（`sources/financials.py`，2026-08）

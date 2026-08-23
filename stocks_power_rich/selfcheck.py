@@ -119,7 +119,8 @@ def build_selfcheck(conn, date: str | None) -> dict:
     return {
         "date": date, "dates": dates, "fields": FIELDS,
         "blocked_reason": dict(BLOCKED_REASON),
-        "tolerances": {"SELFCHECK_TOL": analysis.SELFCHECK_TOL, "SELFCHECK_REL": analysis.SELFCHECK_REL},
+        "tolerances": {"SELFCHECK_TOL": analysis.SELFCHECK_TOL, "SELFCHECK_REL": analysis.SELFCHECK_REL,
+                       "SELFCHECK_ABS_REL": analysis.SELFCHECK_ABS_REL},
         "rows": out_rows, "coverage": coverage,
         "custody_diag": _custody_diag(conn, date),
     }
