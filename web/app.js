@@ -576,14 +576,25 @@ const SC_FIELDS = [
   ["est_profit", "推估EPS（元）"], ["mu_score", "木質（分）"], ["mu_value", "木率"],
 ];
 const SC_MARK = { match: ["✓", "sc-ok"], diff: ["~", "sc-diff"], self_na: ["", "sc-na"], csv_na: ["", "sc-na"] };
-// 數值上色：有正負意義的欄位走全站「正紅負綠」（.up/.down）；W55 翻多(1)紅；
-// 木質/木率是分數不是漲跌 → 中性藍（.sc-score），不用紅綠（全站語彙鎖：紅綠只給漲跌/流向）。
+// 數值上色＋強度漸層（heatmap 感）：值越大顏色越亮。有正負意義的欄＝正紅負綠
+// （沿用全站紅漲綠跌）；W55 翻多(1)紅、0 中性；木質/木率是分數不是漲跌 → 中性藍
+// （守全站語彙鎖：紅綠只給漲跌/流向）。明度固定在偏亮以保持深色底的可讀性（AA）。
 const SC_SIGNED = new Set(["rev_yoy", "big_holder_ratio", "holder_drop_ratio", "est_profit"]);
-function scValClass(k, v) {
+const SC_SCORE = new Set(["mu_score", "mu_value"]);
+function scColCap(rows, k) {   // p85(|值|) 當「全亮」門檻——避免單一離群值把其他人壓成無色
+  const a = rows.map((r) => (r.fields[k] || {}).self).filter((v) => v != null)
+    .map(Math.abs).sort((x, y) => x - y);
+  return a.length ? (a[Math.min(a.length - 1, Math.floor(a.length * 0.85))] || a[a.length - 1] || 0) : 0;
+}
+function scValStyle(k, v, cap) {   // 回傳 inline color；強度 t 依 |v|/cap
   if (v == null) return "";
-  if (k === "w55") return v > 0 ? "up" : "";
-  if (k === "mu_score" || k === "mu_value") return "sc-score";
-  if (SC_SIGNED.has(k)) return v > 0 ? "up" : v < 0 ? "down" : "";
+  const t = cap > 0 ? Math.min(1, Math.abs(v) / cap) : 0;
+  if (SC_SCORE.has(k)) return `color:hsl(210,${45 + 45 * t}%,${66 + 6 * t}%)`;       // 分數藍，越大越亮
+  if (k === "w55") return v > 0 ? "color:var(--up)" : "";                            // 翻多紅、0 中性
+  if (SC_SIGNED.has(k)) {
+    const pos = v >= 0;
+    return `color:hsl(${pos ? 351 : 157},${38 + 55 * t}%,${pos ? 66 : 60}%)`;         // 正紅負綠，越大越亮
+  }
   return "";
 }
 let scBlocked = {};
@@ -619,6 +630,8 @@ async function loadSelfcheck() {
       el.innerHTML = '<div class="table-empty"><strong>尚無資料</strong><span>選一個已匯入 CSV 的日期；或先在「籌碼／基本選股」上傳當日檔。</span></div>';
       return;
     }
+    const scCaps = {};
+    [...SC_SIGNED, ...SC_SCORE].forEach((k) => { scCaps[k] = scColCap(d.rows, k); });
     const head = "<tr><th>股票</th>" + SC_FIELDS.map(([, l]) => `<th class="num">${l}</th>`).join("") + "</tr>";
     const body = d.rows.map((r) => "<tr><td>" + stockLink(r.code, r.name) + "</td>" +
       SC_FIELDS.map(([k]) => {
@@ -628,8 +641,8 @@ async function loadSelfcheck() {
         if (cell.status === "self_na") tip = scBlocked[k] || "尚無自算資料";
         else tip = `CSV: ${cell.csv == null ? "—" : fmt(cell.csv, 2)} ／ 自算: ${selfTxt}` +
           (cell.csv != null && cell.self != null ? ` ／ 差 ${fmt(cell.self - cell.csv, 2)}` : "");
-        const vc = scValClass(k, cell.self);
-        return `<td class="num" title="${esc(tip)}"><span${vc ? ` class="${vc}"` : ""}>${selfTxt}</span> <span class="sc-badge ${cls}">${glyph}</span></td>`;
+        const vs = scValStyle(k, cell.self, scCaps[k]);
+        return `<td class="num" title="${esc(tip)}"><span${vs ? ` style="${vs}"` : ""}>${selfTxt}</span> <span class="sc-badge ${cls}">${glyph}</span></td>`;
       }).join("") + "</tr>").join("");
     el.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
   } catch (e) {
