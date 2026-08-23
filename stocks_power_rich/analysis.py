@@ -93,6 +93,8 @@ SELFCHECK_TOL = {          # 絕對容差
     "rev_yoy": 0.5,        # 百分點
     "big_holder_ratio": 0.05,  # 百分點
     "holder_drop_ratio": 0.5,  # 人數降比（總持股人數相對變化%），比大戶增比鬆（值域較大）
+    "trust_3d": 3.0,       # 投信近3日淨買超（張）：與 XQ 同為官方 T86 張數淨額，抓四捨五入級
+    "foreign_3d": 3.0,     # 外資近3日淨買超（張）。窗口若與 XQ 交易日對不齊會整批 diff→看 median_abs_diff
     "mu_score": 1.0,       # 木質 0–19 小整數刻度
     "mu_value": 1.0,       # 木率
 }

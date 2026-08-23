@@ -29,7 +29,7 @@ def test_build_selfcheck_live_fields_and_blocked_fields(tmp_path):
 
     assert out["date"] == "2026-08-20"
     assert out["fields"] == ["rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio",
-                             "est_profit", "mu_score", "mu_value"]
+                             "trust_3d", "foreign_3d", "est_profit", "mu_score", "mu_value"]
     by_code = {r["code"]: r for r in out["rows"]}
 
     # rev_yoy：自算來自 revenue_yoy_map（本測試沒建月營收 → self None → self_na），不炸
@@ -92,6 +92,26 @@ def test_build_selfcheck_holder_drop_ratio_self_from_custody(tmp_path):
     cell = selfcheck.build_selfcheck(conn, "2026-08-20")["rows"][0]["fields"]["holder_drop_ratio"]
     assert cell["self"] == -1.0        # (990-1000)/1000*100
     assert cell["status"] == "match"   # 與 CSV −1.0 一致
+
+
+def test_build_selfcheck_institutional_3d_self_from_stock_flow(tmp_path):
+    """投信/外資近3日是木質缺的最後兩個籌碼訊號，自算＝stock_flow_daily 近3交易日
+    trust_lots/foreign_lots 加總，對照 CSV 的 投三/外三。chip_snapshot 帶後綴、
+    stock_flow_daily 為 bare code——同樣走去後綴 join（同其他自算來源）。"""
+    from stocks_power_rich.db import bulk_upsert_stock_flow
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    conn.execute("INSERT INTO chip_snapshot(snap_date,code,name,trust_3d,foreign_3d) "
+                 "VALUES('2026-08-20','2330.TW','台積電',6.0,3.0)")
+    bulk_upsert_stock_flow(conn, "2026-08-18", "TWSE", {"2330": {"trust_lots": 1, "foreign_lots": 2}})
+    bulk_upsert_stock_flow(conn, "2026-08-19", "TWSE", {"2330": {"trust_lots": 2, "foreign_lots": -3}})
+    bulk_upsert_stock_flow(conn, "2026-08-20", "TWSE", {"2330": {"trust_lots": 3, "foreign_lots": 4}})
+    conn.commit()
+    fields = selfcheck.build_selfcheck(conn, "2026-08-20")["rows"][0]["fields"]
+    assert fields["trust_3d"]["self"] == 6.0        # 1+2+3
+    assert fields["trust_3d"]["status"] == "match"  # CSV 6.0
+    assert fields["foreign_3d"]["self"] == 3.0      # 2-3+4
+    assert fields["foreign_3d"]["status"] == "match"  # CSV 3.0
 
 
 def test_build_selfcheck_custody_diag_two_weeks(tmp_path):

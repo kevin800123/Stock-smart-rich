@@ -497,6 +497,30 @@ def revenue_yoy_map(conn: sqlite3.Connection, as_of: str | None = None) -> dict:
     return {code: yoy for code, yoy in rows if yoy is not None}
 
 
+def institutional_3d_map(conn: sqlite3.Connection, as_of: str | None = None) -> dict:
+    """全市場 {代號: {trust_3d, foreign_3d}}＝最近 3 個交易日投信/外資淨買超（張，帶正負號）加總。
+
+    對照 CSV 的 投三/外三，是木質籌碼四訊號缺的最後兩個（大戶增比/人數降比已有）。窗口＝
+    stock_flow_daily 中 `date<=as_of` 且有法人資料的「最近 3 個交易日」（不足 3 日則就現有）；
+    某檔某日缺列＝當日 0（COALESCE），不整檔排除——T86 未列出即當日無三大法人淨買賣。
+    兩市場共用交易日曆，故窗口對整張表找一次即可（同 custody_change_map 的作法）。無資料回空。
+
+    註：這是換算張數的加總（來源 parse_t86/tpex 已 /1000 取整），與外部「金額」口徑不可直接對照，
+    但 XQ 投三/外三 本身也是張數淨額，故 selfcheck 對得起來（口徑一致、僅四捨五入級差異）。
+    """
+    cutoff = as_of or "9999-99-99"
+    rows = conn.execute(
+        "SELECT code, SUM(COALESCE(trust_lots,0)), SUM(COALESCE(foreign_lots,0)) "
+        "FROM stock_flow_daily WHERE date IN ("
+        "  SELECT DISTINCT date FROM stock_flow_daily "
+        "  WHERE date<=? AND (foreign_lots IS NOT NULL OR trust_lots IS NOT NULL) "
+        "  ORDER BY date DESC LIMIT 3) "
+        "GROUP BY code",
+        (cutoff,),
+    ).fetchall()
+    return {code: {"trust_3d": t, "foreign_3d": f} for code, t, f in rows}
+
+
 def set_stock_source_coverage(conn: sqlite3.Connection, date: str, market: str,
                               source: str, status: str, row_count: int = 0,
                               error: str | None = None, updated_at: str | None = None) -> None:

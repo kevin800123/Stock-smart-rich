@@ -389,6 +389,14 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - **`db.py::custody_change_map(conn, as_of=None)`**：全市場一次算出 `{代號: {big_holder_ratio, holder_drop_ratio}}`。因為集保是**整週批次寫入**（同一週所有代號共用同一個 `week` 值），「最近兩週」對整張表找一次即可，不必逐代號各自找最近兩週——比月營收的 `revenue_yoy_map`（逐檔 report_date 可能不同）簡單。核心算式抽成純函式 `analysis.custody_change(cur, prev)`（`db.py` 內用區域 import 呼叫，刻意不放頂層——`db.py` 是資料層，`analysis.py` 在它之上，頂層 import 會反過來讓資料層依賴分析層，用區域 import 避免打亂既有的單向依賴關係）。任一週缺列、或上週總持股人數為 0（除以零）都回 `None`，兩個算式互相獨立、不互相拖累。
 - **並存**：`custody_change_map()` 尚未接進 `filtered_picks`（同前兩片的並存策略），2e 整合階段才會用到。
 
+### 投信／外資近3日：Stage 2 第五片（`db.institutional_3d_map`，2026-08）
+
+木質的籌碼四訊號（`MU_CHIP_ITEMS`）缺的最後兩個：大戶增比／人數降比已有（上一片），這片補**投信近3日／外資近3日淨買超**。**不需要新資料源**——`stock_flow_daily` 每檔逐日 `trust_lots`/`foreign_lots`（來自 `parse_t86`/`tpex`，**已 /1000 取整成張、帶正負號**，買超+賣超−）本來就由每日 `run_update` 的 `stock_flow.update_day` 在存。
+
+- **`db.institutional_3d_map(conn, as_of=None)`**：全市場 `{代號: {trust_3d, foreign_3d}}`＝`date<=as_of` 且有法人資料的**最近 3 個交易日** `trust_lots`/`foreign_lots` 加總。窗口用「對整張表找最近 3 個 distinct date」（兩市場共用交易日曆，同 `custody_change_map` 的作法，不逐檔找）；**某檔某日缺列＝當日 0**（`COALESCE`，T86 未列出即當日無三大法人淨買賣，不整檔排除）。無資料回空。**這是換算張數的加總、非金額**——來源已 /1000，與外部金額口徑不可直接比，但 XQ 的 `投三`/`外三` 本身也是張數淨額，故 selfcheck 對得起來（口徑一致、僅四捨五入級差異）。純算式只是「窗內加總」、沒有可抽出的權威公式，故整支放 `db.py`、以真 DB 測（同 `custody_change_map`，不像 `custody_change` 那樣有純函式）。
+- **接進 selfcheck 的兩欄（`投信3日`/`外資3日`）**，對照 `chip_snapshot.trust_3d`/`foreign_3d`（CSV `投三`/`外三`）。容差 `SELFCHECK_TOL` 各 3 張（同官方 T86、抓四捨五入級）——**但窗口若與 XQ 的交易日對不齊會整批 diff**，那是時效訊號不是容差問題，看 `median_abs_diff` 判定。前端 `SC_SIGNED`：正紅負綠、強度隨量級（同大戶增比）。
+- **並存**：`institutional_3d_map()` 只接進 selfcheck 對照，**尚未接進 `filtered_picks`／木質自算**（同前幾片）。木質自算還缺「自算財報分」（`lan_score`，需 production 跑季報回補）＋把這四個籌碼訊號一起餵進 `mu_score`——屬 2e 整合。
+
 ### 季報財務：Stage 2 第四片，sub-task 1（`sources/financials.py`，2026-08）
 
 木質的「財報分」（`lan_score()` 蘭質 15 項）需要 10 個季報指標，這是脫離 XQ 工程量最大的一塊，分兩個 sub-task。**sub-task 1（本片）交付其中 8 個能以乾淨 JSON 取得的指標**；稅前淨利與資本支出需 HTML 報表，留給 sub-task 2。

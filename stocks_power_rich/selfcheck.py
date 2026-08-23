@@ -10,8 +10,9 @@ import statistics
 from . import analysis, db
 
 FIELDS = ["rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio",
-          "est_profit", "mu_score", "mu_value"]
-LIVE_FIELDS = ["rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio"]
+          "trust_3d", "foreign_3d", "est_profit", "mu_score", "mu_value"]
+LIVE_FIELDS = ["rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio",
+               "trust_3d", "foreign_3d"]
 BLOCKED_REASON = {
     "est_profit": "需回補 6 個月歷史月營收（來源已建立，待回補後接線）",
     "mu_score": "需季報財務成熟 ＋ 投信/外資三日自算來源（尚未建立）",
@@ -57,15 +58,17 @@ def build_selfcheck(conn, date: str | None) -> dict:
     if date is None:
         date = dates[0] if dates else None
     rows_csv = conn.execute(
-        "SELECT code, name, rev_yoy, w55, big_holder_ratio, holder_drop_ratio, est_profit "
+        "SELECT code, name, rev_yoy, w55, big_holder_ratio, holder_drop_ratio, "
+        "trust_3d, foreign_3d, est_profit "
         "FROM chip_snapshot WHERE snap_date=? ORDER BY code", (date,)).fetchall() if date else []
 
     yoy = db.revenue_yoy_map(conn, as_of=date) if date else {}
     custody = db.custody_change_map(conn, as_of=date) if date else {}
+    inst3d = db.institutional_3d_map(conn, as_of=date) if date else {}
     ohlc = db.get_all_ohlc(conn, min_bars=55)
 
     out_rows = []
-    for code, name, csv_yoy, csv_w55, csv_bhr, csv_hdr, csv_est in rows_csv:
+    for code, name, csv_yoy, csv_w55, csv_bhr, csv_hdr, csv_t3, csv_f3, csv_est in rows_csv:
         # chip_snapshot 的 code 帶 .TW/.TWO 後綴（XQ CSV 一律加 .TW），但自算來源
         # （月營收 revenue_yoy_map／集保 custody_change_map／OHLC get_all_ohlc）一律 bare
         # code——不去後綴，每一列 join 都 miss、全部「尚無自算」（production 實況）。
@@ -76,11 +79,16 @@ def build_selfcheck(conn, date: str | None) -> dict:
         cc = custody.get(bare) or {}          # 大戶增比／人數降比同一支 custody_change_map
         self_bhr = cc.get("big_holder_ratio")
         self_hdr = cc.get("holder_drop_ratio")
+        i3 = inst3d.get(bare) or {}           # 投信／外資近3日 stock_flow_daily 近3交易日加總
+        self_t3 = i3.get("trust_3d")
+        self_f3 = i3.get("foreign_3d")
         vals = {
             "rev_yoy": (csv_yoy, self_yoy),
             "w55": (csv_w55, self_w55),
             "big_holder_ratio": (csv_bhr, self_bhr),
             "holder_drop_ratio": (csv_hdr, self_hdr),
+            "trust_3d": (csv_t3, self_t3),
+            "foreign_3d": (csv_f3, self_f3),
             "est_profit": (csv_est, None),      # blocked（本案不自算）
             "mu_score": (None, None),           # blocked
             "mu_value": (None, None),           # blocked

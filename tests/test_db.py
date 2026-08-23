@@ -257,6 +257,37 @@ def test_bulk_upsert_custody_stores_total_holders_and_change_map_computes_diff(t
     assert custody_change_map(conn, as_of="2026-06-20") == {}
 
 
+def test_institutional_3d_map_sums_last_three_trading_days(tmp_path):
+    """投信/外資近3日淨買超＝最近 3 個交易日 trust_lots/foreign_lots 加總（單位張、帶正負號），
+    對照 CSV 的 投三/外三。第 4 舊的日子不進窗口；某檔某日缺列＝當日 0（不整檔排除）。"""
+    from stocks_power_rich.db import bulk_upsert_stock_flow, institutional_3d_map
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    # 2330：四天都有；1101：只有 08-04、08-06（缺 08-05）
+    bulk_upsert_stock_flow(conn, "2026-08-03", "TWSE", {"2330": {"trust_lots": 5, "foreign_lots": 10}})
+    bulk_upsert_stock_flow(conn, "2026-08-04", "TWSE", {"2330": {"trust_lots": 1, "foreign_lots": 2},
+                                                        "1101": {"trust_lots": -1, "foreign_lots": 0}})
+    bulk_upsert_stock_flow(conn, "2026-08-05", "TWSE", {"2330": {"trust_lots": 2, "foreign_lots": -3}})
+    bulk_upsert_stock_flow(conn, "2026-08-06", "TWSE", {"2330": {"trust_lots": 3, "foreign_lots": 4},
+                                                        "1101": {"trust_lots": 2, "foreign_lots": 1}})
+
+    m = institutional_3d_map(conn)  # 預設 as_of=最新 → 窗口 {08-06,08-05,08-04}
+    assert m["2330"] == {"trust_3d": 6.0, "foreign_3d": 3.0}   # 1+2+3 / 2+(-3)+4
+    assert m["1101"] == {"trust_3d": 1.0, "foreign_3d": 1.0}   # (-1)+2 / 0+1（08-05 缺＝0）
+
+    # as_of 卡在 08-05 → 窗口 {08-05,08-04,08-03}，2330 改為 5+1+2 / 10+2+(-3)
+    m2 = institutional_3d_map(conn, as_of="2026-08-05")
+    assert m2["2330"] == {"trust_3d": 8.0, "foreign_3d": 9.0}
+
+
+def test_institutional_3d_map_empty_when_no_flow(tmp_path):
+    from stocks_power_rich.db import institutional_3d_map
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    assert institutional_3d_map(conn) == {}
+
+
 def test_custody_change_map_skips_sparse_partial_week(tmp_path):
     """迴歸（production 大戶增比全滅）：最新一週若是逐檔集保回補寫進的『殘缺週』（僅少數檔，
     因為全市場批次還沒公布那週），不可拿它當比較週——否則兩週交集只剩那幾檔。應改用最近

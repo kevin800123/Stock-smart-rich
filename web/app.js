@@ -572,14 +572,14 @@ async function trTableClick(e) {
 // ========== 選股自算對照（CSV 匯入值 vs App 自算值，只讀） ==========
 const SC_FIELDS = [
   ["rev_yoy", "營收年增（%）"], ["w55", "W55（0/1）"], ["big_holder_ratio", "大戶增比（%）"],
-  ["holder_drop_ratio", "人數降比（%）"],
+  ["holder_drop_ratio", "人數降比（%）"], ["trust_3d", "投信3日（張）"], ["foreign_3d", "外資3日（張）"],
   ["est_profit", "推估EPS（元）"], ["mu_score", "木質（分）"], ["mu_value", "木率"],
 ];
 const SC_MARK = { match: ["✓", "sc-ok"], diff: ["~", "sc-diff"], self_na: ["", "sc-na"], csv_na: ["", "sc-na"] };
 // 數值上色＋強度漸層（heatmap 感）：值越大顏色越亮。有正負意義的欄＝正紅負綠
 // （沿用全站紅漲綠跌）；W55 翻多(1)紅、0 中性；木質/木率是分數不是漲跌 → 中性藍
 // （守全站語彙鎖：紅綠只給漲跌/流向）。明度固定在偏亮以保持深色底的可讀性（AA）。
-const SC_SIGNED = new Set(["rev_yoy", "big_holder_ratio", "holder_drop_ratio", "est_profit"]);
+const SC_SIGNED = new Set(["rev_yoy", "big_holder_ratio", "holder_drop_ratio", "trust_3d", "foreign_3d", "est_profit"]);
 const SC_SCORE = new Set(["mu_score", "mu_value"]);
 function scColCap(rows, k) {   // p80(|值|) 當「全亮」門檻——避免單一離群值把其他人壓成無色
   const a = rows.map((r) => (r.fields[k] || {}).self).filter((v) => v != null)
