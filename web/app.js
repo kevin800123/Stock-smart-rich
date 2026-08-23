@@ -581,19 +581,19 @@ const SC_MARK = { match: ["✓", "sc-ok"], diff: ["~", "sc-diff"], self_na: ["",
 // （守全站語彙鎖：紅綠只給漲跌/流向）。明度固定在偏亮以保持深色底的可讀性（AA）。
 const SC_SIGNED = new Set(["rev_yoy", "big_holder_ratio", "holder_drop_ratio", "est_profit"]);
 const SC_SCORE = new Set(["mu_score", "mu_value"]);
-function scColCap(rows, k) {   // p85(|值|) 當「全亮」門檻——避免單一離群值把其他人壓成無色
+function scColCap(rows, k) {   // p80(|值|) 當「全亮」門檻——避免單一離群值把其他人壓成無色
   const a = rows.map((r) => (r.fields[k] || {}).self).filter((v) => v != null)
     .map(Math.abs).sort((x, y) => x - y);
-  return a.length ? (a[Math.min(a.length - 1, Math.floor(a.length * 0.85))] || a[a.length - 1] || 0) : 0;
+  return a.length ? (a[Math.min(a.length - 1, Math.floor(a.length * 0.80))] || a[a.length - 1] || 0) : 0;
 }
-function scValStyle(k, v, cap) {   // 回傳 inline color；強度 t 依 |v|/cap
+function scValStyle(k, v, cap) {   // 回傳 inline color；強度 t 依 |v|/cap（飽和＋明度同步隨 t 增強）
   if (v == null) return "";
   const t = cap > 0 ? Math.min(1, Math.abs(v) / cap) : 0;
-  if (SC_SCORE.has(k)) return `color:hsl(210,${45 + 45 * t}%,${66 + 6 * t}%)`;       // 分數藍，越大越亮
+  if (SC_SCORE.has(k)) return `color:hsl(210,${40 + 60 * t}%,${62 + 8 * t}%)`;        // 分數藍，越大越亮
   if (k === "w55") return v > 0 ? "color:var(--up)" : "";                            // 翻多紅、0 中性
   if (SC_SIGNED.has(k)) {
     const pos = v >= 0;
-    return `color:hsl(${pos ? 351 : 157},${38 + 55 * t}%,${pos ? 66 : 60}%)`;         // 正紅負綠，越大越亮
+    return `color:hsl(${pos ? 351 : 157},${35 + 65 * t}%,${(pos ? 60 : 55) + 10 * t}%)`;  // 正紅負綠，越大越飽和越亮
   }
   return "";
 }
