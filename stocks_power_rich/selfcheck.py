@@ -13,9 +13,9 @@ FIELDS = ["rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio",
           "est_profit", "mu_score", "mu_value"]
 LIVE_FIELDS = ["rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio"]
 BLOCKED_REASON = {
-    "est_profit": "需 6 個月月營收累積（尚在累積中）",
+    "est_profit": "需回補 6 個月歷史月營收（來源已建立，待回補後接線）",
     "mu_score": "需季報財務成熟 ＋ 投信/外資三日自算來源（尚未建立）",
-    "mu_value": "同木質，另需自算本業PE",
+    "mu_value": "同木質，另需自算本業PE（待推估EPS）",
 }
 
 

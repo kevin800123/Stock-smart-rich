@@ -133,3 +133,96 @@ def test_fetch_otc_revenue_returns_empty_on_error(monkeypatch):
 
     monkeypatch.setattr(revenue.httpx, "get", fake_get)
     assert revenue.fetch_otc_revenue() == {}
+
+
+# ── 歷史月營收（MOPS t21sc03 HTML；openapi 只給最新月，這條才能回補過去月份）──────────
+# 真實 t21sc03 每筆資料列 = 10 個 <td>：代號/名稱/當月營收/上月營收/去年當月營收/
+# 上月比較增減%/當月累計/去年累計/前期比較增減%/備註。刻意「沒有」單月 YoY 欄——要自算。
+_T21_HTML = """
+<table>
+<tr><td>公司代號</td><td>公司名稱</td><td>當月營收</td><td>上月營收</td><td>去年當月營收</td>
+    <td>上月比較</td><td>當月累計</td><td>去年累計</td><td>前期比較</td><td>備註</td></tr>
+<tr><td>2330</td><td>台積電</td><td>467,580,548</td><td>442,679,969</td><td>323,165,707</td>
+    <td>5.62</td><td>2,872,064,238</td><td>2,096,211,240</td><td>37.01</td><td>-</td></tr>
+<tr><td>1438</td><td>三地開發</td><td>39,787</td><td>1,115</td><td>0</td>
+    <td>3468.34</td><td>431,482</td><td>241</td><td>178938.17</td><td>因本年已有建案完工交屋</td></tr>
+<tr><td>合計</td><td></td><td>500,000,000</td></tr>
+</table>
+"""
+
+
+def test_parse_monthly_revenue_html_extracts_and_computes_yoy():
+    out = revenue.parse_monthly_revenue_html(_T21_HTML, "2026-06", "2026-07-10")
+    row = out["2330"]
+    assert row["name"] == "台積電"
+    assert row["year_month"] == "2026-06"      # 由呼叫端帶入（HTML 本身不含年月）
+    assert row["report_date"] == "2026-07-10"  # 統計截止日近似（次月 10 日）
+    assert row["revenue"] == 467580548.0       # 仟元，與 openapi 同單位（去逗號）
+    assert row["revenue_prev_month"] == 442679969.0
+    assert row["revenue_last_year"] == 323165707.0
+    assert row["revenue_accum"] == 2872064238.0
+    assert row["accum_yoy_pct"] == 37.01
+    # 單月 YoY t21sc03 不提供 → 自算 (467580548/323165707-1)*100 ≒ 44.69，與 openapi 定義一致
+    assert round(row["yoy_pct"], 2) == 44.69
+    assert row["note"] is None                 # "-" → None
+
+
+def test_parse_monthly_revenue_html_zero_prior_year_yields_none_yoy():
+    """去年當月營收=0（無可比基期）→ 自算 YoY 不可除以零、回 None（同 openapi 空字串語意）。"""
+    out = revenue.parse_monthly_revenue_html(_T21_HTML, "2026-06", "2026-07-10")
+    row = out["1438"]
+    assert row["revenue"] == 39787.0
+    assert row["revenue_last_year"] == 0.0
+    assert row["yoy_pct"] is None
+    assert row["note"] == "因本年已有建案完工交屋"
+
+
+def test_parse_monthly_revenue_html_filters_headers_and_summary_rows():
+    """只收代號為 4 碼數字的資料列——表頭、產業標題、合計列一律略過。"""
+    out = revenue.parse_monthly_revenue_html(_T21_HTML, "2026-06", "2026-07-10")
+    assert set(out.keys()) == {"2330", "1438"}   # 「公司代號」表頭與「合計」列不入表
+
+
+def test_parse_monthly_revenue_html_empty_input():
+    assert revenue.parse_monthly_revenue_html("", "2026-06", "2026-07-10") == {}
+    assert revenue.parse_monthly_revenue_html(None, "2026-06", "2026-07-10") == {}
+
+
+def test_fetch_monthly_revenue_history_twse_url_and_decode(monkeypatch):
+    """上市走 mopsov.twse.com.tw t21sc03，Big5(hkscs) 位元組解碼。"""
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        class _Resp:
+            content = _T21_HTML.encode("big5hkscs")
+        return _Resp()
+
+    monkeypatch.setattr(revenue.httpx, "get", fake_get)
+    out = revenue.fetch_monthly_revenue_history(115, 6, "twse")
+    assert out["2330"]["revenue"] == 467580548.0
+    assert out["2330"]["year_month"] == "2026-06"
+    assert "mopsov.twse.com.tw" in calls[0] and "sii/t21sc03_115_6_0" in calls[0]
+
+
+def test_fetch_monthly_revenue_history_otc_url(monkeypatch):
+    calls = []
+
+    def fake_get(url, **kwargs):
+        calls.append(url)
+        class _Resp:
+            content = _T21_HTML.encode("big5hkscs")
+        return _Resp()
+
+    monkeypatch.setattr(revenue.httpx, "get", fake_get)
+    out = revenue.fetch_monthly_revenue_history(115, 6, "otc")
+    assert "otc/t21sc03_115_6_0" in calls[0]
+    assert out["2330"]["year_month"] == "2026-06"
+
+
+def test_fetch_monthly_revenue_history_returns_empty_on_error(monkeypatch):
+    def fake_get(url, **kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(revenue.httpx, "get", fake_get)
+    assert revenue.fetch_monthly_revenue_history(115, 6, "twse") == {}

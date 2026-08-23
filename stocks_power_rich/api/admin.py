@@ -203,6 +203,22 @@ def financials_backfill_report(anchor_year: int = 0, anchor_season: int = 0,
     finally:
         _backfill_lock.release()
 
+@router.get("/revenue/backfill-history")
+def revenue_backfill_history(months: int = 6, anchor_year: int = 0, anchor_month: int = 0):
+    """回補近 N 個月的全市場月營收（MOPS t21sc03；openapi 只給最新月，補不到歷史）。
+
+    推估季EPS（Call_LE）需近 6 個月月營收，只靠每日累積要等半年——這條一次補齊。
+    anchor 不帶時預設上一個日曆月往回。冪等，重複呼叫安全。
+    """
+    if not _backfill_lock.acquire(blocking=False):
+        return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
+    try:
+        anchor = (anchor_year, anchor_month) if anchor_year and anchor_month else None
+        return updater.backfill_monthly_revenue_history(
+            conn(), months=max(1, min(months, 18)), anchor=anchor)
+    finally:
+        _backfill_lock.release()
+
 @router.get("/picks/selfcheck")
 def picks_selfcheck(date: str = ""):
     """選股自算對照：逐欄位 CSV 值 vs 自算值。只讀，不改 filtered_picks。

@@ -223,6 +223,60 @@ def test_refresh_monthly_revenue_one_market_failing_does_not_block_other(tmp_pat
     assert counts == {"TWSE": 0, "TPEx": 1}
 
 
+def _hist_row(ym):
+    return {"name": "X", "industry": "", "year_month": ym, "report_date": ym + "-10",
+            "revenue": 100.0, "revenue_prev_month": 90.0, "revenue_last_year": 80.0,
+            "mom_pct": 11.1, "yoy_pct": 25.0, "revenue_accum": 500.0,
+            "revenue_accum_last_year": 400.0, "accum_yoy_pct": 25.0, "note": None}
+
+
+def test_prev_calendar_month_year_boundary():
+    from datetime import date as _d
+    assert updater._prev_calendar_month(_d(2026, 8, 23)) == (2026, 7)
+    assert updater._prev_calendar_month(_d(2026, 1, 5)) == (2025, 12)
+
+
+def test_backfill_monthly_revenue_history_walks_months_both_markets(tmp_path, monkeypatch):
+    """回補 N 個月：由 anchor 往回逐月抓上市＋上櫃，換算民國年月，逐月落地。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    calls = []
+
+    def fake(roc_year, month, market):
+        calls.append((roc_year, month, market))
+        ym = f"{roc_year + 1911:04d}-{month:02d}"
+        return {"2330" if market == "twse" else "1240": _hist_row(ym)}
+
+    monkeypatch.setattr(updater.revenue, "fetch_monthly_revenue_history", fake)
+    out = updater.backfill_monthly_revenue_history(conn, months=3, anchor=(2026, 7))
+
+    # 民國 115 年、月份 7→6→5，每月兩市場各一次
+    assert [(y, m) for (y, m, _mk) in calls] == [(115, 7), (115, 7), (115, 6), (115, 6), (115, 5), (115, 5)]
+    assert {mk for (_y, _m, mk) in calls} == {"twse", "otc"}
+    yms = {r[0] for r in conn.execute("SELECT DISTINCT year_month FROM stock_revenue_monthly")}
+    assert yms == {"2026-07", "2026-06", "2026-05"}
+    assert out["months"] == 3
+    assert out["filled"] == 6  # 3 月 × 2 市場 × 1 檔
+
+
+def test_backfill_monthly_revenue_history_one_month_empty_does_not_abort(tmp_path, monkeypatch):
+    """某月某市場回空（改版或暫時性失敗）不中斷其餘月份。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+
+    def fake(roc_year, month, market):
+        if month == 6:
+            return {}
+        ym = f"{roc_year + 1911:04d}-{month:02d}"
+        return {"2330": _hist_row(ym)}
+
+    monkeypatch.setattr(updater.revenue, "fetch_monthly_revenue_history", fake)
+    out = updater.backfill_monthly_revenue_history(conn, months=3, anchor=(2026, 7))
+    yms = {r[0] for r in conn.execute("SELECT DISTINCT year_month FROM stock_revenue_monthly")}
+    assert yms == {"2026-07", "2026-05"}  # 6 月兩市場皆空，略過不落地
+    assert out["filled"] == 4  # (7,twse)+(7,otc?) → 這裡 otc 也走同 fake：7 月與 5 月各 2 市場
+
+
 def test_backfill_financials_batches_pending_codes_and_is_resumable(tmp_path, monkeypatch):
     """全市場逐檔季報回補：以月營收表的代號為母體，一次處理一批、可續傳（同 ohlc/inst 回補）。
     每批對每個 RATIO_ITEMS 指標各打一次 mopsfin，已抓過的代號跳過。"""

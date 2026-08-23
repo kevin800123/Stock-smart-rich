@@ -222,6 +222,48 @@ def _refresh_monthly_revenue(conn) -> dict:
     return counts
 
 
+def _prev_calendar_month(today) -> tuple:
+    """上一個日曆月 (西曆年, 月)；跨年邊界正確（1 月 → 去年 12 月）。"""
+    y, m = today.year, today.month - 1
+    if m == 0:
+        m, y = 12, y - 1
+    return y, m
+
+
+def backfill_monthly_revenue_history(conn, months: int = 6, anchor: tuple | None = None) -> dict:
+    """回補近 `months` 個月的全市場月營收（MOPS t21sc03，openapi 補不到的歷史月份）。
+
+    openapi 只給「最新已公告月」，而 Call_LE 推估季EPS 需要「近3+前3」共 6 個月月營收，
+    只靠每日累積要等半年。這條走 t21sc03 彙總報表可指定年月、一次整月全市場，直接補齊。
+    anchor＝起算 (西曆年, 月)，預設上一個日曆月（本月營收多半尚未公告）；由此往回逐月抓
+    上市＋上櫃，兩市場獨立、任一失敗或回空不影響其餘（同 _refresh_monthly_revenue 精神）。
+    與 openapi 覆蓋到的最新月重疊時是冪等覆寫（revenue 同單位同值，僅 report_date 由精確
+    出表日改為次月10日近似，對 report_date<=as_of 的判斷無影響）。
+
+    重複呼叫是冪等；一季才需要一次、屬偶爾手動觸發的回補，不進每日 run_update。
+    """
+    ay, am = anchor if anchor else _prev_calendar_month(datetime.now())
+    detail, filled = [], 0
+    y, m = ay, am
+    for _ in range(max(1, months)):
+        roc = y - 1911
+        ym = f"{y:04d}-{m:02d}"
+        row = {"year_month": ym, "TWSE": 0, "TPEx": 0}
+        for market, tag in (("twse", "TWSE"), ("otc", "TPEx")):
+            try:
+                rows = revenue.fetch_monthly_revenue_history(roc, m, market)
+                n = bulk_upsert_revenue(conn, tag, rows) if rows else 0
+            except Exception:  # noqa: BLE001 — 單一市場/月份失敗不影響其餘
+                n = 0
+            row[tag] = n
+            filled += n
+        detail.append(row)
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    return {"months": max(1, months), "filled": filled, "detail": detail}
+
+
 def _iso_to_date(s):
     try:
         return _date.fromisoformat(s)
