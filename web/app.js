@@ -570,10 +570,10 @@ async function trTableClick(e) {
 }
 
 // ========== 選股自算對照（CSV 匯入值 vs App 自算值，只讀） ==========
-const SC_FIELDS = [
-  ["rev_yoy", "營收年增（%）"], ["w55", "W55（0/1）"], ["big_holder_ratio", "大戶增比（%）"],
-  ["holder_drop_ratio", "人數降比（%）"], ["trust_3d", "投信3日（張）"], ["foreign_3d", "外資3日（張）"],
-  ["est_profit", "推估EPS（元）"], ["mu_score", "木質（分）"], ["mu_value", "木率"],
+const SC_FIELDS = [   // [key, 欄名, 單位]——單位另置副標，不讓它撐寬欄位（見表頭雙層排版）
+  ["rev_yoy", "營收年增", "%"], ["w55", "W55", "0/1"], ["big_holder_ratio", "大戶增比", "%"],
+  ["holder_drop_ratio", "人數降比", "%"], ["trust_3d", "投信3日", "張"], ["foreign_3d", "外資3日", "張"],
+  ["est_profit", "推估EPS", "元"], ["mu_score", "木質", "分"], ["mu_value", "木率", ""],
 ];
 const SC_MARK = { match: ["✓", "sc-ok"], diff: ["~", "sc-diff"], self_na: ["", "sc-na"], csv_na: ["", "sc-na"] };
 // 數值上色＋強度漸層（heatmap 感）：值越大顏色越亮。有正負意義的欄＝正紅負綠
@@ -619,8 +619,11 @@ function renderSelfcheckTable() {
     });
   }
   const arw = (k) => scSort.key === k ? (scSort.dir === 1 ? " ▲" : " ▼") : "";
-  const head = `<tr><th class="sc-sort" data-k="__code">股票${arw("__code")}</th>` +
-    SC_FIELDS.map(([k, l]) => `<th class="num sc-sort" data-k="${k}">${l}${arw(k)}</th>`).join("") + "</tr>";
+  const hcell = (k, label, unit, cls) =>   // 表頭雙層：欄名一行、單位小字副標一行（欄寬由欄名決定、不被單位撐大）
+    `<th class="${cls}sc-sort" data-k="${k}"><span class="sc-h-label">${label}${arw(k)}</span>` +
+    (unit ? `<span class="sc-h-unit">${unit}</span>` : "") + "</th>";
+  const head = "<tr>" + hcell("__code", "股票", "", "") +
+    SC_FIELDS.map(([k, label, unit]) => hcell(k, label, unit, "num ")).join("") + "</tr>";
   const body = rows.map((r) => "<tr><td>" + stockLink(r.code, r.name) + "</td>" +
     SC_FIELDS.map(([k]) => {
       const cell = r.fields[k] || {}; const [glyph, cls] = SC_MARK[cell.status] || SC_MARK.csv_na;

@@ -1087,8 +1087,14 @@ button.file-label { font: inherit; }
 .sc-ok  { color: var(--muted); }
 .sc-diff{ color: #e0a23c; }         /* 琥珀＝注意這格 */
 .sc-na  { color: var(--border-strong); }
-#selfcheck-table th.sc-sort { cursor: pointer; user-select: none; white-space: nowrap; }
-#selfcheck-table th.sc-sort:hover { color: var(--text-primary); }
+/* 選股自算對照：10 欄密集表。單位另置小字副標，欄寬由欄名決定、不被「（張）（%）」撐寬；
+   min-width 讓窄視窗乾淨橫捲而非把欄位擠爆／切掉最後一欄。 */
+#selfcheck-table table { min-width: 900px; }
+#selfcheck-table th, #selfcheck-table td { padding: 8px 10px; }
+#selfcheck-table th.sc-sort { cursor: pointer; user-select: none; white-space: nowrap; vertical-align: bottom; }
+#selfcheck-table th.sc-sort:hover .sc-h-label { color: var(--text-primary); }
+#selfcheck-table th .sc-h-label { display: block; }
+#selfcheck-table th .sc-h-unit { display: block; margin-top: 1px; font-size: var(--fs-xs); font-weight: 500; color: var(--muted); }
 .picks-feedback { flex: 1 1 220px; min-width: 0; color: var(--muted); font-size: var(--fs-xs); text-align: right; }
 .picks-split { display: flex; gap: 12px; flex: 1; min-height: 0; }
 .picks-side { flex: 0 0 250px; display: flex; flex-direction: column; min-height: 0; }

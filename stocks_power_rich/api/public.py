@@ -313,6 +313,6 @@ def public_overview_page():
     # index.html 用相對路徑引資產（站內在 / 底下正常）；本頁在 /public/overview，
     # 相對路徑會被解析成 /public/styles.css → 404。改絕對路徑（不用 <base href="/">：
     # 那會讓滿頁的 href="#" 錨點指向 "/"，點個股連結就跳離本頁）。
-    html = (html.replace('href="styles.css?v=20260817-ui21"', 'href="/styles.css?v=20260817-ui21"')
-                .replace('src="app.js?v=20260817-ui21"', 'src="/app.js?v=20260817-ui21"'))
+    html = (html.replace('href="styles.css?v=20260817-ui22"', 'href="/styles.css?v=20260817-ui22"')
+                .replace('src="app.js?v=20260817-ui22"', 'src="/app.js?v=20260817-ui22"'))
     return HTMLResponse(html.replace("<body>", '<body data-public="1">', 1))
