@@ -28,7 +28,8 @@ def test_build_selfcheck_live_fields_and_blocked_fields(tmp_path):
     out = selfcheck.build_selfcheck(conn, "2026-08-20")
 
     assert out["date"] == "2026-08-20"
-    assert out["fields"] == ["rev_yoy", "w55", "big_holder_ratio", "est_profit", "mu_score", "mu_value"]
+    assert out["fields"] == ["rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio",
+                             "est_profit", "mu_score", "mu_value"]
     by_code = {r["code"]: r for r in out["rows"]}
 
     # rev_yoy：自算來自 revenue_yoy_map（本測試沒建月營收 → self None → self_na），不炸
@@ -74,6 +75,23 @@ def test_build_selfcheck_strips_tw_suffix_before_self_source_lookup(tmp_path):
     assert row["fields"]["w55"]["self"] == 1.0            # 去後綴後 join 命中 → 自算成功
     assert row["fields"]["w55"]["status"] == "match"      # CSV w55=1 與自算 1 一致
     assert out["coverage"]["w55"]["computable"] == 1
+
+
+def test_build_selfcheck_holder_drop_ratio_self_from_custody(tmp_path):
+    """人數降比是集保自算的另一半（custody_change_map 本來就回傳 holder_drop_ratio）。
+    自算值＝(本週總持股人數−上週)/上週×100，與 CSV 對照。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    conn.execute("INSERT INTO chip_snapshot(snap_date,code,name,holder_drop_ratio) "
+                 "VALUES('2026-08-20','2330.TW','台積電',-1.0)")
+    # 兩週集保，總持股人數 990 → 1000 前一週（降 1%）；big400 兩週皆有讓週被視為完整
+    for w, th in (("2026-08-14", 990.0), ("2026-08-07", 1000.0)):
+        conn.execute("INSERT INTO custody_dist(week,code,big400_pct,total_holders) VALUES(?,?,?,?)",
+                     (w, "2330", 50.0, th))
+    conn.commit()
+    cell = selfcheck.build_selfcheck(conn, "2026-08-20")["rows"][0]["fields"]["holder_drop_ratio"]
+    assert cell["self"] == -1.0        # (990-1000)/1000*100
+    assert cell["status"] == "match"   # 與 CSV −1.0 一致
 
 
 def test_build_selfcheck_custody_diag_two_weeks(tmp_path):

@@ -9,8 +9,9 @@ import statistics
 
 from . import analysis, db
 
-FIELDS = ["rev_yoy", "w55", "big_holder_ratio", "est_profit", "mu_score", "mu_value"]
-LIVE_FIELDS = ["rev_yoy", "w55", "big_holder_ratio"]
+FIELDS = ["rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio",
+          "est_profit", "mu_score", "mu_value"]
+LIVE_FIELDS = ["rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio"]
 BLOCKED_REASON = {
     "est_profit": "需 6 個月月營收累積（尚在累積中）",
     "mu_score": "需季報財務成熟 ＋ 投信/外資三日自算來源（尚未建立）",
@@ -56,7 +57,7 @@ def build_selfcheck(conn, date: str | None) -> dict:
     if date is None:
         date = dates[0] if dates else None
     rows_csv = conn.execute(
-        "SELECT code, name, rev_yoy, w55, big_holder_ratio, est_profit "
+        "SELECT code, name, rev_yoy, w55, big_holder_ratio, holder_drop_ratio, est_profit "
         "FROM chip_snapshot WHERE snap_date=? ORDER BY code", (date,)).fetchall() if date else []
 
     yoy = db.revenue_yoy_map(conn, as_of=date) if date else {}
@@ -64,7 +65,7 @@ def build_selfcheck(conn, date: str | None) -> dict:
     ohlc = db.get_all_ohlc(conn, min_bars=55)
 
     out_rows = []
-    for code, name, csv_yoy, csv_w55, csv_bhr, csv_est in rows_csv:
+    for code, name, csv_yoy, csv_w55, csv_bhr, csv_hdr, csv_est in rows_csv:
         # chip_snapshot 的 code 帶 .TW/.TWO 後綴（XQ CSV 一律加 .TW），但自算來源
         # （月營收 revenue_yoy_map／集保 custody_change_map／OHLC get_all_ohlc）一律 bare
         # code——不去後綴，每一列 join 都 miss、全部「尚無自算」（production 實況）。
@@ -72,11 +73,14 @@ def build_selfcheck(conn, date: str | None) -> dict:
         bare = str(code).split(".")[0]
         self_yoy = yoy.get(bare)
         self_w55 = _self_w55(ohlc.get(bare), date)
-        self_bhr = (custody.get(bare) or {}).get("big_holder_ratio")
+        cc = custody.get(bare) or {}          # 大戶增比／人數降比同一支 custody_change_map
+        self_bhr = cc.get("big_holder_ratio")
+        self_hdr = cc.get("holder_drop_ratio")
         vals = {
             "rev_yoy": (csv_yoy, self_yoy),
             "w55": (csv_w55, self_w55),
             "big_holder_ratio": (csv_bhr, self_bhr),
+            "holder_drop_ratio": (csv_hdr, self_hdr),
             "est_profit": (csv_est, None),      # blocked（本案不自算）
             "mu_score": (None, None),           # blocked
             "mu_value": (None, None),           # blocked

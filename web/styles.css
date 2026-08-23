@@ -1087,6 +1087,7 @@ button.file-label { font: inherit; }
 .sc-ok  { color: var(--muted); }
 .sc-diff{ color: #e0a23c; }         /* 琥珀＝注意這格 */
 .sc-na  { color: var(--border-strong); }
+.sc-score { color: var(--info); }   /* 木質/木率是分數不是漲跌 → 中性藍，不用紅綠（全站語彙鎖） */
 .picks-feedback { flex: 1 1 220px; min-width: 0; color: var(--muted); font-size: var(--fs-xs); text-align: right; }
 .picks-split { display: flex; gap: 12px; flex: 1; min-height: 0; }
 .picks-side { flex: 0 0 250px; display: flex; flex-direction: column; min-height: 0; }

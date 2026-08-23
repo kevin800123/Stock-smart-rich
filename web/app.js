@@ -572,9 +572,20 @@ async function trTableClick(e) {
 // ========== 選股自算對照（CSV 匯入值 vs App 自算值，只讀） ==========
 const SC_FIELDS = [
   ["rev_yoy", "營收年增（%）"], ["w55", "W55（0/1）"], ["big_holder_ratio", "大戶增比（%）"],
+  ["holder_drop_ratio", "人數降比（%）"],
   ["est_profit", "推估EPS（元）"], ["mu_score", "木質（分）"], ["mu_value", "木率"],
 ];
 const SC_MARK = { match: ["✓", "sc-ok"], diff: ["~", "sc-diff"], self_na: ["", "sc-na"], csv_na: ["", "sc-na"] };
+// 數值上色：有正負意義的欄位走全站「正紅負綠」（.up/.down）；W55 翻多(1)紅；
+// 木質/木率是分數不是漲跌 → 中性藍（.sc-score），不用紅綠（全站語彙鎖：紅綠只給漲跌/流向）。
+const SC_SIGNED = new Set(["rev_yoy", "big_holder_ratio", "holder_drop_ratio", "est_profit"]);
+function scValClass(k, v) {
+  if (v == null) return "";
+  if (k === "w55") return v > 0 ? "up" : "";
+  if (k === "mu_score" || k === "mu_value") return "sc-score";
+  if (SC_SIGNED.has(k)) return v > 0 ? "up" : v < 0 ? "down" : "";
+  return "";
+}
 let scBlocked = {};
 
 async function loadSelfcheck() {
@@ -617,7 +628,8 @@ async function loadSelfcheck() {
         if (cell.status === "self_na") tip = scBlocked[k] || "尚無自算資料";
         else tip = `CSV: ${cell.csv == null ? "—" : fmt(cell.csv, 2)} ／ 自算: ${selfTxt}` +
           (cell.csv != null && cell.self != null ? ` ／ 差 ${fmt(cell.self - cell.csv, 2)}` : "");
-        return `<td class="num" title="${esc(tip)}">${selfTxt} <span class="sc-badge ${cls}">${glyph}</span></td>`;
+        const vc = scValClass(k, cell.self);
+        return `<td class="num" title="${esc(tip)}"><span${vc ? ` class="${vc}"` : ""}>${selfTxt}</span> <span class="sc-badge ${cls}">${glyph}</span></td>`;
       }).join("") + "</tr>").join("");
     el.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
   } catch (e) {

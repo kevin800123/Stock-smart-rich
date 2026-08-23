@@ -92,6 +92,7 @@ def estimate_quarterly_eps(monthly_revenue: list, gross_margin: list, opex: list
 SELFCHECK_TOL = {          # 絕對容差
     "rev_yoy": 0.5,        # 百分點
     "big_holder_ratio": 0.05,  # 百分點
+    "holder_drop_ratio": 0.5,  # 人數降比（總持股人數相對變化%），比大戶增比鬆（值域較大）
     "mu_score": 1.0,       # 木質 0–19 小整數刻度
     "mu_value": 1.0,       # 木率
 }
