@@ -598,6 +598,42 @@ function scValStyle(k, v, cap) {   // 回傳 inline color；強度 t 依 |v|/cap
   return "";
 }
 let scBlocked = {};
+let scRows = [], scCaps = {};
+let scSort = { key: null, dir: -1 };   // key=欄位（__code 為股票）；dir 1=升冪 -1=降冪；null=後端原序
+
+function scSortVal(r, k) {              // 排序取值：股票用代號數值、其餘用自算值
+  if (k === "__code") { const n = parseFloat(r.code); return isNaN(n) ? (r.code || "") : n; }
+  return (r.fields[k] || {}).self;
+}
+function renderSelfcheckTable() {
+  const el = $("selfcheck-table"); if (!el) return;
+  const rows = scRows.slice();
+  if (scSort.key) {                    // 空值（—）永遠沉底，不受升降冪影響
+    const k = scSort.key, dir = scSort.dir;
+    rows.sort((ra, rb) => {
+      const va = scSortVal(ra, k), vb = scSortVal(rb, k);
+      const na = va == null || va === "", nb = vb == null || vb === "";
+      if (na && nb) return 0; if (na) return 1; if (nb) return -1;
+      if (typeof va === "string" || typeof vb === "string") return dir * String(va).localeCompare(String(vb));
+      return dir * (va - vb);
+    });
+  }
+  const arw = (k) => scSort.key === k ? (scSort.dir === 1 ? " ▲" : " ▼") : "";
+  const head = `<tr><th class="sc-sort" data-k="__code">股票${arw("__code")}</th>` +
+    SC_FIELDS.map(([k, l]) => `<th class="num sc-sort" data-k="${k}">${l}${arw(k)}</th>`).join("") + "</tr>";
+  const body = rows.map((r) => "<tr><td>" + stockLink(r.code, r.name) + "</td>" +
+    SC_FIELDS.map(([k]) => {
+      const cell = r.fields[k] || {}; const [glyph, cls] = SC_MARK[cell.status] || SC_MARK.csv_na;
+      const selfTxt = cell.self == null ? "—" : fmt(cell.self, 2);
+      let tip;
+      if (cell.status === "self_na") tip = scBlocked[k] || "尚無自算資料";
+      else tip = `CSV: ${cell.csv == null ? "—" : fmt(cell.csv, 2)} ／ 自算: ${selfTxt}` +
+        (cell.csv != null && cell.self != null ? ` ／ 差 ${fmt(cell.self - cell.csv, 2)}` : "");
+      const vs = scValStyle(k, cell.self, scCaps[k]);
+      return `<td class="num" title="${esc(tip)}"><span${vs ? ` style="${vs}"` : ""}>${selfTxt}</span> <span class="sc-badge ${cls}">${glyph}</span></td>`;
+    }).join("") + "</tr>").join("");
+  el.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
 
 async function loadSelfcheck() {
   const el = $("selfcheck-table"); if (!el) return;
@@ -630,21 +666,10 @@ async function loadSelfcheck() {
       el.innerHTML = '<div class="table-empty"><strong>尚無資料</strong><span>選一個已匯入 CSV 的日期；或先在「籌碼／基本選股」上傳當日檔。</span></div>';
       return;
     }
-    const scCaps = {};
+    scRows = d.rows;
+    scCaps = {};
     [...SC_SIGNED, ...SC_SCORE].forEach((k) => { scCaps[k] = scColCap(d.rows, k); });
-    const head = "<tr><th>股票</th>" + SC_FIELDS.map(([, l]) => `<th class="num">${l}</th>`).join("") + "</tr>";
-    const body = d.rows.map((r) => "<tr><td>" + stockLink(r.code, r.name) + "</td>" +
-      SC_FIELDS.map(([k]) => {
-        const cell = r.fields[k] || {}; const [glyph, cls] = SC_MARK[cell.status] || SC_MARK.csv_na;
-        const selfTxt = cell.self == null ? "—" : fmt(cell.self, 2);
-        let tip;
-        if (cell.status === "self_na") tip = scBlocked[k] || "尚無自算資料";
-        else tip = `CSV: ${cell.csv == null ? "—" : fmt(cell.csv, 2)} ／ 自算: ${selfTxt}` +
-          (cell.csv != null && cell.self != null ? ` ／ 差 ${fmt(cell.self - cell.csv, 2)}` : "");
-        const vs = scValStyle(k, cell.self, scCaps[k]);
-        return `<td class="num" title="${esc(tip)}"><span${vs ? ` style="${vs}"` : ""}>${selfTxt}</span> <span class="sc-badge ${cls}">${glyph}</span></td>`;
-      }).join("") + "</tr>").join("");
-    el.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+    renderSelfcheckTable();
   } catch (e) {
     el.innerHTML = '<div class="table-empty"><strong>載入失敗</strong><span>' + esc(e.message) + "</span></div>";
   }
@@ -3001,6 +3026,13 @@ $("csv").addEventListener("change", (e) => { if (e.target.files[0]) uploadCsv(e.
 $("btn-latest").addEventListener("click", importLatest);
 $("date-select").addEventListener("change", (e) => loadDaily(e.target.value));
 $("selfcheck-date").addEventListener("change", loadSelfcheck);
+$("selfcheck-table").addEventListener("click", (e) => {   // 點欄位表頭排序：同欄切升降、換欄預設（股票升冪、其餘降冪）
+  const th = e.target.closest("th.sc-sort"); if (!th) return;
+  const k = th.dataset.k;
+  if (scSort.key === k) scSort.dir = -scSort.dir;
+  else scSort = { key: k, dir: k === "__code" ? 1 : -1 };
+  renderSelfcheckTable();
+});
 const _numOrNull = (v) => { const s = String(v).trim(); if (!s) return null; const n = parseFloat(s); return isFinite(n) ? n : null; };
 $("f-lan-score").addEventListener("input", (e) => { lanMin = _numOrNull(e.target.value); renderDailyView(); });
 $("f-lpe").addEventListener("input", (e) => { lpeMin = _numOrNull(e.target.value); renderDailyView(); });
