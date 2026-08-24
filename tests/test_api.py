@@ -8,6 +8,47 @@ from stocks_power_rich.main import create_app
 from tests.conftest import HEADER, ROW_2330
 
 
+def test_financials_backfill_report_is_async_started_running_done(tmp_path, monkeypatch):
+    """完整報表回補改成背景執行緒＋輪詢（同步跑會被 Zeabur 逾時砍成 502）。請求恆為毫秒級：
+    started → done；帶 restart=1 可在 done 後重跑。這裡把 Thread 換成 inline、backfill 用假值，
+    讓狀態機可決定性驗證。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    from stocks_power_rich import updater as up
+    from stocks_power_rich.api import admin as admin_mod
+    admin_mod._report_state["running"] = False
+    admin_mod._report_state["error"] = None
+    admin_mod._report_state["progress"].clear()
+
+    seq = [(120, 50), (0, 50)]   # 一輪就到底（第二輪沒再下降）
+    calls = {"i": 0}
+
+    def fake(c, **k):
+        f, r = seq[min(calls["i"], len(seq) - 1)]
+        calls["i"] += 1
+        return {"filled": f, "remaining": r, "universe": 1977}
+
+    monkeypatch.setattr(up, "backfill_report_financials", fake)
+
+    class _Inline:   # start() 內同步跑完 target，讓背景工作在測試中可決定性完成
+        def __init__(self, target=None, args=(), daemon=None):
+            self._t, self._a = target, args
+
+        def start(self):
+            self._t(*self._a)
+
+    monkeypatch.setattr(admin_mod.threading, "Thread", _Inline)
+
+    client = TestClient(create_app())
+    r1 = client.get("/api/financials/backfill-report").json()
+    assert r1["status"] == "started"
+    r2 = client.get("/api/financials/backfill-report").json()
+    assert r2["status"] == "done"
+    assert r2["filled"] == 120
+    r3 = client.get("/api/financials/backfill-report?restart=1").json()
+    assert r3["status"] == "started"
+
+
 def test_frontend_card_alert_guards():
     web = Path(__file__).parents[1] / "web"
     js = (web / "app.js").read_text(encoding="utf-8")

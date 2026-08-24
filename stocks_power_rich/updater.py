@@ -204,6 +204,37 @@ def backfill_report_financials(conn, anchor_year: int | None = None, anchor_seas
     return {"filled": filled, "remaining": remaining, "universe": len(universe)}
 
 
+def backfill_report_financials_until_plateau(conn, anchor_year: int | None = None,
+                                             anchor_season: int | None = None,
+                                             chunk_batches: int = 6, batch_size: int = 30,
+                                             max_rounds: int = 25, progress: dict | None = None) -> dict:
+    """反覆呼叫 backfill_report_financials 直到 remaining 不再下降（或達 max_rounds 上限）。
+
+    完整報表回補是「重、逐季逐批打 mopsfin」的同步工作，放在請求裡會被 Zeabur 反向代理
+    逾時砍成 502（同 stock-flow/research 的教訓）；由端點在背景執行緒呼叫這支跑到底、
+    請求本身恆為毫秒級。`progress` 給的話每輪就地更新（filled 累計、remaining、universe、
+    rounds、done），端點即時讀得到目前進度。remaining 不會歸零是正常的——金融業等本就缺
+    現金流量表科目的代號會永遠 pending（見 backfill_report_financials）。"""
+    filled, remaining, universe = 0, None, 0
+    prev = float("inf")
+    rounds = 0
+    for _ in range(max(1, max_rounds)):
+        res = backfill_report_financials(conn, anchor_year=anchor_year, anchor_season=anchor_season,
+                                         max_batches=chunk_batches, batch_size=batch_size)
+        rounds += 1
+        filled += res["filled"]
+        remaining, universe = res["remaining"], res["universe"]
+        if progress is not None:
+            progress.update({"filled": filled, "remaining": remaining,
+                             "universe": universe, "rounds": rounds, "done": False})
+        if remaining >= prev:          # 沒再下降 → 到底
+            break
+        prev = remaining
+    if progress is not None:
+        progress["done"] = True
+    return {"filled": filled, "remaining": remaining, "universe": universe, "rounds": rounds}
+
+
 def _refresh_monthly_revenue(conn) -> dict:
     """月營收（上市/上櫃），兩市場獨立抓取與寫入、互不影響。
 

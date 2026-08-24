@@ -259,6 +259,44 @@ def test_backfill_monthly_revenue_history_walks_months_both_markets(tmp_path, mo
     assert out["filled"] == 6  # 3 月 × 2 市場 × 1 檔
 
 
+def test_backfill_report_until_plateau_stops_when_remaining_stops_dropping(tmp_path, monkeypatch):
+    """完整報表回補在 Zeabur 上同步跑會 502（重、逐批打 mopsfin），改由背景執行緒跑到底。
+    這支純迴圈負責「一直呼叫 backfill_report_financials 直到 remaining 不再下降」，可測。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    seq = [(150, 70), (90, 40), (0, 40)]   # (filled, remaining)：第 3 輪沒再下降 → 到底
+    calls = {"i": 0}
+
+    def fake(c, anchor_year=None, anchor_season=None, max_batches=4, batch_size=30):
+        f, r = seq[min(calls["i"], len(seq) - 1)]
+        calls["i"] += 1
+        return {"filled": f, "remaining": r, "universe": 1977}
+
+    monkeypatch.setattr(updater, "backfill_report_financials", fake)
+    prog = {}
+    out = updater.backfill_report_financials_until_plateau(conn, chunk_batches=6, batch_size=30,
+                                                           max_rounds=25, progress=prog)
+    assert out["remaining"] == 40
+    assert out["filled"] == 240        # 150+90+0
+    assert out["rounds"] == 3
+    assert prog["remaining"] == 40 and prog["done"] is True   # progress 供端點即時讀
+
+
+def test_backfill_report_until_plateau_respects_max_rounds(tmp_path, monkeypatch):
+    """遠端一直有微小進展也不能無限跑——max_rounds 當安全上限。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    state = {"rem": 1000}
+
+    def fake(c, **k):
+        state["rem"] -= 1                # 每輪只掉 1，永遠在下降
+        return {"filled": 1, "remaining": state["rem"], "universe": 1977}
+
+    monkeypatch.setattr(updater, "backfill_report_financials", fake)
+    out = updater.backfill_report_financials_until_plateau(conn, max_rounds=5)
+    assert out["rounds"] == 5           # 停在上限，不是跑到 remaining=0
+
+
 def test_backfill_monthly_revenue_history_one_month_empty_does_not_abort(tmp_path, monkeypatch):
     """某月某市場回空（改版或暫時性失敗）不中斷其餘月份。"""
     conn = get_connection(str(tmp_path / "t.sqlite"))

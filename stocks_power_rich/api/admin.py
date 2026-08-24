@@ -15,7 +15,7 @@ from .helpers import (
     line_quota_paused,
     REPO_DIR
 )
-from ..db import get_setting, set_setting, get_snapshot_dates, get_tx_history, get_ai_cache, backup_db
+from ..db import get_setting, set_setting, get_snapshot_dates, get_tx_history, get_ai_cache, backup_db, get_connection
 from ..config import load_config
 from .. import updater, gemini, analysis, selfcheck
 
@@ -184,24 +184,64 @@ def financials_backfill(max_batches: int = 4, batch_size: int = 50):
     finally:
         _backfill_lock.release()
 
-@router.get("/financials/backfill-report")
-def financials_backfill_report(anchor_year: int = 0, anchor_season: int = 0,
-                                max_batches: int = 4, batch_size: int = 30):
-    """全市場逐檔完整報表回補（mopsfin HTML 報表，sub-task 2：稅前淨利／營業費用／
-    所得稅費用／資本支出，見 CLAUDE.md「季報財務」段）。anchor_year/season 不帶時
-    自動抓「最近一個已結束的日曆季」；重複呼叫直到 remaining 不再下降（非直到 0，
-    金融業等本就沒有現金流量表資本支出科目的代號會永遠 pending，屬預期）。
-    """
-    if not _backfill_lock.acquire(blocking=False):
-        return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
+# 完整報表回補是「重、逐季逐批打 mopsfin」的同步工作，放在請求裡會被 Zeabur 反向代理
+# 逾時砍成 502（實測 max_batches=2 就掛，且降 batch_size 沒用——per-call 成本在多季 fetch
+# 迴圈、非批次大小）。改成背景執行緒跑到底、請求恆為毫秒級（同 stock-flow/research 的教訓）。
+_report_lock = threading.Lock()
+_report_state = {"running": False, "error": None, "progress": {}}
+
+
+def _run_report_backfill_job(db_path, anchor_year, anchor_season):
+    """背景執行緒：自己開一條 sqlite 連線（預設 check_same_thread=True 不能共用請求那條），
+    跑 backfill_report_financials_until_plateau 到底，進度就地寫進 _report_state['progress']
+    供端點輪詢。錯誤留給下次請求回報、不吞掉。"""
+    wc = get_connection(db_path)
     try:
-        return updater.backfill_report_financials(
-            conn(),
-            anchor_year=anchor_year or None, anchor_season=anchor_season or None,
-            max_batches=max(1, min(max_batches, 20)),
-            batch_size=max(1, min(batch_size, 30)))
+        wc.execute("PRAGMA busy_timeout=30000")  # 與 ratios 回補等並行寫入短暫相撞時等待而非失敗
+        updater.backfill_report_financials_until_plateau(
+            wc, anchor_year=anchor_year, anchor_season=anchor_season,
+            chunk_batches=6, batch_size=30, progress=_report_state["progress"])
+    except Exception as exc:  # noqa: BLE001 — 背景錯誤要留給下次請求回報
+        with _report_lock:
+            _report_state["error"] = str(exc)
     finally:
-        _backfill_lock.release()
+        with _report_lock:
+            _report_state["running"] = False
+        wc.close()
+
+
+@router.get("/financials/backfill-report")
+def financials_backfill_report(anchor_year: int = 0, anchor_season: int = 0, restart: int = 0):
+    """全市場逐檔完整報表回補（mopsfin HTML 報表，sub-task 2：稅前淨利／營業費用／所得稅／
+    資本支出）。永遠立刻回應、計算在背景執行緒跑到底：
+      status=started  → 剛啟動背景回補
+      status=running  → 進行中，附即時進度（filled/remaining/rounds），前端每幾秒再打一次
+      status=done     → 已跑到底（remaining 不再下降；非 0 屬正常，金融業缺科目永遠 pending）
+      status=error    → 背景失敗，附訊息；已清除，再打一次即重試
+    remaining/universe 每次由 DB 現算（cheap SELECT），是最新真值；帶 restart=1 可在已 done
+    後強制重跑（例如換季後）。anchor_year/season 不帶時自動抓「最近一個已結束的日曆季」。
+    """
+    c = conn()
+    universe = updater._financials_universe(c)
+    remaining = len(updater._report_pending_codes(c, universe))
+    base = {"universe": len(universe), "remaining": remaining}
+    with _report_lock:
+        if _report_state["error"] is not None:
+            err = _report_state["error"]
+            _report_state["error"] = None
+            return {"status": "error", "error": err, **base}
+        if _report_state["running"]:
+            return {"status": "running", **_report_state["progress"], **base}
+        if _report_state["progress"].get("done") and not restart:
+            return {"status": "done", **_report_state["progress"], **base}
+        _report_state["running"] = True
+        _report_state["progress"].clear()
+        _report_state["progress"].update(
+            {"filled": 0, "remaining": remaining, "universe": len(universe), "rounds": 0, "done": False})
+    threading.Thread(target=_run_report_backfill_job,
+                     args=(load_config().db_path, anchor_year or None, anchor_season or None),
+                     daemon=True).start()
+    return {"status": "started", **base}
 
 @router.get("/revenue/backfill-history")
 def revenue_backfill_history(months: int = 6, anchor_year: int = 0, anchor_month: int = 0):
