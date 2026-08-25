@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import httpx  # noqa: E402
 
 from stocks_power_rich import updater  # noqa: E402
+from stocks_power_rich.sources import financials  # noqa: E402
 
 DEFAULT_BASE = "https://stock-power-rich.zeabur.app"
 
@@ -37,10 +38,11 @@ def main() -> int:
     ap.add_argument("--base-url", default=DEFAULT_BASE, help="雲端網址（預設正式站）")
     ap.add_argument("--user", default=os.getenv("SPR_BASIC_USER", ""), help="Basic Auth 帳號")
     ap.add_argument("--password", default=os.getenv("SPR_BASIC_PASS", ""), help="Basic Auth 密碼（不帶則提示輸入）")
-    ap.add_argument("--batch", type=int, default=30, help="每輪抓幾檔（30 是 mopsfin 報表端點上限）")
+    ap.add_argument("--batch", type=int, default=15, help="每輪抓幾檔（越大越省請求數，但單次回應越大越可能逾時；15 較穩）")
     ap.add_argument("--patience", type=int, default=2, help="連續幾輪 remaining 沒下降才算補完")
     ap.add_argument("--throttle", type=float, default=0.2, help="本機請求間隔秒（本機不會被限流，可小）")
-    ap.add_argument("--max-rounds", type=int, default=200, help="安全上限，避免異常時無限跑")
+    ap.add_argument("--timeout", type=float, default=45, help="每個報表請求逾時秒（本機批次回應較大，給寬一點）")
+    ap.add_argument("--max-rounds", type=int, default=400, help="安全上限，避免異常時無限跑")
     args = ap.parse_args()
 
     user = args.user or input("Basic Auth 帳號: ").strip()
@@ -48,6 +50,8 @@ def main() -> int:
     base = args.base_url.rstrip("/")
     auth = (user, password)
     updater._REPORT_THROTTLE = max(0.0, args.throttle)  # 本機抓，節流可放小加速
+    financials.REPORT_TIMEOUT = max(10.0, args.timeout)  # 本機批次回應較大，逾時放寬（雲端才要短）
+    print(f"設定：base={base} batch={args.batch} timeout={financials.REPORT_TIMEOUT:.0f}s，開始…")
 
     client = httpx.Client(timeout=60, auth=auth, headers={"User-Agent": "spr-sync/1.0"})
 
@@ -85,16 +89,20 @@ def main() -> int:
             print(f"完成：沒有待補代號（remaining={remaining}/{universe}）。")
             break
         ay, aseason = pend["anchor_year"], pend["anchor_season"]
+        print(f"round {rnd}: 抓 {len(codes)} 檔（remaining {remaining}/{universe}）…", flush=True)
         t0 = time.time()
-        by_indicator = updater.compute_report_indicators(codes, ay, aseason)  # 本機重活
+
+        def _tick(report, q, hit, secs):   # 即時進度：每抓一季印一格，才不會整批看起來凍住
+            print(f"    {report[:6]:6s} {q} {'✓' if hit else '·'} {secs:.0f}s", flush=True)
+
+        by_indicator = updater.compute_report_indicators(codes, ay, aseason, on_fetch=_tick)  # 本機重活
         res = call("POST", "/api/financials/import", json={"data": by_indicator})
         if res is None:
             return 2
         imported = res.get("imported", 0)
         total_imported += imported
         dt = time.time() - t0
-        print(f"round {rnd}: 抓 {len(codes)} 檔、匯入 {imported} 列、"
-              f"remaining {remaining}/{universe}（{dt:.0f}s，累計匯入 {total_imported}）")
+        print(f"  → 匯入 {imported} 列（本輪 {dt:.0f}s，累計匯入 {total_imported}）", flush=True)
 
         if remaining < best:            # 有進展 → 重置耐心
             best, stale = remaining, 0

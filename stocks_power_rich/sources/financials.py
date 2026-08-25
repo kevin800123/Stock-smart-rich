@@ -26,6 +26,9 @@ import httpx
 
 MOPSFIN_URL = "https://mopsfin.twse.com.tw/compare/data"
 MOPSFIN_REPORT_URL = "https://mopsfin.twse.com.tw/compare/report"
+# 報表請求逾時（秒）。雲端要短、fail-fast（見 fetch_report）；本機同步腳本會調高，因為
+# 本機一次抓 30 檔的回應較大、健康回應也可能要十幾秒，逾時太短會把好回應也砍掉。
+REPORT_TIMEOUT = 20
 
 # lan_score 財報 key → mopsfin compareItem 代碼（只列「乾淨 JSON」可取的 8 個；
 # pretax_income／capex 需 HTML 報表，屬 sub-task 2，不在此）。
@@ -203,9 +206,8 @@ def fetch_report(codes: list, report: str, year: int, season: int) -> tuple:
         "ys": f"{year}{season}",
     }
     try:
-        # 逾時 20 秒 fail-fast：健康回應約 6 秒，逾時多半是端點在密集請求下退化，
-        # 與其卡 30 秒不如放掉這一季（呼叫端會往回抓下一季，該季下輪回補再補）。
-        r = httpx.post(MOPSFIN_REPORT_URL, data=data, timeout=20,
+        # 逾時見 REPORT_TIMEOUT：雲端短、fail-fast（放掉退化的那季，下輪再補）；本機腳本調高。
+        r = httpx.post(MOPSFIN_REPORT_URL, data=data, timeout=REPORT_TIMEOUT,
                        headers={"User-Agent": "Mozilla/5.0"})
         return parse_report(r.text)
     except Exception:  # noqa: BLE001

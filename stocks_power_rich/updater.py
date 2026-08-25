@@ -170,13 +170,17 @@ def backfill_report_financials(conn, anchor_year: int | None = None, anchor_seas
     return {"filled": filled, "remaining": remaining, "universe": len(universe)}
 
 
-def compute_report_indicators(codes: list, anchor_year: int, anchor_season: int) -> dict:
+def compute_report_indicators(codes: list, anchor_year: int, anchor_season: int,
+                              on_fetch=None) -> dict:
     """抓 `codes` 的完整報表並反推單季 → `{indicator: {code: {季別: 單季值}}}`（**不碰 DB**）。
 
     從 backfill_report_financials 的批次內聯邏輯抽出，讓「本機抓 → 匯入 production」的本機
     腳本能直接呼叫（Zeabur 打不動 mopsfin 報表端點，故在本機抓好再 POST 上雲）。抓取深度
     `depth+1`（墊底一季供反推）、「持續往回抓到蒐集滿」而非固定季數、got 只計真的抓到目標
     科目的季度——這些取捨與踩過的坑見 backfill_report_financials 的 docstring。
+
+    `on_fetch(report, q, hit, secs)` 每抓完一季就回呼一次（供本機腳本印即時進度——一批
+    要十幾次 fetch、每次數秒，沒有回呼的話整批跑完前看起來像凍住）。
     """
     raw: dict = {}  # (code, key) -> {季別: 累計值}
     for report, depth in _REPORT_DEPTH.items():
@@ -189,6 +193,7 @@ def compute_report_indicators(codes: list, anchor_year: int, anchor_season: int)
             s -= 1
             if s == 0:
                 s, y = 4, y - 1
+            t0 = time.time()
             try:
                 _actual_q, parsed = financials.fetch_report(codes, report, int(q[:4]), int(q[5]))
             except Exception:  # noqa: BLE001 — 單季失敗不影響其餘
@@ -199,6 +204,8 @@ def compute_report_indicators(codes: list, anchor_year: int, anchor_season: int)
                     if rep2 == report and label in labels:
                         raw.setdefault((code, key), {})[q] = labels[label]
                         hit = True
+            if on_fetch is not None:
+                on_fetch(report, q, hit, time.time() - t0)
             if hit:
                 got += 1
             time.sleep(_REPORT_THROTTLE)  # 放慢避免 mopsfin 報表端點在密集請求下退化
