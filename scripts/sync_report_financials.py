@@ -55,26 +55,38 @@ def main() -> int:
 
     client = httpx.Client(timeout=60, auth=auth, headers={"User-Agent": "spr-sync/1.0"})
 
-    def call(method: str, path: str, **kw):
-        """打端點並把常見失敗講清楚：401=帳密錯、非 2xx=印狀態＋內容片段，才不會只看到
-        一句無意義的 JSON 解析錯誤。回傳解析好的 JSON dict，或 None（呼叫端判斷後 return）。"""
-        try:
-            r = client.request(method, f"{base}{path}", **kw)
-        except Exception as exc:  # noqa: BLE001 — 連線層失敗（DNS/逾時/TLS）
-            print(f"[!] 連線失敗（{path}）：{exc}")
-            return None
-        if r.status_code == 401:
-            print("[!] HTTP 401：Basic Auth 帳密錯誤或未設定。確認 --user 與密碼對應雲端的 "
-                  "SPR_BASIC_USER / SPR_BASIC_PASS。")
-            return None
-        if r.status_code // 100 != 2:
-            print(f"[!] HTTP {r.status_code}（{path}）：{r.text[:200]}")
-            return None
-        try:
-            return r.json()
-        except Exception:  # noqa: BLE001 — 2xx 但不是 JSON（理論上不該發生）
-            print(f"[!] 回應非 JSON（{path}）：{r.text[:200]}")
-            return None
+    def call(method: str, path: str, retries: int = 5, **kw):
+        """打端點，遇 5xx/連線錯誤**自動重試**（Zeabur 重新部署／代理抖動是常態，8 小時
+        的長工作不能一撞就死、把本輪抓好的資料白白丟掉）。401 是帳密問題、重試也沒用 →
+        直接放棄；其他 4xx 同樣不重試。回傳 JSON dict，或 None（連續失敗後呼叫端 return）。"""
+        for attempt in range(1, retries + 1):
+            try:
+                r = client.request(method, f"{base}{path}", **kw)
+            except Exception as exc:  # noqa: BLE001 — 連線層失敗（DNS/逾時/TLS）
+                wait = min(60, 5 * attempt)
+                print(f"    [重試 {attempt}/{retries}] 連線失敗（{path}）：{exc}；{wait}s 後重試…", flush=True)
+                time.sleep(wait)
+                continue
+            if r.status_code == 401:
+                print("[!] HTTP 401：Basic Auth 帳密錯誤或未設定。確認 --user 與密碼對應雲端的 "
+                      "SPR_BASIC_USER / SPR_BASIC_PASS。")
+                return None
+            if r.status_code // 100 == 5:   # 502/503/504…雲端暫時性 → 退避重試
+                wait = min(60, 5 * attempt)
+                print(f"    [重試 {attempt}/{retries}] HTTP {r.status_code}（{path}，多為 Zeabur "
+                      f"重啟/抖動）；{wait}s 後重試…", flush=True)
+                time.sleep(wait)
+                continue
+            if r.status_code // 100 != 2:   # 其他 4xx＝用戶端錯誤，重試無益
+                print(f"[!] HTTP {r.status_code}（{path}）：{r.text[:200]}")
+                return None
+            try:
+                return r.json()
+            except Exception:  # noqa: BLE001 — 2xx 但不是 JSON（理論上不該發生）
+                print(f"[!] 回應非 JSON（{path}）：{r.text[:200]}")
+                return None
+        print(f"[!] {path} 連續 {retries} 次失敗，放棄本次（重跑會從剩下的續補）。")
+        return None
 
     best = float("inf")
     stale = 0
