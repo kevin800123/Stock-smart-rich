@@ -108,6 +108,11 @@ def backfill_financials(conn, max_batches: int = 4, batch_size: int = 50) -> dic
 # （對照 analysis._LAN_USED 與 Call_LE 的 highest(...,4)），同一報表只抓一次滿足其下所有指標。
 _REPORT_DEPTH = {"IncomeStatement": 4, "CashflowStatement": 8}
 
+# mopsfin 完整報表端點本身慢（實測單次 ~6 秒）且**在密集請求下會退化/限流**（本機連打
+# 12 次總時間 >120 秒、每次爬升到 >10 秒，Zeabur 上更會拖到 30 秒逾時而近乎停住）。放慢
+# 請求間隔反而更快——讓端點維持 ~6 秒基準、穩定前進不卡死（放慢節奏總吞吐大於狂打踩限流）。
+_REPORT_THROTTLE = 1.0
+
 
 def _default_report_anchor() -> tuple:
     """預設從「最近一個已結束的日曆季」往回抓——本季幾乎必然還沒公布（見 financials.py 的
@@ -188,7 +193,7 @@ def backfill_report_financials(conn, anchor_year: int | None = None, anchor_seas
                             hit = True
                 if hit:
                     got += 1
-                time.sleep(0.2)  # 禮貌節流
+                time.sleep(_REPORT_THROTTLE)  # 放慢避免 mopsfin 報表端點在密集請求下退化
 
         by_indicator: dict = {}
         for (code, key), series in raw.items():
@@ -207,17 +212,24 @@ def backfill_report_financials(conn, anchor_year: int | None = None, anchor_seas
 def backfill_report_financials_until_plateau(conn, anchor_year: int | None = None,
                                              anchor_season: int | None = None,
                                              chunk_batches: int = 6, batch_size: int = 30,
-                                             max_rounds: int = 25, progress: dict | None = None) -> dict:
-    """反覆呼叫 backfill_report_financials 直到 remaining 不再下降（或達 max_rounds 上限）。
+                                             max_rounds: int = 40, patience: int = 2,
+                                             progress: dict | None = None) -> dict:
+    """反覆呼叫 backfill_report_financials 直到 remaining 連續 `patience` 輪不再下降（或達
+    max_rounds 上限）。
 
     完整報表回補是「重、逐季逐批打 mopsfin」的同步工作，放在請求裡會被 Zeabur 反向代理
     逾時砍成 502（同 stock-flow/research 的教訓）；由端點在背景執行緒呼叫這支跑到底、
     請求本身恆為毫秒級。`progress` 給的話每輪就地更新（filled 累計、remaining、universe、
-    rounds、done），端點即時讀得到目前進度。remaining 不會歸零是正常的——金融業等本就缺
+    rounds、done），端點即時讀得到目前進度。
+
+    **不可在「第一輪沒下降」就停**（patience≥2）：mopsfin 報表端點在密集請求下會退化，
+    某一輪可能整輪回空、committed=0（實測 production：round1 只 committed 30/180、round2
+    整輪 0 → 舊版單輪判定就誤判 done、remaining 卡在 1947）；那多半是暫時性退化而非真的
+    沒資料可補，要連續數輪都沒進展才算到底。remaining 不會歸零也正常——金融業等本就缺
     現金流量表科目的代號會永遠 pending（見 backfill_report_financials）。"""
     filled, remaining, universe = 0, None, 0
-    prev = float("inf")
-    rounds = 0
+    best = float("inf")
+    rounds, stale = 0, 0
     for _ in range(max(1, max_rounds)):
         res = backfill_report_financials(conn, anchor_year=anchor_year, anchor_season=anchor_season,
                                          max_batches=chunk_batches, batch_size=batch_size)
@@ -227,9 +239,12 @@ def backfill_report_financials_until_plateau(conn, anchor_year: int | None = Non
         if progress is not None:
             progress.update({"filled": filled, "remaining": remaining,
                              "universe": universe, "rounds": rounds, "done": False})
-        if remaining >= prev:          # 沒再下降 → 到底
-            break
-        prev = remaining
+        if remaining < best:           # 有進展 → 重置耐心
+            best, stale = remaining, 0
+        else:
+            stale += 1
+            if stale >= max(1, patience):   # 連續 patience 輪沒下降 → 到底
+                break
     if progress is not None:
         progress["done"] = True
     return {"filled": filled, "remaining": remaining, "universe": universe, "rounds": rounds}

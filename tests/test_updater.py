@@ -264,7 +264,9 @@ def test_backfill_report_until_plateau_stops_when_remaining_stops_dropping(tmp_p
     這支純迴圈負責「一直呼叫 backfill_report_financials 直到 remaining 不再下降」，可測。"""
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
-    seq = [(150, 70), (90, 40), (0, 40)]   # (filled, remaining)：第 3 輪沒再下降 → 到底
+    # (filled, remaining)：40 之後連續兩輪沒下降才算到底（patience=2，不在第一個平輪就停——
+    # 報表端點退化造成的整輪回空是暫時性的，見 until_plateau docstring）
+    seq = [(150, 70), (90, 40), (0, 40)]
     calls = {"i": 0}
 
     def fake(c, anchor_year=None, anchor_season=None, max_batches=4, batch_size=30):
@@ -275,11 +277,31 @@ def test_backfill_report_until_plateau_stops_when_remaining_stops_dropping(tmp_p
     monkeypatch.setattr(updater, "backfill_report_financials", fake)
     prog = {}
     out = updater.backfill_report_financials_until_plateau(conn, chunk_batches=6, batch_size=30,
-                                                           max_rounds=25, progress=prog)
+                                                           max_rounds=25, patience=2, progress=prog)
     assert out["remaining"] == 40
-    assert out["filled"] == 240        # 150+90+0
-    assert out["rounds"] == 3
+    assert out["filled"] == 240        # 150+90+0+0（第 4 輪也跑了，才湊滿兩個平輪）
+    assert out["rounds"] == 4          # 70→40 兩個進展輪 + 40,40 兩個平輪
     assert prog["remaining"] == 40 and prog["done"] is True   # progress 供端點即時讀
+
+
+def test_backfill_report_until_plateau_tolerates_transient_empty_round(tmp_path, monkeypatch):
+    """迴歸（production 卡在 remaining=1947）：某一輪整輪 committed=0（報表端點退化回空）不可
+    直接判 done——下一輪可能就恢復。patience=2 讓單一暫時性空輪被容忍、繼續補到真的平為止。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    seq = [(100, 80), (0, 80), (60, 50), (0, 50), (0, 50)]   # 第 2 輪空、第 3 輪恢復
+    calls = {"i": 0}
+
+    def fake(c, **k):
+        f, r = seq[min(calls["i"], len(seq) - 1)]
+        calls["i"] += 1
+        return {"filled": f, "remaining": r, "universe": 1977}
+
+    monkeypatch.setattr(updater, "backfill_report_financials", fake)
+    out = updater.backfill_report_financials_until_plateau(conn, patience=2)
+    assert out["remaining"] == 50      # 沒有停在第 2 輪的 80，繼續補到 50
+    assert out["filled"] == 160        # 100+0+60+0+0（含恢復輪的 60）
+    assert out["rounds"] == 5
 
 
 def test_backfill_report_until_plateau_respects_max_rounds(tmp_path, monkeypatch):
@@ -414,6 +436,7 @@ def test_backfill_report_financials_decumulates_and_stores_by_indicator(tmp_path
         return (q, {c: {"取得不動產、廠房及設備": -cashflow_cum[q]} for c in codes})
 
     monkeypatch.setattr(updater.financials, "fetch_report", fake_fetch_report)
+    monkeypatch.setattr(updater, "_REPORT_THROTTLE", 0)   # 測試不等真實節流
 
     res = updater.backfill_report_financials(conn, anchor_year=2026, anchor_season=1,
                                               max_batches=1, batch_size=50)
@@ -462,6 +485,7 @@ def test_backfill_report_financials_skips_unpublished_quarter(tmp_path, monkeypa
                         "所得稅費用（利益）合計": 1.0, "取得不動產、廠房及設備": -3.0} for c in codes})
 
     monkeypatch.setattr(updater.financials, "fetch_report", fake_fetch_report)
+    monkeypatch.setattr(updater, "_REPORT_THROTTLE", 0)   # 測試不等真實節流
     updater.backfill_report_financials(conn, anchor_year=2026, anchor_season=2,
                                        max_batches=1, batch_size=50)
     pretax = dict(get_financial_series(conn, "2330", "pretax_income"))
@@ -500,6 +524,7 @@ def test_backfill_report_financials_quarter_with_data_but_missing_target_label_d
         return (q, {c: {"取得不動產、廠房及設備": -cashflow_cum[q]} for c in codes})
 
     monkeypatch.setattr(updater.financials, "fetch_report", fake_fetch_report)
+    monkeypatch.setattr(updater, "_REPORT_THROTTLE", 0)   # 測試不等真實節流
     updater.backfill_report_financials(conn, anchor_year=2026, anchor_season=2,
                                        max_batches=1, batch_size=50)
     capex = dict(get_financial_series(conn, "2330", "capex"))

@@ -203,7 +203,9 @@ def fetch_report(codes: list, report: str, year: int, season: int) -> tuple:
         "ys": f"{year}{season}",
     }
     try:
-        r = httpx.post(MOPSFIN_REPORT_URL, data=data, timeout=30,
+        # 逾時 20 秒 fail-fast：健康回應約 6 秒，逾時多半是端點在密集請求下退化，
+        # 與其卡 30 秒不如放掉這一季（呼叫端會往回抓下一季，該季下輪回補再補）。
+        r = httpx.post(MOPSFIN_REPORT_URL, data=data, timeout=20,
                        headers={"User-Agent": "Mozilla/5.0"})
         return parse_report(r.text)
     except Exception:  # noqa: BLE001
