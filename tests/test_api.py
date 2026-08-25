@@ -76,6 +76,26 @@ def test_financials_import_and_report_pending(tmp_path, monkeypatch):
     assert isinstance(rp["codes"], list)
 
 
+def test_financials_report_pending_after_cursor_pages_forward(tmp_path, monkeypatch):
+    """report-pending 用 after 游標往後掃，才不會卡在前面補不齊的金融股（每輪重抓同一批、
+    remaining 不動就誤判補完，後面能補的永遠掃不到）。remaining 一律回總數、codes 回游標後那批。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_revenue
+    c0 = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c0)
+    for code in ("1101", "1102", "2330"):   # 3 檔進母體、都沒報表財務 → 全 pending
+        bulk_upsert_revenue(c0, "TWSE", {code: {"year_month": "2026-07", "report_date": "2026-08-10", "revenue": 1.0}})
+
+    client = TestClient(create_app())
+    r = client.get("/api/financials/report-pending?limit=2").json()
+    assert r["codes"] == ["1101", "1102"] and r["remaining"] == 3
+    r2 = client.get("/api/financials/report-pending?limit=2&after=1102").json()
+    assert r2["codes"] == ["2330"] and r2["remaining"] == 3   # remaining=總數不變、codes=游標後
+    r3 = client.get("/api/financials/report-pending?after=2330").json()
+    assert r3["codes"] == []                                  # 掃到底
+
+
 def test_frontend_card_alert_guards():
     web = Path(__file__).parents[1] / "web"
     js = (web / "app.js").read_text(encoding="utf-8")

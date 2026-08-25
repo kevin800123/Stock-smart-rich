@@ -39,7 +39,6 @@ def main() -> int:
     ap.add_argument("--user", default=os.getenv("SPR_BASIC_USER", ""), help="Basic Auth 帳號")
     ap.add_argument("--password", default=os.getenv("SPR_BASIC_PASS", ""), help="Basic Auth 密碼（不帶則提示輸入）")
     ap.add_argument("--batch", type=int, default=15, help="每輪抓幾檔（越大越省請求數，但單次回應越大越可能逾時；15 較穩）")
-    ap.add_argument("--patience", type=int, default=2, help="連續幾輪 remaining 沒下降才算補完")
     ap.add_argument("--throttle", type=float, default=0.2, help="本機請求間隔秒（本機不會被限流，可小）")
     ap.add_argument("--timeout", type=float, default=45, help="每個報表請求逾時秒（本機批次回應較大，給寬一點）")
     ap.add_argument("--max-rounds", type=int, default=400, help="安全上限，避免異常時無限跑")
@@ -88,20 +87,25 @@ def main() -> int:
         print(f"[!] {path} 連續 {retries} 次失敗，放棄本次（重跑會從剩下的續補）。")
         return None
 
-    best = float("inf")
-    stale = 0
+    # 用 after 游標一路往後掃過整份 pending 清單，每個代號一輪只碰一次——不能用「remaining
+    # 沒下降就停」，因為一撞到一群缺 capex 的金融股（永遠湊不齊 4 指標）remaining 就不動、
+    # 會誤判補完，而那群後面還能補的代號永遠掃不到（見 report-pending 端點的 after 說明）。
+    after = ""
     total_imported = 0
     for rnd in range(1, args.max_rounds + 1):
-        pend = call("GET", "/api/financials/report-pending", params={"limit": args.batch})
+        pend = call("GET", "/api/financials/report-pending",
+                    params={"limit": args.batch, "after": after})
         if pend is None:
             return 2
         codes = pend.get("codes") or []
         remaining, universe = pend.get("remaining", 0), pend.get("universe", 0)
         if not codes:
-            print(f"完成：沒有待補代號（remaining={remaining}/{universe}）。")
+            print(f"補完：整份清單已掃完一輪（remaining={remaining}/{universe}，剩下多為缺 capex "
+                  f"的金融股／尚未公布的代號）。累計匯入 {total_imported} 列。")
             break
         ay, aseason = pend["anchor_year"], pend["anchor_season"]
-        print(f"round {rnd}: 抓 {len(codes)} 檔（remaining {remaining}/{universe}）…", flush=True)
+        print(f"round {rnd}: 抓 {len(codes)} 檔（{codes[0]}–{codes[-1]}，remaining {remaining}/{universe}）…",
+              flush=True)
         t0 = time.time()
 
         def _tick(report, q, hit, secs):   # 即時進度：每抓一季印一格，才不會整批看起來凍住
@@ -115,14 +119,9 @@ def main() -> int:
         total_imported += imported
         dt = time.time() - t0
         print(f"  → 匯入 {imported} 列（本輪 {dt:.0f}s，累計匯入 {total_imported}）", flush=True)
-
-        if remaining < best:            # 有進展 → 重置耐心
-            best, stale = remaining, 0
-        else:
-            stale += 1
-            if stale >= max(1, args.patience):
-                print(f"補完（remaining 連續 {args.patience} 輪未下降，剩 {remaining} 檔多為缺科目的代號）。")
-                break
+        after = codes[-1]   # 游標往後推，下一輪抓 code > after 的，不重掃前面卡住的
+    else:
+        print(f"[!] 達 max_rounds={args.max_rounds} 上限仍未掃完，先停（重跑會從頭再掃一遍、續補）。")
     client.close()
     print(f"結束。本次共匯入 {total_imported} 列。")
     return 0

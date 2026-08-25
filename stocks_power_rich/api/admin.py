@@ -263,13 +263,20 @@ def revenue_backfill_history(months: int = 6, anchor_year: int = 0, anchor_month
 # remaining 卡住 0 提交），改在本機抓好（本機 ~6 秒沒問題）再 POST 上雲。這兩個端點是那條
 # 管線的雲端側——同 CSV 上傳的哲學（本機做 Zeabur 做不到的事、把結果送上來）。
 @router.get("/financials/report-pending")
-def financials_report_pending(limit: int = 60):
-    """回還缺完整報表指標的代號（前 limit 個）＋預設 anchor 季，供本機同步腳本驅動。"""
+def financials_report_pending(limit: int = 60, after: str = ""):
+    """回還缺完整報表指標的代號（`code > after` 的前 limit 個）＋anchor 季，供本機腳本驅動。
+
+    **`after` 游標是必要的**：金融股（銀行/保險）只有損益、沒有現金流量表 capex，會永遠
+    湊不齊 4 個指標而卡在 pending。若每次都回「最前面 N 個」，腳本一撞到一群這種代號就會
+    每輪重抓同一批、remaining 不動、誤判補完，而那群「後面」還能補的代號永遠掃不到。改用
+    `after` 讓腳本一路往後掃過整份清單、每個代號一輪只碰一次（見 sync 腳本的游標分頁）。
+    """
     c = conn()
     universe = updater._financials_universe(c)
     pending = updater._report_pending_codes(c, universe)
+    after_codes = [code for code in pending if code > after]   # 游標之後的下一批
     ay, aseason = updater._default_report_anchor()
-    return {"codes": pending[:max(1, min(limit, 300))], "anchor_year": ay, "anchor_season": aseason,
+    return {"codes": after_codes[:max(1, min(limit, 300))], "anchor_year": ay, "anchor_season": aseason,
             "universe": len(universe), "remaining": len(pending)}
 
 @router.post("/financials/import")
