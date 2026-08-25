@@ -15,7 +15,7 @@ from .helpers import (
     line_quota_paused,
     REPO_DIR
 )
-from ..db import get_setting, set_setting, get_snapshot_dates, get_tx_history, get_ai_cache, backup_db, get_connection
+from ..db import get_setting, set_setting, get_snapshot_dates, get_tx_history, get_ai_cache, backup_db, get_connection, bulk_upsert_financials
 from ..config import load_config
 from .. import updater, gemini, analysis, selfcheck
 
@@ -258,6 +258,33 @@ def revenue_backfill_history(months: int = 6, anchor_year: int = 0, anchor_month
             conn(), months=max(1, min(months, 18)), anchor=anchor)
     finally:
         _backfill_lock.release()
+
+# 「本機抓 → 匯入 production」：Zeabur 打不動 mopsfin 完整報表端點（實測每請求逾時、
+# remaining 卡住 0 提交），改在本機抓好（本機 ~6 秒沒問題）再 POST 上雲。這兩個端點是那條
+# 管線的雲端側——同 CSV 上傳的哲學（本機做 Zeabur 做不到的事、把結果送上來）。
+@router.get("/financials/report-pending")
+def financials_report_pending(limit: int = 60):
+    """回還缺完整報表指標的代號（前 limit 個）＋預設 anchor 季，供本機同步腳本驅動。"""
+    c = conn()
+    universe = updater._financials_universe(c)
+    pending = updater._report_pending_codes(c, universe)
+    ay, aseason = updater._default_report_anchor()
+    return {"codes": pending[:max(1, min(limit, 300))], "anchor_year": ay, "anchor_season": aseason,
+            "universe": len(universe), "remaining": len(pending)}
+
+@router.post("/financials/import")
+def financials_import(payload: dict = Body(...)):
+    """收本機算好的報表指標並上 `stock_financials`。body＝`{"data": {indicator: {code: {季別: 值}}}}`
+    （`updater.compute_report_indicators` 的輸出形狀）。只收已知財報指標鍵（REPORT_ITEMS ∪
+    RATIO_ITEMS），未知鍵一律略過，避免這個開放的匯入端點被亂寫。回 `{"imported": 列數}`。"""
+    data = (payload or {}).get("data") or {}
+    allowed = set(updater.financials.REPORT_ITEMS) | set(updater.financials.RATIO_ITEMS)
+    c = conn()
+    imported = 0
+    for indicator, by_code in data.items():
+        if indicator in allowed and isinstance(by_code, dict):
+            imported += bulk_upsert_financials(c, indicator, by_code)
+    return {"imported": imported}
 
 @router.get("/picks/selfcheck")
 def picks_selfcheck(date: str = ""):

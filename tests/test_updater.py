@@ -284,6 +284,28 @@ def test_backfill_report_until_plateau_stops_when_remaining_stops_dropping(tmp_p
     assert prog["remaining"] == 40 and prog["done"] is True   # progress 供端點即時讀
 
 
+def test_compute_report_indicators_returns_decumulated_by_indicator_no_db(monkeypatch):
+    """抽出的純函式：抓報表→反推單季→{indicator:{code:{季別:單季值}}}，不需要 DB。
+    本機腳本靠它在本機算好再 POST 上 production（Zeabur 打不動報表端點）。"""
+    monkeypatch.setattr(updater, "_REPORT_THROTTLE", 0)
+    # 每季累計值（loss/pretax 用同一組模擬）；2026 各季累計，反推後 Q1=Q1累計、Q2=Q2-Q1…
+    income_cum = {"2026Q1": 100.0, "2025Q4": 400.0, "2025Q3": 300.0, "2025Q2": 200.0, "2025Q1": 90.0}
+    cash_cum = {f"{y}Q{s}": 10.0 * (4 * (2026 - y) + (5 - s)) for y in (2025, 2026) for s in (1, 2, 3, 4)}
+
+    def fake(codes, report, year, season):
+        q = f"{year}Q{season}"
+        if report == "IncomeStatement":
+            return (q, {c: {"稅前淨利（淨損）": income_cum[q]} for c in codes}) if q in income_cum else (q, {})
+        return (q, {c: {"取得不動產、廠房及設備": -cash_cum[q]} for c in codes}) if q in cash_cum else (q, {})
+
+    monkeypatch.setattr(updater.financials, "fetch_report", fake)
+    out = updater.compute_report_indicators(["2330"], 2026, 1)
+    assert "pretax_income" in out and "capex" in out
+    assert out["pretax_income"]["2330"]["2026Q1"] == 100.0        # 新年度 Q1＝累計本身
+    assert out["pretax_income"]["2330"]["2025Q4"] == 100.0        # 400-300
+    assert isinstance(out["capex"]["2330"], dict) and out["capex"]["2330"]
+
+
 def test_backfill_report_until_plateau_tolerates_transient_empty_round(tmp_path, monkeypatch):
     """迴歸（production 卡在 remaining=1947）：某一輪整輪 committed=0（報表端點退化回空）不可
     直接判 done——下一輪可能就恢復。patience=2 讓單一暫時性空輪被容忍、繼續補到真的平為止。"""

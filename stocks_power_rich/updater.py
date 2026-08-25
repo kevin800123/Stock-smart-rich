@@ -161,52 +161,55 @@ def backfill_report_financials(conn, anchor_year: int | None = None, anchor_seas
         batch = pending[b * batch_size:(b + 1) * batch_size]
         if not batch:
             break
-        raw: dict = {}  # (code, key) -> {季別: 累計值}
-        for report, depth in _REPORT_DEPTH.items():
-            # 目標是蒐集到 depth+1 個「有資料」的季度（+1 是墊底：最舊那季的單季值＝該季
-            # 累計－上一季累計，需要多一季基準才反推得出，否則最舊一季必為 None 被濾掉）。
-            # 用「持續往回抓直到蒐集滿」而非固定季數，是因為 anchor 本身那季常常還沒公布
-            # （見 fetch_report 的 ys 說明）——若固定抓 depth+1 個季別標籤，遇到 anchor 空
-            # 就會少一次有效抓取，實測因此仍然只換到 depth-1 季能用。安全上限 depth+6
-            # 次嘗試，避免報表整個掛掉時無限迴圈。
-            # got 只計「這季真的抓到我要的科目」，不能只看 parsed 是否非空——實測踩到
-            # 一種過渡態：最新一季 parsed 有資料，卻沒有我要的那個科目（如現金流量表科目
-            # 還沒填齊、損益數字先出來），這種季度算進 got 會讓真正有用的季度少一筆。
-            got = 0
-            y, s = ay, aseason
-            for _ in range(depth + 6):
-                if got >= depth + 1:
-                    break
-                q = f"{y}Q{s}"
-                s -= 1
-                if s == 0:
-                    s, y = 4, y - 1
-                try:
-                    _actual_q, parsed = financials.fetch_report(batch, report, int(q[:4]), int(q[5]))
-                except Exception:  # noqa: BLE001 — 單季失敗不影響其餘
-                    parsed = {}
-                hit = False
-                for code, labels in parsed.items():
-                    for key, (rep2, label) in financials.REPORT_ITEMS.items():
-                        if rep2 == report and label in labels:
-                            raw.setdefault((code, key), {})[q] = labels[label]
-                            hit = True
-                if hit:
-                    got += 1
-                time.sleep(_REPORT_THROTTLE)  # 放慢避免 mopsfin 報表端點在密集請求下退化
-
-        by_indicator: dict = {}
-        for (code, key), series in raw.items():
-            decum = financials.decumulate_quarterly(series)
-            vals = {q: v for q, v in decum.items() if v is not None}
-            if vals:
-                by_indicator.setdefault(key, {})[code] = vals
+        by_indicator = compute_report_indicators(batch, ay, aseason)
         for key, by_code in by_indicator.items():
             bulk_upsert_financials(conn, key, by_code)
         filled += len(batch)
 
     remaining = len(_report_pending_codes(conn, universe))
     return {"filled": filled, "remaining": remaining, "universe": len(universe)}
+
+
+def compute_report_indicators(codes: list, anchor_year: int, anchor_season: int) -> dict:
+    """抓 `codes` 的完整報表並反推單季 → `{indicator: {code: {季別: 單季值}}}`（**不碰 DB**）。
+
+    從 backfill_report_financials 的批次內聯邏輯抽出，讓「本機抓 → 匯入 production」的本機
+    腳本能直接呼叫（Zeabur 打不動 mopsfin 報表端點，故在本機抓好再 POST 上雲）。抓取深度
+    `depth+1`（墊底一季供反推）、「持續往回抓到蒐集滿」而非固定季數、got 只計真的抓到目標
+    科目的季度——這些取捨與踩過的坑見 backfill_report_financials 的 docstring。
+    """
+    raw: dict = {}  # (code, key) -> {季別: 累計值}
+    for report, depth in _REPORT_DEPTH.items():
+        got = 0
+        y, s = anchor_year, anchor_season
+        for _ in range(depth + 6):
+            if got >= depth + 1:
+                break
+            q = f"{y}Q{s}"
+            s -= 1
+            if s == 0:
+                s, y = 4, y - 1
+            try:
+                _actual_q, parsed = financials.fetch_report(codes, report, int(q[:4]), int(q[5]))
+            except Exception:  # noqa: BLE001 — 單季失敗不影響其餘
+                parsed = {}
+            hit = False
+            for code, labels in parsed.items():
+                for key, (rep2, label) in financials.REPORT_ITEMS.items():
+                    if rep2 == report and label in labels:
+                        raw.setdefault((code, key), {})[q] = labels[label]
+                        hit = True
+            if hit:
+                got += 1
+            time.sleep(_REPORT_THROTTLE)  # 放慢避免 mopsfin 報表端點在密集請求下退化
+
+    by_indicator: dict = {}
+    for (code, key), series in raw.items():
+        decum = financials.decumulate_quarterly(series)
+        vals = {q: v for q, v in decum.items() if v is not None}
+        if vals:
+            by_indicator.setdefault(key, {})[code] = vals
+    return by_indicator
 
 
 def backfill_report_financials_until_plateau(conn, anchor_year: int | None = None,

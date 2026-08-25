@@ -49,6 +49,33 @@ def test_financials_backfill_report_is_async_started_running_done(tmp_path, monk
     assert r3["status"] == "started"
 
 
+def test_financials_import_and_report_pending(tmp_path, monkeypatch):
+    """本機抓→匯入 production 的雲端兩端點：POST import 收報表指標上 stock_financials；
+    GET report-pending 回還缺的代號＋anchor 供本機腳本驅動。未知指標鍵一律略過（防亂寫）。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(create_app())
+
+    body = {"data": {
+        "pretax_income": {"2330": {"2026Q1": 100.0, "2025Q4": 90.0}},
+        "capex": {"2330": {"2026Q1": -50.0}},
+        "bogus_indicator": {"9999": {"2026Q1": 1.0}},   # 未知鍵 → 略過
+    }}
+    r = client.post("/api/financials/import", json=body).json()
+    assert r["imported"] == 3        # pretax 2 + capex 1；bogus 不計
+
+    from stocks_power_rich.db import get_connection, get_financial_series
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    assert dict(get_financial_series(c, "2330", "pretax_income"))["2026Q1"] == 100.0
+    assert "bogus_indicator" not in {i for _, i in c.execute(
+        "SELECT code, indicator FROM stock_financials")}
+
+    rp = client.get("/api/financials/report-pending?limit=10").json()
+    for k in ("codes", "anchor_year", "anchor_season", "universe", "remaining"):
+        assert k in rp
+    assert isinstance(rp["codes"], list)
+
+
 def test_frontend_card_alert_guards():
     web = Path(__file__).parents[1] / "web"
     js = (web / "app.js").read_text(encoding="utf-8")

@@ -63,6 +63,27 @@ DPAPI 快取、`-BaseUrl` 也固定指向這個部署）和 [`upload_xq.example.
 固定時間即可，細節與 XQ 端「每日自動執行選股」（[官方教學](https://www.xq.com.tw/learning/%E9%81%B8%E8%82%A1%E4%B8%AD%E5%BF%83%EF%BC%9A%E5%A6%82%E4%BD%95%E5%9F%B7%E8%A1%8C%E8%87%AA%E5%8B%95%E9%81%B8%E8%82%A1/)，讓 XQ
 自己每天重跑選股，你仍需手動匯出成檔）搭配的做法，等真的想要再回頭研究即可。
 
+## 季報完整報表：本機抓 → 匯入雲端（偶爾跑一次，非每天）
+
+木質的「自算財報分」（`lan_score`）需要季報裡的**稅前淨利、營業費用、所得稅、資本支出**，
+這 4 個要打 mopsfin 的完整報表端點（`/compare/report`）。**這個端點從 Zeabur 出站打不動**
+（每個請求逾時、一筆都提交不了；同一主機的 ratios 端點卻通），但**本機**打 ~6 秒沒問題。
+所以這 4 個指標走「本機抓好、POST 上雲」，其餘 8 個 ratios 指標仍直接在雲端回補。
+
+在 repo 根目錄、用專案 venv 執行：
+
+```
+.venv\Scripts\python scripts\sync_report_financials.py --user admin
+```
+
+- `--base-url` 預設正式站；密碼不帶會跳出提示輸入（或設環境變數 `SPR_BASIC_PASS`）
+- 它會自動迴圈：向雲端問「還缺哪些代號」→ 本機抓報表、反推單季 → POST 上雲，直到補完
+- **季報一季才更新一次**，所以這支是「偶爾手動跑一次、可能跑一兩小時」的工作，不是每天的事
+- 可隨時 Ctrl+C 中斷，重跑會從剩下的續補（雲端記得已補到哪）
+
+跑之前，雲端要先有 ratios（8 個 JSON 指標）：那個直接在雲端跑就好，
+`GET /api/financials/backfill?max_batches=6&batch_size=50`（重複呼叫到 `remaining` 不再下降）。
+
 ## 下一階段（Stage 2，尚未開始）
 
 長期要讓本站不再依賴 XQ/蘭弦逐日匯出，改用公開資料源（月營收、季報財務、集保、K 線）
