@@ -279,6 +279,24 @@ def financials_report_pending(limit: int = 60, after: str = ""):
     return {"codes": after_codes[:max(1, min(limit, 300))], "anchor_year": ay, "anchor_season": aseason,
             "universe": len(universe), "remaining": len(pending)}
 
+@router.get("/financials/coverage-for")
+def financials_coverage_for(codes: str = ""):
+    """診斷：指定代號各自持有幾季的 lan_score 所需指標（_LAN_USED），以及 lan_score 算不算得出來。
+    用來查「財報分為何是 —」——一眼看出缺哪個指標（0 季）或哪個季數不足。"""
+    want = list(analysis._LAN_USED)
+    from ..db import get_financials_bulk as _gfb
+    bulk = _gfb(conn(), want)
+    out = {}
+    for code in [x.strip() for x in codes.split(",") if x.strip()]:
+        f = bulk.get(code) or {}
+        need = {k: max(analysis._LAN_USED[k]) + 1 for k in want}
+        have = {k: len(f.get(k, [])) for k in want}
+        short = [k for k in want if have[k] < need[k]]
+        ls = analysis.lan_score(f)
+        out[code] = {"have": have, "need": need, "short": short,
+                     "lan_score": ls["score"] if ls else None}
+    return {"codes": out}
+
 @router.post("/financials/import")
 def financials_import(payload: dict = Body(...)):
     """收本機算好的報表指標並上 `stock_financials`。body＝`{"data": {indicator: {code: {季別: 值}}}}`

@@ -1077,7 +1077,7 @@ button.file-label { font: inherit; }
   grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px;
   padding-top: 9px; border-top: 1px solid var(--border-subtle);
 }
-.picks-summary { display: flex; align-items: center; gap: 0; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
+.picks-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 0; row-gap: 4px; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
 .picks-summary span { padding: 0 10px; border-right: 1px solid var(--border-default); }
 .picks-summary span:first-child { padding-left: 0; }
 .picks-summary span:last-child { border-right: 0; }
