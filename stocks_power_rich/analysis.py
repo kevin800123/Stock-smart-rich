@@ -93,6 +93,7 @@ SELFCHECK_TOL = {          # 絕對容差
     "rev_yoy": 0.5,        # 百分點
     "big_holder_ratio": 0.05,  # 百分點
     "holder_drop_ratio": 0.5,  # 人數降比（總持股人數相對變化%），比大戶增比鬆（值域較大）
+    "lan_score": 1.0,      # 財報分（蘭質 0–15 整數刻度）：自算 vs CSV 蘭質，容 ±1 項邊界差
     "mu_score": 1.0,       # 木質 0–19 小整數刻度
     "mu_value": 1.0,       # 木率
 }

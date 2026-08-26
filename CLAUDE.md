@@ -396,7 +396,16 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - **`db.institutional_3d_map(conn, as_of=None)`**：全市場 `{代號: {trust_3d, foreign_3d}}`＝`date<=as_of` 且有法人資料的**最近 3 個交易日** `trust_lots`/`foreign_lots` 加總。窗口用「對整張表找最近 3 個 distinct date」（兩市場共用交易日曆，同 `custody_change_map` 的作法，不逐檔找）；**某檔某日缺列＝當日 0**（`COALESCE`，T86 未列出即當日無三大法人淨買賣，不整檔排除）。無資料回空。**這是換算張數的加總、非金額**——來源已 /1000，與外部金額口徑不可直接比，但 XQ 的 `投三`/`外三` 本身也是張數淨額，故 selfcheck 對得起來（口徑一致、僅四捨五入級差異）。純算式只是「窗內加總」、沒有可抽出的權威公式，故整支放 `db.py`、以真 DB 測（同 `custody_change_map`，不像 `custody_change` 那樣有純函式）。
 - **接進 selfcheck 的兩欄（`投信3日`/`外資3日`）**，對照 `chip_snapshot.trust_3d`/`foreign_3d`（CSV `投三`/`外三`）。前端 `SC_SIGNED`：正紅負綠、強度隨量級（同大戶增比）。
 - **容差用「隨量級寬容」`SELFCHECK_ABS_REL`（下限 5 張, 比例 2%）＝ `max(5, 0.02×|csv|)`，不是固定絕對容差**——這是實測校準出來的：初版用固定 3 張，外資幾乎整排判 diff。追查發現**我方自算＝官方 T86**（逐檔 3 日加總，實測 1101=23,345、1102=31,339、1216=37,018 與 raw T86 逐位元相符），而與 XQ 的 `外三` **中位差僅 80 張 ≒ 0.3%**（外資量級達數萬張），是 feed 級 sub-% 差異、非錯誤。**投信中位差 0 只是因為投信量級近 0**，不是「投信比較準」。固定 3 張對「量級可達數萬」的外資天生過嚴，改相對容差吸收大值噪音、下限守小值，真正偏很多（>2%）才 diff。**曾誤判為「含/不含外資自營商」口徑差**，實測推翻：`外資自營商買賣超` 3 日加總在**全部 1089 檔上市股皆為 0**（近乎休眠的通道），故「改含自營」對數字零影響（no-op）；canonical 外資＝`外陸資(不含自營)+外資自營商`，但因後者恆 0，兩者相等。教訓：**大量級數量用固定絕對容差本來就會假性全 diff，先確認自算＝官方再決定容差形狀，不要一看到整排 diff 就假設是口徑錯**。
-- **並存**：`institutional_3d_map()` 只接進 selfcheck 對照，**尚未接進 `filtered_picks`／木質自算**（同前幾片）。木質自算還缺「自算財報分」（`lan_score`，需 production 跑季報回補）＋把這四個籌碼訊號一起餵進 `mu_score`——屬 2e 整合。
+- **並存**：`institutional_3d_map()` 只接進 selfcheck 對照，**尚未接進 `filtered_picks`**（同前幾片）。
+
+### 自算財報分（蘭質）＋木質接進 selfcheck（2026-08，季報回補完成後）
+
+季報回補（本機抓→匯入，見上）跑到 remaining 144/1977（1833 檔有完整報表指標）後，**自算 `lan_score`（蘭質 15 項）終於有全市場原料**，接進 selfcheck：
+
+- **`db.get_financials_bulk(conn, indicators)`**：一支 SQL 取回 `{代號: {指標: [值,新到舊]}}`（避免逐檔逐指標打數千次查詢），正是 `analysis.lan_score` 期望的 `[0]=最新` 形狀。缺某指標的代號自然沒那個 key、`lan_score` 的充足性守衛據此回 None（顯示尚無自算）。
+- **selfcheck 新增「財報分（蘭質）」欄**：自算 `lan_score(fin[bare])["score"]` vs CSV 蘭質（`chip_snapshot.lan_score`），容差 `SELFCHECK_TOL["lan_score"]=1`（0–15 刻度容 ±1 項邊界差）。這是**驗證我們 15 項公式重現得了 XQ 蘭質**的關卡。
+- **木質（`mu_score`）同時解鎖**：＝自算財報分 ＋ 四個籌碼訊號（大戶增比/人數降比/投信三日/外資三日，皆已自算）。CSV 沒有木質欄（本站自有分數）→ `csv_na`（顯示「無 CSV 對照」但值會亮出來），前端 `SC_SCORE` 中性藍。**仍 blocked 的只剩 `mu_value`（木率，需本業PE）與 `est_profit`（推估EPS，需 Call_LE 組裝月營收＋季報）**——屬下一步。
+- **並存不變**：`filtered_picks`／`attach_mu` 仍用 CSV 匯入的蘭質當財報分（Stage 1）；selfcheck 的自算欄是拿來對照驗證的，驗過才談把 `attach_mu` 換成自算 `lan_score`。
 
 ### 季報財務：Stage 2 第四片，sub-task 1（`sources/financials.py`，2026-08）
 

@@ -29,7 +29,7 @@ def test_build_selfcheck_live_fields_and_blocked_fields(tmp_path):
 
     assert out["date"] == "2026-08-20"
     assert out["fields"] == ["rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio",
-                             "trust_3d", "foreign_3d", "est_profit", "mu_score", "mu_value"]
+                             "trust_3d", "foreign_3d", "lan_score", "est_profit", "mu_score", "mu_value"]
     by_code = {r["code"]: r for r in out["rows"]}
 
     # rev_yoy：自算來自 revenue_yoy_map（本測試沒建月營收 → self None → self_na），不炸
@@ -41,11 +41,14 @@ def test_build_selfcheck_live_fields_and_blocked_fields(tmp_path):
     assert by_code["1101"]["fields"]["w55"]["self"] == 0.0
     assert by_code["1101"]["fields"]["w55"]["status"] == "match"
 
-    # 三個 blocked 欄：self 恆 None、status 恆 self_na（本案不自算）
-    for f in ("est_profit", "mu_score", "mu_value"):
+    # est_profit / mu_value 仍 blocked：self 恆 None、status self_na（本案不自算）
+    for f in ("est_profit", "mu_value"):
         assert by_code["2330"]["fields"][f]["self"] is None
         assert by_code["2330"]["fields"][f]["status"] == "self_na"
         assert f in out["blocked_reason"]
+    # mu_score（木質）已解鎖＝自算財報分＋籌碼；本測試沒建季報 → self None、CSV 無此欄 → csv_na（不再 blocked）
+    assert by_code["2330"]["fields"]["mu_score"]["self"] is None
+    assert "mu_score" not in out["blocked_reason"]
 
     # 容差揭露來自 analysis 常數（防前端另寫一份）
     from stocks_power_rich import analysis
@@ -112,6 +115,31 @@ def test_build_selfcheck_institutional_3d_self_from_stock_flow(tmp_path):
     assert fields["trust_3d"]["status"] == "match"  # CSV 6.0
     assert fields["foreign_3d"]["self"] == 3.0      # 2-3+4
     assert fields["foreign_3d"]["status"] == "match"  # CSV 3.0
+
+
+def test_build_selfcheck_lan_score_self_from_financials(tmp_path):
+    """財報分：自算 lan_score（蘭質 15 項）從 stock_financials 組裝所有 _LAN_USED 指標，
+    對照 CSV 蘭質（chip_snapshot.lan_score）。這是木質的財報主幹、季報回補後解鎖。"""
+    from stocks_power_rich.db import bulk_upsert_financials
+    from stocks_power_rich import analysis
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    conn.execute("INSERT INTO chip_snapshot(snap_date,code,name,lan_score) "
+                 "VALUES('2026-08-20','2330.TW','台積電',8.0)")
+    quarters = ["2026Q2", "2026Q1", "2025Q4", "2025Q3", "2025Q2", "2025Q1", "2024Q4", "2024Q3"]
+    for ind in analysis._LAN_USED:      # 每個指標 8 季（capex 最遠用到 [7]）
+        bulk_upsert_financials(conn, ind, {"2330": {q: float(10 + i) for i, q in enumerate(quarters)}})
+    conn.commit()
+
+    fields = selfcheck.build_selfcheck(conn, "2026-08-20")["rows"][0]["fields"]
+    fin = {ind: [float(10 + i) for i in range(8)] for ind in analysis._LAN_USED}  # 新到舊
+    expected = analysis.lan_score(fin)["score"]
+    assert fields["lan_score"]["self"] == expected   # 與獨立呼叫 lan_score 一致（去後綴 join 命中）
+    assert fields["lan_score"]["csv"] == 8.0          # CSV 蘭質
+    assert fields["lan_score"]["status"] in ("match", "diff")
+    # 木質也解鎖：無籌碼（沒建集保/3日）→ 木質＝財報分＋0 bonus；CSV 無木質欄 → csv_na
+    assert fields["mu_score"]["self"] == expected
+    assert fields["mu_score"]["status"] == "csv_na"
 
 
 def test_build_selfcheck_custody_diag_two_weeks(tmp_path):

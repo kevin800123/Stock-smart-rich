@@ -281,6 +281,20 @@ def test_institutional_3d_map_sums_last_three_trading_days(tmp_path):
     assert m2["2330"] == {"trust_3d": 8.0, "foreign_3d": 9.0}
 
 
+def test_get_financials_bulk_shapes_for_lan_score(tmp_path):
+    """全市場一次取 {代號:{指標:[值,新到舊]}}，正是 lan_score 期望的 [0]=最新 形狀。"""
+    from stocks_power_rich.db import bulk_upsert_financials, get_financials_bulk
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    bulk_upsert_financials(conn, "revenue", {"2330": {"2026Q2": 300.0, "2026Q1": 200.0, "2025Q4": 100.0}})
+    bulk_upsert_financials(conn, "roe", {"2330": {"2026Q2": 30.0}, "1101": {"2026Q2": 5.0}})
+    out = get_financials_bulk(conn, ["revenue", "roe"])
+    assert out["2330"]["revenue"] == [300.0, 200.0, 100.0]   # 季別由新到舊
+    assert out["2330"]["roe"] == [30.0]
+    assert out["1101"] == {"roe": [5.0]}                      # 缺 revenue → 沒那個 key
+    assert get_financials_bulk(conn, []) == {}
+
+
 def test_institutional_3d_map_empty_when_no_flow(tmp_path):
     from stocks_power_rich.db import institutional_3d_map
     conn = get_connection(str(tmp_path / "t.sqlite"))

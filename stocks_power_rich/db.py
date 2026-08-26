@@ -460,6 +460,23 @@ def get_financial_series(conn: sqlite3.Connection, code: str, indicator: str) ->
         "ORDER BY quarter DESC", (code, indicator))]
 
 
+def get_financials_bulk(conn: sqlite3.Connection, indicators: list) -> dict:
+    """全市場一次取：`{代號: {指標: [值, 新到舊]}}`，供 analysis.lan_score 逐檔組裝輸入。
+
+    一支 SQL 取回所有代號的指定指標（避免逐檔逐指標打數千次查詢）；每檔每指標的值依季別
+    由新到舊排列，正是 lan_score 期望的 `[0]=最新` 形狀。缺某指標的代號自然不會有那個 key，
+    lan_score 的充足性守衛會據此回 None（該檔顯示尚無自算）。"""
+    if not indicators:
+        return {}
+    ph = ",".join("?" * len(indicators))
+    out: dict = {}
+    for code, indicator, _q, value in conn.execute(
+            f"SELECT code, indicator, quarter, value FROM stock_financials "
+            f"WHERE indicator IN ({ph}) ORDER BY code, indicator, quarter DESC", list(indicators)):
+        out.setdefault(code, {}).setdefault(indicator, []).append(value)
+    return out
+
+
 def get_latest_revenue(conn: sqlite3.Connection, code: str, as_of: str | None = None) -> dict | None:
     """單一代號「已知最新」月營收列，可用 as_of 限定只看該日之前已公告的月份（不回推未來）。"""
     if as_of:
