@@ -11,12 +11,8 @@ from . import analysis, db
 
 FIELDS = ["rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio",
           "trust_3d", "foreign_3d", "lan_score", "est_profit", "mu_score", "mu_value"]
-LIVE_FIELDS = ["rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio",
-               "trust_3d", "foreign_3d", "lan_score"]
-BLOCKED_REASON = {
-    "est_profit": "需回補 6 個月歷史月營收（來源已建立，待回補後接線）",
-    "mu_value": "同木質，另需自算本業PE（待推估EPS）",
-}
+LIVE_FIELDS = list(FIELDS)   # 10 欄全部自算（est_profit/mu_score/mu_value 於季報回補完成後解鎖）
+BLOCKED_REASON: dict = {}   # 10 欄全部接上自算（財報分/木質/木率/推估EPS 於季報回補完成後解鎖）
 
 
 def _snap_dates(conn) -> list[str]:
@@ -58,17 +54,19 @@ def build_selfcheck(conn, date: str | None) -> dict:
         date = dates[0] if dates else None
     rows_csv = conn.execute(
         "SELECT code, name, rev_yoy, w55, big_holder_ratio, holder_drop_ratio, "
-        "trust_3d, foreign_3d, lan_score, est_profit "
+        "trust_3d, foreign_3d, lan_score, est_profit, capital "
         "FROM chip_snapshot WHERE snap_date=? ORDER BY code", (date,)).fetchall() if date else []
 
     yoy = db.revenue_yoy_map(conn, as_of=date) if date else {}
     custody = db.custody_change_map(conn, as_of=date) if date else {}
     inst3d = db.institutional_3d_map(conn, as_of=date) if date else {}
-    fin = db.get_financials_bulk(conn, list(analysis._LAN_USED)) if date else {}  # 自算財報分（蘭質）的原料
+    # 財報分（蘭質）＋Call_LE（推估EPS）的季報原料：_LAN_USED ∪ {opex, income_tax}
+    fin = db.get_financials_bulk(conn, list(analysis._LAN_USED) + ["opex", "income_tax"]) if date else {}
+    mrev = db.monthly_revenue_bulk(conn, as_of=date) if date else {}   # {代號: [月營收億元,新到舊]}
     ohlc = db.get_all_ohlc(conn, min_bars=55)
 
     out_rows = []
-    for code, name, csv_yoy, csv_w55, csv_bhr, csv_hdr, csv_t3, csv_f3, csv_lan, csv_est in rows_csv:
+    for code, name, csv_yoy, csv_w55, csv_bhr, csv_hdr, csv_t3, csv_f3, csv_lan, csv_est, csv_cap in rows_csv:
         # chip_snapshot 的 code 帶 .TW/.TWO 後綴（XQ CSV 一律加 .TW），但自算來源
         # （月營收 revenue_yoy_map／集保 custody_change_map／OHLC get_all_ohlc）一律 bare
         # code——不去後綴，每一列 join 都 miss、全部「尚無自算」（production 實況）。
@@ -89,6 +87,20 @@ def build_selfcheck(conn, date: str | None) -> dict:
         ms = analysis.mu_score(self_lan, {"big_holder_ratio": self_bhr, "holder_drop_ratio": self_hdr,
                                           "trust_3d": self_t3, "foreign_3d": self_f3})
         self_mu = ms["score"] if ms else None
+        # 推估EPS（Call_LE）：月營收(億元,已轉)＋近2季毛利率＋近4季營業費用/所得稅(仟元→百萬元)
+        # ＋股數(股本億元×1e7)。單位換算與守衛見 analysis.estimate_quarterly_eps。
+        f = fin.get(bare) or {}
+        _m = lambda xs: [x / 1000 if x is not None else None for x in xs]   # 仟元 → 百萬元
+        shares = csv_cap * 1e7 if csv_cap else None
+        self_est = analysis.estimate_quarterly_eps(
+            mrev.get(bare, []), f.get("gross_margin") or [], _m(f.get("opex") or []),
+            _m(f.get("income_tax") or []), shares)
+        # 木率＝木質 ÷ 本業PE × 100。本業PE＝現價 ÷ 本業年EPS（推估季EPS×4）；現價取 OHLC 最新收盤。
+        oc = ohlc.get(bare) or {}
+        price = oc["closes"][-1] if oc.get("closes") else None
+        self_lpe = (price / (self_est * 4)) if (self_est and self_est > 0 and price) else None
+        mv = analysis.mu_value(self_mu, self_lpe)
+        self_mv = mv["value"] if mv else None
         vals = {
             "rev_yoy": (csv_yoy, self_yoy),
             "w55": (csv_w55, self_w55),
@@ -97,9 +109,9 @@ def build_selfcheck(conn, date: str | None) -> dict:
             "trust_3d": (csv_t3, self_t3),
             "foreign_3d": (csv_f3, self_f3),
             "lan_score": (csv_lan, self_lan),   # 財報分：自算 lan_score vs CSV 蘭質
+            "est_profit": (csv_est, self_est),  # 推估EPS：自算 Call_LE vs CSV 推估獲利
             "mu_score": (None, self_mu),        # 木質：自算（CSV 無此欄 → csv_na），本站自有分數
-            "est_profit": (csv_est, None),      # blocked（本案不自算）
-            "mu_value": (None, None),           # blocked
+            "mu_value": (None, self_mv),        # 木率：自算（CSV 無此欄 → csv_na）
         }
         fields = {}
         for f, (cv, sv) in vals.items():

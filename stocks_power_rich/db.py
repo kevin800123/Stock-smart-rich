@@ -497,6 +497,23 @@ def get_latest_revenue(conn: sqlite3.Connection, code: str, as_of: str | None = 
             "yoy_pct": row[3], "accum_yoy_pct": row[4]}
 
 
+def monthly_revenue_bulk(conn: sqlite3.Connection, as_of: str | None = None, months: int = 6) -> dict:
+    """全市場 `{代號: [月營收(億元), 新到舊]}`，取每檔 `report_date<=as_of` 的最近 `months` 個月。
+
+    供 analysis.estimate_quarterly_eps（Call_LE）用——它要「本季 3 月＋上季 3 月」共 6 筆、
+    最新在前、單位億元。`stock_revenue_monthly.revenue` 是仟元，這裡 ÷1e5 轉億元（同 Call_LE
+    的單位換算）。缺值(None)照原樣留著，讓 estimate_quarterly_eps 的守衛自己判不足→回 None。"""
+    cutoff = as_of or "9999-99-99"
+    out: dict = {}
+    for code, revenue in conn.execute(
+            "SELECT code, revenue FROM stock_revenue_monthly WHERE report_date<=? "
+            "ORDER BY code, year_month DESC", (cutoff,)):
+        lst = out.setdefault(code, [])
+        if len(lst) < months:
+            lst.append(revenue / 1e5 if revenue is not None else None)
+    return out
+
+
 def revenue_yoy_map(conn: sqlite3.Connection, as_of: str | None = None) -> dict:
     """全市場 {代號: 最新已知營收年增%}，as_of 限定只看該日之前已公告的月份。
 

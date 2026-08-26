@@ -41,14 +41,11 @@ def test_build_selfcheck_live_fields_and_blocked_fields(tmp_path):
     assert by_code["1101"]["fields"]["w55"]["self"] == 0.0
     assert by_code["1101"]["fields"]["w55"]["status"] == "match"
 
-    # est_profit / mu_value 仍 blocked：self 恆 None、status self_na（本案不自算）
-    for f in ("est_profit", "mu_value"):
+    # 10 欄全部接上自算，BLOCKED_REASON 空。本測試沒建季報/月營收 → est_profit/mu_score/mu_value
+    # 的 self 為 None，但那是「資料不足」而非「blocked」。
+    assert out["blocked_reason"] == {}
+    for f in ("est_profit", "mu_score", "mu_value"):
         assert by_code["2330"]["fields"][f]["self"] is None
-        assert by_code["2330"]["fields"][f]["status"] == "self_na"
-        assert f in out["blocked_reason"]
-    # mu_score（木質）已解鎖＝自算財報分＋籌碼；本測試沒建季報 → self None、CSV 無此欄 → csv_na（不再 blocked）
-    assert by_code["2330"]["fields"]["mu_score"]["self"] is None
-    assert "mu_score" not in out["blocked_reason"]
 
     # 容差揭露來自 analysis 常數（防前端另寫一份）
     from stocks_power_rich import analysis
@@ -140,6 +137,29 @@ def test_build_selfcheck_lan_score_self_from_financials(tmp_path):
     # 木質也解鎖：無籌碼（沒建集保/3日）→ 木質＝財報分＋0 bonus；CSV 無木質欄 → csv_na
     assert fields["mu_score"]["self"] == expected
     assert fields["mu_score"]["status"] == "csv_na"
+
+
+def test_build_selfcheck_est_profit_self_from_call_le(tmp_path):
+    """推估EPS：自算 Call_LE 從月營收(億元)＋季毛利率＋近4季營業費用/所得稅(仟元→百萬元)＋
+    股數(股本×1e7) 組裝，對照 CSV 推估獲利。用 test_analysis_call_le 的合成值鎖住單位換算。"""
+    from stocks_power_rich.db import bulk_upsert_financials, bulk_upsert_revenue
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    conn.execute("INSERT INTO chip_snapshot(snap_date,code,name,est_profit,capital) "
+                 "VALUES('2026-08-20','2330.TW','台積電',1.5,100.0)")   # capital 100億 → shares 1e9
+    yms = ["2026-07", "2026-06", "2026-05", "2026-04", "2026-03", "2026-02"]   # 新到舊
+    revs = [1e6, 1e6, 1e6, 8e5, 8e5, 8e5]   # 仟元＝億元×1e5 → 10,10,10,8,8,8 億
+    for ym, rv in zip(yms, revs):
+        bulk_upsert_revenue(conn, "TWSE", {"2330": {"year_month": ym, "report_date": ym + "-10", "revenue": rv}})
+    q4 = ["2026Q2", "2026Q1", "2025Q4", "2025Q3"]
+    bulk_upsert_financials(conn, "gross_margin", {"2330": {"2026Q2": 65.0, "2026Q1": 60.0}})
+    bulk_upsert_financials(conn, "opex", {"2330": dict(zip(q4, [2e5, 1.5e5, 1.8e5, 1.9e5]))})   # 仟元＝百萬×1000
+    bulk_upsert_financials(conn, "income_tax", {"2330": dict(zip(q4, [1e5, 8e4, 9e4, 9.5e4]))})
+    conn.commit()
+
+    cell = selfcheck.build_selfcheck(conn, "2026-08-20")["rows"][0]["fields"]["est_profit"]
+    assert cell["self"] == 1.575    # 與 test_analysis_call_le 手算合成值一致（單位換算正確）
+    assert cell["csv"] == 1.5
 
 
 def test_build_selfcheck_custody_diag_two_weeks(tmp_path):
