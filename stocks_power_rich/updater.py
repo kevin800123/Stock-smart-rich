@@ -127,15 +127,27 @@ def _default_report_anchor() -> tuple:
     return year, season
 
 
+# 每個報表指標「算完成」所需的最少季數＝該報表的抓取深度（IncomeStatement 4、
+# CashflowStatement 8）。**必須看季數、不能只看「指標存不存在」**：早期 sync 在 mopsfin
+# 退化期只抓到 capex 2 季就中斷，舊版「有 capex 指標就算完成」把這種半殘代號判為完成、
+# 之後游標掃過就跳過、永遠補不到 8 季，於是 lan_score 的 capex_expand（需近 8 季）算不出
+# → 財報分顯示 —（實測 1101/1102 capex 只有 2 季、2330 有 8 季能算）。改成季數不足即 pending，
+# 重跑 sync 會把半殘代號補齊；真的沒 8 季歷史的（新上市）自然留在 pending，本就算不出。
+def _report_min_quarters() -> dict:
+    return {key: _REPORT_DEPTH[rep] for key, (rep, _label) in financials.REPORT_ITEMS.items()}
+
+
 def _report_pending_codes(conn, universe: list) -> list:
-    n_items = len(financials.REPORT_ITEMS)
-    placeholders = ",".join("?" * n_items)
-    have = dict(conn.execute(
-        f"SELECT code, COUNT(DISTINCT indicator) FROM stock_financials "
-        f"WHERE indicator IN ({placeholders}) GROUP BY code",
-        list(financials.REPORT_ITEMS),
-    ).fetchall())
-    return [c for c in universe if have.get(c, 0) < n_items]
+    items = list(financials.REPORT_ITEMS)
+    placeholders = ",".join("?" * len(items))
+    counts: dict = {}   # code -> {indicator: 季數}
+    for code, indicator, n in conn.execute(
+        f"SELECT code, indicator, COUNT(*) FROM stock_financials "
+        f"WHERE indicator IN ({placeholders}) GROUP BY code, indicator", items).fetchall():
+        counts.setdefault(code, {})[indicator] = n
+    need = _report_min_quarters()
+    return [c for c in universe
+            if any((counts.get(c, {}).get(ind, 0)) < need[ind] for ind in items)]
 
 
 def backfill_report_financials(conn, anchor_year: int | None = None, anchor_season: int | None = None,

@@ -284,6 +284,24 @@ def test_backfill_report_until_plateau_stops_when_remaining_stops_dropping(tmp_p
     assert prog["remaining"] == 40 and prog["done"] is True   # progress 供端點即時讀
 
 
+def test_report_pending_codes_requires_enough_quarters_not_just_presence(tmp_path):
+    """迴歸（財報分顯示 —）：早期 sync 只抓到 capex 2 季就中斷，舊版「有 capex 指標就算完成」
+    把半殘代號判完成、游標跳過、永遠補不到 lan_score 需要的 8 季。改成季數不足即 pending。"""
+    from stocks_power_rich.db import bulk_upsert_financials
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    q = ["2026Q2", "2026Q1", "2025Q4", "2025Q3", "2025Q2", "2025Q1", "2024Q4", "2024Q3"]
+    for ind in ("pretax_income", "opex", "income_tax"):           # 損益 3 項各 4 季（=深度）
+        for code in ("1101", "2330"):
+            bulk_upsert_financials(conn, ind, {code: {x: 1.0 for x in q[:4]}})
+    bulk_upsert_financials(conn, "capex", {"2330": {x: 1.0 for x in q}})       # 2330 capex 8 季（齊）
+    bulk_upsert_financials(conn, "capex", {"1101": {x: 1.0 for x in q[:2]}})   # 1101 capex 只 2 季（半殘）
+
+    pending = updater._report_pending_codes(conn, ["1101", "2330"])
+    assert "1101" in pending        # capex 不足 8 季 → 仍 pending（會被重抓補齊）
+    assert "2330" not in pending    # 齊全 → 完成
+
+
 def test_compute_report_indicators_returns_decumulated_by_indicator_no_db(monkeypatch):
     """抽出的純函式：抓報表→反推單季→{indicator:{code:{季別:單季值}}}，不需要 DB。
     本機腳本靠它在本機算好再 POST 上 production（Zeabur 打不動報表端點）。"""

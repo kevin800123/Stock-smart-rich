@@ -406,6 +406,7 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - **selfcheck 新增「財報分（蘭質）」欄**：自算 `lan_score(fin[bare])["score"]` vs CSV 蘭質（`chip_snapshot.lan_score`），容差 `SELFCHECK_TOL["lan_score"]=1`（0–15 刻度容 ±1 項邊界差）。這是**驗證我們 15 項公式重現得了 XQ 蘭質**的關卡。
 - **木質（`mu_score`）同時解鎖**：＝自算財報分 ＋ 四個籌碼訊號（大戶增比/人數降比/投信三日/外資三日，皆已自算）。CSV 沒有木質欄（本站自有分數）→ `csv_na`（顯示「無 CSV 對照」但值會亮出來），前端 `SC_SCORE` 中性藍。**仍 blocked 的只剩 `mu_value`（木率，需本業PE）與 `est_profit`（推估EPS，需 Call_LE 組裝月營收＋季報）**——屬下一步。
 - **並存不變**：`filtered_picks`／`attach_mu` 仍用 CSV 匯入的蘭質當財報分（Stage 1）；selfcheck 的自算欄是拿來對照驗證的，驗過才談把 `attach_mu` 換成自算 `lan_score`。
+- **`_report_pending_codes` 必須看「季數」不是「指標存不存在」（2026-08 實測踩到，財報分大批顯示 —）**：接上 selfcheck 後 production 前段大型股（1101/1102…）財報分是 `—`、覆蓋率只有 1463/1770。`GET /api/financials/coverage-for?codes=1101` 一眼定位：`capex` 只有 **2 季**（`_LAN_USED` 需 8 季）→ `lan_score` 的 `capex_expand`（近3季 vs 近8季）算不出 → None。根因：早期 sync 在 mopsfin 退化期只抓到 capex 2 季就中斷，而舊版 `_report_pending_codes` 只 `COUNT(DISTINCT indicator)`——**capex 指標「存在」就判該代號完成**，之後游標掃過便跳過、永遠補不到 8 季（台積電在後期穩定時抓、拿到 8 季所以能算，這就是「前段大型股 — 而後段能算」的分界）。修法：pending 判定改成**逐指標比對季數 ≥ 該報表抓取深度**（`_report_min_quarters()`＝IncomeStatement 4／CashflowStatement 8），季數不足即重列 pending，重跑 sync 就補齊；真的沒 8 季歷史的（新上市）自然留 pending、本就算不出。**教訓：多欄位/多季的「完成度」判定，要數到「每個維度都夠」，別只確認「維度存在」**——本機一路測都對，是因為本機抓從不中途退化、每檔都拿滿季數，這個洞只在「遠端退化造成半殘寫入」時才現形（又一個「本機全綠、production 才炸」）。**診斷端點 `GET /api/financials/coverage-for?codes=…`** 回每檔各指標季數＋短缺清單＋lan_score，是查這類「財報分為何 None」的利器，保留不刪。
 
 ### 季報財務：Stage 2 第四片，sub-task 1（`sources/financials.py`，2026-08）
 
