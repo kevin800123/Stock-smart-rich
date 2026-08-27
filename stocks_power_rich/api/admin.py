@@ -297,6 +297,23 @@ def financials_coverage_for(codes: str = ""):
                      "lan_score": ls["score"] if ls else None}
     return {"codes": out}
 
+@router.get("/custody/diag")
+def custody_diag():
+    """診斷集保：最近幾週各有幾檔 big400_pct / total_holders 有值——查「人數降比空白」。
+    total_holders 是後加欄位，舊週為 NULL；若最近週的 total_holders_n=0 但 big400_pct_n 有值，
+    代表人數降比缺的是 total_holders（隨新週補齊而自愈）；若最近累積週 total_holders_n 也有值
+    卻仍算不出，才是寫入/計算的真 bug。"""
+    c = conn()
+    weeks = [r[0] for r in c.execute(
+        "SELECT DISTINCT week FROM custody_dist ORDER BY week DESC LIMIT 6")]
+    out = []
+    for w in weeks:
+        n, b400, th = c.execute(
+            "SELECT COUNT(*), COUNT(big400_pct), COUNT(total_holders) "
+            "FROM custody_dist WHERE week=?", (w,)).fetchone()
+        out.append({"week": w, "codes": n, "big400_pct_n": b400, "total_holders_n": th})
+    return {"weeks": out}
+
 @router.post("/financials/import")
 def financials_import(payload: dict = Body(...)):
     """收本機算好的報表指標並上 `stock_financials`。body＝`{"data": {indicator: {code: {季別: 值}}}}`

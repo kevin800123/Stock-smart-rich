@@ -96,6 +96,23 @@ def test_financials_report_pending_after_cursor_pages_forward(tmp_path, monkeypa
     assert r3["codes"] == []                                  # 掃到底
 
 
+def test_custody_diag_reports_total_holders_presence_per_week(tmp_path, monkeypatch):
+    """診斷端點：每週各有幾檔 big400_pct / total_holders 有值——查人數降比空白是缺 total_holders
+    （舊週 NULL）還是真 bug。COUNT(col) 只數非 NULL。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_custody
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    bulk_upsert_custody(c, "2026-08-14", {"2330": {"big400_pct": 87.0}})   # 舊週：total_holders 缺
+    bulk_upsert_custody(c, "2026-08-21", {"2330": {"big400_pct": 87.5, "total_holders": 3067183}})
+
+    weeks = {w["week"]: w for w in TestClient(create_app()).get("/api/custody/diag").json()["weeks"]}
+    assert weeks["2026-08-21"]["total_holders_n"] == 1   # 有值
+    assert weeks["2026-08-14"]["total_holders_n"] == 0   # NULL（舊週）
+    assert weeks["2026-08-14"]["big400_pct_n"] == 1      # big400 有值 → 大戶增比正常、人數降比缺
+
+
 def test_frontend_card_alert_guards():
     web = Path(__file__).parents[1] / "web"
     js = (web / "app.js").read_text(encoding="utf-8")
