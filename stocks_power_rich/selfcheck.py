@@ -48,6 +48,47 @@ def _custody_diag(conn, date: str | None) -> dict:
     return {"weeks": weeks, "this_n": len(a), "prev_n": len(b), "overlap": len(a & b)}
 
 
+def _row_self(code, shares, yoy, custody, inst3d, fin, mrev, ohlc, date) -> dict:
+    """單檔 10 個自算值——selfcheck 對照與 self-screen 選股**共用同一份權威計算**
+    （同 bands/Elliott「算式只能有一份」的規矩）。
+
+    code 可帶 .TW/.TWO 後綴，內部去後綴 join 各自算來源（一律 bare）。shares＝發行股數：
+    selfcheck 傳「CSV 股本×1e7」維持與 CSV 對照口徑一致（不破壞已驗證的中位差 0）；
+    self-screen 傳真實已發行股數。缺料的欄位回 None（各自的守衛負責）。
+    """
+    bare = str(code).split(".")[0]
+    cc = custody.get(bare) or {}
+    self_bhr, self_hdr = cc.get("big_holder_ratio"), cc.get("holder_drop_ratio")
+    i3 = inst3d.get(bare) or {}
+    self_t3, self_f3 = i3.get("trust_3d"), i3.get("foreign_3d")
+    ls = analysis.lan_score(fin.get(bare) or {})
+    self_lan = ls["score"] if ls else None
+    ms = analysis.mu_score(self_lan, {"big_holder_ratio": self_bhr, "holder_drop_ratio": self_hdr,
+                                      "trust_3d": self_t3, "foreign_3d": self_f3})
+    self_mu = ms["score"] if ms else None
+    f = fin.get(bare) or {}
+    _m = lambda xs: [x / 1000 if x is not None else None for x in xs]   # 仟元 → 百萬元
+    self_est = analysis.estimate_quarterly_eps(
+        mrev.get(bare, []), f.get("gross_margin") or [], _m(f.get("opex") or []),
+        _m(f.get("income_tax") or []), shares)
+    oc = ohlc.get(bare) or {}
+    price = oc["closes"][-1] if oc.get("closes") else None
+    self_lpe = (price / (self_est * 4)) if (self_est and self_est > 0 and price) else None
+    mv = analysis.mu_value(self_mu, self_lpe)
+    return {
+        "rev_yoy": yoy.get(bare),
+        "w55": _self_w55(ohlc.get(bare), date),
+        "big_holder_ratio": self_bhr,
+        "holder_drop_ratio": self_hdr,
+        "trust_3d": self_t3,
+        "foreign_3d": self_f3,
+        "lan_score": self_lan,
+        "est_profit": self_est,
+        "mu_score": self_mu,
+        "mu_value": mv["value"] if mv else None,
+    }
+
+
 def build_selfcheck(conn, date: str | None) -> dict:
     dates = _snap_dates(conn)
     if date is None:
@@ -67,51 +108,21 @@ def build_selfcheck(conn, date: str | None) -> dict:
 
     out_rows = []
     for code, name, csv_yoy, csv_w55, csv_bhr, csv_hdr, csv_t3, csv_f3, csv_lan, csv_est, csv_cap in rows_csv:
-        # chip_snapshot 的 code 帶 .TW/.TWO 後綴（XQ CSV 一律加 .TW），但自算來源
-        # （月營收 revenue_yoy_map／集保 custody_change_map／OHLC get_all_ohlc）一律 bare
-        # code——不去後綴，每一列 join 都 miss、全部「尚無自算」（production 實況）。
-        # 去後綴是本 codebase 既有慣例（updater._financials_universe、api/* 皆 .split(".")[0]）。
-        bare = str(code).split(".")[0]
-        self_yoy = yoy.get(bare)
-        self_w55 = _self_w55(ohlc.get(bare), date)
-        cc = custody.get(bare) or {}          # 大戶增比／人數降比同一支 custody_change_map
-        self_bhr = cc.get("big_holder_ratio")
-        self_hdr = cc.get("holder_drop_ratio")
-        i3 = inst3d.get(bare) or {}           # 投信／外資近3日 stock_flow_daily 近3交易日加總
-        self_t3 = i3.get("trust_3d")
-        self_f3 = i3.get("foreign_3d")
-        ls = analysis.lan_score(fin.get(bare) or {})   # 自算財報分（蘭質 15 項），缺指標→None
-        self_lan = ls["score"] if ls else None
-        # 木質＝自算財報分 ＋ 本站已在算的四個籌碼訊號（大戶增比/人數降比/投信三日/外資三日）。
-        # CSV 沒有木質欄（本站自有分數）→ csv=None、顯示為「無 CSV 對照」，但值會亮出來。
-        ms = analysis.mu_score(self_lan, {"big_holder_ratio": self_bhr, "holder_drop_ratio": self_hdr,
-                                          "trust_3d": self_t3, "foreign_3d": self_f3})
-        self_mu = ms["score"] if ms else None
-        # 推估EPS（Call_LE）：月營收(億元,已轉)＋近2季毛利率＋近4季營業費用/所得稅(仟元→百萬元)
-        # ＋股數(股本億元×1e7)。單位換算與守衛見 analysis.estimate_quarterly_eps。
-        f = fin.get(bare) or {}
-        _m = lambda xs: [x / 1000 if x is not None else None for x in xs]   # 仟元 → 百萬元
+        # chip_snapshot 的 code 帶 .TW/.TWO 後綴（XQ CSV 一律加 .TW），去後綴 join 各自算來源
+        # （一律 bare code）——見 _row_self。shares 用 CSV 股本×1e7，維持與 CSV 對照口徑一致。
         shares = csv_cap * 1e7 if csv_cap else None
-        self_est = analysis.estimate_quarterly_eps(
-            mrev.get(bare, []), f.get("gross_margin") or [], _m(f.get("opex") or []),
-            _m(f.get("income_tax") or []), shares)
-        # 木率＝木質 ÷ 本業PE × 100。本業PE＝現價 ÷ 本業年EPS（推估季EPS×4）；現價取 OHLC 最新收盤。
-        oc = ohlc.get(bare) or {}
-        price = oc["closes"][-1] if oc.get("closes") else None
-        self_lpe = (price / (self_est * 4)) if (self_est and self_est > 0 and price) else None
-        mv = analysis.mu_value(self_mu, self_lpe)
-        self_mv = mv["value"] if mv else None
+        s = _row_self(code, shares, yoy, custody, inst3d, fin, mrev, ohlc, date)
         vals = {
-            "rev_yoy": (csv_yoy, self_yoy),
-            "w55": (csv_w55, self_w55),
-            "big_holder_ratio": (csv_bhr, self_bhr),
-            "holder_drop_ratio": (csv_hdr, self_hdr),
-            "trust_3d": (csv_t3, self_t3),
-            "foreign_3d": (csv_f3, self_f3),
-            "lan_score": (csv_lan, self_lan),   # 財報分：自算 lan_score vs CSV 蘭質
-            "est_profit": (csv_est, self_est),  # 推估EPS：自算 Call_LE vs CSV 推估獲利
-            "mu_score": (None, self_mu),        # 木質：自算（CSV 無此欄 → csv_na），本站自有分數
-            "mu_value": (None, self_mv),        # 木率：自算（CSV 無此欄 → csv_na）
+            "rev_yoy": (csv_yoy, s["rev_yoy"]),
+            "w55": (csv_w55, s["w55"]),
+            "big_holder_ratio": (csv_bhr, s["big_holder_ratio"]),
+            "holder_drop_ratio": (csv_hdr, s["holder_drop_ratio"]),
+            "trust_3d": (csv_t3, s["trust_3d"]),
+            "foreign_3d": (csv_f3, s["foreign_3d"]),
+            "lan_score": (csv_lan, s["lan_score"]),   # 財報分：自算 lan_score vs CSV 蘭質
+            "est_profit": (csv_est, s["est_profit"]),  # 推估EPS：自算 Call_LE vs CSV 推估獲利
+            "mu_score": (None, s["mu_score"]),        # 木質：自算（CSV 無此欄 → csv_na），本站自有分數
+            "mu_value": (None, s["mu_value"]),        # 木率：自算（CSV 無此欄 → csv_na）
         }
         fields = {}
         for f, (cv, sv) in vals.items():
@@ -143,4 +154,63 @@ def build_selfcheck(conn, date: str | None) -> dict:
                        "SELFCHECK_ABS_REL": analysis.SELFCHECK_ABS_REL},
         "rows": out_rows, "coverage": coverage,
         "custody_diag": _custody_diag(conn, date),
+    }
+
+
+def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min) -> dict:
+    """自算籌碼/基本選股：**全市場自算池**（零 CSV 依賴），與 build_selfcheck 共用 _row_self。
+
+    universe＝`{code: {sector, name, shares}}`（由端點用 _industry_map/_otc_industry 組好傳入，
+    讓網路／月快取留在 api 層、selfcheck 保持不依賴 api.helpers）。回傳：
+    - heatmap：大戶增比>0 的股依「類股」分組，版塊大小＝本週成交額、顏色資料＝avg 大戶增比、
+      WoW＝本週 vs 上週同期成交額（見 db.weekly_amounts）。
+    - rows：7 條件（見 analysis.screen_pass）篩選後依木率(mu_value)由大到小，欄位同 selfcheck。
+    - coverage：universe / 大戶增比>0 / 有成交額 / 入選 的檔數，讓覆蓋缺口不被靜默吃掉。
+    """
+    yoy = db.revenue_yoy_map(conn, as_of=date) if date else {}
+    custody = db.custody_change_map(conn, as_of=date) if date else {}
+    inst3d = db.institutional_3d_map(conn, as_of=date) if date else {}
+    fin = db.get_financials_bulk(conn, list(analysis._LAN_USED) + ["opex", "income_tax"]) if date else {}
+    mrev = db.monthly_revenue_bulk(conn, as_of=date) if date else {}
+    ohlc = db.get_all_ohlc(conn, min_bars=55)
+    wk = db.weekly_amounts(conn, date) if date else {}
+
+    groups: dict = {}
+    picked, big_pos, with_amount = [], 0, 0
+    for code, info in universe.items():
+        s = _row_self(code, info.get("shares"), yoy, custody, inst3d, fin, mrev, ohlc, date)
+        bhr = s["big_holder_ratio"]
+        if bhr is not None and bhr > 0:
+            big_pos += 1
+            amt = wk.get(code)
+            if amt:                       # 只納入本週有成交額的（缺料不靜默併進版塊）
+                with_amount += 1
+                sector = info.get("sector") or "未分類"
+                g = groups.setdefault(sector, {"this": 0.0, "prev": 0.0, "bhr": 0.0, "n": 0, "children": []})
+                g["this"] += amt["this"]
+                g["prev"] += amt["prev"]
+                g["bhr"] += bhr
+                g["n"] += 1
+                g["children"].append({"code": code, "name": info.get("name") or code,
+                                      "amount": amt["this"], "big_holder_ratio": bhr})
+        if analysis.screen_pass(s, mu_value_min, mu_score_min):
+            picked.append({"code": code, "name": info.get("name") or code,
+                           "sector": info.get("sector"), "vals": s})
+
+    heatmap = []
+    for sector, g in groups.items():
+        wow = round((g["this"] - g["prev"]) / g["prev"] * 100, 1) if g["prev"] else None
+        g["children"].sort(key=lambda x: x["amount"], reverse=True)
+        heatmap.append({"sector": sector, "amount": round(g["this"]), "prev_amount": round(g["prev"]),
+                        "wow_pct": wow, "avg_big_holder": round(g["bhr"] / g["n"], 2),
+                        "count": g["n"], "children": g["children"]})
+    heatmap.sort(key=lambda x: x["amount"], reverse=True)
+    picked.sort(key=lambda r: (r["vals"]["mu_value"] if r["vals"]["mu_value"] is not None
+                               else float("-inf")), reverse=True)
+    return {
+        "date": date,
+        "thresholds": {"mu_value_min": mu_value_min, "mu_score_min": mu_score_min},
+        "heatmap": heatmap, "rows": picked,
+        "coverage": {"universe": len(universe), "big_holder_pos": big_pos,
+                     "with_amount": with_amount, "picked": len(picked)},
     }

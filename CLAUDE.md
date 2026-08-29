@@ -443,6 +443,19 @@ sub-task 1 的比率工具沒有稅前淨利與資本支出；opex/income_tax �
 
 三片（月營收年增/W55/大戶增比人數降比）完成後，使用者要求在「設定」頁列出計算方式與資料來源，方便日後檢視——沿用**評分規則**（木質/木率）那套既有的「唯讀、規則來自後端」慣例，不是另開一套。`GET /api/stage2-sources`（`api/admin.py`，緊接在 `/scoring-rules` 之後）回傳三片各自的 `sources`/`formula`/`verified`；門檻文字用 `f"{analysis.W55_THRESHOLD:g}"` 組出，不在端點裡寫死 `50`（同 `/scoring-rules` 的防漂移規矩，`tests/test_api.py::test_stage2_sources_reflects_w55_threshold_and_marks_not_wired` 鎖住這件事）。前端 `renderStage2Sources()`（`web/app.js`）緊跟在 `renderScoringRules()` 後呼叫，容器 `#set-stage2` 直接沿用既有的 `.scoring-rules`/`.sr-card` CSS——三張卡全部給 `.sr-pending` 樣式（同蘭質那張「待接季報源」卡的語彙），因為三片都還沒接進 `filtered_picks`。**`wired_to_picks: false` 與每張卡的「尚未接進選股」標籤是刻意的**：這一頁本質是「開發進度揭露」，如果只列公式不標「還沒生效」，使用者容易誤以為選股結果已經改變。
 
+### 自算籌碼/基本選股：全市場自算池的獨立選股頁（`view-self-screen`，2026-08）
+
+selfcheck 的自算鏈驗過（10 欄中位差 ~0）之後，使用者要一個**真的拿自算值來選股**的獨立頁，且候選池要是**全市場**、**零 CSV 依賴**（脫離 XQ）。這頁**不動 `filtered_picks`**（正式選股仍走 CSV 並存對照），是平行入口。端點 `GET /api/picks/self-screen?mu_value_min=&mu_score_min=`（`api/admin.py`，緊接 `picks_selfcheck`）。
+
+- **全市場池怎麼組（關鍵，不碰 chip_snapshot）**：`universe = {**_otc_industry(c), **_industry_map(c)}`——App 既有的月快取 helper（TWSE/TPEx 公司基本資料 t187ap03）直接給每檔的 **類股 + 股名 + 已發行股數**，高價股/熱力圖本來就在用。推估EPS/木率因此用**真實已發行股數**（非 CSV 股本×1e7 近似）、本業PE 用 OHLC 最新收盤。參考日期＝`_latest_date(c)`（最新市場日），此頁**沒有日期選單、不需上傳**。
+- **自算計算只有一份權威版本**：`selfcheck._row_self(code, shares, ...maps..., date)` 回單檔 10 個自算值，`build_selfcheck`（傳 `shares=csv_cap*1e7` 維持與 CSV 對照口徑一致、不破壞中位差 0）與 `build_self_screen`（傳真實股數）**共用它**。改自算邏輯只改這一支。既有 `tests/test_selfcheck.py` 全綠＝這次重構的迴歸護欄。
+- **`build_self_screen(conn, date, universe, mu_value_min, mu_score_min)`**（selfcheck.py）：`universe` 由端點組好傳入（網路/月快取留在 api 層，selfcheck 保持不依賴 api.helpers）。回 `heatmap`（大戶增比>0 依 `universe[code]["sector"]` 分組）＋ `rows`（`analysis.screen_pass` 篩選後依 `mu_value` 降冪，欄位同 selfcheck 的 SC_FIELDS，每列另帶 `sector` 供 drill-down）＋ `coverage`（universe/大戶增比>0/有成交額/入選 檔數，缺口不靜默）。
+- **篩選（`analysis.screen_pass`，純函式）**：營收年增>0 ∧ W55 翻多 ∧ 大戶增比>0 ∧ 人數降比<0 ∧ 推估EPS>0 ∧ 木率>門檻 ∧ 木質>門檻，全 AND、None 一律不過（同 filtered_picks 的 <=0 慣例）、門檻嚴格 `>`。木率用**已過品質閘的 `mu_value`**（木質<`MU_QUALITY_FLOOR`=10 時已為 0），故「木率>50」已隱含木質≥10，「木質>門檻」是額外明確條件、與品質閘獨立（不動 `MU_QUALITY_FLOOR`）。
+- **門檻在「設定」頁可調**（預設 木率>50、木質>9＝`analysis.SCREEN_MU_VALUE_MIN`/`SCREEN_MU_SCORE_MIN`，單一權威版本）：`GET/POST /api/settings` 的 `screen_mu_value_min`/`screen_mu_score_min`；端點門檻優先吃 query→設定→analysis 預設。
+- **熱力圖（treemap，`renderSelfScreenHeatmap`，仿 `renderHeatmapDetail`）**：版塊大小＝**本週成交額**、顏色＝**大戶增比強度**（紅色漸層 `hsl(351,...)`——這裡的紅是「加碼強度」不是漲跌，只用在這張圖、不與紅漲綠跌相混，守全站色彩鎖）、`upperLabel`＝「類股名　週成交額 WoW±%」。點類股 drill-down 過濾下方表格、點個股開 K 線。容器動態高度＝先寫 inline height→setOption→resize（本站既有 echarts 凍尺寸教訓）。
+- **`db.weekly_amounts(conn, ref_date)`**＝本週 vs 上週「**同期**」成交額（`stock_ohlc.amount_twd` 依 ISO 週彙總）：盤後資料週中就是半週，直接比完整上週會讓 WoW 在週一二恆為負、誤導，故上週只取「前 N 個交易日」對齊本週至今的 N 天。上週的 ISO 週由「本週以外最新的資料日」推得（不做跨年月的週數算術）。
+- **本機驗證的陷阱**：dev DB **沒有季報/OHLC≥55**（`get_financials_bulk`=0、`get_all_ohlc(55)`=0），所以本機 `picked` 恆 0（財報分/推估EPS/木率/W55 全 None）——**這是資料稀疏、不是 filter bug**（production 都有）。list 的正確性由 `build_self_screen` 單元測試（seed 完整資料→2330 入選）鎖住；前端表格/排序/drill-down 則靠「往 live 頁面注入假 rows」驗證（熱力圖用真資料，實測 34 類股、WoW 正常）。快取版本字串同步為 `20260817-ui25`（index.html/public.py/test_api.py）。
+
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.

@@ -5,6 +5,8 @@ from fastapi import APIRouter, Body, Request
 from .deps import conn
 from .helpers import (
     _latest_date,
+    _industry_map,
+    _otc_industry,
     effective_schedule,
     effective_data_dir,
     _dir_within,
@@ -339,6 +341,28 @@ def picks_selfcheck(date: str = ""):
     # 效能次階段：W55 全市場掃描若逼近逾時，再加 data_version 快取（見 plan/spec）——目前每次計算，正確與只讀優先。
     return selfcheck.build_selfcheck(c, d)
 
+
+def _screen_threshold(c, key: str, default) -> float:
+    """木率/木質門檻：query 未帶時取設定值、再退 analysis 常數（單一權威預設）。"""
+    v = get_setting(c, key)
+    try:
+        return float(v) if v is not None else float(default)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+@router.get("/picks/self-screen")
+def picks_self_screen(mu_value_min: float | None = None, mu_score_min: float | None = None):
+    """自算籌碼/基本選股：全市場自算池（零 CSV 依賴）。候選池＝_industry_map ∪ _otc_industry
+    （上市＋上櫃公司基本資料，含類股/股名/已發行股數）；門檻優先吃 query→設定→analysis 預設。"""
+    c = conn()
+    universe = {**_otc_industry(c), **_industry_map(c)}   # 代號不衝突；上市優先
+    vmin = mu_value_min if mu_value_min is not None else _screen_threshold(
+        c, "screen_mu_value_min", analysis.SCREEN_MU_VALUE_MIN)
+    smin = mu_score_min if mu_score_min is not None else _screen_threshold(
+        c, "screen_mu_score_min", analysis.SCREEN_MU_SCORE_MIN)
+    return selfcheck.build_self_screen(c, _latest_date(c), universe, vmin, smin)
+
 @router.get("/ohlc/backfill")
 def ohlc_backfill(days: int = 377, max_fetch: int = 60, reset: int = 0):
     if not _backfill_lock.acquire(blocking=False):
@@ -389,6 +413,9 @@ def get_settings(request: Request):
         "nav_order": (get_setting(c, "nav_order") or "").split(",") if get_setting(c, "nav_order") else None,
         "intraday_picks_only": get_setting(c, "intraday_picks_only") == "1",
         "loss_tolerance": int(get_setting(c, "loss_tolerance") or 0) or None,
+        # 自算籌碼/基本選股的木率/木質門檻（預設來自 analysis 常數，可調）
+        "screen_mu_value_min": int(_screen_threshold(c, "screen_mu_value_min", analysis.SCREEN_MU_VALUE_MIN)),
+        "screen_mu_score_min": int(_screen_threshold(c, "screen_mu_score_min", analysis.SCREEN_MU_SCORE_MIN)),
     }
 
 @router.get("/scoring-rules")
@@ -488,6 +515,12 @@ def update_settings(request: Request, payload: dict = Body(...)):
         except (TypeError, ValueError):
             v = 0
         set_setting(c, "loss_tolerance", str(v) if v > 0 else "")
+    for key in ("screen_mu_value_min", "screen_mu_score_min"):   # 木率/木質門檻（整數分數刻度）
+        if key in payload:
+            try:
+                set_setting(c, key, str(int(payload[key])))
+            except (TypeError, ValueError):
+                pass
     no = payload.get("nav_order")
     if isinstance(no, list) and no:
         ids = [str(x) for x in no if str(x).isalnum()]

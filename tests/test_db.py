@@ -11,7 +11,54 @@ from stocks_power_rich.db import (
     set_ai_cache,
     upsert_tx_history,
     get_tx_history,
+    weekly_amounts,
 )
+
+
+def _seed_amounts(conn, rows):
+    """rows＝[(code, date, amount_twd)]，只寫成交額（high/low 留空、不影響 weekly_amounts）。"""
+    for code, d, amt in rows:
+        conn.execute("INSERT INTO stock_ohlc(code,date,close,amount_twd) VALUES(?,?,?,?)",
+                     (code, d, 100.0, amt))
+    conn.commit()
+
+
+# 2026-08-17 是週一（ISO 週起點）；08-10 是前一週的週一 → 兩段各自成一個完整 ISO 週、且相鄰。
+def test_weekly_amounts_sums_this_and_prev_week(tmp_path):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _seed_amounts(conn, [
+        ("2330", "2026-08-17", 100), ("2330", "2026-08-18", 200), ("2330", "2026-08-19", 300),
+        ("2330", "2026-08-10", 100), ("2330", "2026-08-11", 100), ("2330", "2026-08-12", 100),
+        ("1101", "2026-08-17", 50),   # 只有本週、上週無 → prev 0
+    ])
+    wk = weekly_amounts(conn, "2026-08-19")
+    assert wk["2330"]["this"] == 600
+    assert wk["2330"]["prev"] == 300
+    assert wk["2330"]["days"] == 3
+    assert wk["1101"]["this"] == 50
+    assert wk["1101"]["prev"] == 0
+
+
+def test_weekly_amounts_uses_equal_trading_days_not_full_week(tmp_path):
+    """WoW 要同期比：本週只到週二(2 個交易日)時，上週也只取前 2 個交易日，
+    不是拿半週去比完整上週（否則週初 WoW 恆為負、誤導）。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _seed_amounts(conn, [
+        ("2330", "2026-08-17", 100), ("2330", "2026-08-18", 200),   # 本週只到週二
+        ("2330", "2026-08-10", 100), ("2330", "2026-08-11", 100), ("2330", "2026-08-12", 100),
+    ])
+    wk = weekly_amounts(conn, "2026-08-18")
+    assert wk["2330"]["days"] == 2
+    assert wk["2330"]["this"] == 300     # 100+200
+    assert wk["2330"]["prev"] == 200     # 上週前 2 個交易日 100+100（不含 08-12 的 100）
+
+
+def test_weekly_amounts_empty_when_no_amount_data(tmp_path):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    assert weekly_amounts(conn, "2026-08-19") == {}
 
 
 def test_tx_history_roundtrip(tmp_path):

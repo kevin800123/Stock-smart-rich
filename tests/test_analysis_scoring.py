@@ -181,3 +181,47 @@ def test_mu_value_matches_lan_value_formula_magnitude():
 
 def test_mu_quality_floor_within_scale():
     assert 0 <= analysis.MU_QUALITY_FLOOR <= 19
+
+
+# ---------- screen_pass（自算籌碼/基本選股的 7 條件篩選） ----------
+
+def _sv(**over):
+    """一份剛好全部通過的自算值（screen_pass 用）：營收年增>0、W55、大戶增比>0、
+    人數降比<0、推估EPS>0、木率>門檻、木質>門檻。"""
+    v = {"rev_yoy": 5.0, "w55": 1.0, "big_holder_ratio": 0.3, "holder_drop_ratio": -1.0,
+         "est_profit": 2.0, "mu_value": 60.0, "mu_score": 12.0}
+    v.update(over)
+    return v
+
+
+def test_screen_pass_all_conditions_met():
+    assert analysis.screen_pass(_sv(), 50, 9) is True
+
+
+def test_screen_pass_each_condition_can_fail():
+    assert analysis.screen_pass(_sv(rev_yoy=0), 50, 9) is False        # 營收年增 需 >0
+    assert analysis.screen_pass(_sv(rev_yoy=-1), 50, 9) is False
+    assert analysis.screen_pass(_sv(w55=0), 50, 9) is False            # W55 需翻多(>0)
+    assert analysis.screen_pass(_sv(big_holder_ratio=0), 50, 9) is False   # 大戶增比 需 >0
+    assert analysis.screen_pass(_sv(holder_drop_ratio=0), 50, 9) is False  # 人數降比 需 <0
+    assert analysis.screen_pass(_sv(holder_drop_ratio=1), 50, 9) is False
+    assert analysis.screen_pass(_sv(est_profit=0), 50, 9) is False     # 推估EPS 需 >0
+    assert analysis.screen_pass(_sv(mu_value=50), 50, 9) is False      # 木率 需 > 門檻（嚴格）
+    assert analysis.screen_pass(_sv(mu_score=9), 50, 9) is False       # 木質 需 > 門檻（嚴格）
+
+
+def test_screen_pass_none_never_passes():
+    for k in ("rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio",
+              "est_profit", "mu_value", "mu_score"):
+        assert analysis.screen_pass(_sv(**{k: None}), 50, 9) is False
+
+
+def test_screen_pass_thresholds_are_strict_and_adjustable():
+    assert analysis.screen_pass(_sv(mu_value=51, mu_score=10), 50, 9) is True
+    # 降低門檻 → 原本不過的也能過
+    assert analysis.screen_pass(_sv(mu_value=30, mu_score=5), 20, 4) is True
+
+
+def test_screen_default_thresholds_are_authoritative():
+    assert analysis.SCREEN_MU_VALUE_MIN == 50
+    assert analysis.SCREEN_MU_SCORE_MIN == 9

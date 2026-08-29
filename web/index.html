@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260817-ui24" />
+  <link rel="stylesheet" href="styles.css?v=20260817-ui25" />
   <script src="/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -47,6 +47,7 @@
       <div class="nav-group">
         <div class="nav-group-title">選股</div>
         <a class="nav" data-view="picks" data-short="選股"><span class="ico">🎯</span><span class="lbl">籌碼/基本選股</span></a>
+        <a class="nav" data-view="self-screen" data-short="自算選股"><span class="ico">🌲</span><span class="lbl">自算籌碼/基本選股</span></a>
         <a class="nav" data-view="cup" data-short="杯柄"><span class="ico">🏆</span><span class="lbl">杯柄選股</span></a>
       </div>
       <div class="nav-group">
@@ -617,6 +618,23 @@
         <div id="selfcheck-table" class="table-wrap fill"><div class="table-empty">載入中…</div></div>
       </section>
 
+      <!-- ===== 自算籌碼/基本選股（全市場自算池，零 CSV） ===== -->
+      <section id="view-self-screen" class="view picks-view">
+        <div class="picks-command">
+          <div class="picks-command-copy">
+            <div class="picks-title-row"><h2>自算籌碼/基本選股</h2></div>
+            <p>全市場自算池、零 CSV 依賴：先看大戶加碼落在哪些類股（版塊＝本週成交額、顏色＝大戶增比、標題＝週成交額 WoW），再篩 營收年增&gt;0 ∧ W55 翻多 ∧ 大戶增比&gt;0 ∧ 人數降比&lt;0 ∧ 推估EPS&gt;0 ∧ 木率/木質過門檻，依木率排序。門檻於<a href="#" id="ss-goto-settings" class="help-link">設定</a>調整。</p>
+          </div>
+          <div class="picks-command-foot">
+            <div id="ss-coverage" class="picks-summary" aria-label="覆蓋度" aria-live="polite"></div>
+          </div>
+        </div>
+        <div class="pane-heading"><div><h3>大戶加碼類股熱力圖</h3><p>大戶增比&gt;0 的股依類股彙總；點類股只看該類股，再點空白還原</p></div><span id="ss-hm-note" class="pane-count">—</span></div>
+        <div id="self-screen-heatmap" style="height:460px"></div>
+        <div class="pane-heading"><div><h3>入選個股</h3><p>點欄位排序；點股票開啟個股分析</p></div><span id="ss-picked-note" class="pane-count">—</span></div>
+        <div id="self-screen-table" class="table-wrap fill"><div class="table-empty">載入中…</div></div>
+      </section>
+
       <!-- ===== 每日財經新聞 ===== -->
       <section id="view-news" class="view picks-view">
         <div class="picks-command">
@@ -648,6 +666,7 @@
           <div class="set-row"><label>Telegram 財經新聞</label><span id="set-telegram" class="set-badge"></span><button id="btn-telegram-test" class="file-label">📱 測試推播</button><span id="set-telegram-status" class="muted small"></span></div>
           <div class="set-row"><label>盤中突破哨兵</label><label class="wave-toggle" style="margin:0"><input type="checkbox" id="set-picks-only" /> 只警示「同時符合籌碼/基本選股」的突破</label><span class="muted small">（未勾＝全部杯柄股都盯，交集股標 ⭐）</span></div>
           <div class="set-row"><label>單筆可容忍虧損（元）</label><input type="number" id="set-loss-tol" class="stock-input" min="0" step="1000" placeholder="例如 20000" /><span class="muted small">（杯柄頁自動算建議部位＝此金額 ÷ 每股風險；建議填總資金的 1–2%，清空＝不啟用）</span></div>
+          <div class="set-row"><label>自算選股門檻</label>木率 &gt; <input type="number" id="set-screen-mv" class="mini-input" min="0" step="1" /> ・ 木質 &gt; <input type="number" id="set-screen-ms" class="mini-input" min="0" step="1" /><span class="muted small">（「自算籌碼/基本選股」的入選門檻；預設 木率50、木質9）</span></div>
           <div class="set-row"><button id="btn-save-settings" class="file-label">💾 儲存設定</button><span id="set-saved" class="muted"></span></div>
         </div>
 
@@ -663,6 +682,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260817-ui24"></script>
+  <script src="app.js?v=20260817-ui25"></script>
 </body>
 </html>

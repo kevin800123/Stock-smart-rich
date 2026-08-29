@@ -76,6 +76,51 @@ def test_financials_import_and_report_pending(tmp_path, monkeypatch):
     assert isinstance(rp["codes"], list)
 
 
+def test_self_screen_endpoint_full_market_universe_and_thresholds(tmp_path, monkeypatch):
+    """自算籌碼/基本選股端點：候選池＝全市場（_industry_map ∪ _otc_industry），不碰 CSV。
+    門檻預設來自 analysis 常數、可由 query 覆寫。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    from stocks_power_rich.api import admin as admin_mod
+    monkeypatch.setattr(admin_mod, "_industry_map",
+                        lambda c: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1e9}})
+    monkeypatch.setattr(admin_mod, "_otc_industry",
+                        lambda c: {"6488": {"sector": "光電", "name": "環球晶", "shares": 1e8}})
+    client = TestClient(create_app())
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-08-19", "taiex": 20000.0})
+    c.commit()
+
+    d = client.get("/api/picks/self-screen").json()
+    for k in ("date", "thresholds", "heatmap", "rows", "coverage"):
+        assert k in d
+    assert d["date"] == "2026-08-19"
+    assert d["coverage"]["universe"] == 2           # 上市 1 ＋ 上櫃 1，全市場池
+    assert d["thresholds"] == {"mu_value_min": 50, "mu_score_min": 9}   # 預設來自 analysis 常數
+
+    over = client.get("/api/picks/self-screen?mu_value_min=10&mu_score_min=1").json()
+    assert over["thresholds"] == {"mu_value_min": 10, "mu_score_min": 1}
+
+
+def test_settings_screen_thresholds_roundtrip(tmp_path, monkeypatch):
+    """木率/木質門檻在設定頁可調（預設 50/9）；GET 揭露、POST 寫入、再 GET 反映。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(create_app())
+
+    s0 = client.get("/api/settings").json()
+    assert s0["screen_mu_value_min"] == 50
+    assert s0["screen_mu_score_min"] == 9
+
+    r = client.post("/api/settings", json={"screen_mu_value_min": 40, "screen_mu_score_min": 8}).json()
+    assert r["screen_mu_value_min"] == 40 and r["screen_mu_score_min"] == 8
+
+    s1 = client.get("/api/settings").json()
+    assert s1["screen_mu_value_min"] == 40 and s1["screen_mu_score_min"] == 8
+
+
 def test_financials_report_pending_after_cursor_pages_forward(tmp_path, monkeypatch):
     """report-pending 用 after 游標往後掃，才不會卡在前面補不齊的金融股（每輪重抓同一批、
     remaining 不動就誤判補完，後面能補的永遠掃不到）。remaining 一律回總數、codes 回游標後那批。"""
@@ -1416,10 +1461,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260817-ui24"' in html.text
-    assert 'href="/styles.css?v=20260817-ui24"' in html.text
-    assert 'src="app.js?v=20260817-ui24"' not in html.text
-    assert 'href="styles.css?v=20260817-ui24"' not in html.text
+    assert 'src="/app.js?v=20260817-ui25"' in html.text
+    assert 'href="/styles.css?v=20260817-ui25"' in html.text
+    assert 'src="app.js?v=20260817-ui25"' not in html.text
+    assert 'href="styles.css?v=20260817-ui25"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",

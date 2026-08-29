@@ -599,6 +599,46 @@ def get_all_ohlc(conn: sqlite3.Connection, min_bars: int = 1) -> dict:
     return {code: s for code, s in out.items() if len(s["dates"]) >= min_bars}
 
 
+def weekly_amounts(conn: sqlite3.Connection, ref_date: str) -> dict:
+    """全市場 {code: {this, prev, days}}＝本週 vs 上週「同期」成交金額（元）加總。
+
+    供「自算籌碼/基本選股」熱力圖：版塊大小＝本週成交額、右下角 WoW＝(this-prev)/prev。
+    「本週」＝含最新一個有成交額的交易日（≤ref_date）那個 ISO 週的所有日；「上週」＝其前一個
+    有資料的 ISO 週。WoW 用**同期**：本週到目前是 N 個交易日，上週也只取前 N 個交易日相比
+    ——盤後資料週中就是半週，直接比完整上週會讓 WoW 在週一二恆為負、誤導。上週不足 N 天即
+    就現有。只納入本週有成交額的 code（缺 amount 的日/檔不計）；上週無資料時 prev=0（呼叫端
+    據此判 WoW 算不出）。無任何成交額回空 dict。
+    """
+    dates = [d for (d,) in conn.execute(
+        "SELECT DISTINCT date FROM stock_ohlc WHERE date<=? AND amount_twd IS NOT NULL "
+        "ORDER BY date DESC", (ref_date,))]
+    if not dates:
+        return {}
+
+    def _iso(ds):
+        c = datetime.fromisoformat(ds).isocalendar()
+        return (c[0], c[1])
+
+    this_iso = _iso(dates[0])
+    this_dates = sorted(d for d in dates if _iso(d) == this_iso)   # 本週（升冪）
+    older = [d for d in dates if _iso(d) != this_iso]              # 更舊的日期（已降冪）
+    prev_dates = sorted(d for d in dates if older and _iso(d) == _iso(older[0]))
+    n = len(this_dates)
+    prev_same = prev_dates[:n]                                     # 同期：上週前 N 個交易日
+
+    def _sum(dlist):
+        if not dlist:
+            return {}
+        ph = ",".join("?" * len(dlist))
+        return {code: s for code, s in conn.execute(
+            f"SELECT code, SUM(amount_twd) FROM stock_ohlc WHERE date IN ({ph}) "
+            f"AND amount_twd IS NOT NULL GROUP BY code", dlist)}
+
+    this_sum, prev_sum = _sum(this_dates), _sum(prev_same)
+    return {code: {"this": t, "prev": prev_sum.get(code, 0.0), "days": n}
+            for code, t in this_sum.items()}
+
+
 def get_ohlc_history(conn: sqlite3.Connection, code: str) -> list[dict]:
     return [{"date": d, "open": o, "high": h, "low": l, "close": c}
             for d, o, h, l, c in conn.execute(

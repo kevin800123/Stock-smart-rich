@@ -43,6 +43,10 @@ let sectorChart = null, heatmapMarket = "tse", heatmapTop = 5, lastHeatmapData =
 // 的主因）。false＝只算資料、不畫 treemap，省下 setOption／fitHeatmapFonts 的成本。
 let hmDetailExpanded = false;
 let cupChart = null, cupMatches = [], cupLoaded = false;
+// 自算籌碼/基本選股（全市場自算池）：進頁才載入（比照 cupLoaded）。
+let selfScreenChart = null, selfScreenLoaded = false;
+let ssRows = [], ssCaps = {}, ssData = null, ssSectorFilter = null;
+let ssSort = { key: "mu_value", dir: -1 };
 let instBreadthChart = null, instAlphaChart = null;
 let instCoverage = null, instReport = null, instSegment = "combined", instResearchLoading = false;
 // 進頁才載入的旗標（比照 cupLoaded）。**這兩支是開頁流量的大頭**：實測總覽開頁抓
@@ -248,6 +252,7 @@ function showView(name) {
   if (name === "trades") loadTrades();
   if (name === "traders") loadTraders();
   if (name === "selfcheck") loadSelfcheck();
+  if (name === "self-screen") { if (!selfScreenLoaded) { selfScreenLoaded = true; loadSelfScreen(); } else selfScreenChart && selfScreenChart.resize(); }
   if (name === "inst-research") {
     loadInstResearchCoverage();
     instBreadthChart && instBreadthChart.resize();
@@ -678,6 +683,149 @@ async function loadSelfcheck() {
   }
 }
 
+// ========== 自算籌碼/基本選股（全市場自算池，零 CSV） ==========
+async function loadSelfScreen() {
+  const tbl = $("self-screen-table"); if (!tbl) return;
+  try {
+    const d = await getJSON("/api/picks/self-screen");
+    ssData = d;
+    const cov = d.coverage || {}, th = d.thresholds || {};
+    $("ss-coverage").innerHTML = [
+      `資料日 <b>${esc(d.date || "—")}</b>`,
+      `全市場 <b>${cov.universe || 0}</b>`,
+      `大戶增比&gt;0 <b>${cov.big_holder_pos || 0}</b>`,
+      `有成交額 <b>${cov.with_amount || 0}</b>`,
+      `入選 <b>${cov.picked || 0}</b>`,
+      `門檻 木率&gt;<b>${th.mu_value_min}</b>・木質&gt;<b>${th.mu_score_min}</b>`,
+    ].map((s) => `<span>${s}</span>`).join("");
+    ssRows = d.rows || [];
+    ssCaps = {};
+    [...SC_SIGNED, ...SC_SCORE].forEach((k) => { ssCaps[k] = ssColCap(ssRows, k); });
+    ssSectorFilter = null;
+    ssSort = { key: "mu_value", dir: -1 };
+    renderSelfScreenHeatmap(d.heatmap || []);
+    renderSelfScreenTable();
+  } catch (e) {
+    tbl.innerHTML = '<div class="table-empty"><strong>載入失敗</strong><span>' + esc(e.message) + "</span></div>";
+  }
+}
+
+function ssColCap(rows, k) {   // p80(|自算值|)，同 selfcheck 的漸層門檻
+  const a = rows.map((r) => r.vals[k]).filter((v) => v != null).map(Math.abs).sort((x, y) => x - y);
+  return a.length ? (a[Math.min(a.length - 1, Math.floor(a.length * 0.80))] || a[a.length - 1] || 0) : 0;
+}
+
+// 大戶增比強度 → 紅色系（全為正；飽和隨強度、明度壓在 42–52% 讓白字可讀）。守全站色彩鎖：
+// 這裡的紅表達「加碼強度」不是漲跌，且只用在這張圖，不與紅漲綠跌相混。
+function ssHeatColor(v, cap) {
+  const t = cap > 0 ? Math.min(1, Math.abs(v) / cap) : 0;
+  return `hsl(351,${40 + 55 * t}%,${52 - 10 * t}%)`;
+}
+
+function renderSelfScreenHeatmap(groups) {
+  const el = $("self-screen-heatmap"); if (!el) return;
+  const note = $("ss-hm-note");
+  if (!groups.length) {
+    if (selfScreenChart) selfScreenChart.clear();
+    el.style.height = "0";
+    if (note) note.textContent = "尚無大戶加碼類股（需集保近兩週＋成交額資料）";
+    return;
+  }
+  const allBhr = groups.flatMap((g) => g.children.map((s) => s.big_holder_ratio)).filter((v) => v != null).map(Math.abs).sort((x, y) => x - y);
+  const cap = allBhr.length ? (allBhr[Math.floor(allBhr.length * 0.8)] || allBhr[allBhr.length - 1]) : 1;
+  const area = (amt) => Math.sqrt(Math.max(amt, 0));
+  const wowTxt = (w) => w == null ? "—" : (w >= 0 ? "+" : "") + fmt(w, 1) + "%";
+  const data = groups.map((g) => ({
+    name: g.sector, value: g.children.reduce((a, s) => a + area(s.amount), 0),
+    amount: g.amount, wow: g.wow_pct, avg: g.avg_big_holder, count: g.count,
+    itemStyle: { color: ssHeatColor(g.avg_big_holder, cap) },
+    children: g.children.map((s) => ({
+      name: s.name, value: area(s.amount), amount: s.amount, bhr: s.big_holder_ratio,
+      code: s.code, sector: g.sector, itemStyle: { color: ssHeatColor(s.big_holder_ratio, cap) },
+    })),
+  }));
+  if (note) note.textContent = `（${ssData ? ssData.date : ""}　面積＝本週成交額、顏色＝大戶增比、標題＝週成交額 WoW）`;
+  el.style.height = "460px";
+  if (!selfScreenChart || selfScreenChart.getDom() !== el) selfScreenChart = initChart(el);
+  selfScreenChart.setOption({
+    tooltip: {
+      formatter: (p) => {
+        if (p.data.code == null) {
+          return `${esc(p.name)}<br/>本週成交額 <b>${fmt(p.data.amount / 1e8, 1)}</b> 億　WoW ${wowTxt(p.data.wow)}`
+            + `<br/>平均大戶增比 <b>${fmt(p.data.avg, 2)}</b>　${p.data.count} 檔<br/><span style="color:#8a94a3">點類股只看該類股</span>`;
+        }
+        return `${esc(p.data.code)} ${esc(p.name)}<br/>本週成交額 <b>${fmt(p.data.amount / 1e8, 1)}</b> 億`
+          + `<br/>大戶增比 <b>${fmt(p.data.bhr, 2)}</b>　${esc(p.data.sector)}<br/><span style="color:#8a94a3">點看 K 線</span>`;
+      },
+    },
+    series: [{
+      type: "treemap", roam: false, nodeClick: false, animationDuration: 300,
+      breadcrumb: { show: false }, left: 1, right: 1, top: 1, bottom: 1, squareRatio: 1,
+      visibleMin: 8, childrenVisibleMin: 60,
+      upperLabel: {
+        show: true, height: 22, color: C.label, fontSize: 13, fontWeight: 700, fontFamily: HM_FONT,
+        formatter: (p) => `${esc(p.name)}　${wowTxt(p.data.wow)}`,
+      },
+      levels: [
+        { itemStyle: { borderColor: "#0b0e13", borderWidth: 3, gapWidth: 3 } },
+        { itemStyle: { borderColor: "#0f1419", borderWidth: 1, gapWidth: 1 } },
+      ],
+      label: {
+        show: true, overflow: "truncate", color: "#fff", fontWeight: 700, fontFamily: HM_FONT,
+        textShadowColor: "rgba(0,0,0,0.55)", textShadowBlur: 3, textShadowOffsetY: 1,
+        formatter: (p) => p.data.code == null ? "" : `${esc(p.name)}\n${p.data.bhr >= 0 ? "+" : ""}${fmt(p.data.bhr, 1)}`,
+      },
+      data,
+    }],
+  }, true);
+  selfScreenChart.off("click");
+  selfScreenChart.on("click", (p) => {
+    if (p && p.data && p.data.code) { showView("stock"); $("stock-input").value = p.data.code; loadStock(p.data.code, p.data.name); }
+    else if (p && p.data && p.data.name != null) { ssSectorFilter = (ssSectorFilter === p.data.name) ? null : p.data.name; renderSelfScreenTable(); }
+  });
+  selfScreenChart.resize();
+}
+
+function ssSortVal(r, k) {
+  if (k === "__code") { const n = parseFloat(r.code); return isNaN(n) ? (r.code || "") : n; }
+  return r.vals[k];
+}
+function renderSelfScreenTable() {
+  const el = $("self-screen-table"); if (!el) return;
+  let rows = ssRows.slice();
+  if (ssSectorFilter) rows = rows.filter((r) => r.sector === ssSectorFilter);
+  const note = $("ss-picked-note");
+  if (note) note.innerHTML = ssSectorFilter
+    ? `${esc(ssSectorFilter)}：${rows.length} 檔　<a href="#" id="ss-clear-sector" class="help-link">全部</a>`
+    : `${ssRows.length} 檔`;
+  if (!rows.length) {
+    el.innerHTML = '<div class="table-empty"><strong>' + (ssSectorFilter ? "該類股無入選個股" : "無符合條件的個股")
+      + '</strong><span>可到「設定」放寬木率/木質門檻，或等財報/集保回補齊全。</span></div>';
+    return;
+  }
+  const k0 = ssSort.key, dir = ssSort.dir;
+  if (k0) rows.sort((ra, rb) => {           // 空值永遠沉底
+    const va = ssSortVal(ra, k0), vb = ssSortVal(rb, k0);
+    const na = va == null, nb = vb == null;
+    if (na && nb) return 0; if (na) return 1; if (nb) return -1;
+    if (typeof va === "string" || typeof vb === "string") return dir * String(va).localeCompare(String(vb));
+    return dir * (va - vb);
+  });
+  const arw = (k) => ssSort.key === k ? (ssSort.dir === 1 ? " ▲" : " ▼") : "";
+  const hcell = (k, label, unit, cls) =>
+    `<th class="${cls}sc-sort" data-k="${k}"><span class="sc-h-label">${label}${arw(k)}</span>`
+    + (unit ? `<span class="sc-h-unit">${unit}</span>` : "") + "</th>";
+  const head = "<tr>" + hcell("__code", "股票", "", "")
+    + SC_FIELDS.map(([k, label, unit]) => hcell(k, label, unit, "num ")).join("") + "</tr>";
+  const body = rows.map((r) => "<tr><td>" + stockLink(r.code, r.name) + "</td>"
+    + SC_FIELDS.map(([k]) => {
+      const v = r.vals[k];
+      const vs = scValStyle(k, v, ssCaps[k]);
+      return `<td class="num"><span${vs ? ` style="${vs}"` : ""}>${v == null ? "—" : fmt(v, 2)}</span></td>`;
+    }).join("") + "</tr>").join("");
+  el.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+}
+
 // ========== 操盤手（多操盤手，通用區塊渲染） ==========
 let traderList = [], currentTrader = null;
 async function loadTraders() {
@@ -947,6 +1095,8 @@ async function loadSettings() {
     tg.className = "set-badge " + (s.telegram_configured ? "ok" : "no");
     $("set-picks-only").checked = !!s.intraday_picks_only;
     $("set-loss-tol").value = s.loss_tolerance || "";
+    $("set-screen-mv").value = s.screen_mu_value_min;
+    $("set-screen-ms").value = s.screen_mu_score_min;
     $("set-stats").innerHTML = [
       ["快照天數", s.snapshots], ["台指期歷史天數", s.tx_history_days], ["最新大盤日期", s.last_market_date || "—"],
     ].map(([k, v]) => `<div class="stat"><div class="stat-k">${k}</div><div class="stat-v">${v}</div></div>`).join("");
@@ -999,7 +1149,7 @@ async function renderStage2Sources() {
 async function saveSettings() {
   $("set-saved").textContent = "儲存中…";
   try {
-    await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ schedule_time: $("set-schedule").value, data_dir: $("set-datadir").value, intraday_picks_only: $("set-picks-only").checked, loss_tolerance: parseInt($("set-loss-tol").value, 10) || 0 }) });
+    await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ schedule_time: $("set-schedule").value, data_dir: $("set-datadir").value, intraday_picks_only: $("set-picks-only").checked, loss_tolerance: parseInt($("set-loss-tol").value, 10) || 0, screen_mu_value_min: parseInt($("set-screen-mv").value, 10), screen_mu_score_min: parseInt($("set-screen-ms").value, 10) }) });
     $("set-saved").textContent = "已儲存 ✓"; setTimeout(() => { $("set-saved").textContent = ""; }, 2000);
     loadSettings();
   } catch (e) { $("set-saved").textContent = "儲存失敗：" + e.message; }
@@ -3036,6 +3186,17 @@ $("selfcheck-table").addEventListener("click", (e) => {   // 點欄位表頭排�
   else scSort = { key: k, dir: k === "__code" ? 1 : -1 };
   renderSelfcheckTable();
 });
+$("self-screen-table").addEventListener("click", (e) => {   // 自算選股表頭排序（同 selfcheck）
+  const th = e.target.closest("th.sc-sort"); if (!th) return;
+  const k = th.dataset.k;
+  if (ssSort.key === k) ssSort.dir = -ssSort.dir;
+  else ssSort = { key: k, dir: k === "__code" ? 1 : -1 };
+  renderSelfScreenTable();
+});
+$("ss-picked-note").addEventListener("click", (e) => {      // 清除熱力圖類股 drill-down
+  if (e.target.closest("#ss-clear-sector")) { e.preventDefault(); ssSectorFilter = null; renderSelfScreenTable(); }
+});
+$("ss-goto-settings").addEventListener("click", (e) => { e.preventDefault(); showView("settings"); });
 const _numOrNull = (v) => { const s = String(v).trim(); if (!s) return null; const n = parseFloat(s); return isFinite(n) ? n : null; };
 $("f-lan-score").addEventListener("input", (e) => { lanMin = _numOrNull(e.target.value); renderDailyView(); });
 $("f-lpe").addEventListener("input", (e) => { lpeMin = _numOrNull(e.target.value); renderDailyView(); });
@@ -3376,7 +3537,7 @@ document.querySelectorAll(".rku").forEach((b) => b.addEventListener("click", () 
 // 而 375↔812 的寬度差足以讓漏網的圖整張畫錯位。pulseChart／stockCustodyChart 原本就漏了。
 window.addEventListener("resize", () => {
   [stockChart, chipChart, stockChipsChart, stockCustodyChart, pulseChart, cupChart, distChart,
-    instBreadthChart, instAlphaChart]
+    instBreadthChart, instAlphaChart, selfScreenChart]
     .forEach((c) => c && c.resize());
   if (sectorChart) { sectorChart.resize(); if (lastHeatmapData) fitHeatmapFonts(lastHeatmapData); }
 });

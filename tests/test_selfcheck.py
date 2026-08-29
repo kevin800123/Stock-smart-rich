@@ -198,3 +198,101 @@ def test_build_selfcheck_defaults_to_latest_snap_date(tmp_path):
     out = selfcheck.build_selfcheck(conn, None)     # 不帶 date → 最新
     assert out["date"] == "2026-08-21"
     assert out["dates"][0] == "2026-08-21"           # 新到舊
+
+
+# ========== 自算籌碼/基本選股（全市場自算池，零 CSV 依賴） ==========
+
+def _seed_full_market(conn):
+    """2330 全條件通過（財報/月營收/集保/OHLC/成交額齊全）；1101 只有 大戶增比>0＋成交額
+    （財報缺 → 推估EPS/木率算不出、人數降比>0 → 不入選，但仍進熱力圖）。"""
+    from stocks_power_rich.db import bulk_upsert_financials, bulk_upsert_revenue
+    from stocks_power_rich import analysis
+    # 2330：60 根遞增日 K → W55=1；價格供本業PE
+    ds = [(date(2026, 6, 1) + timedelta(days=n)).isoformat() for n in range(60)]
+    for i, d in enumerate(ds):
+        conn.execute("INSERT INTO stock_ohlc(code,date,high,low,close) VALUES('2330',?,?,?,?)",
+                     (d, 100 + i, 99 + i, 100 + i))
+    # 本週(08-17/18/19) / 上週(08-10/11/12) 成交額（只寫 amount、不含 high/low → 不進 w55 序列）
+    for d, a in (("2026-08-17", 100), ("2026-08-18", 200), ("2026-08-19", 300),
+                 ("2026-08-10", 100), ("2026-08-11", 100), ("2026-08-12", 100)):
+        conn.execute("INSERT INTO stock_ohlc(code,date,close,amount_twd) VALUES('2330',?,?,?)", (d, 100, a))
+    # 月營收：yoy>0 且 6 個月供 Call_LE（10,10,10,8,8,8 億）
+    yms = ["2026-07", "2026-06", "2026-05", "2026-04", "2026-03", "2026-02"]
+    revs = [1e6, 1e6, 1e6, 8e5, 8e5, 8e5]
+    for ym, rv in zip(yms, revs):
+        bulk_upsert_revenue(conn, "TWSE", {"2330": {"year_month": ym, "report_date": ym + "-10",
+                                                     "revenue": rv, "yoy_pct": 44.0}})
+    # 季報：_LAN_USED 8 季（完美形態→蘭質高）＋ opex/income_tax 供 Call_LE
+    perfect = {
+        "revenue":       [500, 400, 300, 200, 100, 100, 100, 100],
+        "pretax_income": [200, 100, 100, 100, 100, 100, 100, 100],
+        "gross_margin":  [50, 45, 40, 35, 30, 30, 30, 30],
+        "ar_turnover":   [10, 9, 8, 7, 6, 6, 6, 6],
+        "inv_turnover":  [5, 4, 3, 2, 1, 1, 1, 1],
+        "debt_ratio":    [30, 40, 35, 50, 45, 45, 45, 45],
+        "ocf":           [100, 80, 60, 40, 20, 20, 20, 20],
+        "net_income":    [50, 40, 30, 20, 10, 10, 10, 10],
+        "roe":           [20, 15, 10, 8, 5, 5, 5, 5],
+        "capex":         [-100, -100, -100, -50, -50, -50, -50, -50],
+    }
+    quarters = ["2026Q2", "2026Q1", "2025Q4", "2025Q3", "2025Q2", "2025Q1", "2024Q4", "2024Q3"]
+    for ind, series in perfect.items():
+        bulk_upsert_financials(conn, ind, {"2330": {q: float(v) for q, v in zip(quarters, series)}})
+    q4 = ["2026Q2", "2026Q1", "2025Q4", "2025Q3"]
+    bulk_upsert_financials(conn, "opex", {"2330": dict(zip(q4, [2e5, 1.5e5, 1.8e5, 1.9e5]))})
+    bulk_upsert_financials(conn, "income_tax", {"2330": dict(zip(q4, [1e5, 8e4, 9e4, 9.5e4]))})
+    # 集保兩週：2330 大戶增比 +1(50>49)、人數降比 -1(990<1000)；1101 大戶增比 +1 但人數降比 +1
+    for w, b2330, th2330, b1101, th1101 in (("2026-08-14", 50.0, 990.0, 50.0, 1010.0),
+                                            ("2026-08-07", 49.0, 1000.0, 49.0, 1000.0)):
+        conn.execute("INSERT INTO custody_dist(week,code,big400_pct,total_holders) VALUES(?,?,?,?)",
+                     (w, "2330", b2330, th2330))
+        conn.execute("INSERT INTO custody_dist(week,code,big400_pct,total_holders) VALUES(?,?,?,?)",
+                     (w, "1101", b1101, th1101))
+    # 1101：本週成交額 500、上週 0（WoW 無從算）；無財報 → 推估EPS/木率 None
+    conn.execute("INSERT INTO stock_ohlc(code,date,close,amount_twd) VALUES('1101','2026-08-17',100,500)")
+    conn.commit()
+
+
+_UNIVERSE = {
+    "2330": {"sector": "半導體", "name": "台積電", "shares": 1e9},
+    "1101": {"sector": "水泥", "name": "台泥", "shares": 5e8},
+}
+
+
+def test_build_self_screen_filters_sorts_and_builds_heatmap(tmp_path):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _seed_full_market(conn)
+
+    out = selfcheck.build_self_screen(conn, "2026-08-19", _UNIVERSE, 0, 0)
+
+    # 篩選：只有 2330 全條件通過（1101 人數降比>0、且無推估EPS → 淘汰）
+    assert [r["code"] for r in out["rows"]] == ["2330"]
+    row = out["rows"][0]
+    assert row["name"] == "台積電"
+    assert set(row["vals"]) == {"rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio",
+                                "trust_3d", "foreign_3d", "lan_score", "est_profit",
+                                "mu_score", "mu_value"}
+    assert row["vals"]["mu_value"] is not None and row["vals"]["mu_value"] > 0
+
+    # 熱力圖：大戶增比>0 的兩檔各自成類股（版塊大小＝本週成交額；顏色資料＝avg 大戶增比）
+    hm = {g["sector"]: g for g in out["heatmap"]}
+    assert set(hm) == {"半導體", "水泥"}
+    assert hm["半導體"]["amount"] == 600            # 2330 本週 100+200+300
+    assert hm["半導體"]["wow_pct"] == 100.0         # (600-300)/300*100，同期比較
+    assert hm["水泥"]["amount"] == 500              # 1101 本週
+    assert hm["水泥"]["wow_pct"] is None            # 上週無成交額 → 算不出
+    assert out["heatmap"][0]["sector"] == "半導體"  # 依本週成交額由大到小
+
+    # coverage：universe 2、大戶增比>0 2、有成交額 2、入選 1
+    assert out["coverage"] == {"universe": 2, "big_holder_pos": 2, "with_amount": 2, "picked": 1}
+
+
+def test_build_self_screen_thresholds_exclude_by_mu_value(tmp_path):
+    """木率門檻嚴格 >：把門檻設到高於該檔實際木率 → 被排除（驗證門檻可調且生效）。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _seed_full_market(conn)
+    mv = selfcheck.build_self_screen(conn, "2026-08-19", _UNIVERSE, 0, 0)["rows"][0]["vals"]["mu_value"]
+    hi = selfcheck.build_self_screen(conn, "2026-08-19", _UNIVERSE, mv + 1, 0)
+    assert [r["code"] for r in hi["rows"]] == []

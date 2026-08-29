@@ -526,6 +526,37 @@ def mu_value(mu_q, lpe, quality_floor: float = MU_QUALITY_FLOOR) -> dict | None:
     return {"value": raw if quality_ok else 0, "raw": raw, "quality_ok": quality_ok}
 
 
+# 「自算籌碼/基本選股」的木率/木質門檻預設（單一權威版本；設定頁可調、經 /api/settings 揭露，
+# 前端不得複製一份寫死）。木率>50、木質>9 是使用者指定的預設值。
+SCREEN_MU_VALUE_MIN = 50
+SCREEN_MU_SCORE_MIN = 9
+
+
+def screen_pass(vals: dict, mu_value_min, mu_score_min) -> bool:
+    """自算籌碼/基本選股的 7 條件篩選（全 AND，None 一律不通過，同 filtered_picks 的 <=0 慣例）：
+    營收年增>0 ∧ W55 翻多 ∧ 大戶增比>0 ∧ 人數降比<0 ∧ 推估EPS>0 ∧ 木率>門檻 ∧ 木質>門檻。
+
+    門檻是嚴格 >（與使用者的「木率>50、木質>9」一致）。`vals`＝selfcheck._row_self 的自算值。
+    篩選用的是已過品質閘的 mu_value（木質<MU_QUALITY_FLOOR 時 mu_value 已為 0，價值陷阱股不混入）。
+    """
+    def gt0(x):
+        return x is not None and x > 0
+
+    def lt0(x):
+        return x is not None and x < 0
+
+    mv, ms = vals.get("mu_value"), vals.get("mu_score")
+    return bool(
+        gt0(vals.get("rev_yoy"))
+        and gt0(vals.get("w55"))
+        and gt0(vals.get("big_holder_ratio"))
+        and lt0(vals.get("holder_drop_ratio"))
+        and gt0(vals.get("est_profit"))
+        and mv is not None and mv > mu_value_min
+        and ms is not None and ms > mu_score_min
+    )
+
+
 DEFAULT_TRADE_FEE = 0.585  # 來回費用%＝買賣手續費 0.1425%×2 ＋ 賣出證交稅 0.3%
 
 
