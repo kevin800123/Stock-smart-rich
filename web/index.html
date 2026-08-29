@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260817-ui25" />
+  <link rel="stylesheet" href="styles.css?v=20260817-ui26" />
   <script src="/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -631,8 +631,12 @@
         </div>
         <div class="pane-heading"><div><h3>大戶加碼類股熱力圖</h3><p>大戶增比&gt;0 的股依類股彙總；點類股只看該類股，再點空白還原</p></div><span id="ss-hm-note" class="pane-count">—</span></div>
         <div id="self-screen-heatmap" style="height:460px"></div>
+        <div id="ss-hm-legend" class="ss-hm-legend"></div>
         <div class="pane-heading"><div><h3>入選個股</h3><p>點欄位排序；點股票開啟個股分析</p></div><span id="ss-picked-note" class="pane-count">—</span></div>
-        <div id="self-screen-table" class="table-wrap fill"><div class="table-empty">載入中…</div></div>
+        <!-- 刻意用 .table-wrap 不加 .fill：本頁表格上方有 460px 熱力圖，.fill（flex:1 1 0;min-height:0）
+             會在 .view flex column 裡被壓成 0 高（見 CLAUDE.md「Layout quirk」）→ 入選個股整段看不到。
+             預設 .table-wrap（flex-shrink:0）保留自然高度、由 .content 捲動。 -->
+        <div id="self-screen-table" class="table-wrap"><div class="table-empty">載入中…</div></div>
       </section>
 
       <!-- ===== 每日財經新聞 ===== -->
@@ -682,6 +686,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260817-ui25"></script>
+  <script src="app.js?v=20260817-ui26"></script>
 </body>
 </html>

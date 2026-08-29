@@ -1126,6 +1126,9 @@ button.file-label { font: inherit; }
 .table-wrap { overflow: auto; border: 1px solid var(--border-strong); border-radius: var(--r-lg); flex-shrink: 0; background: var(--sunken); box-shadow: var(--shadow-card); }
 .table-wrap.fill { flex: 1 1 0; min-height: 0; }
 .table-wrap.fill-half { max-height: 55vh; }
+/* 自算選股熱力圖的色階圖例＋展開切換（色階 hsl 端點與 app.js::ssHeatColor 對齊） */
+.ss-hm-legend { display: flex; align-items: center; gap: 8px; padding: 6px 2px 2px; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
+.ss-hm-legend .ssl-bar { width: 64px; height: 8px; border-radius: 4px; display: inline-block; vertical-align: middle; background: linear-gradient(90deg, hsl(351, 25%, 50%), hsl(351, 100%, 44%)); }
 
 /* ===== 法人資料研究室 =====
    這一頁是研究工作台，不沿用選股頁的卡片與紅綠訊號語彙。單一狀態帶交代結論，

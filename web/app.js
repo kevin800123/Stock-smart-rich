@@ -45,7 +45,7 @@ let hmDetailExpanded = false;
 let cupChart = null, cupMatches = [], cupLoaded = false;
 // 自算籌碼/基本選股（全市場自算池）：進頁才載入（比照 cupLoaded）。
 let selfScreenChart = null, selfScreenLoaded = false;
-let ssRows = [], ssCaps = {}, ssData = null, ssSectorFilter = null;
+let ssRows = [], ssCaps = {}, ssData = null, ssSectorFilter = null, ssHmShowAll = false;
 let ssSort = { key: "mu_value", dir: -1 };
 let instBreadthChart = null, instAlphaChart = null;
 let instCoverage = null, instReport = null, instSegment = "combined", instResearchLoading = false;
@@ -702,6 +702,7 @@ async function loadSelfScreen() {
     ssCaps = {};
     [...SC_SIGNED, ...SC_SCORE].forEach((k) => { ssCaps[k] = ssColCap(ssRows, k); });
     ssSectorFilter = null;
+    ssHmShowAll = false;
     ssSort = { key: "mu_value", dir: -1 };
     renderSelfScreenHeatmap(d.heatmap || []);
     renderSelfScreenTable();
@@ -719,24 +720,33 @@ function ssColCap(rows, k) {   // p80(|自算值|)，同 selfcheck 的漸層門�
 // 這裡的紅表達「加碼強度」不是漲跌，且只用在這張圖，不與紅漲綠跌相混。
 function ssHeatColor(v, cap) {
   const t = cap > 0 ? Math.min(1, Math.abs(v) / cap) : 0;
-  return `hsl(351,${40 + 55 * t}%,${52 - 10 * t}%)`;
+  return `hsl(351,${25 + 75 * t}%,${50 - 6 * t}%)`;   // 飽和主導：灰紅→鮮紅，明度守在白字可讀帶
 }
+const SS_HM_LIMIT = 14;   // 預設只畫成交額前 N 類，其餘併「其他」——34 類全畫時尾巴的字全被截、讀不到
 
 function renderSelfScreenHeatmap(groups) {
   const el = $("self-screen-heatmap"); if (!el) return;
-  const note = $("ss-hm-note");
+  const note = $("ss-hm-note"), legend = $("ss-hm-legend");
   if (!groups.length) {
     if (selfScreenChart) selfScreenChart.clear();
     el.style.height = "0";
     if (note) note.textContent = "尚無大戶加碼類股（需集保近兩週＋成交額資料）";
+    if (legend) legend.innerHTML = "";
     return;
   }
   const allBhr = groups.flatMap((g) => g.children.map((s) => s.big_holder_ratio)).filter((v) => v != null).map(Math.abs).sort((x, y) => x - y);
   const cap = allBhr.length ? (allBhr[Math.floor(allBhr.length * 0.8)] || allBhr[allBhr.length - 1]) : 1;
   const area = (amt) => Math.sqrt(Math.max(amt, 0));
   const wowTxt = (w) => w == null ? "—" : (w >= 0 ? "+" : "") + fmt(w, 1) + "%";
-  const data = groups.map((g) => ({
-    name: g.sector, value: g.children.reduce((a, s) => a + area(s.amount), 0),
+  const secVal = (g) => g.children.reduce((a, s) => a + area(s.amount), 0);   // 版塊面積＝各檔面積和
+  // 收斂長尾：groups 已依成交額降冪（後端排好），預設取前 SS_HM_LIMIT 類、其餘併中性「其他 N 類」
+  // 葉節點（不可點、明細仍在下方表格）；圖例的切換鈕可展開全部。
+  const overLimit = groups.length > SS_HM_LIMIT;
+  const compact = overLimit && !ssHmShowAll;
+  const shown = compact ? groups.slice(0, SS_HM_LIMIT) : groups;
+  const rest = compact ? groups.slice(SS_HM_LIMIT) : [];
+  const data = shown.map((g) => ({
+    name: g.sector, value: secVal(g),
     amount: g.amount, wow: g.wow_pct, avg: g.avg_big_holder, count: g.count,
     itemStyle: { color: ssHeatColor(g.avg_big_holder, cap) },
     children: g.children.map((s) => ({
@@ -744,12 +754,23 @@ function renderSelfScreenHeatmap(groups) {
       code: s.code, sector: g.sector, itemStyle: { color: ssHeatColor(s.big_holder_ratio, cap) },
     })),
   }));
+  if (rest.length) {
+    data.push({
+      name: `其他 ${rest.length} 類`, isOther: true, value: rest.reduce((a, g) => a + secVal(g), 0),
+      amount: rest.reduce((a, g) => a + g.amount, 0), count: rest.reduce((a, g) => a + g.count, 0),
+      itemStyle: { color: "hsl(351,8%,32%)" },   // 中性、與紅色階明顯區隔
+    });
+  }
   if (note) note.textContent = `（${ssData ? ssData.date : ""}　面積＝本週成交額、顏色＝大戶增比、標題＝週成交額 WoW）`;
+  if (legend) legend.innerHTML =
+    `<span>大戶增比</span><span>弱</span><i class="ssl-bar"></i><span>強</span>`
+    + (overLimit ? ` ・ <a href="#" id="ss-hm-toggle" class="help-link">${ssHmShowAll ? `只看前 ${SS_HM_LIMIT} 類` : `展開全部 ${groups.length} 類`}</a>` : "");
   el.style.height = "460px";
   if (!selfScreenChart || selfScreenChart.getDom() !== el) selfScreenChart = initChart(el);
   selfScreenChart.setOption({
     tooltip: {
       formatter: (p) => {
+        if (p.data.isOther) return `${esc(p.name)}<br/>本週成交額 <b>${fmt(p.data.amount / 1e8, 1)}</b> 億　${p.data.count} 檔<br/><span style="color:#8a94a3">明細見下方表格</span>`;
         if (p.data.code == null) {
           return `${esc(p.name)}<br/>本週成交額 <b>${fmt(p.data.amount / 1e8, 1)}</b> 億　WoW ${wowTxt(p.data.wow)}`
             + `<br/>平均大戶增比 <b>${fmt(p.data.avg, 2)}</b>　${p.data.count} 檔<br/><span style="color:#8a94a3">點類股只看該類股</span>`;
@@ -764,7 +785,7 @@ function renderSelfScreenHeatmap(groups) {
       visibleMin: 8, childrenVisibleMin: 60,
       upperLabel: {
         show: true, height: 22, color: C.label, fontSize: 13, fontWeight: 700, fontFamily: HM_FONT,
-        formatter: (p) => `${esc(p.name)}　${wowTxt(p.data.wow)}`,
+        formatter: (p) => p.data.isOther ? "" : `${esc(p.name)}　${wowTxt(p.data.wow)}`,
       },
       levels: [
         { itemStyle: { borderColor: "#0b0e13", borderWidth: 3, gapWidth: 3 } },
@@ -773,7 +794,8 @@ function renderSelfScreenHeatmap(groups) {
       label: {
         show: true, overflow: "truncate", color: "#fff", fontWeight: 700, fontFamily: HM_FONT,
         textShadowColor: "rgba(0,0,0,0.55)", textShadowBlur: 3, textShadowOffsetY: 1,
-        formatter: (p) => p.data.code == null ? "" : `${esc(p.name)}\n${p.data.bhr >= 0 ? "+" : ""}${fmt(p.data.bhr, 1)}`,
+        formatter: (p) => p.data.isOther ? esc(p.name)
+          : (p.data.code == null ? "" : `${esc(p.name)}\n${p.data.bhr >= 0 ? "+" : ""}${fmt(p.data.bhr, 1)}`),
       },
       data,
     }],
@@ -781,7 +803,7 @@ function renderSelfScreenHeatmap(groups) {
   selfScreenChart.off("click");
   selfScreenChart.on("click", (p) => {
     if (p && p.data && p.data.code) { showView("stock"); $("stock-input").value = p.data.code; loadStock(p.data.code, p.data.name); }
-    else if (p && p.data && p.data.name != null) { ssSectorFilter = (ssSectorFilter === p.data.name) ? null : p.data.name; renderSelfScreenTable(); }
+    else if (p && p.data && !p.data.isOther && p.data.name != null) { ssSectorFilter = (ssSectorFilter === p.data.name) ? null : p.data.name; renderSelfScreenTable(); }
   });
   selfScreenChart.resize();
 }
@@ -3195,6 +3217,9 @@ $("self-screen-table").addEventListener("click", (e) => {   // 自算選股表�
 });
 $("ss-picked-note").addEventListener("click", (e) => {      // 清除熱力圖類股 drill-down
   if (e.target.closest("#ss-clear-sector")) { e.preventDefault(); ssSectorFilter = null; renderSelfScreenTable(); }
+});
+$("ss-hm-legend").addEventListener("click", (e) => {        // 熱力圖「展開全部類股 / 只看前 N 類」切換
+  if (e.target.closest("#ss-hm-toggle")) { e.preventDefault(); ssHmShowAll = !ssHmShowAll; if (ssData) renderSelfScreenHeatmap(ssData.heatmap || []); }
 });
 $("ss-goto-settings").addEventListener("click", (e) => { e.preventDefault(); showView("settings"); });
 const _numOrNull = (v) => { const s = String(v).trim(); if (!s) return null; const n = parseFloat(s); return isFinite(n) ? n : null; };
