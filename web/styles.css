@@ -1090,11 +1090,13 @@ button.file-label { font: inherit; }
 /* 選股自算對照：10 欄密集表。單位另置小字副標，欄寬由欄名決定、不被「（張）（%）」撐寬；
    min-width 讓窄視窗乾淨橫捲而非把欄位擠爆／切掉最後一欄。 */
 #selfcheck-table table { min-width: 900px; }
-#selfcheck-table th, #selfcheck-table td { padding: 8px 10px; }
-#selfcheck-table th.sc-sort { cursor: pointer; user-select: none; white-space: nowrap; vertical-align: bottom; }
-#selfcheck-table th.sc-sort:hover .sc-h-label { color: var(--text-primary); }
-#selfcheck-table th .sc-h-label { display: block; }
-#selfcheck-table th .sc-h-unit { display: block; margin-top: 1px; font-size: var(--fs-xs); font-weight: 500; color: var(--muted); }
+/* 排序表頭樣式：selfcheck 與 self-screen 兩張表共用同一份 markup／sort handler，
+   樣式必須同時涵蓋兩者，否則其一有游標/hover/雙層單位、另一沒有（實測 self-screen 漏掉過）。 */
+#selfcheck-table th, #selfcheck-table td, #self-screen-table th, #self-screen-table td { padding: 8px 10px; }
+#selfcheck-table th.sc-sort, #self-screen-table th.sc-sort { cursor: pointer; user-select: none; white-space: nowrap; vertical-align: bottom; }
+#selfcheck-table th.sc-sort:hover .sc-h-label, #self-screen-table th.sc-sort:hover .sc-h-label { color: var(--text-primary); }
+#selfcheck-table th .sc-h-label, #self-screen-table th .sc-h-label { display: block; }
+#selfcheck-table th .sc-h-unit, #self-screen-table th .sc-h-unit { display: block; margin-top: 1px; font-size: var(--fs-xs); font-weight: 500; color: var(--muted); }
 .picks-feedback { flex: 1 1 220px; min-width: 0; color: var(--muted); font-size: var(--fs-xs); text-align: right; }
 .picks-split { display: flex; gap: 12px; flex: 1; min-height: 0; }
 .picks-side { flex: 0 0 250px; display: flex; flex-direction: column; min-height: 0; }
@@ -1129,6 +1131,13 @@ button.file-label { font: inherit; }
 /* 自算選股熱力圖的色階圖例＋展開切換（色階 hsl 端點與 app.js::ssHeatColor 對齊） */
 .ss-hm-legend { display: flex; align-items: center; gap: 8px; padding: 6px 2px 2px; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
 .ss-hm-legend .ssl-bar { width: 64px; height: 8px; border-radius: 4px; display: inline-block; vertical-align: middle; background: linear-gradient(90deg, hsl(351, 25%, 50%), hsl(351, 100%, 44%)); }
+/* 類股篩選 chip：熱力圖 drill-down 的鍵盤可操作替代（active 用中性藍，不碰紅綠語彙） */
+.ss-hm-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+.ss-hm-chips:empty { display: none; }
+.ss-chip { font-size: 12px; line-height: 1.4; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border-default); background: transparent; color: var(--muted); cursor: pointer; }
+.ss-chip:hover { color: var(--text-primary); border-color: var(--border-strong); }
+.ss-chip.active { background: var(--info); border-color: var(--info); color: #0b0e13; font-weight: 700; }
+.ss-chip:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 
 /* ===== 法人資料研究室 =====
    這一頁是研究工作台，不沿用選股頁的卡片與紅綠訊號語彙。單一狀態帶交代結論，
