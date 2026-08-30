@@ -42,6 +42,9 @@ let sectorChart = null, heatmapMarket = "tse", heatmapTop = 5, lastHeatmapData =
 // 熱力圖預設只顯示緊湊橫條，展開完整 treemap 是使用者主動要的（單一最大區塊 820px
 // 的主因）。false＝只算資料、不畫 treemap，省下 setOption／fitHeatmapFonts 的成本。
 let hmDetailExpanded = false;
+// 大戶買進版圖只畫前 50 大子產業：全市場常有 ~400 個子產業，長尾在固定版圖裡是
+// 小於一個標籤寬的微格、讀不到，只把右側糊成一團（見 renderSelfScreenBubbles）。
+const SS_MAP_LIMIT = 50;
 let cupChart = null, cupMatches = [], cupLoaded = false;
 // 自算籌碼/基本選股（全市場自算池）：進頁才載入（比照 cupLoaded）。
 let selfScreenLoaded = false;
@@ -751,16 +754,21 @@ function layoutBinaryTreemap(items, x, y, width, height, out = []) {
 function renderSelfScreenBubbles(heatmap) {
   const el = $("self-screen-heatmap"), note = $("ss-hm-note");
   if (!el) return;
-  const rows = (heatmap || []).filter((g) => g.buy_value > 0)
+  const all = (heatmap || []).filter((g) => g.buy_value > 0)
     .sort((a, b) => b.buy_value - a.buy_value);
+  // 只畫前 50 大：固定版圖裡，長尾子產業小於一個標籤寬，放上去讀不到、只是把右側糊成一團。
+  const rows = all.slice(0, SS_MAP_LIMIT);
   el.classList.toggle("has-selection", Boolean(ssSectorFilter));
   if (!rows.length) {
     el.innerHTML = '<div class="ss-market-empty"><strong>尚無大戶買進資料</strong><span>需集保近兩週與收盤價，資料齊備後會顯示子產業資金版圖。</span></div>';
     if (note) note.textContent = "";
     return;
   }
-  const total = rows.reduce((sum, g) => sum + g.buy_value, 0);
-  if (note) note.textContent = `${ssData && ssData.date ? ssData.date + " · " : ""}${rows.length} 個子產業 · 合計 ${fmt(total / 1e8, 0)} 億`;
+  const grandTotal = all.reduce((sum, g) => sum + g.buy_value, 0);   // 全部子產業合計（含未畫出的長尾）
+  const total = rows.reduce((sum, g) => sum + g.buy_value, 0);       // 版圖占比分母＝畫出來的前 50
+  if (note) note.textContent = `${ssData && ssData.date ? ssData.date + " · " : ""}`
+    + (all.length > rows.length ? `顯示前 ${rows.length} / 共 ${all.length} 子產業` : `${all.length} 個子產業`)
+    + ` · 合計 ${fmt(grandTotal / 1e8, 0)} 億`;
   const mapWidth = Math.max(el.clientWidth, 320), mapHeight = Math.max(el.clientHeight, 400);
   const boxes = layoutBinaryTreemap(rows, 0, 0, mapWidth, mapHeight);
   el.innerHTML = boxes.map((box, index) => {
