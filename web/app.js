@@ -774,7 +774,7 @@ function renderSelfScreenBubbles(heatmap) {
     const left = box.x / mapWidth * 100, top = box.y / mapHeight * 100;
     const width = box.width / mapWidth * 100, height = box.height / mapHeight * 100;
     const count = Number(g.count) || 0;
-    const tip = `第 ${index + 1} 名｜${g.sector}｜大戶淨買進約 ${amt} 億｜占版圖 ${fmt(share, 1)}%｜${count} 檔`;
+    const tip = `第 ${index + 1} 名｜${g.sector}｜大戶淨買進約 ${amt} 億｜占版圖 ${fmt(share, 1)}%｜大戶買進 ${count} 檔（非入選數，入選見下方表格）`;
     return `<button type="button" class="ss-market-cell tone-${tone}${compact ? " is-compact" : ""}${micro ? " is-micro" : ""}${on ? " active" : ""}"`
       + ` data-sector="${esc(g.sector)}" aria-pressed="${on ? "true" : "false"}"`
       + ` aria-label="${esc(tip + "；按下篩選下方入選股")}" title="${esc(tip)}"`
@@ -782,7 +782,7 @@ function renderSelfScreenBubbles(heatmap) {
       + `<span class="ss-cell-rank" aria-hidden="true">${String(index + 1).padStart(2, "0")}</span>`
       + `<span class="ss-cell-name">${esc(g.sector)}</span>`
       + `<span class="ss-cell-value">${esc(amt)}<small>億</small></span>`
-      + `<span class="ss-cell-meta">占 ${fmt(share, 1)}% · ${count} 檔</span></button>`;
+      + `<span class="ss-cell-meta">占 ${fmt(share, 1)}% · 大戶買 ${count} 檔</span></button>`;
   }).join("");
 }
 
