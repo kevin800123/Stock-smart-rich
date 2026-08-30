@@ -275,17 +275,23 @@ def test_build_self_screen_filters_sorts_and_builds_heatmap(tmp_path):
                                 "mu_score", "mu_value"}
     assert row["vals"]["mu_value"] is not None and row["vals"]["mu_value"] > 0
 
-    # 熱力圖：大戶增比>0 的兩檔各自成類股（版塊大小＝本週成交額；顏色資料＝avg 大戶增比）
+    # 熱力圖：大戶增比>0 的兩檔各自成類股
     hm = {g["sector"]: g for g in out["heatmap"]}
     assert set(hm) == {"半導體", "水泥"}
-    assert hm["半導體"]["amount"] == 600            # 2330 本週 100+200+300
+    assert hm["半導體"]["amount"] == 600            # 2330 本週 100+200+300（成交額仍保留給 tooltip）
     assert hm["半導體"]["wow_pct"] == 100.0         # (600-300)/300*100，同期比較
     assert hm["水泥"]["amount"] == 500              # 1101 本週
     assert hm["水泥"]["wow_pct"] is None            # 上週無成交額 → 算不出
-    assert out["heatmap"][0]["sector"] == "半導體"  # 依本週成交額由大到小
 
-    # coverage：universe 2、大戶增比>0 2、有成交額 2、入選 1
-    assert out["coverage"] == {"universe": 2, "big_holder_pos": 2, "with_amount": 2, "picked": 1}
+    # 大戶淨買進金額估計＝大戶增比% × 市值（股數×收盤）。2330：1%×(1e9×159)=1.59e9；
+    # 1101 無 55 根 K（只有成交額列、無 high/low）→ 無收盤 → 算不出、該類股 buy_value=0。
+    assert hm["半導體"]["buy_value"] == 1590000000
+    assert hm["水泥"]["buy_value"] == 0
+    assert out["heatmap"][0]["sector"] == "半導體"  # heatmap 依 buy_value 由大到小
+
+    # coverage：universe 2、大戶增比>0 2、有成交額 2、能算市值 1（只有 2330 有收盤）、入選 1
+    assert out["coverage"] == {"universe": 2, "big_holder_pos": 2, "with_amount": 2,
+                               "with_mcap": 1, "picked": 1}
 
 
 def test_build_self_screen_thresholds_exclude_by_mu_value(tmp_path):

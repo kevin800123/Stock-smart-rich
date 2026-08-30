@@ -176,7 +176,7 @@ def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min) ->
     wk = db.weekly_amounts(conn, date) if date else {}
 
     groups: dict = {}
-    picked, big_pos, with_amount = [], 0, 0
+    picked, big_pos, with_amount, with_mcap = [], 0, 0, 0
     for code, info in universe.items():
         s = _row_self(code, info.get("shares"), yoy, custody, inst3d, fin, mrev, ohlc, date)
         bhr = s["big_holder_ratio"]
@@ -185,14 +185,26 @@ def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min) ->
             amt = wk.get(code)
             if amt:                       # 只納入本週有成交額的（缺料不靜默併進版塊）
                 with_amount += 1
+                # 大戶淨買進金額估計＝大戶增比% × 市值（股數×收盤）——大戶當週實際加碼的錢。
+                # 缺股數或收盤（無 55 根 K）就算不出，不計入該類股 buy_value（with_mcap 揭露缺口）。
+                shares = info.get("shares")
+                closes = (ohlc.get(code) or {}).get("closes")
+                price = closes[-1] if closes else None
+                buy_value = (bhr / 100 * shares * price) if (shares and price) else None
+                if buy_value is not None:
+                    with_mcap += 1
                 sector = info.get("sector") or "未分類"
-                g = groups.setdefault(sector, {"this": 0.0, "prev": 0.0, "bhr": 0.0, "n": 0, "children": []})
+                g = groups.setdefault(sector, {"this": 0.0, "prev": 0.0, "bhr": 0.0,
+                                               "buy": 0.0, "n": 0, "children": []})
                 g["this"] += amt["this"]
                 g["prev"] += amt["prev"]
                 g["bhr"] += bhr
                 g["n"] += 1
+                if buy_value is not None:
+                    g["buy"] += buy_value
                 g["children"].append({"code": code, "name": info.get("name") or code,
-                                      "amount": amt["this"], "big_holder_ratio": bhr})
+                                      "amount": amt["this"], "big_holder_ratio": bhr,
+                                      "buy_value": round(buy_value) if buy_value is not None else None})
         if analysis.screen_pass(s, mu_value_min, mu_score_min):
             picked.append({"code": code, "name": info.get("name") or code,
                            "sector": info.get("sector"), "vals": s})
@@ -200,11 +212,12 @@ def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min) ->
     heatmap = []
     for sector, g in groups.items():
         wow = round((g["this"] - g["prev"]) / g["prev"] * 100, 1) if g["prev"] else None
-        g["children"].sort(key=lambda x: x["amount"], reverse=True)
-        heatmap.append({"sector": sector, "amount": round(g["this"]), "prev_amount": round(g["prev"]),
+        g["children"].sort(key=lambda x: (x["buy_value"] or 0), reverse=True)
+        heatmap.append({"sector": sector, "buy_value": round(g["buy"]),
+                        "amount": round(g["this"]), "prev_amount": round(g["prev"]),
                         "wow_pct": wow, "avg_big_holder": round(g["bhr"] / g["n"], 2),
                         "count": g["n"], "children": g["children"]})
-    heatmap.sort(key=lambda x: x["amount"], reverse=True)
+    heatmap.sort(key=lambda x: x["buy_value"], reverse=True)   # 依大戶淨買進金額由大到小
     picked.sort(key=lambda r: (r["vals"]["mu_value"] if r["vals"]["mu_value"] is not None
                                else float("-inf")), reverse=True)
     return {
@@ -212,5 +225,5 @@ def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min) ->
         "thresholds": {"mu_value_min": mu_value_min, "mu_score_min": mu_score_min},
         "heatmap": heatmap, "rows": picked,
         "coverage": {"universe": len(universe), "big_holder_pos": big_pos,
-                     "with_amount": with_amount, "picked": len(picked)},
+                     "with_amount": with_amount, "with_mcap": with_mcap, "picked": len(picked)},
     }

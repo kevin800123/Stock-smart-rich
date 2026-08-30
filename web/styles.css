@@ -1128,16 +1128,20 @@ button.file-label { font: inherit; }
 .table-wrap { overflow: auto; border: 1px solid var(--border-strong); border-radius: var(--r-lg); flex-shrink: 0; background: var(--sunken); box-shadow: var(--shadow-card); }
 .table-wrap.fill { flex: 1 1 0; min-height: 0; }
 .table-wrap.fill-half { max-height: 55vh; }
-/* 自算選股熱力圖的色階圖例＋展開切換（色階 hsl 端點與 app.js::ssHeatColor 對齊） */
-.ss-hm-legend { display: flex; align-items: center; gap: 8px; padding: 6px 2px 2px; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
-.ss-hm-legend .ssl-bar { width: 64px; height: 8px; border-radius: 4px; display: inline-block; vertical-align: middle; background: linear-gradient(90deg, hsl(351, 25%, 50%), hsl(351, 100%, 44%)); }
-/* 類股篩選 chip：熱力圖 drill-down 的鍵盤可操作替代（active 用中性藍，不碰紅綠語彙） */
-.ss-hm-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
-.ss-hm-chips:empty { display: none; }
-.ss-chip { font-size: 12px; line-height: 1.4; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border-default); background: transparent; color: var(--muted); cursor: pointer; }
-.ss-chip:hover { color: var(--text-primary); border-color: var(--border-strong); }
-.ss-chip.active { background: var(--info); border-color: var(--info); color: #0b0e13; font-weight: 700; }
-.ss-chip:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* 大戶買進類股排行長條：冷靜單色（中性藍，非紅），長度＝大戶淨買進金額。每列是可鍵盤操作的
+   <button>，點一下把入選表格篩到該類股（active 用藍框，不碰紅綠語彙）。取代整片紅的 treemap。 */
+.ss-bars { display: flex; flex-direction: column; gap: 4px; }
+.ss-bar-row { display: grid; grid-template-columns: 96px 1fr 68px; align-items: center; gap: var(--space-sm);
+  width: 100%; padding: 6px 8px; border: 1px solid transparent; border-radius: var(--r-md);
+  background: transparent; color: inherit; cursor: pointer; text-align: left; font: inherit; }
+.ss-bar-row:hover { background: var(--sunken); }
+.ss-bar-row.active { border-color: var(--info); background: var(--sunken); }
+.ss-bar-row:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.ss-bar-name { font-size: var(--fs-sm); color: var(--label); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ss-bar-track { position: relative; height: 10px; background: var(--sunken); border-radius: 5px; overflow: hidden; }
+.ss-bar-row:hover .ss-bar-track, .ss-bar-row.active .ss-bar-track { background: var(--bg); }
+.ss-bar-fill { position: absolute; top: 0; left: 0; height: 100%; border-radius: 5px; background: var(--info); }
+.ss-bar-val { font-size: var(--fs-sm); font-weight: 700; text-align: right; white-space: nowrap; color: var(--text-primary); }
 
 /* ===== 法人資料研究室 =====
    這一頁是研究工作台，不沿用選股頁的卡片與紅綠訊號語彙。單一狀態帶交代結論，

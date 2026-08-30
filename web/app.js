@@ -44,7 +44,7 @@ let sectorChart = null, heatmapMarket = "tse", heatmapTop = 5, lastHeatmapData =
 let hmDetailExpanded = false;
 let cupChart = null, cupMatches = [], cupLoaded = false;
 // 自算籌碼/基本選股（全市場自算池）：進頁才載入（比照 cupLoaded）。
-let selfScreenChart = null, selfScreenLoaded = false;
+let selfScreenLoaded = false;
 let ssRows = [], ssCaps = {}, ssData = null, ssSectorFilter = null;
 let ssSort = { key: "mu_value", dir: -1 };
 let instBreadthChart = null, instAlphaChart = null;
@@ -252,7 +252,7 @@ function showView(name) {
   if (name === "trades") loadTrades();
   if (name === "traders") loadTraders();
   if (name === "selfcheck") loadSelfcheck();
-  if (name === "self-screen") { if (!selfScreenLoaded) { selfScreenLoaded = true; loadSelfScreen(); } else selfScreenChart && selfScreenChart.resize(); }
+  if (name === "self-screen" && !selfScreenLoaded) { selfScreenLoaded = true; loadSelfScreen(); }   // 純 HTML 長條，無需 resize
   if (name === "inst-research") {
     loadInstResearchCoverage();
     instBreadthChart && instBreadthChart.resize();
@@ -695,6 +695,7 @@ async function loadSelfScreen() {
       `全市場 <b>${cov.universe || 0}</b>`,
       `大戶增比&gt;0 <b>${cov.big_holder_pos || 0}</b>`,
       `有成交額 <b>${cov.with_amount || 0}</b>`,
+      `可估金額 <b>${cov.with_mcap || 0}</b>`,
       `入選 <b>${cov.picked || 0}</b>`,
       `門檻 木率&gt;<b>${th.mu_value_min}</b>・木質&gt;<b>${th.mu_score_min}</b>`,
     ].map((s) => `<span>${s}</span>`).join("");
@@ -703,7 +704,7 @@ async function loadSelfScreen() {
     [...SC_SIGNED, ...SC_SCORE].forEach((k) => { ssCaps[k] = ssColCap(ssRows, k); });
     ssSectorFilter = null;
     ssSort = { key: "mu_value", dir: -1 };
-    renderSelfScreenHeatmap(d.heatmap || []);
+    renderSelfScreenBars(d.heatmap || []);
     renderSelfScreenTable();
   } catch (e) {
     tbl.innerHTML = '<div class="table-empty"><strong>載入失敗</strong><span>' + esc(e.message) + "</span></div>";
@@ -715,84 +716,30 @@ function ssColCap(rows, k) {   // p80(|自算值|)，同 selfcheck 的漸層門�
   return a.length ? (a[Math.min(a.length - 1, Math.floor(a.length * 0.80))] || a[a.length - 1] || 0) : 0;
 }
 
-// 大戶增比強度 → 紅色系（全為正；飽和隨強度、明度壓在 42–52% 讓白字可讀）。守全站色彩鎖：
-// 這裡的紅表達「加碼強度」不是漲跌，且只用在這張圖，不與紅漲綠跌相混。
-function ssHeatColor(v, cap) {
-  const t = cap > 0 ? Math.min(1, Math.abs(v) / cap) : 0;
-  return `hsl(351,${25 + 75 * t}%,${50 - 6 * t}%)`;   // 飽和主導：灰紅→鮮紅，明度守在白字可讀帶
-}
-
-function renderSelfScreenHeatmap(groups) {
-  const el = $("self-screen-heatmap"); if (!el) return;
-  const note = $("ss-hm-note"), legend = $("ss-hm-legend");
-  if (!groups.length) {
-    if (selfScreenChart) selfScreenChart.clear();
-    el.style.height = "0";
-    if (note) note.textContent = "尚無大戶加碼類股（需集保近兩週＋成交額資料）";
-    if (legend) legend.innerHTML = "";
+// 「大戶買進類股」排行長條：依大戶淨買進金額（大戶增比×市值）由大到小、取前 15。
+// 純 HTML（無 canvas）、**冷靜單色**（藍，長度才是主訊號）——取代原本整片紅的 treemap。
+// 每列是 <button>：可鍵盤操作，點一下把下方表格篩到該類股（aria-pressed 標作用中）。
+function renderSelfScreenBars(heatmap) {
+  const el = $("self-screen-heatmap"), note = $("ss-hm-note");
+  if (!el) return;
+  const rows = (heatmap || []).filter((g) => g.buy_value > 0).slice(0, 15);   // 後端已依 buy_value 降冪
+  if (!rows.length) {
+    el.innerHTML = '<div class="muted small" style="padding:8px 2px">尚無大戶買進資料（需集保近兩週＋收盤價）</div>';
+    if (note) note.textContent = "";
     return;
   }
-  // 顏色強度參考量：全部個股大戶增比的 p80（避免單一離群把其他壓成同色）
-  const allBhr = groups.flatMap((g) => g.children.map((s) => s.big_holder_ratio)).filter((v) => v != null).map(Math.abs).sort((x, y) => x - y);
-  const cap = allBhr.length ? (allBhr[Math.floor(allBhr.length * 0.8)] || allBhr[allBhr.length - 1]) : 1;
-  const wowTxt = (w) => w == null ? "—" : (w >= 0 ? "+" : "") + fmt(w, 1) + "%";
-  // **個股層級**（使用者要「看大戶買什麼」）：每一葉塊＝一檔大戶增比>0 的股，依類股分群；
-  // 塊大小＝大戶增比（加碼越多塊越大→買最多的自己浮出來）、顏色＝大戶增比強度。成交額/WoW 移到
-  // tooltip。弱加碼的小塊由 visibleMin 併入留白（不畫「其他」黑塊、不用點開）。
-  const data = groups.map((g) => ({
-    name: g.sector, avg: g.avg_big_holder, wow: g.wow_pct, amount: g.amount, count: g.count,
-    itemStyle: { color: ssHeatColor(g.avg_big_holder, cap) },
-    children: g.children.map((s) => ({
-      name: s.name, value: Math.max(s.big_holder_ratio, 0.001), bhr: s.big_holder_ratio,
-      amount: s.amount, code: s.code, sector: g.sector,
-      itemStyle: { color: ssHeatColor(s.big_holder_ratio, cap) },
-    })),
-  }));
-  if (note) note.textContent = `（${ssData ? ssData.date : ""}　每塊＝一檔・面積＝大戶增比、依類股分群；成交額/WoW 見 tooltip）`;
-  if (legend) legend.innerHTML = `<span>大戶增比</span><span>弱</span><i class="ssl-bar"></i><span>強</span>`;
-  el.style.height = "560px";
-  if (!selfScreenChart || selfScreenChart.getDom() !== el) selfScreenChart = initChart(el);
-  selfScreenChart.setOption({
-    tooltip: {
-      formatter: (p) => {
-        if (p.data.code == null) {   // 類股群組
-          return `${esc(p.name)}　${p.data.count} 檔<br/>平均大戶增比 <b>${fmt(p.data.avg, 2)}</b>　成交額 WoW ${wowTxt(p.data.wow)}`
-            + `<br/>本週成交額 <b>${fmt(p.data.amount / 1e8, 1)}</b> 億`;
-        }
-        return `${esc(p.data.code)} ${esc(p.name)}<br/>大戶增比 <b>${p.data.bhr >= 0 ? "+" : ""}${fmt(p.data.bhr, 2)}</b>`
-          + `<br/>本週成交額 <b>${fmt(p.data.amount / 1e8, 1)}</b> 億　${esc(p.data.sector)}<br/><span style="color:#8a94a3">點看 K 線</span>`;
-      },
-    },
-    series: [{
-      type: "treemap", roam: false, nodeClick: false, animationDuration: 300,
-      breadcrumb: { show: false }, left: 1, right: 1, top: 1, bottom: 1, squareRatio: 1,
-      visibleMin: 14, childrenVisibleMin: 40,
-      upperLabel: {
-        show: true, height: 20, color: C.label, fontSize: 12, fontWeight: 700, fontFamily: HM_FONT,
-        // 只標「類股」那一層（treePathInfo 長度 2＝root>類股）：root(長度1)、個股(長度3)都不標，
-        // 否則 treemap 的隱藏 root 會標成「undefined 檔」。
-        formatter: (p) => (p.treePathInfo && p.treePathInfo.length === 2 && p.data && p.data.count != null)
-          ? `${esc(p.name)}　${p.data.count}檔` : "",
-      },
-      levels: [
-        { itemStyle: { borderColor: "#0b0e13", borderWidth: 3, gapWidth: 3, color: "#171c24" } },
-        { itemStyle: { borderColor: "#0f1419", borderWidth: 1, gapWidth: 1 } },
-      ],
-      label: {
-        show: true, position: "inside", overflow: "truncate", color: "#fff", fontWeight: 700,
-        fontFamily: HM_FONT, fontSize: 12, lineHeight: 14,
-        textShadowColor: "rgba(0,0,0,0.55)", textShadowBlur: 3, textShadowOffsetY: 1,
-        formatter: (p) => p.data.code == null ? "" : `${esc(p.name)}\n${p.data.bhr >= 0 ? "+" : ""}${fmt(p.data.bhr, 1)}`,
-      },
-      data,
-    }],
-  }, true);
-  selfScreenChart.off("click");
-  selfScreenChart.on("click", (p) => {
-    if (p && p.data && p.data.code) { showView("stock"); $("stock-input").value = p.data.code; loadStock(p.data.code, p.data.name); }
-    else if (p && p.data && p.data.name != null) { ssSectorFilter = (ssSectorFilter === p.data.name) ? null : p.data.name; renderSelfScreenTable(); }
-  });
-  selfScreenChart.resize();
+  const max = rows[0].buy_value || 1;
+  if (note) note.textContent = `（${ssData ? ssData.date : ""}　長度＝大戶淨買進金額估計（大戶增比×市值），依金額由大到小）`;
+  el.innerHTML = rows.map((g) => {
+    const on = ssSectorFilter === g.sector;
+    const w = Math.max(2, g.buy_value / max * 100);
+    const tip = `${g.sector}　${g.count} 檔　平均大戶增比 ${fmt(g.avg_big_holder, 2)}`;
+    return `<button type="button" class="ss-bar-row${on ? " active" : ""}" data-sector="${esc(g.sector)}"`
+      + ` aria-pressed="${on ? "true" : "false"}" title="${esc(tip)}">`
+      + `<span class="ss-bar-name">${esc(g.sector)}</span>`
+      + `<span class="ss-bar-track"><span class="ss-bar-fill" style="width:${w.toFixed(1)}%"></span></span>`
+      + `<span class="ss-bar-val">${fmt(g.buy_value / 1e8, 1)} 億</span></button>`;
+  }).join("");
 }
 
 function ssSortVal(r, k) {
@@ -801,16 +748,6 @@ function ssSortVal(r, k) {
 }
 function renderSelfScreenTable() {
   const el = $("self-screen-table"); if (!el) return;
-  // 類股篩選 chip：只列「有入選股」的類股（可鍵盤操作、aria-pressed 標作用中）——
-  // 熱力圖 canvas 點不到，這是它的無障礙替代路徑（critique P3）。
-  const chipsEl = $("ss-hm-chips");
-  if (chipsEl) {
-    const secs = [...new Set(ssRows.map((r) => r.sector).filter(Boolean))].sort();
-    chipsEl.innerHTML = secs.length > 1 ? secs.map((s) => {
-      const on = ssSectorFilter === s;
-      return `<button type="button" class="ss-chip${on ? " active" : ""}" data-sector="${esc(s)}" aria-pressed="${on ? "true" : "false"}">${esc(s)}</button>`;
-    }).join("") : "";
-  }
   let rows = ssRows.slice();
   if (ssSectorFilter) rows = rows.filter((r) => r.sector === ssSectorFilter);
   const note = $("ss-picked-note");
@@ -3216,14 +3153,17 @@ $("self-screen-table").addEventListener("click", (e) => {   // 自算選股表�
   else ssSort = { key: k, dir: k === "__code" ? 1 : -1 };
   renderSelfScreenTable();
 });
-$("ss-picked-note").addEventListener("click", (e) => {      // 清除熱力圖類股 drill-down
-  if (e.target.closest("#ss-clear-sector")) { e.preventDefault(); ssSectorFilter = null; renderSelfScreenTable(); }
+$("ss-picked-note").addEventListener("click", (e) => {      // 「全部」：清除類股 drill-down
+  if (e.target.closest("#ss-clear-sector")) {
+    e.preventDefault(); ssSectorFilter = null;
+    renderSelfScreenBars(ssData ? ssData.heatmap : []); renderSelfScreenTable();
+  }
 });
-$("ss-hm-chips").addEventListener("click", (e) => {        // 類股 chip：鍵盤/滑鼠皆可切換 drill-down（同熱力圖點擊）
-  const b = e.target.closest(".ss-chip"); if (!b) return;
+$("self-screen-heatmap").addEventListener("click", (e) => {   // 點大戶買進長條 → 篩下方表格到該類股（鍵盤可操作）
+  const b = e.target.closest(".ss-bar-row"); if (!b) return;
   const s = b.dataset.sector;
   ssSectorFilter = (ssSectorFilter === s) ? null : s;
-  renderSelfScreenTable();
+  renderSelfScreenBars(ssData ? ssData.heatmap : []); renderSelfScreenTable();
 });
 $("ss-goto-settings").addEventListener("click", (e) => { e.preventDefault(); showView("settings"); });
 const _numOrNull = (v) => { const s = String(v).trim(); if (!s) return null; const n = parseFloat(s); return isFinite(n) ? n : null; };
@@ -3566,7 +3506,7 @@ document.querySelectorAll(".rku").forEach((b) => b.addEventListener("click", () 
 // 而 375↔812 的寬度差足以讓漏網的圖整張畫錯位。pulseChart／stockCustodyChart 原本就漏了。
 window.addEventListener("resize", () => {
   [stockChart, chipChart, stockChipsChart, stockCustodyChart, pulseChart, cupChart, distChart,
-    instBreadthChart, instAlphaChart, selfScreenChart]
+    instBreadthChart, instAlphaChart]
     .forEach((c) => c && c.resize());
   if (sectorChart) { sectorChart.resize(); if (lastHeatmapData) fitHeatmapFonts(lastHeatmapData); }
 });
