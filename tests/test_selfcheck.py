@@ -250,6 +250,10 @@ def _seed_full_market(conn):
                      (w, "1101", b1101, th1101))
     # 1101：本週成交額 500、上週 0（WoW 無從算）；無財報 → 推估EPS/木率 None
     conn.execute("INSERT INTO stock_ohlc(code,date,close,amount_twd) VALUES('1101','2026-08-17',100,500)")
+    # 細分類（子產業）只存在 XQ CSV（chip_snapshot），code 帶 .TW（CSV 慣例）。2330 標「IC設計」，
+    # 1101 沒標 → 退回 universe 的官方類股「水泥」。
+    conn.execute("INSERT INTO chip_snapshot(snap_date,code,name,sub_industry) "
+                 "VALUES('2026-08-20','2330.TW','台積電','IC設計')")
     conn.commit()
 
 
@@ -270,28 +274,29 @@ def test_build_self_screen_filters_sorts_and_builds_heatmap(tmp_path):
     assert [r["code"] for r in out["rows"]] == ["2330"]
     row = out["rows"][0]
     assert row["name"] == "台積電"
+    assert row["sector"] == "IC設計"                # 細分類流進入選列（drill-down 才對得上泡泡）
     assert set(row["vals"]) == {"rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio",
                                 "trust_3d", "foreign_3d", "lan_score", "est_profit",
                                 "mu_score", "mu_value"}
     assert row["vals"]["mu_value"] is not None and row["vals"]["mu_value"] > 0
 
-    # 熱力圖：大戶增比>0 的兩檔各自成類股
+    # 分群用細分類（子產業）：2330→「IC設計」(CSV sub_industry)、1101→「水泥」(退回官方類股)
     hm = {g["sector"]: g for g in out["heatmap"]}
-    assert set(hm) == {"半導體", "水泥"}
-    assert hm["半導體"]["amount"] == 600            # 2330 本週 100+200+300（成交額仍保留給 tooltip）
-    assert hm["半導體"]["wow_pct"] == 100.0         # (600-300)/300*100，同期比較
+    assert set(hm) == {"IC設計", "水泥"}
+    assert hm["IC設計"]["amount"] == 600            # 2330 本週 100+200+300（成交額仍保留給 tooltip）
+    assert hm["IC設計"]["wow_pct"] == 100.0         # (600-300)/300*100，同期比較
     assert hm["水泥"]["amount"] == 500              # 1101 本週
     assert hm["水泥"]["wow_pct"] is None            # 上週無成交額 → 算不出
 
     # 大戶淨買進金額估計＝大戶增比% × 市值（股數×收盤）。2330：1%×(1e9×159)=1.59e9；
     # 1101 無 55 根 K（只有成交額列、無 high/low）→ 無收盤 → 算不出、該類股 buy_value=0。
-    assert hm["半導體"]["buy_value"] == 1590000000
+    assert hm["IC設計"]["buy_value"] == 1590000000
     assert hm["水泥"]["buy_value"] == 0
-    assert out["heatmap"][0]["sector"] == "半導體"  # heatmap 依 buy_value 由大到小
+    assert out["heatmap"][0]["sector"] == "IC設計"  # heatmap 依 buy_value 由大到小
 
-    # coverage：universe 2、大戶增比>0 2、有成交額 2、能算市值 1（只有 2330 有收盤）、入選 1
+    # coverage：universe 2、大戶增比>0 2、有成交額 2、能算市值 1、有細分類 1（只有 2330 標 IC設計）、入選 1
     assert out["coverage"] == {"universe": 2, "big_holder_pos": 2, "with_amount": 2,
-                               "with_mcap": 1, "picked": 1}
+                               "with_mcap": 1, "with_subindustry": 1, "picked": 1}
 
 
 def test_build_self_screen_thresholds_exclude_by_mu_value(tmp_path):

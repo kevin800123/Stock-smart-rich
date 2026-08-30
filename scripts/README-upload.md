@@ -70,7 +70,13 @@ DPAPI 快取、`-BaseUrl` 也固定指向這個部署）和 [`upload_xq.example.
 （每個請求逾時、一筆都提交不了；同一主機的 ratios 端點卻通），但**本機**打 ~6 秒沒問題。
 所以這 4 個指標走「本機抓好、POST 上雲」，其餘 8 個 ratios 指標仍直接在雲端回補。
 
-在 repo 根目錄、用專案 venv 執行：
+**雙擊版（建議）**：雙擊 [`scripts\sync_report.bat`](sync_report.bat)。帳密與上傳工具**共用同一份**
+（DPAPI 加密快取；若已雙擊過 `upload_today.bat` 就不會再問），之後放著跑即可（全市場約一兩小時，
+中途可關、重跑會續補）。**何時該跑**：不用自己記——**設定頁的「財報新鮮度」會提醒**：新一季財報
+公布後（Q1≈5/15、Q2≈8/14、Q3≈11/14、年報≈3/31）會亮出 🔔「該更新了」，看到再跑一次即可。
+（帳密輸錯用 `powershell -File scripts\sync_report_click.ps1 -ResetCredential` 重設。）
+
+底層是 [`sync_report_financials.py`](sync_report_financials.py)，也可直接在 repo 根目錄、用專案 venv 執行：
 
 ```
 .venv\Scripts\python scripts\sync_report_financials.py --user admin

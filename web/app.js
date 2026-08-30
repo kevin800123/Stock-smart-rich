@@ -696,6 +696,7 @@ async function loadSelfScreen() {
       `大戶增比&gt;0 <b>${cov.big_holder_pos || 0}</b>`,
       `有成交額 <b>${cov.with_amount || 0}</b>`,
       `可估金額 <b>${cov.with_mcap || 0}</b>`,
+      `細分類 <b>${cov.with_subindustry || 0}</b>`,
       `入選 <b>${cov.picked || 0}</b>`,
       `門檻 木率&gt;<b>${th.mu_value_min}</b>・木質&gt;<b>${th.mu_score_min}</b>`,
     ].map((s) => `<span>${s}</span>`).join("");
@@ -704,7 +705,7 @@ async function loadSelfScreen() {
     [...SC_SIGNED, ...SC_SCORE].forEach((k) => { ssCaps[k] = ssColCap(ssRows, k); });
     ssSectorFilter = null;
     ssSort = { key: "mu_value", dir: -1 };
-    renderSelfScreenBars(d.heatmap || []);
+    renderSelfScreenBubbles(d.heatmap || []);
     renderSelfScreenTable();
   } catch (e) {
     tbl.innerHTML = '<div class="table-empty"><strong>載入失敗</strong><span>' + esc(e.message) + "</span></div>";
@@ -716,29 +717,32 @@ function ssColCap(rows, k) {   // p80(|自算值|)，同 selfcheck 的漸層門�
   return a.length ? (a[Math.min(a.length - 1, Math.floor(a.length * 0.80))] || a[a.length - 1] || 0) : 0;
 }
 
-// 「大戶買進類股」排行長條：依大戶淨買進金額（大戶增比×市值）由大到小、取前 15。
-// 純 HTML（無 canvas）、**冷靜單色**（藍，長度才是主訊號）——取代原本整片紅的 treemap。
-// 每列是 <button>：可鍵盤操作，點一下把下方表格篩到該類股（aria-pressed 標作用中）。
-function renderSelfScreenBars(heatmap) {
+// 「大戶買進類股」泡泡：每個子產業＝一顆藍色圓泡，大小＝大戶淨買進金額（大戶增比×市值），
+// 依金額由大到小、大顆自然浮出。純 HTML（無 canvas）、冷靜藍色球體（不再整片紅、一目了然）。
+// 每顆是 <button>：可鍵盤操作，點一下把下方表格篩到該子產業（aria-pressed 標作用中）。
+function renderSelfScreenBubbles(heatmap) {
   const el = $("self-screen-heatmap"), note = $("ss-hm-note");
   if (!el) return;
-  const rows = (heatmap || []).filter((g) => g.buy_value > 0).slice(0, 15);   // 後端已依 buy_value 降冪
+  const rows = (heatmap || []).filter((g) => g.buy_value > 0);   // 後端已依 buy_value 降冪；泡泡大小自然分主次
   if (!rows.length) {
     el.innerHTML = '<div class="muted small" style="padding:8px 2px">尚無大戶買進資料（需集保近兩週＋收盤價）</div>';
     if (note) note.textContent = "";
     return;
   }
   const max = rows[0].buy_value || 1;
-  if (note) note.textContent = `（${ssData ? ssData.date : ""}　長度＝大戶淨買進金額估計（大戶增比×市值），依金額由大到小）`;
+  if (note) note.textContent = `（${ssData ? ssData.date : ""}　泡泡大小＝大戶淨買進金額估計（億；大戶增比×市值），依金額由大到小）`;
+  const MIN = 34, MAX = 96;   // 直徑用 sqrt(金額) 對應面積∝金額；大顆才把數字放進圓內
   el.innerHTML = rows.map((g) => {
     const on = ssSectorFilter === g.sector;
-    const w = Math.max(2, g.buy_value / max * 100);
-    const tip = `${g.sector}　${g.count} 檔　平均大戶增比 ${fmt(g.avg_big_holder, 2)}`;
-    return `<button type="button" class="ss-bar-row${on ? " active" : ""}" data-sector="${esc(g.sector)}"`
+    const d = Math.round(MIN + Math.sqrt(g.buy_value / max) * (MAX - MIN));
+    const amt = fmt(g.buy_value / 1e8, g.buy_value >= 1e11 ? 0 : 1);   // ≥千億給整數、否則一位小數
+    const inside = d >= 52;
+    const tip = `${g.sector}　${g.count} 檔　大戶買進約 ${amt} 億`;
+    return `<button type="button" class="ss-bubble${on ? " active" : ""}" data-sector="${esc(g.sector)}"`
       + ` aria-pressed="${on ? "true" : "false"}" title="${esc(tip)}">`
-      + `<span class="ss-bar-name">${esc(g.sector)}</span>`
-      + `<span class="ss-bar-track"><span class="ss-bar-fill" style="width:${w.toFixed(1)}%"></span></span>`
-      + `<span class="ss-bar-val">${fmt(g.buy_value / 1e8, 1)} 億</span></button>`;
+      + `<span class="ss-bubble-circle" style="width:${d}px;height:${d}px">${inside ? esc(amt) : ""}</span>`
+      + `<span class="ss-bubble-name">${esc(g.sector)}</span>`
+      + (inside ? "" : `<span class="ss-bubble-val">${esc(amt)} 億</span>`) + "</button>";
   }).join("");
 }
 
@@ -1060,6 +1064,13 @@ async function loadSettings() {
     $("set-stats").innerHTML = [
       ["快照天數", s.snapshots], ["台指期歷史天數", s.tx_history_days], ["最新大盤日期", s.last_market_date || "—"],
     ].map(([k, v]) => `<div class="stat"><div class="stat-k">${k}</div><div class="stat-v">${v}</div></div>`).join("");
+    // 財報新鮮度提醒：庫內最新季 vs 應已公布季，stale 就琥珀提醒跑 sync_report.bat（月營收每日自動、僅資訊）
+    const ff = $("set-fin-fresh"), fq = s.financials_latest_quarter, eq = s.financials_expected_quarter, rm = s.revenue_latest_month || "—";
+    if (ff) {
+      if (!fq) ff.innerHTML = `<span class="set-badge no">尚無季報資料</span><span class="muted small">請在本機跑一次 <b>sync_report.bat</b>（見 scripts/README-upload.md）。月營收最新 ${esc(rm)}。</span>`;
+      else if (s.financials_stale) ff.innerHTML = `<span class="set-badge no">🔔 ${esc(eq)} 財報已到公布期</span><span class="muted small">庫內還停在 <b>${esc(fq)}</b> → 雙擊 <b>sync_report.bat</b> 更新（影響入選個股的推估EPS／木率）。月營收最新 ${esc(rm)}。</span>`;
+      else ff.innerHTML = `<span class="set-badge ok">季報最新 ${esc(fq)} ✓</span><span class="muted small">月營收最新 ${esc(rm)}（每日自動更新）。</span>`;
+    }
   } catch (e) { /* 忽略 */ }
   renderScoringRules();
   renderStage2Sources();
@@ -3156,14 +3167,14 @@ $("self-screen-table").addEventListener("click", (e) => {   // 自算選股表�
 $("ss-picked-note").addEventListener("click", (e) => {      // 「全部」：清除類股 drill-down
   if (e.target.closest("#ss-clear-sector")) {
     e.preventDefault(); ssSectorFilter = null;
-    renderSelfScreenBars(ssData ? ssData.heatmap : []); renderSelfScreenTable();
+    renderSelfScreenBubbles(ssData ? ssData.heatmap : []); renderSelfScreenTable();
   }
 });
 $("self-screen-heatmap").addEventListener("click", (e) => {   // 點大戶買進長條 → 篩下方表格到該類股（鍵盤可操作）
-  const b = e.target.closest(".ss-bar-row"); if (!b) return;
+  const b = e.target.closest(".ss-bubble"); if (!b) return;
   const s = b.dataset.sector;
   ssSectorFilter = (ssSectorFilter === s) ? null : s;
-  renderSelfScreenBars(ssData ? ssData.heatmap : []); renderSelfScreenTable();
+  renderSelfScreenBubbles(ssData ? ssData.heatmap : []); renderSelfScreenTable();
 });
 $("ss-goto-settings").addEventListener("click", (e) => { e.preventDefault(); showView("settings"); });
 const _numOrNull = (v) => { const s = String(v).trim(); if (!s) return null; const n = parseFloat(s); return isFinite(n) ? n : null; };

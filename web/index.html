@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260817-ui33" />
+  <link rel="stylesheet" href="styles.css?v=20260817-ui35" />
   <script src="/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -629,9 +629,9 @@
             <div id="ss-coverage" class="picks-summary" aria-label="覆蓋度" aria-live="polite"></div>
           </div>
         </div>
-        <div class="pane-heading"><div><h3>大戶買進類股（本週）</h3><p>依大戶淨買進金額（大戶增比×市值）由大到小；點類股只看該類股的入選股，再點一次還原</p></div><span id="ss-hm-note" class="pane-count">—</span></div>
-        <!-- 大戶買進類股排行長條（純 HTML，renderSelfScreenBars 填入）。每列是可鍵盤操作的 <button>，點一下篩下方表格。 -->
-        <div id="self-screen-heatmap" class="ss-bars" role="group" aria-label="大戶買進類股排行，點類股篩選入選個股"></div>
+        <div class="pane-heading"><div><h3>大戶買進類股（本週）</h3><p>泡泡＝子產業（無細分類的退回官方類股），大小＝大戶淨買進金額；點泡泡只看該類的入選股，再點一次還原</p></div><span id="ss-hm-note" class="pane-count">—</span></div>
+        <!-- 大戶買進類股泡泡（純 HTML，renderSelfScreenBubbles 填入）。每顆是可鍵盤操作的 <button>，點一下篩下方表格。 -->
+        <div id="self-screen-heatmap" class="ss-bubbles" role="group" aria-label="大戶買進類股泡泡，點子產業篩選入選個股"></div>
         <div class="pane-heading"><div><h3>入選個股</h3><p>點欄位排序；點股票開啟個股分析</p></div><span id="ss-picked-note" class="pane-count">—</span></div>
         <!-- 刻意用 .table-wrap 不加 .fill：本頁表格上方有 460px 熱力圖，.fill（flex:1 1 0;min-height:0）
              會在 .view flex column 裡被壓成 0 高（見 CLAUDE.md「Layout quirk」）→ 入選個股整段看不到。
@@ -677,6 +677,9 @@
         <div class="ai-head" style="margin-top:8px"><span>資料庫狀態</span></div>
         <div id="set-stats" class="stats-grid"></div>
 
+        <div class="ai-head" style="margin-top:8px"><span>財報新鮮度</span><span class="muted small">季報一季一更（財報公布後跑一次本機 sync_report.bat）；月營收每日自動</span></div>
+        <div id="set-fin-fresh" class="set-row"></div>
+
         <div class="ai-head" style="margin-top:8px"><span>評分規則</span><span class="muted small">木質／木率（唯讀，規則來自後端）</span></div>
         <div id="set-scoring" class="scoring-rules"></div>
 
@@ -686,6 +689,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260817-ui33"></script>
+  <script src="app.js?v=20260817-ui35"></script>
 </body>
 </html>

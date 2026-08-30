@@ -174,17 +174,21 @@ def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min) ->
     mrev = db.monthly_revenue_bulk(conn, as_of=date) if date else {}
     ohlc = db.get_all_ohlc(conn, min_bars=55)
     wk = db.weekly_amounts(conn, date) if date else {}
+    submap = db.sub_industry_map(conn) if date else {}   # 細分類（子產業）：XQ CSV 才有，退回官方類股
 
     groups: dict = {}
-    picked, big_pos, with_amount, with_mcap = [], 0, 0, 0
+    picked, big_pos, with_amount, with_mcap, with_subindustry = [], 0, 0, 0, 0
     for code, info in universe.items():
         s = _row_self(code, info.get("shares"), yoy, custody, inst3d, fin, mrev, ohlc, date)
+        gk = submap.get(code) or info.get("sector") or "未分類"   # 細分類優先、退回官方類股
         bhr = s["big_holder_ratio"]
         if bhr is not None and bhr > 0:
             big_pos += 1
             amt = wk.get(code)
             if amt:                       # 只納入本週有成交額的（缺料不靜默併進版塊）
                 with_amount += 1
+                if submap.get(code):
+                    with_subindustry += 1
                 # 大戶淨買進金額估計＝大戶增比% × 市值（股數×收盤）——大戶當週實際加碼的錢。
                 # 缺股數或收盤（無 55 根 K）就算不出，不計入該類股 buy_value（with_mcap 揭露缺口）。
                 shares = info.get("shares")
@@ -193,9 +197,8 @@ def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min) ->
                 buy_value = (bhr / 100 * shares * price) if (shares and price) else None
                 if buy_value is not None:
                     with_mcap += 1
-                sector = info.get("sector") or "未分類"
-                g = groups.setdefault(sector, {"this": 0.0, "prev": 0.0, "bhr": 0.0,
-                                               "buy": 0.0, "n": 0, "children": []})
+                g = groups.setdefault(gk, {"this": 0.0, "prev": 0.0, "bhr": 0.0,
+                                           "buy": 0.0, "n": 0, "children": []})
                 g["this"] += amt["this"]
                 g["prev"] += amt["prev"]
                 g["bhr"] += bhr
@@ -207,7 +210,7 @@ def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min) ->
                                       "buy_value": round(buy_value) if buy_value is not None else None})
         if analysis.screen_pass(s, mu_value_min, mu_score_min):
             picked.append({"code": code, "name": info.get("name") or code,
-                           "sector": info.get("sector"), "vals": s})
+                           "sector": gk, "vals": s})   # 用細分類，drill-down 才對得上泡泡
 
     heatmap = []
     for sector, g in groups.items():
@@ -225,5 +228,6 @@ def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min) ->
         "thresholds": {"mu_value_min": mu_value_min, "mu_score_min": mu_score_min},
         "heatmap": heatmap, "rows": picked,
         "coverage": {"universe": len(universe), "big_holder_pos": big_pos,
-                     "with_amount": with_amount, "with_mcap": with_mcap, "picked": len(picked)},
+                     "with_amount": with_amount, "with_mcap": with_mcap,
+                     "with_subindustry": with_subindustry, "picked": len(picked)},
     }

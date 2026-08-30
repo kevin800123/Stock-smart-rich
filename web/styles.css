@@ -1128,20 +1128,22 @@ button.file-label { font: inherit; }
 .table-wrap { overflow: auto; border: 1px solid var(--border-strong); border-radius: var(--r-lg); flex-shrink: 0; background: var(--sunken); box-shadow: var(--shadow-card); }
 .table-wrap.fill { flex: 1 1 0; min-height: 0; }
 .table-wrap.fill-half { max-height: 55vh; }
-/* 大戶買進類股排行長條：冷靜單色（中性藍，非紅），長度＝大戶淨買進金額。每列是可鍵盤操作的
-   <button>，點一下把入選表格篩到該類股（active 用藍框，不碰紅綠語彙）。取代整片紅的 treemap。 */
-.ss-bars { display: flex; flex-direction: column; gap: 4px; }
-.ss-bar-row { display: grid; grid-template-columns: 96px 1fr 68px; align-items: center; gap: var(--space-sm);
-  width: 100%; padding: 6px 8px; border: 1px solid transparent; border-radius: var(--r-md);
-  background: transparent; color: inherit; cursor: pointer; text-align: left; font: inherit; }
-.ss-bar-row:hover { background: var(--sunken); }
-.ss-bar-row.active { border-color: var(--info); background: var(--sunken); }
-.ss-bar-row:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
-.ss-bar-name { font-size: var(--fs-sm); color: var(--label); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ss-bar-track { position: relative; height: 10px; background: var(--sunken); border-radius: 5px; overflow: hidden; }
-.ss-bar-row:hover .ss-bar-track, .ss-bar-row.active .ss-bar-track { background: var(--bg); }
-.ss-bar-fill { position: absolute; top: 0; left: 0; height: 100%; border-radius: 5px; background: var(--info); }
-.ss-bar-val { font-size: var(--fs-sm); font-weight: 700; text-align: right; white-space: nowrap; color: var(--text-primary); }
+/* 大戶買進類股泡泡：每個子產業＝一顆藍色球體，大小＝大戶淨買進金額。冷靜藍、不碰紅綠語彙、
+   一目了然（大顆＝買最多）。底邊對齊成一排「浮在架上」的泡泡。每顆是可鍵盤操作的 <button>。 */
+.ss-bubbles { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px 16px; padding: 8px 2px 4px; }
+.ss-bubble { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 5px;
+  min-width: 68px; padding: 6px 4px; border: 1px solid transparent; border-radius: var(--r-md);
+  background: transparent; color: inherit; cursor: pointer; font: inherit; }
+.ss-bubble:hover { background: var(--sunken); }
+.ss-bubble.active { border-color: var(--info); background: var(--sunken); }
+.ss-bubble:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.ss-bubble-circle { flex: 0 0 auto; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  color: #fff; font-weight: 700; font-size: var(--fs-sm);
+  background: radial-gradient(circle at 34% 30%, #6fb2f0, #2f6fb0);
+  box-shadow: inset 0 -3px 8px rgba(0, 0, 0, 0.28); }
+.ss-bubble-name { font-size: var(--fs-xs); color: var(--label); text-align: center; line-height: 1.2;
+  max-width: 88px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ss-bubble-val { font-size: var(--fs-xs); font-weight: 700; color: var(--text-primary); }
 
 /* ===== 法人資料研究室 =====
    這一頁是研究工作台，不沿用選股頁的卡片與紅綠訊號語彙。單一狀態帶交代結論，

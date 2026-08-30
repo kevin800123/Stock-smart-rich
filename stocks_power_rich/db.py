@@ -359,6 +359,20 @@ def custody_change_map(conn: sqlite3.Connection, as_of: str | None = None) -> di
     return out
 
 
+def sub_industry_map(conn: sqlite3.Connection) -> dict:
+    """{bare_code: 子產業}——來自 XQ CSV（chip_snapshot.sub_industry），跨所有日期取最新非空。
+
+    官方 TWSE 產業別（_industry_map）只有 ~30 大類；「記憶體/被動元件」等**細分類只存在 XQ
+    匯入**，故覆蓋＝曾出現在 CSV 的股（大戶在買的通常都在內）。chip_snapshot 的 code 帶 .TW/.TWO
+    後綴（CSV 慣例）→ 去後綴，對齊全市場 bare code。"""
+    out: dict = {}
+    for code, sub in conn.execute(
+            "SELECT code, sub_industry FROM chip_snapshot "
+            "WHERE sub_industry IS NOT NULL AND sub_industry<>'' ORDER BY snap_date"):
+        out[str(code).split(".")[0]] = sub   # 後日期覆蓋前日期＝取最新
+    return out
+
+
 def bulk_upsert_ohlc(conn: sqlite3.Connection, date: str, rows: dict) -> int:
     """一日全市場 OHLC 批次入庫。rows＝{code: {open,high,low,close}}。"""
     data = [(date, code, v.get("open"), v.get("high"), v.get("low"), v.get("close"),
@@ -475,6 +489,18 @@ def get_financials_bulk(conn: sqlite3.Connection, indicators: list) -> dict:
             f"WHERE indicator IN ({ph}) ORDER BY code, indicator, quarter DESC", list(indicators)):
         out.setdefault(code, {}).setdefault(indicator, []).append(value)
     return out
+
+
+def latest_financial_quarter(conn: sqlite3.Connection) -> str | None:
+    """庫內最新季報季別（"YYYYQn"，字典序＝時序），無資料回 None。供財報新鮮度提醒。"""
+    row = conn.execute("SELECT MAX(quarter) FROM stock_financials").fetchone()
+    return row[0] if row and row[0] else None
+
+
+def latest_revenue_month(conn: sqlite3.Connection) -> str | None:
+    """庫內最新月營收月份（"YYYY-MM"），無資料回 None。月營收由每日 run_update 自動更新。"""
+    row = conn.execute("SELECT MAX(year_month) FROM stock_revenue_monthly").fetchone()
+    return row[0] if row and row[0] else None
 
 
 def get_latest_revenue(conn: sqlite3.Connection, code: str, as_of: str | None = None) -> dict | None:

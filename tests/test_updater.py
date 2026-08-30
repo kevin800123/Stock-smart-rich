@@ -1018,3 +1018,16 @@ def test_run_update_writes_session_aligned_intl_not_live_snapshot(tmp_path, monk
     assert r[0] == 105.0 and r[1] == 5.0   # 美盤：D 當晚可得的是 D 之前那一場
     assert r[2] is None                    # 亞股當日還沒收 → 留 NULL，不拿別場頂替
     assert "intl" in result["success"]
+
+
+def test_expected_published_quarter_uses_tw_filing_deadlines():
+    """財報公布截止：年報(Q4) 3/31、Q1 5/15、Q2 8/14、Q3 11/14。回「到今天最新一個應已公布的季」。"""
+    eq = updater.expected_published_quarter
+    assert eq(date(2026, 5, 14)) == "2025Q4"   # Q1 未到 5/15
+    assert eq(date(2026, 5, 15)) == "2026Q1"   # Q1 公布日
+    assert eq(date(2026, 8, 14)) == "2026Q2"
+    assert eq(date(2026, 11, 14)) == "2026Q3"
+    assert eq(date(2026, 12, 1)) == "2026Q3"
+    assert eq(date(2026, 3, 31)) == "2025Q4"   # 年報 3/31
+    assert eq(date(2026, 3, 30)) == "2025Q3"   # 年報前，最新是前年 Q3
+    assert eq(date(2027, 1, 10)) == "2026Q3"

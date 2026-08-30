@@ -17,7 +17,10 @@ from .helpers import (
     line_quota_paused,
     REPO_DIR
 )
-from ..db import get_setting, set_setting, get_snapshot_dates, get_tx_history, get_ai_cache, backup_db, get_connection, bulk_upsert_financials
+from datetime import date
+from ..db import (get_setting, set_setting, get_snapshot_dates, get_tx_history, get_ai_cache,
+                  backup_db, get_connection, bulk_upsert_financials,
+                  latest_financial_quarter, latest_revenue_month)
 from ..config import load_config
 from .. import updater, gemini, analysis, selfcheck
 
@@ -392,6 +395,8 @@ def get_settings(request: Request):
     cfg = load_config()
     c = conn()
     last_date = _latest_date(c)
+    _fin_q = latest_financial_quarter(c)
+    _exp_q = updater.expected_published_quarter(date.today())
     return {
         "gemini_configured": bool(cfg.gemini_api_key),
         # 免費層是每日 × 每專案 × 每模型 20 次，撞上限前完全沒有跡象可查（實際發生過，
@@ -416,6 +421,12 @@ def get_settings(request: Request):
         # 自算籌碼/基本選股的木率/木質門檻（預設來自 analysis 常數，可調）
         "screen_mu_value_min": int(_screen_threshold(c, "screen_mu_value_min", analysis.SCREEN_MU_VALUE_MIN)),
         "screen_mu_score_min": int(_screen_threshold(c, "screen_mu_score_min", analysis.SCREEN_MU_SCORE_MIN)),
+        # 財報新鮮度提醒：庫內最新季 vs 依公布截止「應已公布的季」→ stale 就提醒跑 sync_report.bat。
+        # 月營收由每日 run_update 自動更新（openapi 最新月），只是資訊性顯示。
+        "financials_latest_quarter": _fin_q,
+        "financials_expected_quarter": _exp_q,
+        "financials_stale": bool(_fin_q and _fin_q < _exp_q),
+        "revenue_latest_month": latest_revenue_month(c),
     }
 
 @router.get("/scoring-rules")

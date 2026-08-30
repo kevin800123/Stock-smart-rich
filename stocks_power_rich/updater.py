@@ -127,6 +127,23 @@ def _default_report_anchor() -> tuple:
     return year, season
 
 
+# 台股財報公布截止（月,日,季）：≥此日該季已公布。年報(Q4) 另在 3/31（見下）。
+_REPORT_FILING_DEADLINES = ((11, 14, 3), (8, 14, 2), (5, 15, 1))
+
+
+def expected_published_quarter(today) -> str:
+    """依台股財報公布截止日，回「到 today 為止最新一個應已公布的季別」＝ "YYYYQn"。
+    截止：年報(Q4) 3/31、Q1 5/15、Q2 8/14、Q3 11/14。供設定頁的財報新鮮度提醒判斷用
+    （庫內最新季 < 這個 → 該跑季報更新了）。"""
+    y, md = today.year, (today.month, today.day)
+    for mm, dd, q in _REPORT_FILING_DEADLINES:
+        if md >= (mm, dd):
+            return f"{y}Q{q}"
+    if md >= (3, 31):
+        return f"{y - 1}Q4"
+    return f"{y - 1}Q3"
+
+
 # 每個報表指標「算完成」所需的最少季數＝該報表的抓取深度（IncomeStatement 4、
 # CashflowStatement 8）。**必須看季數、不能只看「指標存不存在」**：早期 sync 在 mopsfin
 # 退化期只抓到 capex 2 季就中斷，舊版「有 capex 指標就算完成」把這種半殘代號判為完成、

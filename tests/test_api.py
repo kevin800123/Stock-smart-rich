@@ -1461,10 +1461,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260817-ui33"' in html.text
-    assert 'href="/styles.css?v=20260817-ui33"' in html.text
-    assert 'src="app.js?v=20260817-ui33"' not in html.text
-    assert 'href="styles.css?v=20260817-ui33"' not in html.text
+    assert 'src="/app.js?v=20260817-ui35"' in html.text
+    assert 'href="/styles.css?v=20260817-ui35"' in html.text
+    assert 'src="app.js?v=20260817-ui35"' not in html.text
+    assert 'href="styles.css?v=20260817-ui35"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",
@@ -2824,3 +2824,21 @@ def test_picks_selfcheck_tolerances_come_from_analysis(tmp_path, monkeypatch):
     r = client.get("/api/picks/selfcheck")
     assert r.status_code == 200
     assert r.json()["tolerances"]["SELFCHECK_TOL"] == analysis.SELFCHECK_TOL
+
+
+def test_settings_financials_freshness_flags_stale(tmp_path, monkeypatch):
+    """財報新鮮度：庫內最新季 < 應已公布季 → stale=True（提醒跑 sync_report.bat）。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    from stocks_power_rich import updater
+    monkeypatch.setattr(updater, "expected_published_quarter", lambda today: "2026Q2")
+    client = TestClient(create_app())
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_financials
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    bulk_upsert_financials(c, "revenue", {"2330": {"2026Q1": 100.0}})   # 庫內只到 2026Q1
+    c.commit()
+    s = client.get("/api/settings").json()
+    assert s["financials_latest_quarter"] == "2026Q1"
+    assert s["financials_expected_quarter"] == "2026Q2"
+    assert s["financials_stale"] is True
