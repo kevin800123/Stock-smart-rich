@@ -252,7 +252,7 @@ function showView(name) {
   if (name === "trades") loadTrades();
   if (name === "traders") loadTraders();
   if (name === "selfcheck") loadSelfcheck();
-  if (name === "self-screen" && !selfScreenLoaded) { selfScreenLoaded = true; loadSelfScreen(); }   // 純 HTML 長條，無需 resize
+  if (name === "self-screen" && !selfScreenLoaded) { selfScreenLoaded = true; loadSelfScreen(); }   // 原生 DOM treemap，進頁才載入
   if (name === "inst-research") {
     loadInstResearchCoverage();
     instBreadthChart && instBreadthChart.resize();
@@ -717,32 +717,72 @@ function ssColCap(rows, k) {   // p80(|自算值|)，同 selfcheck 的漸層門�
   return a.length ? (a[Math.min(a.length - 1, Math.floor(a.length * 0.80))] || a[a.length - 1] || 0) : 0;
 }
 
-// 「大戶買進類股」泡泡：每個子產業＝一顆藍色圓泡，大小＝大戶淨買進金額（大戶增比×市值），
-// 依金額由大到小、大顆自然浮出。純 HTML（無 canvas）、冷靜藍色球體（不再整片紅、一目了然）。
-// 每顆是 <button>：可鍵盤操作，點一下把下方表格篩到該子產業（aria-pressed 標作用中）。
+// Binary treemap：用真正的矩形面積表達 buy_value，且保留資料的降冪順序。
+// 不依賴 canvas／第三方套件，每個葉節點都能直接渲染成可鍵盤操作的 <button>。
+function layoutBinaryTreemap(items, x, y, width, height, out = []) {
+  if (!items.length || width <= 0 || height <= 0) return out;
+  if (items.length === 1) {
+    out.push({ item: items[0], x, y, width, height });
+    return out;
+  }
+  const total = items.reduce((sum, item) => sum + item.buy_value, 0);
+  let running = 0, splitAt = 1, bestDistance = Infinity;
+  for (let i = 1; i < items.length; i += 1) {
+    running += items[i - 1].buy_value;
+    const distance = Math.abs(total / 2 - running);
+    if (distance < bestDistance) { bestDistance = distance; splitAt = i; }
+  }
+  const first = items.slice(0, splitAt), second = items.slice(splitAt);
+  const firstTotal = first.reduce((sum, item) => sum + item.buy_value, 0);
+  const ratio = total > 0 ? firstTotal / total : first.length / items.length;
+  if (width >= height) {
+    const firstWidth = width * ratio;
+    layoutBinaryTreemap(first, x, y, firstWidth, height, out);
+    layoutBinaryTreemap(second, x + firstWidth, y, width - firstWidth, height, out);
+  } else {
+    const firstHeight = height * ratio;
+    layoutBinaryTreemap(first, x, y, width, firstHeight, out);
+    layoutBinaryTreemap(second, x, y + firstHeight, width, height - firstHeight, out);
+  }
+  return out;
+}
+
+// 函式名稱保留，避免既有載入／drill-down 路徑漂移；輸出已由泡泡改為冷靜藍系子產業版圖。
 function renderSelfScreenBubbles(heatmap) {
   const el = $("self-screen-heatmap"), note = $("ss-hm-note");
   if (!el) return;
-  const rows = (heatmap || []).filter((g) => g.buy_value > 0);   // 後端已依 buy_value 降冪；泡泡大小自然分主次
+  const rows = (heatmap || []).filter((g) => g.buy_value > 0)
+    .sort((a, b) => b.buy_value - a.buy_value);
+  el.classList.toggle("has-selection", Boolean(ssSectorFilter));
   if (!rows.length) {
-    el.innerHTML = '<div class="muted small" style="padding:8px 2px">尚無大戶買進資料（需集保近兩週＋收盤價）</div>';
+    el.innerHTML = '<div class="ss-market-empty"><strong>尚無大戶買進資料</strong><span>需集保近兩週與收盤價，資料齊備後會顯示子產業資金版圖。</span></div>';
     if (note) note.textContent = "";
     return;
   }
-  const max = rows[0].buy_value || 1;
-  if (note) note.textContent = `（${ssData ? ssData.date : ""}　泡泡大小＝大戶淨買進金額估計（億；大戶增比×市值），依金額由大到小）`;
-  const MIN = 34, MAX = 96;   // 直徑用 sqrt(金額) 對應面積∝金額；大顆才把數字放進圓內
-  el.innerHTML = rows.map((g) => {
+  const total = rows.reduce((sum, g) => sum + g.buy_value, 0);
+  if (note) note.textContent = `${ssData && ssData.date ? ssData.date + " · " : ""}${rows.length} 個子產業 · 合計 ${fmt(total / 1e8, 0)} 億`;
+  const mapWidth = Math.max(el.clientWidth, 320), mapHeight = Math.max(el.clientHeight, 400);
+  const boxes = layoutBinaryTreemap(rows, 0, 0, mapWidth, mapHeight);
+  el.innerHTML = boxes.map((box, index) => {
+    const g = box.item;
     const on = ssSectorFilter === g.sector;
-    const d = Math.round(MIN + Math.sqrt(g.buy_value / max) * (MAX - MIN));
     const amt = fmt(g.buy_value / 1e8, g.buy_value >= 1e11 ? 0 : 1);   // ≥千億給整數、否則一位小數
-    const inside = d >= 52;
-    const tip = `${g.sector}　${g.count} 檔　大戶買進約 ${amt} 億`;
-    return `<button type="button" class="ss-bubble${on ? " active" : ""}" data-sector="${esc(g.sector)}"`
-      + ` aria-pressed="${on ? "true" : "false"}" title="${esc(tip)}">`
-      + `<span class="ss-bubble-circle" style="width:${d}px;height:${d}px">${inside ? esc(amt) : ""}</span>`
-      + `<span class="ss-bubble-name">${esc(g.sector)}</span>`
-      + (inside ? "" : `<span class="ss-bubble-val">${esc(amt)} 億</span>`) + "</button>";
+    const share = total > 0 ? g.buy_value / total * 100 : 0;
+    const compact = box.width < 116 || box.height < 76;
+    const micro = box.width < 74 || box.height < 49;
+    const tone = index < 3 ? 1 : index < 8 ? 2 : index < 16 ? 3 : 4;
+    const left = box.x / mapWidth * 100, top = box.y / mapHeight * 100;
+    const width = box.width / mapWidth * 100, height = box.height / mapHeight * 100;
+    const count = Number(g.count) || 0;
+    const tip = `第 ${index + 1} 名｜${g.sector}｜大戶淨買進約 ${amt} 億｜占版圖 ${fmt(share, 1)}%｜${count} 檔`;
+    return `<button type="button" class="ss-market-cell tone-${tone}${compact ? " is-compact" : ""}${micro ? " is-micro" : ""}${on ? " active" : ""}"`
+      + ` data-sector="${esc(g.sector)}" aria-pressed="${on ? "true" : "false"}"`
+      + ` aria-label="${esc(tip + "；按下篩選下方入選股")}" title="${esc(tip)}"`
+      + ` style="left:${left.toFixed(4)}%;top:${top.toFixed(4)}%;width:${width.toFixed(4)}%;height:${height.toFixed(4)}%">`
+      + `<span class="ss-cell-rank" aria-hidden="true">${String(index + 1).padStart(2, "0")}</span>`
+      + `<span class="ss-cell-name">${esc(g.sector)}</span>`
+      + `<span class="ss-cell-value">${esc(amt)}<small>億</small></span>`
+      + `<span class="ss-cell-meta">占 ${fmt(share, 1)}% · ${count} 檔</span></button>`;
   }).join("");
 }
 
@@ -3170,8 +3210,8 @@ $("ss-picked-note").addEventListener("click", (e) => {      // 「全部」：�
     renderSelfScreenBubbles(ssData ? ssData.heatmap : []); renderSelfScreenTable();
   }
 });
-$("self-screen-heatmap").addEventListener("click", (e) => {   // 點大戶買進長條 → 篩下方表格到該類股（鍵盤可操作）
-  const b = e.target.closest(".ss-bubble"); if (!b) return;
+$("self-screen-heatmap").addEventListener("click", (e) => {   // 點子產業版圖 → 篩下方表格到該類股（原生 button 支援鍵盤）
+  const b = e.target.closest(".ss-market-cell"); if (!b) return;
   const s = b.dataset.sector;
   ssSectorFilter = (ssSectorFilter === s) ? null : s;
   renderSelfScreenBubbles(ssData ? ssData.heatmap : []); renderSelfScreenTable();
@@ -3520,6 +3560,10 @@ window.addEventListener("resize", () => {
     instBreadthChart, instAlphaChart]
     .forEach((c) => c && c.resize());
   if (sectorChart) { sectorChart.resize(); if (lastHeatmapData) fitHeatmapFonts(lastHeatmapData); }
+  // DOM treemap 的切割方向取決於容器長寬；跨 breakpoint／手機轉向時重新排一次。
+  if (ssData && $("view-self-screen").classList.contains("active")) {
+    renderSelfScreenBubbles(ssData.heatmap || []);
+  }
 });
 // 粉圓/M PLUS 是 async 載入。若熱力圖在字型載入前已排版，measureText 量到的是系統字寬度，
 // 字型 swap 後實際寬度改變 → 可能截字。字型就緒後重跑一次字級擬合（重用既有 refit 路徑）。

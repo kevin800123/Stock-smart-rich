@@ -1128,22 +1128,56 @@ button.file-label { font: inherit; }
 .table-wrap { overflow: auto; border: 1px solid var(--border-strong); border-radius: var(--r-lg); flex-shrink: 0; background: var(--sunken); box-shadow: var(--shadow-card); }
 .table-wrap.fill { flex: 1 1 0; min-height: 0; }
 .table-wrap.fill-half { max-height: 55vh; }
-/* 大戶買進類股泡泡：每個子產業＝一顆藍色球體，大小＝大戶淨買進金額。冷靜藍、不碰紅綠語彙、
-   一目了然（大顆＝買最多）。底邊對齊成一排「浮在架上」的泡泡。每顆是可鍵盤操作的 <button>。 */
-.ss-bubbles { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px 16px; padding: 8px 2px 4px; }
-.ss-bubble { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 5px;
-  min-width: 68px; padding: 6px 4px; border: 1px solid transparent; border-radius: var(--r-md);
-  background: transparent; color: inherit; cursor: pointer; font: inherit; }
-.ss-bubble:hover { background: var(--sunken); }
-.ss-bubble.active { border-color: var(--info); background: var(--sunken); }
-.ss-bubble:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
-.ss-bubble-circle { flex: 0 0 auto; border-radius: 50%; display: flex; align-items: center; justify-content: center;
-  color: #fff; font-weight: 700; font-size: var(--fs-sm);
-  background: radial-gradient(circle at 34% 30%, #6fb2f0, #2f6fb0);
-  box-shadow: inset 0 -3px 8px rgba(0, 0, 0, 0.28); }
-.ss-bubble-name { font-size: var(--fs-xs); color: var(--label); text-align: center; line-height: 1.2;
-  max-width: 88px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ss-bubble-val { font-size: var(--fs-xs); font-weight: 700; color: var(--text-primary); }
+/* 大戶買進版圖：真正的面積圖，版塊面積＝buy_value。藍色深淺只建立閱讀層次，不借用行情紅綠。
+   每個葉節點都是原生 button；2px 內框同時形成版塊間隙，維持高密度而不糊成一片。 */
+.ss-market-map {
+  position: relative; width: 100%; height: clamp(420px, 29vw, 470px); min-height: 400px;
+  overflow: hidden; background: var(--sunken); border: 1px solid var(--border-strong);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-card); isolation: isolate;
+}
+#ss-hm-note { max-width: 42ch; white-space: normal; text-align: right; line-height: 1.4; }
+.ss-market-cell {
+  position: absolute; display: flex; flex-direction: column; align-items: flex-start; justify-content: flex-end;
+  min-width: 24px; min-height: 24px; margin: 0; padding: 12px 13px; overflow: hidden;
+  border: 2px solid var(--sunken); border-radius: 7px; color: #edf7ff; text-align: left;
+  font: inherit; cursor: pointer; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
+  transition: filter var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
+}
+.ss-market-cell.tone-1 { background: linear-gradient(145deg, #397fba, #1d527f); }
+.ss-market-cell.tone-2 { background: linear-gradient(145deg, #2d6da4, #194467); }
+.ss-market-cell.tone-3 { background: linear-gradient(145deg, #285d89, #173751); }
+.ss-market-cell.tone-4 { background: linear-gradient(145deg, #214b6e, #132d43); }
+.ss-market-cell:hover { filter: brightness(1.14); z-index: 2; }
+.ss-market-cell:focus-visible {
+  z-index: 4; outline: 3px solid #d8efff; outline-offset: -5px;
+  box-shadow: inset 0 0 0 2px #183b59, 0 5px 16px rgba(0, 0, 0, .3);
+}
+.ss-market-cell.active {
+  z-index: 3; box-shadow: inset 0 0 0 3px #b9e1ff, inset 0 1px 0 rgba(255, 255, 255, .18);
+  filter: brightness(1.12);
+}
+.ss-market-map.has-selection .ss-market-cell:not(.active) { opacity: .5; }
+.ss-cell-rank { position: absolute; top: 10px; left: 12px; color: #c8e6fb; font-size: 11px; font-weight: 800; letter-spacing: .05em; }
+.ss-cell-name {
+  display: -webkit-box; overflow: hidden; color: #f6fbff; font-size: clamp(13px, 1.12vw, 17px);
+  font-weight: 800; line-height: 1.22; letter-spacing: -.01em; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+}
+.ss-cell-value { margin-top: 5px; font-size: clamp(19px, 1.75vw, 28px); font-weight: 800; line-height: 1; letter-spacing: -.025em; }
+.ss-cell-value small { margin-left: 3px; color: #d5ebfa; font-size: .55em; font-weight: 700; letter-spacing: 0; }
+.ss-cell-meta { margin-top: 6px; color: #c8e0f2; font-size: 11px; font-weight: 600; line-height: 1.2; white-space: nowrap; }
+.ss-market-cell.is-compact { padding: 8px 9px; }
+.ss-market-cell.is-compact .ss-cell-rank, .ss-market-cell.is-compact .ss-cell-meta { display: none; }
+.ss-market-cell.is-compact .ss-cell-name { font-size: 12px; }
+.ss-market-cell.is-compact .ss-cell-value { margin-top: 3px; font-size: 16px; }
+.ss-market-cell.is-micro { justify-content: center; padding: 5px 6px; }
+.ss-market-cell.is-micro .ss-cell-name { font-size: 10px; line-height: 1.15; -webkit-line-clamp: 3; }
+.ss-market-cell.is-micro .ss-cell-value { display: none; }
+.ss-market-empty {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 5px; padding: 24px; color: var(--muted); text-align: center;
+}
+.ss-market-empty strong { color: var(--label); font-size: var(--fs-sm); }
+.ss-market-empty span { max-width: 42ch; font-size: var(--fs-xs); line-height: 1.5; }
 
 /* ===== 法人資料研究室 =====
    這一頁是研究工作台，不沿用選股頁的卡片與紅綠訊號語彙。單一狀態帶交代結論，
@@ -1482,6 +1516,13 @@ a.stock:hover { text-decoration: underline; }
   .picks-filter-item { white-space: nowrap; }
   .pane-heading { min-height: 34px; }
   .table-wrap.fill-half { max-height: 60vh; }
+  .ss-market-map { height: 620px; min-height: 620px; border-radius: var(--r); }
+  .ss-map-heading { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 5px; }
+  #ss-hm-note { text-align: left; }
+  .ss-market-cell { padding: 7px 8px; border-width: 1.5px; border-radius: 5px; }
+  .ss-cell-rank { top: 7px; left: 8px; }
+  .ss-cell-name { font-size: 12px; }
+  .ss-cell-value { font-size: 18px; }
 
   /* 左側欄 → 固定底部分頁列。
      **`display: flex` 這行不能省。** `.sidebar` 本身沒有宣告 display（桌機的 flex 容器

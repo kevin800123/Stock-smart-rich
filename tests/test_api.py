@@ -234,6 +234,27 @@ def test_frontend_picks_workspace_structure():
     assert "@media (max-width: 1100px)" in css
 
 
+def test_self_screen_sector_map_is_accessible_treemap_not_bubbles():
+    """大戶買進版圖以面積表達 buy_value；每個子產業都能直接鍵盤操作與 drill-down。"""
+    web = Path(__file__).parents[1] / "web"
+    html = (web / "index.html").read_text(encoding="utf-8")
+    js = (web / "app.js").read_text(encoding="utf-8")
+    css = (web / "styles.css").read_text(encoding="utf-8")
+
+    assert 'id="self-screen-heatmap" class="ss-market-map"' in html
+    assert 'aria-label="大戶買進子產業版圖' in html
+    assert "function layoutBinaryTreemap(" in js
+    assert 'class="ss-market-cell' in js
+    assert 'aria-pressed="${on ? "true" : "false"}"' in js
+    assert 'data-sector="${esc(g.sector)}"' in js
+    assert ".sort((a, b) => b.buy_value - a.buy_value)" in js
+    assert 'closest(".ss-market-cell")' in js
+    assert ".ss-market-map" in css
+    assert ".ss-market-cell:focus-visible" in css
+    assert "min-width: 24px" in css and "min-height: 24px" in css
+    assert "ss-bubble" not in html + js + css
+
+
 def test_dashboard_and_upload(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     monkeypatch.chdir(tmp_path)
@@ -1461,10 +1482,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260817-ui35"' in html.text
-    assert 'href="/styles.css?v=20260817-ui35"' in html.text
-    assert 'src="app.js?v=20260817-ui35"' not in html.text
-    assert 'href="styles.css?v=20260817-ui35"' not in html.text
+    assert 'src="/app.js?v=20260817-ui36"' in html.text
+    assert 'href="/styles.css?v=20260817-ui36"' in html.text
+    assert 'src="app.js?v=20260817-ui36"' not in html.text
+    assert 'href="styles.css?v=20260817-ui36"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",
