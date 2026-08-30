@@ -732,52 +732,65 @@ function renderSelfScreenHeatmap(groups) {
     if (legend) legend.innerHTML = "";
     return;
   }
-  // 顏色強度參考量：全部類股 avg 大戶增比的 p80（避免單一離群把其他壓成同色）
-  const avgs = groups.map((g) => Math.abs(g.avg_big_holder)).filter((v) => v != null).sort((x, y) => x - y);
-  const cap = avgs.length ? (avgs[Math.floor(avgs.length * 0.8)] || avgs[avgs.length - 1]) : 1;
+  // 顏色強度參考量：全部個股大戶增比的 p80（避免單一離群把其他壓成同色）
+  const allBhr = groups.flatMap((g) => g.children.map((s) => s.big_holder_ratio)).filter((v) => v != null).map(Math.abs).sort((x, y) => x - y);
+  const cap = allBhr.length ? (allBhr[Math.floor(allBhr.length * 0.8)] || allBhr[allBhr.length - 1]) : 1;
   const wowTxt = (w) => w == null ? "—" : (w >= 0 ? "+" : "") + fmt(w, 1) + "%";
-  // **一類股一塊、直接顯示全部**（不巢狀個股、不做「其他」、不用點開）——正好對應「先看大方向＝
-  // 哪些類股」的原始需求；個股明細在下方表格＋tooltip。面積用 sqrt(成交額) 壓縮動態範圍：最大類股
-  // 成交額是尾巴的上百倍，直接用會讓尾巴縮到看不見，sqrt 後仍是「越大＝成交額越高」的順序、尾巴
-  // 也讀得到（tooltip 給真實金額，同總覽熱力圖作法）。
+  // **個股層級**（使用者要「看大戶買什麼」）：每一葉塊＝一檔大戶增比>0 的股，依類股分群；
+  // 塊大小＝大戶增比（加碼越多塊越大→買最多的自己浮出來）、顏色＝大戶增比強度。成交額/WoW 移到
+  // tooltip。弱加碼的小塊由 visibleMin 併入留白（不畫「其他」黑塊、不用點開）。
   const data = groups.map((g) => ({
-    name: g.sector, value: Math.sqrt(Math.max(g.amount, 0)),
-    amount: g.amount, wow: g.wow_pct, avg: g.avg_big_holder, count: g.count,
-    tops: (g.children || []).slice(0, 5).map((s) => s.name),   // 供 tooltip 列主要個股（children 已依成交額降冪）
+    name: g.sector, avg: g.avg_big_holder, wow: g.wow_pct, amount: g.amount, count: g.count,
     itemStyle: { color: ssHeatColor(g.avg_big_holder, cap) },
+    children: g.children.map((s) => ({
+      name: s.name, value: Math.max(s.big_holder_ratio, 0.001), bhr: s.big_holder_ratio,
+      amount: s.amount, code: s.code, sector: g.sector,
+      itemStyle: { color: ssHeatColor(s.big_holder_ratio, cap) },
+    })),
   }));
-  if (note) note.textContent = `（${ssData ? ssData.date : ""}　面積＝本週成交額、標題＝大戶增比／週成交額WoW）`;   // 顏色由下方圖例說明，不在此重複
+  if (note) note.textContent = `（${ssData ? ssData.date : ""}　每塊＝一檔・面積＝大戶增比、依類股分群；成交額/WoW 見 tooltip）`;
   if (legend) legend.innerHTML = `<span>大戶增比</span><span>弱</span><i class="ssl-bar"></i><span>強</span>`;
-  el.style.height = "500px";
+  el.style.height = "560px";
   if (!selfScreenChart || selfScreenChart.getDom() !== el) selfScreenChart = initChart(el);
   selfScreenChart.setOption({
     tooltip: {
       formatter: (p) => {
-        const tops = (p.data.tops || []).join("、");
-        return `${esc(p.name)}　${wowTxt(p.data.wow)}<br/>本週成交額 <b>${fmt(p.data.amount / 1e8, 1)}</b> 億　${p.data.count} 檔`
-          + `<br/>平均大戶增比 <b>${fmt(p.data.avg, 2)}</b>`
-          + (tops ? `<br/><span style="color:#8a94a3">主要：${esc(tops)}</span>` : "")
-          + `<br/><span style="color:#8a94a3">點只看該類股</span>`;
+        if (p.data.code == null) {   // 類股群組
+          return `${esc(p.name)}　${p.data.count} 檔<br/>平均大戶增比 <b>${fmt(p.data.avg, 2)}</b>　成交額 WoW ${wowTxt(p.data.wow)}`
+            + `<br/>本週成交額 <b>${fmt(p.data.amount / 1e8, 1)}</b> 億`;
+        }
+        return `${esc(p.data.code)} ${esc(p.name)}<br/>大戶增比 <b>${p.data.bhr >= 0 ? "+" : ""}${fmt(p.data.bhr, 2)}</b>`
+          + `<br/>本週成交額 <b>${fmt(p.data.amount / 1e8, 1)}</b> 億　${esc(p.data.sector)}<br/><span style="color:#8a94a3">點看 K 線</span>`;
       },
     },
     series: [{
       type: "treemap", roam: false, nodeClick: false, animationDuration: 300,
       breadcrumb: { show: false }, left: 1, right: 1, top: 1, bottom: 1, squareRatio: 1,
-      itemStyle: { borderColor: "#0f1419", borderWidth: 1, gapWidth: 2 },
+      visibleMin: 14, childrenVisibleMin: 40,
+      upperLabel: {
+        show: true, height: 20, color: C.label, fontSize: 12, fontWeight: 700, fontFamily: HM_FONT,
+        // 只標「類股」那一層（treePathInfo 長度 2＝root>類股）：root(長度1)、個股(長度3)都不標，
+        // 否則 treemap 的隱藏 root 會標成「undefined 檔」。
+        formatter: (p) => (p.treePathInfo && p.treePathInfo.length === 2 && p.data && p.data.count != null)
+          ? `${esc(p.name)}　${p.data.count}檔` : "",
+      },
+      levels: [
+        { itemStyle: { borderColor: "#0b0e13", borderWidth: 3, gapWidth: 3, color: "#171c24" } },
+        { itemStyle: { borderColor: "#0f1419", borderWidth: 1, gapWidth: 1 } },
+      ],
       label: {
         show: true, position: "inside", overflow: "truncate", color: "#fff", fontWeight: 700,
-        fontFamily: HM_FONT, fontSize: 13, lineHeight: 15,
+        fontFamily: HM_FONT, fontSize: 12, lineHeight: 14,
         textShadowColor: "rgba(0,0,0,0.55)", textShadowBlur: 3, textShadowOffsetY: 1,
-        // 版塊上的數字先給大戶增比（＝顏色所編碼的值，兩者一致），再附成交額 WoW；
-        // 顏色是全頁主角，不該是唯一要 hover 才看得到的數字（critique P2）。
-        formatter: (p) => `${esc(p.name)}\n大戶${p.data.avg >= 0 ? "+" : ""}${fmt(p.data.avg, 1)}　額${wowTxt(p.data.wow)}`,
+        formatter: (p) => p.data.code == null ? "" : `${esc(p.name)}\n${p.data.bhr >= 0 ? "+" : ""}${fmt(p.data.bhr, 1)}`,
       },
       data,
     }],
   }, true);
   selfScreenChart.off("click");
-  selfScreenChart.on("click", (p) => {   // 點類股 → 下方表格只看該類股，再點還原
-    if (p && p.data && p.data.name != null) { ssSectorFilter = (ssSectorFilter === p.data.name) ? null : p.data.name; renderSelfScreenTable(); }
+  selfScreenChart.on("click", (p) => {
+    if (p && p.data && p.data.code) { showView("stock"); $("stock-input").value = p.data.code; loadStock(p.data.code, p.data.name); }
+    else if (p && p.data && p.data.name != null) { ssSectorFilter = (ssSectorFilter === p.data.name) ? null : p.data.name; renderSelfScreenTable(); }
   });
   selfScreenChart.resize();
 }
