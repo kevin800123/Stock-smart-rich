@@ -532,29 +532,49 @@ SCREEN_MU_VALUE_MIN = 50
 SCREEN_MU_SCORE_MIN = 9
 
 
-def screen_pass(vals: dict, mu_value_min, mu_score_min) -> bool:
+# 自算選股的 7 個篩選條件（key, 顯示標籤）——**單一權威版本**：勾選 UI 的清單由端點送給前端
+# 渲染，`app.js` 不得自己再寫一份（同 bands/Elliott/scoring-rules 的規矩，兩份必然漂移）。
+# 順序即畫面上 checkbox 的順序，也是 screen_pass 檢查的順序。
+SCREEN_CONDITIONS = [
+    ("rev_yoy", "營收年增 > 0"),
+    ("w55", "W55 翻多"),
+    ("big_holder_ratio", "大戶增比 > 0"),
+    ("holder_drop_ratio", "人數降比 < 0"),
+    ("est_profit", "推估EPS > 0"),
+    ("mu_value", "木率 > 門檻"),
+    ("mu_score", "木質 > 門檻"),
+]
+
+
+def screen_pass(vals: dict, mu_value_min, mu_score_min, conds=None) -> bool:
     """自算籌碼/基本選股的 7 條件篩選（全 AND，None 一律不通過，同 filtered_picks 的 <=0 慣例）：
     營收年增>0 ∧ W55 翻多 ∧ 大戶增比>0 ∧ 人數降比<0 ∧ 推估EPS>0 ∧ 木率>門檻 ∧ 木質>門檻。
 
     門檻是嚴格 >（與使用者的「木率>50、木質>9」一致）。`vals`＝selfcheck._row_self 的自算值。
     篩選用的是已過品質閘的 mu_value（木質<MU_QUALITY_FLOOR 時 mu_value 已為 0，價值陷阱股不混入）。
+
+    `conds`＝要套用的條件 key（見 SCREEN_CONDITIONS）。**None＝全部套用，也就是原本的行為**——
+    預設不變是刻意的：勾選只是「交叉檢視」的工具，關掉一關只是暫時放行那一關，其餘條件（含各自
+    的 None 守衛）照常把關，不會因為少了一關就讓缺值的股混進來。
     """
+    active = set(k for k, _ in SCREEN_CONDITIONS) if conds is None else set(conds)
+
     def gt0(x):
         return x is not None and x > 0
 
     def lt0(x):
         return x is not None and x < 0
 
-    mv, ms = vals.get("mu_value"), vals.get("mu_score")
-    return bool(
-        gt0(vals.get("rev_yoy"))
-        and gt0(vals.get("w55"))
-        and gt0(vals.get("big_holder_ratio"))
-        and lt0(vals.get("holder_drop_ratio"))
-        and gt0(vals.get("est_profit"))
-        and mv is not None and mv > mu_value_min
-        and ms is not None and ms > mu_score_min
-    )
+    checks = {
+        "rev_yoy": lambda: gt0(vals.get("rev_yoy")),
+        "w55": lambda: gt0(vals.get("w55")),
+        "big_holder_ratio": lambda: gt0(vals.get("big_holder_ratio")),
+        "holder_drop_ratio": lambda: lt0(vals.get("holder_drop_ratio")),
+        "est_profit": lambda: gt0(vals.get("est_profit")),
+        "mu_value": lambda: vals.get("mu_value") is not None and vals["mu_value"] > mu_value_min,
+        "mu_score": lambda: vals.get("mu_score") is not None and vals["mu_score"] > mu_score_min,
+    }
+    return all(check() for key, check in checks.items() if key in active)
 
 
 DEFAULT_TRADE_FEE = 0.585  # 來回費用%＝買賣手續費 0.1425%×2 ＋ 賣出證交稅 0.3%

@@ -355,7 +355,7 @@ def _screen_threshold(c, key: str, default) -> float:
 
 
 @router.get("/picks/self-screen")
-def picks_self_screen(date: str | None = None,
+def picks_self_screen(date: str | None = None, conds: str | None = None,
                       mu_value_min: float | None = None, mu_score_min: float | None = None):
     """自算籌碼/基本選股：全市場自算池（零 CSV 依賴）。候選池＝_industry_map ∪ _otc_industry
     （上市＋上櫃公司基本資料，含類股/股名/已發行股數）；門檻優先吃 query→設定→analysis 預設。
@@ -371,7 +371,13 @@ def picks_self_screen(date: str | None = None,
         c, "screen_mu_score_min", analysis.SCREEN_MU_SCORE_MIN)
     snap_dates = get_snapshot_dates(c)                   # 籌碼選股用的 CSV 快照日，供選單與預設
     chosen = date or (snap_dates[-1] if snap_dates else _latest_date(c))
-    result = selfcheck.build_self_screen(c, chosen, universe, vmin, smin)
+    # conds＝要套用的條件（逗號分隔）。**不帶＝None＝全部 7 條**，也就是原本的行為；
+    # 帶了才是交叉檢視。只收 SCREEN_CONDITIONS 裡的 key，擋掉亂傳的字串。
+    picked_conds = None
+    if conds is not None:
+        known = {k for k, _ in analysis.SCREEN_CONDITIONS}
+        picked_conds = [k for k in conds.split(",") if k in known]
+    result = selfcheck.build_self_screen(c, chosen, universe, vmin, smin, picked_conds)
     result["snap_dates"] = snap_dates
     return result
 

@@ -48,7 +48,7 @@ def _custody_diag(conn, date: str | None) -> dict:
     return {"weeks": weeks, "this_n": len(a), "prev_n": len(b), "overlap": len(a & b)}
 
 
-def _row_self(code, shares, yoy, custody, inst3d, fin, mrev, ohlc, date) -> dict:
+def _row_self(code, shares, yoy, custody, inst3d, fin, mrev, ohlc, date, margin=None) -> dict:
     """單檔 10 個自算值——selfcheck 對照與 self-screen 選股**共用同一份權威計算**
     （同 bands/Elliott「算式只能有一份」的規矩）。
 
@@ -86,6 +86,9 @@ def _row_self(code, shares, yoy, custody, inst3d, fin, mrev, ohlc, date) -> dict
         "est_profit": self_est,
         "mu_score": self_mu,
         "mu_value": mv["value"] if mv else None,
+        # 融資3日增減（張）：**參考欄，不進木質/木率計分**。負值＝融資減少（散戶退場），
+        # 與「大戶增比>0」並看就是典型的籌碼轉移。不列入 FIELDS，故 selfcheck 對照表不受影響。
+        "margin_3d": (margin or {}).get(bare),
     }
 
 
@@ -105,13 +108,14 @@ def build_selfcheck(conn, date: str | None) -> dict:
     fin = db.get_financials_bulk(conn, list(analysis._LAN_USED) + ["opex", "income_tax"]) if date else {}
     mrev = db.monthly_revenue_bulk(conn, as_of=date) if date else {}   # {代號: [月營收億元,新到舊]}
     ohlc = db.get_all_ohlc(conn, min_bars=55)
+    margin = db.margin_3d_map(conn, as_of=date) if date else {}        # 融資3日：參考欄、不計分
 
     out_rows = []
     for code, name, csv_yoy, csv_w55, csv_bhr, csv_hdr, csv_t3, csv_f3, csv_lan, csv_est, csv_cap in rows_csv:
         # chip_snapshot 的 code 帶 .TW/.TWO 後綴（XQ CSV 一律加 .TW），去後綴 join 各自算來源
         # （一律 bare code）——見 _row_self。shares 用 CSV 股本×1e7，維持與 CSV 對照口徑一致。
         shares = csv_cap * 1e7 if csv_cap else None
-        s = _row_self(code, shares, yoy, custody, inst3d, fin, mrev, ohlc, date)
+        s = _row_self(code, shares, yoy, custody, inst3d, fin, mrev, ohlc, date, margin)
         vals = {
             "rev_yoy": (csv_yoy, s["rev_yoy"]),
             "w55": (csv_w55, s["w55"]),
@@ -157,7 +161,7 @@ def build_selfcheck(conn, date: str | None) -> dict:
     }
 
 
-def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min) -> dict:
+def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min, conds=None) -> dict:
     """自算籌碼/基本選股：**全市場自算池**（零 CSV 依賴），與 build_selfcheck 共用 _row_self。
 
     universe＝`{code: {sector, name, shares}}`（由端點用 _industry_map/_otc_industry 組好傳入，
@@ -175,11 +179,12 @@ def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min) ->
     ohlc = db.get_all_ohlc(conn, min_bars=55)
     wk = db.weekly_amounts(conn, date) if date else {}
     submap = db.sub_industry_map(conn) if date else {}   # 細分類（子產業）：XQ CSV 才有，退回官方類股
+    margin = db.margin_3d_map(conn, as_of=date) if date else {}   # 融資3日：參考欄、不進 screen_pass
 
     groups: dict = {}
     picked, big_pos, with_amount, with_mcap, with_subindustry = [], 0, 0, 0, 0
     for code, info in universe.items():
-        s = _row_self(code, info.get("shares"), yoy, custody, inst3d, fin, mrev, ohlc, date)
+        s = _row_self(code, info.get("shares"), yoy, custody, inst3d, fin, mrev, ohlc, date, margin)
         gk = submap.get(code) or info.get("sector") or "未分類"   # 細分類優先、退回官方類股
         bhr = s["big_holder_ratio"]
         if bhr is not None and bhr > 0:
@@ -208,7 +213,7 @@ def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min) ->
                 g["children"].append({"code": code, "name": info.get("name") or code,
                                       "amount": amt["this"], "big_holder_ratio": bhr,
                                       "buy_value": round(buy_value) if buy_value is not None else None})
-        if analysis.screen_pass(s, mu_value_min, mu_score_min):
+        if analysis.screen_pass(s, mu_value_min, mu_score_min, conds):
             picked.append({"code": code, "name": info.get("name") or code,
                            "sector": gk, "vals": s})   # 用細分類，drill-down 才對得上泡泡
 
@@ -226,6 +231,9 @@ def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min) ->
     return {
         "date": date,
         "thresholds": {"mu_value_min": mu_value_min, "mu_score_min": mu_score_min},
+        # 勾選 UI 的清單與目前生效的條件都由後端給（前端不得自己寫死一份，見 SCREEN_CONDITIONS）
+        "conditions": [{"key": k, "label": lb} for k, lb in analysis.SCREEN_CONDITIONS],
+        "conds": ([k for k, _ in analysis.SCREEN_CONDITIONS] if conds is None else list(conds)),
         "heatmap": heatmap, "rows": picked,
         "coverage": {"universe": len(universe), "big_holder_pos": big_pos,
                      "with_amount": with_amount, "with_mcap": with_mcap,

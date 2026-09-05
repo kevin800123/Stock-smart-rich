@@ -581,6 +581,37 @@ def institutional_3d_map(conn: sqlite3.Connection, as_of: str | None = None) -> 
     return {code: {"trust_3d": t, "foreign_3d": f} for code, t, f in rows}
 
 
+def margin_3d_map(conn: sqlite3.Connection, as_of: str | None = None) -> dict:
+    """全市場 {代號: 融資3日增減(張)}＝融資餘額(最新) − 融資餘額(3 個交易日前)。
+
+    **與 institutional_3d_map 是不同語意**：trust_lots/foreign_lots 是「當日淨買賣」流量，
+    可以加總；margin_balance_lots 是**餘額**存量，只能相減——抄成 SUM 會把餘額累加，數字大
+    一個量級且完全沒有意義。窗口＝`date<=as_of` 且有融資資料的最近 **4** 個交易日（4 個端點
+    ＝3 個間隔），取最新與最舊相減。
+
+    兩端任一缺列就整檔不入表（不 COALESCE 成 0）：「融資餘額是 0」與「這天沒抓到資料」是兩件
+    不同的事實，混為一談會把「沒資料」報成一筆巨大的增減。負值＝融資減少（散戶退場）。
+
+    目前只作為自算選股的**參考欄**，刻意不進木質/木率計分（使用者決定：先不改分數刻度，
+    避免既有門檻木質>9 與品質閘 10 的鬆緊度被動搖）。
+    """
+    cutoff = as_of or "9999-99-99"
+    dates = [r[0] for r in conn.execute(
+        "SELECT DISTINCT date FROM stock_flow_daily "
+        "WHERE date<=? AND margin_balance_lots IS NOT NULL "
+        "ORDER BY date DESC LIMIT 4", (cutoff,)).fetchall()]
+    if len(dates) < 2:
+        return {}
+    newest, oldest = dates[0], dates[-1]
+    rows = conn.execute(
+        "SELECT n.code, n.margin_balance_lots - o.margin_balance_lots "
+        "FROM stock_flow_daily n JOIN stock_flow_daily o ON n.code = o.code "
+        "WHERE n.date=? AND o.date=? "
+        "  AND n.margin_balance_lots IS NOT NULL AND o.margin_balance_lots IS NOT NULL",
+        (newest, oldest)).fetchall()
+    return {code: chg for code, chg in rows}
+
+
 def set_stock_source_coverage(conn: sqlite3.Connection, date: str, market: str,
                               source: str, status: str, row_count: int = 0,
                               error: str | None = None, updated_at: str | None = None) -> None:

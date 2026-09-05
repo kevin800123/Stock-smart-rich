@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260817-ui39" />
+  <link rel="stylesheet" href="styles.css?v=20260817-ui40" />
   <script src="/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -626,6 +626,8 @@
             <p>全市場自算池、零 CSV 依賴：先看本週大戶資金集中在哪些子產業（面積＝大戶淨買進金額），再篩 營收年增&gt;0 ∧ W55 翻多 ∧ 大戶增比&gt;0 ∧ 人數降比&lt;0 ∧ 推估EPS&gt;0 ∧ 木率/木質過門檻，依木率排序。門檻於<a href="#" id="ss-goto-settings" class="help-link">設定</a>調整。</p>
           </div>
           <div class="picks-command-foot">
+            <!-- 勾選交叉檢視：條件由後端 SCREEN_CONDITIONS 渲染（前端不寫死）。預設全勾＝原本的篩選方式。 -->
+            <div id="ss-conds" class="ss-conds" role="group" aria-label="篩選條件（取消勾選即暫時不套用該條件）"></div>
             <div id="ss-coverage" class="picks-summary" aria-label="覆蓋度" aria-live="polite"></div>
           </div>
         </div>
@@ -689,6 +691,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260817-ui39"></script>
+  <script src="app.js?v=20260817-ui40"></script>
 </body>
 </html>

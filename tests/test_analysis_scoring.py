@@ -210,6 +210,42 @@ def test_screen_pass_each_condition_can_fail():
     assert analysis.screen_pass(_sv(mu_score=9), 50, 9) is False       # 木質 需 > 門檻（嚴格）
 
 
+def test_screen_conditions_is_the_single_authoritative_list():
+    """勾選 UI 的條件清單只能有一份權威版本（同 bands/Elliott 規矩，前端不得自己寫死）：
+    SCREEN_CONDITIONS 的 key 必須與 screen_pass 實際檢查的 7 條完全一致。"""
+    keys = [k for k, _label in analysis.SCREEN_CONDITIONS]
+    assert keys == ["rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio",
+                    "est_profit", "mu_value", "mu_score"]
+    for k, label in analysis.SCREEN_CONDITIONS:
+        assert label and isinstance(label, str)      # 標籤直接餵前端 checkbox，不可為空
+
+
+def test_screen_pass_conds_can_disable_individual_conditions():
+    """勾選交叉檢視：conds=None（預設）＝全部 7 條都套用（原本的行為，不可改變）；
+    傳入子集時，**沒被勾的條件就不檢查**，讓使用者拿掉某一關看看還有誰。"""
+    all_keys = [k for k, _ in analysis.SCREEN_CONDITIONS]
+    # 預設（None）與「全部都勾」等價
+    assert analysis.screen_pass(_sv(rev_yoy=-1), 50, 9) is False
+    assert analysis.screen_pass(_sv(rev_yoy=-1), 50, 9, conds=all_keys) is False
+    # 關掉營收年增那一關 → 同一檔就過了；其餘條件仍然照常把關
+    assert analysis.screen_pass(_sv(rev_yoy=-1), 50, 9, conds=[k for k in all_keys if k != "rev_yoy"]) is True
+    assert analysis.screen_pass(_sv(rev_yoy=-1, w55=0), 50, 9,
+                                conds=[k for k in all_keys if k != "rev_yoy"]) is False
+    # 關掉門檻類的也一樣（木率/木質是門檻比較，不是 >0）
+    assert analysis.screen_pass(_sv(mu_value=10), 50, 9) is False
+    assert analysis.screen_pass(_sv(mu_value=10), 50, 9,
+                                conds=[k for k in all_keys if k != "mu_value"]) is True
+    # 一條都不勾 → 全市場都過（沒有任何條件可檢查）
+    assert analysis.screen_pass(_sv(rev_yoy=-1, w55=0, est_profit=-1), 50, 9, conds=[]) is True
+
+
+def test_screen_pass_disabled_condition_does_not_resurrect_none_guard():
+    """關掉某一關，不代表其他關的 None 守衛可以鬆手——缺值仍然不通過。"""
+    all_keys = [k for k, _ in analysis.SCREEN_CONDITIONS]
+    v = _sv(rev_yoy=None, est_profit=None)
+    assert analysis.screen_pass(v, 50, 9, conds=[k for k in all_keys if k != "rev_yoy"]) is False
+
+
 def test_screen_pass_none_never_passes():
     for k in ("rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio",
               "est_profit", "mu_value", "mu_score"):

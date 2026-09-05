@@ -328,6 +328,32 @@ def test_institutional_3d_map_sums_last_three_trading_days(tmp_path):
     assert m2["2330"] == {"trust_3d": 8.0, "foreign_3d": 9.0}
 
 
+def test_margin_3d_map_uses_balance_difference_not_sum(tmp_path):
+    """融資3日增減＝融資餘額(最新) − 融資餘額(3個交易日前)。
+
+    margin_balance_lots 是**餘額**不是當日流量，所以是相減而非加總（與 institutional_3d_map
+    的語意不同，抄錯就會把餘額當流量累加、數字大一個量級）。兩端任一缺列就算不出來 → 不入表：
+    「餘額 0」與「沒抓到資料」是兩件不同的事實，不可 COALESCE 成 0。"""
+    from stocks_power_rich.db import bulk_upsert_stock_flow, margin_3d_map
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    # 2330 四天都有：1000 → 940（3 個交易日共減 60 張）；1101 缺最舊那天
+    bulk_upsert_stock_flow(conn, "2026-08-03", "TWSE", {"2330": {"margin_balance_lots": 1000}})
+    bulk_upsert_stock_flow(conn, "2026-08-04", "TWSE", {"2330": {"margin_balance_lots": 980},
+                                                        "1101": {"margin_balance_lots": 500}})
+    bulk_upsert_stock_flow(conn, "2026-08-05", "TWSE", {"2330": {"margin_balance_lots": 970}})
+    bulk_upsert_stock_flow(conn, "2026-08-06", "TWSE", {"2330": {"margin_balance_lots": 940},
+                                                        "1101": {"margin_balance_lots": 520}})
+
+    m = margin_3d_map(conn)        # 窗口＝最近 4 個有融資資料的日子（3 個間隔）
+    assert m["2330"] == -60.0      # 940 − 1000：融資減少＝散戶退場
+    assert "1101" not in m         # 起點那天沒有列 → 算不出，不可當成 0 而報成 +520
+
+    m2 = margin_3d_map(conn, as_of="2026-08-05")   # 窗口縮到 {08-05,08-04,08-03}
+    assert m2["2330"] == -30.0     # 970 − 1000
+
+
 def test_get_financials_bulk_shapes_for_lan_score(tmp_path):
     """全市場一次取 {代號:{指標:[值,新到舊]}}，正是 lan_score 期望的 [0]=最新 形狀。"""
     from stocks_power_rich.db import bulk_upsert_financials, get_financials_bulk

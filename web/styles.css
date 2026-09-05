@@ -1077,6 +1077,10 @@ button.file-label { font: inherit; }
   grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px;
   padding-top: 9px; border-top: 1px solid var(--border-subtle);
 }
+/* 自算選股的條件勾選列。label 沿用 .wave-toggle（已含 24px 觸控目標），這裡只管排版。
+   放在覆蓋度上方：先看「現在套了哪些條件」，再看「篩出幾檔」，順序與閱讀動線一致。 */
+.ss-conds { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; margin-bottom: 6px; }
+.ss-conds .wave-toggle { margin-left: 0; }
 .picks-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 0; row-gap: 4px; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
 .picks-summary span { padding: 0 10px; border-right: 1px solid var(--border-default); }
 .picks-summary span:first-child { padding-left: 0; }

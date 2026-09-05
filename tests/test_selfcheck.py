@@ -275,9 +275,11 @@ def test_build_self_screen_filters_sorts_and_builds_heatmap(tmp_path):
     row = out["rows"][0]
     assert row["name"] == "台積電"
     assert row["sector"] == "IC設計"                # 細分類流進入選列（drill-down 才對得上泡泡）
+    # 10 個自算欄 ＋ margin_3d（融資3日**參考欄**，不進 screen_pass、不進 FIELDS 對照）
     assert set(row["vals"]) == {"rev_yoy", "w55", "big_holder_ratio", "holder_drop_ratio",
                                 "trust_3d", "foreign_3d", "lan_score", "est_profit",
-                                "mu_score", "mu_value"}
+                                "mu_score", "mu_value", "margin_3d"}
+    assert "margin_3d" not in selfcheck.FIELDS   # 參考欄不得混進 CSV 對照的 10 欄
     assert row["vals"]["mu_value"] is not None and row["vals"]["mu_value"] > 0
 
     # 分群用細分類（子產業）：2330→「IC設計」(CSV sub_industry)、1101→「水泥」(退回官方類股)

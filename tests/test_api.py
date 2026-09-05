@@ -130,6 +130,15 @@ def test_self_screen_date_selector_defaults_to_latest_csv_and_accepts_date(tmp_p
     older = client.get("/api/picks/self-screen?date=2026-08-21").json()
     assert older["date"] == "2026-08-21"                   # 帶 date → 用該日
 
+    # 勾選交叉檢視：條件清單由後端給（前端不得自寫），不帶 conds＝全部 7 條（原本行為）
+    from stocks_power_rich import analysis
+    assert [c["key"] for c in d["conditions"]] == [k for k, _ in analysis.SCREEN_CONDITIONS]
+    assert d["conds"] == [k for k, _ in analysis.SCREEN_CONDITIONS]
+    sub = client.get("/api/picks/self-screen?conds=w55,mu_score").json()
+    assert sub["conds"] == ["w55", "mu_score"]             # 只套用勾選的那幾條
+    bad = client.get("/api/picks/self-screen?conds=w55,__nope__").json()
+    assert bad["conds"] == ["w55"]                         # 未知 key 直接濾掉，不炸
+
 
 def test_settings_screen_thresholds_roundtrip(tmp_path, monkeypatch):
     """木率/木質門檻在設定頁可調（預設 50/9）；GET 揭露、POST 寫入、再 GET 反映。"""
@@ -1509,10 +1518,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260817-ui39"' in html.text
-    assert 'href="/styles.css?v=20260817-ui39"' in html.text
-    assert 'src="app.js?v=20260817-ui39"' not in html.text
-    assert 'href="styles.css?v=20260817-ui39"' not in html.text
+    assert 'src="/app.js?v=20260817-ui40"' in html.text
+    assert 'href="/styles.css?v=20260817-ui40"' in html.text
+    assert 'src="app.js?v=20260817-ui40"' not in html.text
+    assert 'href="styles.css?v=20260817-ui40"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",

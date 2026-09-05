@@ -147,6 +147,28 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             update_ledger_returns(c)
         except Exception:  # noqa: BLE001
             pass
+        try:
+            # 自算選股的前瞻追蹤：只在每日排程做（build_self_screen 是全市場計算，不放進
+            # CSV 上傳等請求路徑）。universe 從 api.helpers 取——ledger 屬核心層不反向依賴，
+            # 由這裡（協調層）餵進去。獨立 try：它失敗不該影響上面既有的 ledger 記錄。
+            from .ledger import record_self_screen_signals
+            from .api.helpers import _industry_map, _otc_industry
+            from .db import get_setting
+            from . import analysis as _an
+
+            def _th(key, dflt):
+                raw = get_setting(c, key)
+                try:
+                    return float(raw) if raw is not None else dflt
+                except (TypeError, ValueError):
+                    return dflt
+
+            record_self_screen_signals(
+                c, {**_otc_industry(c), **_industry_map(c)},
+                _th("screen_mu_value_min", _an.SCREEN_MU_VALUE_MIN),
+                _th("screen_mu_score_min", _an.SCREEN_MU_SCORE_MIN))
+        except Exception:  # noqa: BLE001
+            pass
 
     def osfut_job():
         """海期監控排程：一天固定兩次（07:30／21:30），取代舊的「每 2 分鐘輪詢」。

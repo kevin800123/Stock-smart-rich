@@ -49,6 +49,10 @@ let cupChart = null, cupMatches = [], cupLoaded = false;
 // 自算籌碼/基本選股（全市場自算池）：進頁才載入（比照 cupLoaded）。
 let selfScreenLoaded = false;
 let ssRows = [], ssCaps = {}, ssData = null, ssSectorFilter = null;
+// 自算選股「勾選交叉檢視」目前生效的條件。**null＝全部套用＝原本的篩選方式**，且刻意
+// 不寫進 localStorage（使用者決定）：每次進頁面都回到原本 7 條件，不會發生「隔天打開發現
+// 名單怪怪的、卻忘了自己關過某一關」。
+let ssConds = null;
 let ssSort = { key: "mu_value", dir: -1 };
 let instBreadthChart = null, instAlphaChart = null;
 let instCoverage = null, instReport = null, instSegment = "combined", instResearchLoading = false;
@@ -583,6 +587,12 @@ const SC_FIELDS = [   // [key, 欄名, 單位]——單位另置副標，不讓�
   ["holder_drop_ratio", "人數降比", "%"], ["trust_3d", "投信3日", "張"], ["foreign_3d", "外資3日", "張"],
   ["lan_score", "財報分", "蘭質"], ["est_profit", "推估EPS", "元"], ["mu_score", "木質", "分"], ["mu_value", "木率", ""],
 ];
+// 自算選股表格＝對照表那 10 欄 ＋ 融資3日（**只在這頁出現**：selfcheck 是 CSV 逐欄對照，
+// CSV 沒有融資欄、放進去只會多一整排 csv_na）。融資3日是參考欄，不進木質/木率計分。
+// **刻意不著色**：全站紅綠鎖給行情漲跌，而融資餘額減少是籌碼清洗、不是下跌——總覽那張
+// 融資餘額卡的 .card-note 也是基於同一理由不著色（見 CLAUDE.md）。不列入 SC_SIGNED/SC_SCORE
+// 就自然拿不到漸層色，不需要額外的例外規則。
+const SS_FIELDS = SC_FIELDS.concat([["margin_3d", "融資3日", "張"]]);
 const SC_MARK = { match: ["✓", "sc-ok"], diff: ["~", "sc-diff"], self_na: ["", "sc-na"], csv_na: ["", "sc-na"] };
 // 數值上色＋強度漸層（heatmap 感）：值越大顏色越亮。有正負意義的欄＝正紅負綠
 // （沿用全站紅漲綠跌）；W55 翻多(1)紅、0 中性；木質/木率是分數不是漲跌 → 中性藍
@@ -687,11 +697,17 @@ async function loadSelfcheck() {
 }
 
 // ========== 自算籌碼/基本選股（全市場自算池，零 CSV） ==========
-async function loadSelfScreen(date) {
+async function loadSelfScreen(date, conds) {
   const tbl = $("self-screen-table"); if (!tbl) return;
   try {
-    const d = await getJSON("/api/picks/self-screen" + (date ? `?date=${encodeURIComponent(date)}` : ""));
+    // conds 省略＝不帶參數＝後端套用全部 7 條（原本行為）；帶了才是交叉檢視。
+    // 空陣列要送出 `conds=`（一條都不勾＝全部放行），所以判斷用 !== undefined 而非真值。
+    const qs = [];
+    if (date) qs.push(`date=${encodeURIComponent(date)}`);
+    if (conds !== undefined && conds !== null) qs.push(`conds=${encodeURIComponent(conds.join(","))}`);
+    const d = await getJSON("/api/picks/self-screen" + (qs.length ? "?" + qs.join("&") : ""));
     ssData = d;
+    renderSelfScreenConds(d);
     // 日期選單：來源＝CSV 快照日（與籌碼選股同一組），讓兩邊能選同一天比較。基準日若不在
     // CSV 清單裡（沒 CSV、退回 market 日）就補一個 option，select 才顯示得出目前這天。
     const sel = $("ss-date");
@@ -711,6 +727,9 @@ async function loadSelfScreen(date) {
       `細分類 <b>${cov.with_subindustry || 0}</b>`,
       `入選 <b>${cov.picked || 0}</b>`,
       `門檻 木率&gt;<b>${th.mu_value_min}</b>・木質&gt;<b>${th.mu_score_min}</b>`,
+      // 非預設條件時明講，否則「入選變多」看起來會像資料出錯
+      ...(ssConds && ssConds.length < (d.conditions || []).length
+        ? [`條件 <b>${ssConds.length}/${(d.conditions || []).length}</b>（交叉檢視中）`] : []),
     ].map((s) => `<span>${s}</span>`).join("");
     ssRows = d.rows || [];
     ssCaps = {};
@@ -722,6 +741,19 @@ async function loadSelfScreen(date) {
   } catch (e) {
     tbl.innerHTML = '<div class="table-empty"><strong>載入失敗</strong><span>' + esc(e.message) + "</span></div>";
   }
+}
+
+// 勾選條件：清單一律由後端的 SCREEN_CONDITIONS 送來渲染，**前端不得自己寫死一份**
+// （同 bands/Elliott/scoring-rules 的規矩，兩份必然漂移）。label 沿用既有的 .wave-toggle
+// checkbox 樣式（已含 24px 觸控目標），不另起一套。
+function renderSelfScreenConds(d) {
+  const box = $("ss-conds"); if (!box) return;
+  const list = d.conditions || [];
+  const on = new Set(ssConds || list.map((c) => c.key));
+  box.innerHTML = list.map((c) =>
+    `<label class="wave-toggle"><input type="checkbox" class="sscd" data-k="${esc(c.key)}"`
+    + `${on.has(c.key) ? " checked" : ""} /> ${esc(c.label)}</label>`).join("")
+    + (ssConds ? ` <button type="button" id="ss-cond-reset" class="help-link">回到預設</button>` : "");
 }
 
 function ssColCap(rows, k) {   // p80(|自算值|)，同 selfcheck 的漸層門檻
@@ -835,9 +867,9 @@ function renderSelfScreenTable() {
       + (unit ? `<span class="sc-h-unit">${unit}</span>` : "") + "</th>";
   };
   const head = "<tr>" + hcell("__code", "股票", "", "")
-    + SC_FIELDS.map(([k, label, unit]) => hcell(k, label, unit, "num ")).join("") + "</tr>";
+    + SS_FIELDS.map(([k, label, unit]) => hcell(k, label, unit, "num ")).join("") + "</tr>";
   const body = rows.map((r) => "<tr><td>" + stockLink(r.code, r.name) + "</td>"
-    + SC_FIELDS.map(([k]) => {
+    + SS_FIELDS.map(([k]) => {
       const v = r.vals[k];
       const vs = scValStyle(k, v, ssCaps[k]);
       // W55 是布林（入選股一律翻多）→ ✓/— 比孤零零的 1/0 好讀；其餘照數值
@@ -3214,7 +3246,18 @@ $("selfcheck-table").addEventListener("click", (e) => {   // 點欄位表頭排�
   else scSort = { key: k, dir: k === "__code" ? 1 : -1 };
   renderSelfcheckTable();
 });
-$("ss-date").addEventListener("change", (e) => loadSelfScreen(e.target.value));   // 選 CSV 同一天 → 與籌碼選股對齊
+$("ss-date").addEventListener("change", (e) => loadSelfScreen(e.target.value, ssConds));   // 選 CSV 同一天 → 與籌碼選股對齊
+// 勾選交叉檢視：委派在容器上（checkbox 是動態產生的，不能寫 inline on*，見 CSP 那條）
+$("ss-conds").addEventListener("change", (e) => {
+  if (!e.target.closest("input.sscd")) return;
+  ssConds = [...$("ss-conds").querySelectorAll("input.sscd")].filter((i) => i.checked)
+    .map((i) => i.dataset.k);
+  loadSelfScreen($("ss-date").value, ssConds);
+});
+$("ss-conds").addEventListener("click", (e) => {
+  if (!e.target.closest("#ss-cond-reset")) return;
+  e.preventDefault(); ssConds = null; loadSelfScreen($("ss-date").value);   // 不帶 conds＝回到全部 7 條
+});
 $("self-screen-table").addEventListener("click", (e) => {   // 自算選股表頭排序（同 selfcheck）
   const th = e.target.closest("th.sc-sort"); if (!th) return;
   const k = th.dataset.k;

@@ -5,6 +5,41 @@ from stocks_power_rich.ledger import record_daily_signals, update_ledger_returns
 from stocks_power_rich.main import create_app
 from fastapi.testclient import TestClient
 
+def test_record_self_screen_signals_writes_forward_test_rows(tmp_path, monkeypatch):
+    """自算選股的 picks 也要進 signal_ledger（source='self_screen'）才有前瞻績效可查。
+
+    前瞻資料**不能回補**（回補就有存活者偏誤），所以晚一天接、歷史就永遠少一天——這是唯一
+    「拖越久損失越大」的一項。與 filtered_picks 共用同一個 signal_date（最新 CSV 日），
+    兩個來源才能直接對照誰比較準。
+
+    entry_ref_price 取「signal_date 當天(或之前最近)的收盤」，**不可**拿 stock_ohlc 的最新
+    收盤——signal_date 可能是較舊的 CSV 日，用最新收盤等於進場價領先訊號日，報酬會灌水。"""
+    from stocks_power_rich import ledger, selfcheck
+
+    db_file = str(tmp_path / "t.sqlite")
+    conn = get_connection(db_file)
+    init_db(conn)
+    insert_chip_snapshot(conn, "2026-09-04", [{"code": "2330.TW", "name": "台積電"}])
+    for ds, px in (("2026-09-03", 900.0), ("2026-09-04", 1000.0), ("2026-09-05", 1200.0)):
+        conn.execute("INSERT INTO stock_ohlc (date, code, open, high, low, close) VALUES (?,?,?,?,?,?)",
+                     (ds, "2330", 1.0, 1.0, 1.0, px))
+    conn.commit()
+
+    monkeypatch.setattr(selfcheck, "build_self_screen",
+                        lambda *a, **k: {"rows": [{"code": "2330", "name": "台積電", "vals": {}}]})
+    ledger.record_self_screen_signals(conn, {"2330": {}}, 50, 9)
+
+    rows = conn.execute(
+        "SELECT signal_date, code, source, entry_ref_price FROM signal_ledger").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["signal_date"] == "2026-09-04"     # 與 filtered_picks 同一天，才好對照
+    assert rows[0]["source"] == "self_screen"
+    assert rows[0]["entry_ref_price"] == 1000.0       # 訊號日收盤，不是後來的 1200
+
+    ledger.record_self_screen_signals(conn, {"2330": {}}, 50, 9)   # 重跑不重複寫
+    assert conn.execute("SELECT COUNT(*) FROM signal_ledger").fetchone()[0] == 1
+
+
 def test_ledger_flow_and_api(tmp_path, monkeypatch):
     db_file = str(tmp_path / "t.sqlite")
     monkeypatch.setenv("SPR_DB_PATH", db_file)
