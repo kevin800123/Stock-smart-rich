@@ -104,6 +104,33 @@ def test_self_screen_endpoint_full_market_universe_and_thresholds(tmp_path, monk
     assert over["thresholds"] == {"mu_value_min": 10, "mu_score_min": 1}
 
 
+def test_self_screen_date_selector_defaults_to_latest_csv_and_accepts_date(tmp_path, monkeypatch):
+    """自算選股日期選單：不帶 date → 預設最新 CSV 快照日（與籌碼選股對齊）；帶 date → 用該日；
+    回應帶 snap_dates 供前端選單。目的：讓自算選股能和籌碼選股站在同一天比較。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    from stocks_power_rich.api import admin as admin_mod
+    monkeypatch.setattr(admin_mod, "_industry_map",
+                        lambda c: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1e9}})
+    monkeypatch.setattr(admin_mod, "_otc_industry", lambda c: {})
+    client = TestClient(create_app())
+    from stocks_power_rich.db import (get_connection, init_db, upsert_market_daily,
+                                      insert_chip_snapshot)
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-09-04", "taiex": 20000.0})   # market_daily 較新（09-04）
+    insert_chip_snapshot(c, "2026-08-21", [{"code": "2330"}])
+    insert_chip_snapshot(c, "2026-08-28", [{"code": "2330"}])          # 最新 CSV 快照＝08-28
+    c.commit()
+
+    d = client.get("/api/picks/self-screen").json()
+    assert d["date"] == "2026-08-28"                       # 預設＝最新 CSV 日，非 market 的 09-04
+    assert d["snap_dates"] == ["2026-08-21", "2026-08-28"]  # 前端日期選單來源
+
+    older = client.get("/api/picks/self-screen?date=2026-08-21").json()
+    assert older["date"] == "2026-08-21"                   # 帶 date → 用該日
+
+
 def test_settings_screen_thresholds_roundtrip(tmp_path, monkeypatch):
     """木率/木質門檻在設定頁可調（預設 50/9）；GET 揭露、POST 寫入、再 GET 反映。"""
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
@@ -1482,10 +1509,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260817-ui38"' in html.text
-    assert 'href="/styles.css?v=20260817-ui38"' in html.text
-    assert 'src="app.js?v=20260817-ui38"' not in html.text
-    assert 'href="styles.css?v=20260817-ui38"' not in html.text
+    assert 'src="/app.js?v=20260817-ui39"' in html.text
+    assert 'href="/styles.css?v=20260817-ui39"' in html.text
+    assert 'src="app.js?v=20260817-ui39"' not in html.text
+    assert 'href="styles.css?v=20260817-ui39"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",

@@ -355,16 +355,25 @@ def _screen_threshold(c, key: str, default) -> float:
 
 
 @router.get("/picks/self-screen")
-def picks_self_screen(mu_value_min: float | None = None, mu_score_min: float | None = None):
+def picks_self_screen(date: str | None = None,
+                      mu_value_min: float | None = None, mu_score_min: float | None = None):
     """自算籌碼/基本選股：全市場自算池（零 CSV 依賴）。候選池＝_industry_map ∪ _otc_industry
-    （上市＋上櫃公司基本資料，含類股/股名/已發行股數）；門檻優先吃 query→設定→analysis 預設。"""
+    （上市＋上櫃公司基本資料，含類股/股名/已發行股數）；門檻優先吃 query→設定→analysis 預設。
+
+    日期基準：帶 date 用該日；否則**預設最新 CSV 快照日**——這樣自算選股與籌碼選股
+    （用 chip_snapshot 日期）預設對齊，才能拿同一天比較（見「為何篩選不一樣」那條差異）。
+    完全沒有 CSV 時才退回 market_daily 最新日。回應帶 snap_dates 供前端日期選單。"""
     c = conn()
     universe = {**_otc_industry(c), **_industry_map(c)}   # 代號不衝突；上市優先
     vmin = mu_value_min if mu_value_min is not None else _screen_threshold(
         c, "screen_mu_value_min", analysis.SCREEN_MU_VALUE_MIN)
     smin = mu_score_min if mu_score_min is not None else _screen_threshold(
         c, "screen_mu_score_min", analysis.SCREEN_MU_SCORE_MIN)
-    return selfcheck.build_self_screen(c, _latest_date(c), universe, vmin, smin)
+    snap_dates = get_snapshot_dates(c)                   # 籌碼選股用的 CSV 快照日，供選單與預設
+    chosen = date or (snap_dates[-1] if snap_dates else _latest_date(c))
+    result = selfcheck.build_self_screen(c, chosen, universe, vmin, smin)
+    result["snap_dates"] = snap_dates
+    return result
 
 @router.get("/ohlc/backfill")
 def ohlc_backfill(days: int = 377, max_fetch: int = 60, reset: int = 0):

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260817-ui38" />
+  <link rel="stylesheet" href="styles.css?v=20260817-ui39" />
   <script src="/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -622,7 +622,7 @@
       <section id="view-self-screen" class="view picks-view">
         <div class="picks-command">
           <div class="picks-command-copy">
-            <div class="picks-title-row"><h2>自算籌碼/基本選股</h2></div>
+            <div class="picks-title-row"><h2>自算籌碼/基本選股</h2><label class="date-pick">資料日期 <select id="ss-date"></select></label></div>
             <p>全市場自算池、零 CSV 依賴：先看本週大戶資金集中在哪些子產業（面積＝大戶淨買進金額），再篩 營收年增&gt;0 ∧ W55 翻多 ∧ 大戶增比&gt;0 ∧ 人數降比&lt;0 ∧ 推估EPS&gt;0 ∧ 木率/木質過門檻，依木率排序。門檻於<a href="#" id="ss-goto-settings" class="help-link">設定</a>調整。</p>
           </div>
           <div class="picks-command-foot">
@@ -689,6 +689,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260817-ui38"></script>
+  <script src="app.js?v=20260817-ui39"></script>
 </body>
 </html>

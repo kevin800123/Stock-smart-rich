@@ -687,11 +687,20 @@ async function loadSelfcheck() {
 }
 
 // ========== 自算籌碼/基本選股（全市場自算池，零 CSV） ==========
-async function loadSelfScreen() {
+async function loadSelfScreen(date) {
   const tbl = $("self-screen-table"); if (!tbl) return;
   try {
-    const d = await getJSON("/api/picks/self-screen");
+    const d = await getJSON("/api/picks/self-screen" + (date ? `?date=${encodeURIComponent(date)}` : ""));
     ssData = d;
+    // 日期選單：來源＝CSV 快照日（與籌碼選股同一組），讓兩邊能選同一天比較。基準日若不在
+    // CSV 清單裡（沒 CSV、退回 market 日）就補一個 option，select 才顯示得出目前這天。
+    const sel = $("ss-date");
+    if (sel) {
+      const dates = (d.snap_dates || []).slice();
+      if (d.date && !dates.includes(d.date)) { dates.push(d.date); dates.sort(); }
+      sel.innerHTML = dates.map((x) => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
+      if (d.date) sel.value = d.date;
+    }
     const cov = d.coverage || {}, th = d.thresholds || {};
     $("ss-coverage").innerHTML = [
       `資料日 <b>${esc(d.date || "—")}</b>`,
@@ -3205,6 +3214,7 @@ $("selfcheck-table").addEventListener("click", (e) => {   // 點欄位表頭排�
   else scSort = { key: k, dir: k === "__code" ? 1 : -1 };
   renderSelfcheckTable();
 });
+$("ss-date").addEventListener("change", (e) => loadSelfScreen(e.target.value));   // 選 CSV 同一天 → 與籌碼選股對齊
 $("self-screen-table").addEventListener("click", (e) => {   // 自算選股表頭排序（同 selfcheck）
   const th = e.target.closest("th.sc-sort"); if (!th) return;
   const k = th.dataset.k;
