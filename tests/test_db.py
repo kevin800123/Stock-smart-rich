@@ -124,12 +124,15 @@ def test_backup_db_creates_rotates_and_is_readable(tmp_path):
     for stamp in days:
         p = backup_db(db, keep=7, stamp=stamp)
         assert p and os.path.exists(p)
-    files = sorted(glob.glob(str(tmp_path / "backup" / "spr-*.sqlite")))
+    # 輪替橫跨兩種形式：最新一份是未壓縮的 .sqlite、較舊的是 .sqlite.gz
+    # （壓縮是為了收斂「每天一份完整 DB × 7 ＝ 8 倍」的空間放大，保留份數不變）
+    files = sorted(glob.glob(str(tmp_path / "backup" / "spr-*.sqlite"))
+                   + glob.glob(str(tmp_path / "backup" / "spr-*.sqlite.gz")))
     assert len(files) == 7                                   # 只留 7 份
-    assert files[0].endswith("spr-20260103.sqlite")         # 最舊兩份被刪
-    assert files[-1].endswith("spr-20260109.sqlite")
+    assert files[0].endswith("spr-20260103.sqlite.gz")       # 最舊兩份被刪
+    assert files[-1].endswith("spr-20260109.sqlite")         # 最新那份保持未壓縮
 
-    # 備份檔可獨立開啟且含原資料
+    # 最新的備份檔可直接開啟且含原資料（緊急還原零摩擦）
     bc = get_connection(files[-1])
     assert bc.execute("SELECT taiex FROM market_daily").fetchone()[0] == 47000.0
 
@@ -485,3 +488,41 @@ def test_get_connection_sets_busy_timeout_so_writers_wait_instead_of_failing(tmp
 
     c = get_connection(str(tmp_path / "t.sqlite"))
     assert c.execute("PRAGMA busy_timeout").fetchone()[0] >= 30000
+
+
+def test_backup_compresses_older_copies_but_keeps_newest_ready_to_restore(tmp_path):
+    """備份的空間放大：每天一份完整 DB × 7 ＝ **8 倍**（實測 production Volume 6.34GB）。
+
+    DB 壓縮率很高，所以壓縮是比「少留幾份」更好的解——**保留份數不動、安全性不變**。
+    但**最新那一份刻意不壓**：緊急還原時最常用的就是它，零摩擦比省那一點空間重要；
+    較舊的才壓成 .gz（那是封存，很少真的動用）。
+    """
+    import glob, gzip, os
+    from stocks_power_rich.db import backup_db
+
+    db = str(tmp_path / "spr.sqlite")
+    c = get_connection(db)
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-07-01", "taiex": 47000.0})
+
+    for stamp in [f"202601{d:02d}" for d in range(1, 10)]:      # 連續 9 天
+        assert backup_db(db, keep=7, stamp=stamp)
+
+    bdir = str(tmp_path / "backup")
+    plain = sorted(glob.glob(os.path.join(bdir, "spr-*.sqlite")))
+    gzs = sorted(glob.glob(os.path.join(bdir, "spr-*.sqlite.gz")))
+
+    assert [os.path.basename(f) for f in plain] == ["spr-20260109.sqlite"]   # 只有最新一份未壓
+    assert len(gzs) == 6                                        # 其餘 6 份已壓縮
+    assert len(plain) + len(gzs) == 7                           # 保留份數仍是 7（安全性不變）
+    assert os.path.basename(gzs[0]) == "spr-20260103.sqlite.gz"  # 最舊兩份仍被輪替掉
+
+    # 最新那份可直接開（零摩擦還原）
+    assert get_connection(plain[0]).execute(
+        "SELECT taiex FROM market_daily").fetchone()[0] == 47000.0
+    # 壓縮的那份解開後也是完整可用的 DB
+    restored = str(tmp_path / "restored.sqlite")
+    with gzip.open(gzs[-1], "rb") as fi, open(restored, "wb") as fo:
+        fo.write(fi.read())
+    assert get_connection(restored).execute(
+        "SELECT taiex FROM market_daily").fetchone()[0] == 47000.0

@@ -1,8 +1,10 @@
 """SQLite 資料層：建立 schema、每日大盤快照與籌碼快照的 upsert/查詢。"""
 import glob
+import gzip
 import json
 import math
 import os
+import shutil
 import sqlite3
 from datetime import datetime
 
@@ -39,11 +41,29 @@ WATCHLIST_COLS = [
 ]
 
 
-def backup_db(db_path: str, keep: int = 7, stamp: str | None = None) -> str | None:
-    """以 SQLite 線上備份 API 複製整個 DB 到同目錄 backup/spr-YYYYMMDD.sqlite，輪替保留最近 keep 份。
+def _backup_stamp(path: str) -> str:
+    """從備份檔名取出日期戳，讓 .sqlite 與 .sqlite.gz 能一起依時序排序/輪替。"""
+    name = os.path.basename(path)
+    if name.endswith(".gz"):
+        name = name[:-3]
+    return name[len("spr-"):-len(".sqlite")]
 
-    用官方 Connection.backup（可在服務運行中安全備份，不鎖庫）；來源不存在回 None。
+
+def backup_db(db_path: str, keep: int = 7, stamp: str | None = None) -> str | None:
+    """每日備份到 backup/spr-YYYYMMDD.sqlite，輪替保留最近 keep 份。來源不存在回 None。
+
     集保逐週資料等無法重建，故排程每日執行以防 Volume 故障/誤刪造成永久遺失。
+
+    **兩個為了 production 實測問題而做的取捨**：
+
+    1. **分批複製而非一口氣**（`pages=1000, sleep=0.05`）：官方 backup API 在複製期間會
+       持有來源的讀鎖，DB 大了之後這段時間很長。2026-09 全站 `database is locked` 那次，
+       備份正是「長時間持鎖」的候選之一。分批讓 SQLite 在每批之間釋放鎖，寫入者插得進來。
+       （代價：若備份途中來源被大量改寫，SQLite 會重啟複製；本站寫入是突發而非持續，可接受。）
+    2. **只有最新一份保持未壓縮，較舊的壓成 .gz**：每天一份完整 DB × 7 ＝ **8 倍放大**
+       （實測 production Volume 6.34GB）。DB 壓縮率很高，所以壓縮比「少留幾份」更好——
+       **保留份數不變、安全性不變**。最新那份刻意不壓：緊急還原最常用的就是它，零摩擦
+       比省那點空間重要；較舊的是封存，很少真的動用（要用時 `gunzip` 即可）。
     """
     if not os.path.exists(db_path):
         return None
@@ -55,13 +75,28 @@ def backup_db(db_path: str, keep: int = 7, stamp: str | None = None) -> str | No
     try:
         dst = sqlite3.connect(dest)
         try:
-            src.backup(dst)
+            src.backup(dst, pages=1000, sleep=0.05)   # 分批並讓出鎖，見上方 (1)
         finally:
             dst.close()
     finally:
         src.close()
-    files = sorted(glob.glob(os.path.join(bdir, "spr-*.sqlite")))
-    for old in files[:-keep]:  # 只留最近 keep 份（檔名日期字典序＝時序）
+
+    # 把「除了這次剛寫的」之外的未壓縮備份壓成 .gz（見上方 (2)）
+    for f in glob.glob(os.path.join(bdir, "spr-*.sqlite")):
+        if os.path.abspath(f) == os.path.abspath(dest):
+            continue
+        try:
+            with open(f, "rb") as fi, gzip.open(f + ".gz", "wb", compresslevel=6) as fo:
+                shutil.copyfileobj(fi, fo)
+            os.remove(f)
+        except OSError:
+            pass
+
+    # 輪替：.sqlite 與 .sqlite.gz 一起依日期戳排序，只留最近 keep 份
+    files = sorted(glob.glob(os.path.join(bdir, "spr-*.sqlite"))
+                   + glob.glob(os.path.join(bdir, "spr-*.sqlite.gz")),
+                   key=_backup_stamp)
+    for old in files[:-keep] if keep > 0 else files:
         try:
             os.remove(old)
         except OSError:
