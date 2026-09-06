@@ -145,7 +145,6 @@ const SER = { foreign: C.chartForeign, trust: C.chartTrust, dealer: C.chartDeale
 // 圖表字型：熱力圖的量測(canvas)與繪製(ECharts)必須用同一組，否則量得下卻被截；
 // K線等其他圖表也套同一組讓全站字型一致。須與 styles.css 的 body 堆疊同步（數字→Num、中文→粉圓）。
 const HM_FONT = '"Num", "Huninn", "Microsoft JhengHei", "PingFang TC", sans-serif';
-const PIN_YELLOW = "#ffd23f";   // 杯柄圖釘醒目黃（獨立於 token，僅此一用）
 
 function ma(values, n) {
   const out = [];
@@ -1891,17 +1890,21 @@ function cupChartOption(d, m) {
   const maSeries = MA_DEFS.map((x) => ({ name: "MA" + x.n, type: "line", data: ma(closes, x.n),
     smooth: true, showSymbol: false, lineStyle: { width: 1, color: x.color } }));
   const lastDate = d.dates[d.dates.length - 1];
+  // 量能柱依當根 K 棒方向著紅/綠（同個股圖，兩張圖用同一套語彙）
+  const volumes = (d.volumes || []).map((v, i) => ({
+    value: v, itemStyle: { color: d.candles[i] && d.candles[i][1] >= d.candles[i][0] ? C.up : C.down },
+  }));
   const candle = {
-    name: "K線", type: "candlestick", data: d.candles,
+    name: "K線", type: "candlestick", data: d.candles, xAxisIndex: 0, yAxisIndex: 0,
     itemStyle: { color: C.up, color0: C.down, borderColor: C.up, borderColor0: C.down },
     markLine: {
       symbol: ["none", "none"],
       // 標籤放線段中段（非末端）：末端貼右緣會被 grid 裁切破版；中段有留白、也不會
-      // 跟右緣 pin 疊在一起（右緣點＝趨勢線終點＝壓力線起點，三者同座標）
+      // 跟右緣標記疊在一起（右緣點＝趨勢線終點＝壓力線起點，三者同座標）
       label: { show: true, position: "middle", color: "#fff", fontSize: 11,
                backgroundColor: "rgba(0,0,0,0.55)", padding: [2, 4], borderRadius: 3 },
       data: [
-        // 趨勢線不標字（左右緣已有 pin），避免與右緣 pin 疊字
+        // 趨勢線不標字（左右緣已有標記），避免與右緣標記疊字
         [{ coord: [m.left_date, m.left_price], lineStyle: { color: C.accent, width: 2 }, label: { show: false } },
          { coord: [m.right_date, m.right_price] }],
         [{ name: `壓力 ${fmt(m.resistance, 2)}`, coord: [m.right_date, m.resistance],
@@ -1909,15 +1912,22 @@ function cupChartOption(d, m) {
          { coord: [lastDate, m.resistance] }],
       ],
     },
+    // 左右緣改用「量測錨點」而非地圖圖釘：40px 的黃色 pin 是個與杯柄毫無關係的隱喻，
+    // 在密集 K 棒上像貼紙，而且右緣 pin 與壓力線／停損線的標籤同座標必然打架。
+    // 現在是小實心圓＋深色描邊（讀作趨勢線的端點），文字往**上方**推開避開那兩條水平線；
+    // 顏色沿用趨勢線的琥珀，讓「杯柄幾何」在圖上只有一種顏色語彙。
     markPoint: {
-      // 圖釘原本跟趨勢線同橘色、融進線裡不明顯：改亮黃＋白色描邊讓圖釘從線上「跳出來」，
-      // 並用 symbolOffset 把圖釘往上提，避開與趨勢線／K棒交叉處的視覺重疊。
-      symbol: "pin", symbolSize: 40, symbolOffset: [0, -10],
-      itemStyle: { color: PIN_YELLOW, borderColor: "#fff", borderWidth: 1.5,
-                   shadowColor: "rgba(0,0,0,0.5)", shadowBlur: 4 },
-      label: { color: "#1a1a1a", fontSize: 12, fontWeight: 700, formatter: (p) => p.data.value },
+      symbol: "circle", symbolSize: 9,
+      itemStyle: { color: C.accent, borderColor: C.bg, borderWidth: 2 },
+      label: { position: "top", distance: 8, color: C.accent, fontSize: 11, fontWeight: 700,
+               backgroundColor: "rgba(10,16,26,0.72)", padding: [2, 5], borderRadius: 3,
+               formatter: (p) => p.data.value },
+      // 右緣點與壓力線起點是**同一個座標**（右緣價＝壓力價），所以兩個標籤必須往相反
+      // 方向推開，否則窄畫面下壓力線變短、它的中點標籤就貼上來（實測 375px 疊在一起，
+      // 桌機因為線夠長才看不出來——這是只有跑過每個斷點才會發現的那種碰撞）。
       data: [{ value: "左緣", coord: [m.left_date, m.left_price] },
-             { value: "右緣", coord: [m.right_date, m.right_price] }],
+             { value: "右緣", coord: [m.right_date, m.right_price],
+               label: { position: "left", distance: 10 } }],
     },
   };
   if (m.stop_loss != null && m.stop_loss > 0)  // 停損線＝突破價−2×ATR14（部位管理，見下方說明）
@@ -1925,15 +1935,35 @@ function cupChartOption(d, m) {
       [{ name: `停損 ${fmt(m.stop_loss, 2)}`, coord: [m.right_date, m.stop_loss],
         lineStyle: { color: C.up, width: 2, type: "dashed" } },
        { coord: [lastDate, m.stop_loss] }]);
+
+  // **預設視窗要框住整個杯柄**：原本寫死 start=35%，與杯柄實際位置無關，於是左緣常常在
+  // 畫面外，使用者每次都得手動把日期拉遠才看得到型態——這張圖唯一的任務就是看型態。
+  // 從左緣往前留 12% 的前導（看得出杯口形成前的走勢），夾在 0~55% 之間避免過度放大。
+  const li = d.dates.indexOf(m.left_date);
+  const startPct = li < 0 ? 35
+    : Math.max(0, Math.min(55, (li / d.dates.length) * 100 - 12));
+
   return {
     textStyle: { fontFamily: HM_FONT },
     tooltip: financeTooltip({ axisPointer: { type: "cross", lineStyle: { color: C.borderStrong, type: "dashed" } } }),
     legend: { top: 0, data: ["K線", ...MA_DEFS.map((x) => "MA" + x.n)], textStyle: { color: C.label } },
-    grid: { left: 55, right: 30, top: 30, bottom: 50 },
-    xAxis: { type: "category", data: d.dates, axisLabel: { color: C.muted } },
-    yAxis: { scale: true, axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.gridline, type: "dashed" } } },
-    dataZoom: klineDataZoom(0, 35),
-    series: [candle, ...maSeries],
+    // 與個股圖同一套兩窗格版面（價格 59% ／ 量能 13%），日期只出現在最底部——
+    // 兩張同型的圖走同一個系統，不要各長各的。
+    grid: [{ left: 55, right: 30, top: 30, height: "59%" }, { left: 55, right: 30, top: "71%", height: "13%" }],
+    xAxis: [
+      { type: "category", data: d.dates, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false }, axisLabel: { show: false } },
+      { type: "category", data: d.dates, gridIndex: 1, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 11 } },
+    ],
+    yAxis: [
+      { scale: true, axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.gridline, type: "dashed" } } },
+      { gridIndex: 1, splitNumber: 2, splitLine: { show: false },
+        axisLabel: { color: C.muted, fontSize: 10,
+                     formatter: (v) => v >= 10000 ? fmt(v / 10000, 1) + "萬" : fmt(v, 0) } },
+    ],
+    dataZoom: klineDataZoom([0, 1], startPct),
+    series: [candle, ...maSeries,
+             { name: "成交量(張)", type: "bar", xAxisIndex: 1, yAxisIndex: 1, barWidth: 7,
+               barCategoryGap: "32%", itemStyle: { opacity: 0.55 }, data: volumes }],
   };
 }
 async function drawCupChart(m) {
@@ -1944,7 +1974,11 @@ async function drawCupChart(m) {
     const d = await getJSON(`/api/stock/${encodeURIComponent(m.code)}/ohlc?bars=400`);
     cupChart.hideLoading();
     if (!d.candles || !d.candles.length) { cupChart.clear(); return; }
+    // **setOption 後必須 resize()**：容器在收合/未啟用時 init 會把尺寸記成 0，
+    // 之後不會自己重量（本專案多處記載過的 echarts 凍尺寸坑）。杯柄圖是進頁才畫的，
+    // 正好落在那條路徑上。
     cupChart.setOption(cupChartOption(d, m), true);
+    cupChart.resize();
   } catch (e) { cupChart.hideLoading(); }
 }
 let cupData = null, cupPicksOnly = false, cupMinR = 70;

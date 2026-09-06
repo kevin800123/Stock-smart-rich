@@ -50,8 +50,11 @@ def stock_search(q: str = "", n: int = 8):
 def stock_ohlc(code: str, bars: int = 400):
     pure = code.split(".")[0]
     rows = get_ohlc_history(conn(), pure)[-max(60, min(bars, 500)):]
+    # volumes（張）：杯柄圖的量能窗格用。缺量給 0 而非 None——這是「畫得出來的柱高」，
+    # 不是分析輸入；圖表沒有辦法呈現 None，而 0 在視覺上就是「那天沒有量能資料」。
     return {"code": pure, "dates": [r["date"] for r in rows],
-            "candles": [[r["open"], r["close"], r["low"], r["high"]] for r in rows]}
+            "candles": [[r["open"], r["close"], r["low"], r["high"]] for r in rows],
+            "volumes": [r.get("volume") or 0 for r in rows]}
 
 # 後備資料的時間窗。yfinance 自己會依 period 截斷，stock_ohlc 不會——它是逐日累積
 # 的整張表，`get_ohlc_history` 一次回傳該股**所有**歷史列。

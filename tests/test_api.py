@@ -1518,10 +1518,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260817-ui43"' in html.text
-    assert 'href="/styles.css?v=20260817-ui43"' in html.text
-    assert 'src="app.js?v=20260817-ui43"' not in html.text
-    assert 'href="styles.css?v=20260817-ui43"' not in html.text
+    assert 'src="/app.js?v=20260817-ui44"' in html.text
+    assert 'href="/styles.css?v=20260817-ui44"' in html.text
+    assert 'src="app.js?v=20260817-ui44"' not in html.text
+    assert 'href="styles.css?v=20260817-ui44"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",
@@ -3004,3 +3004,24 @@ def test_ohlc_pending_force_days_returns_recent_dates_regardless_of_coverage(tmp
     f = client.get("/api/ohlc/pending?force_days=2").json()
     assert f["dates"] == ["2026-09-03", "2026-09-02"]                 # 仍回最近 2 天供重抓
     assert f["forced"] is True                                        # 讓呼叫端知道這不是「缺口」
+
+
+def test_stock_ohlc_endpoint_returns_volumes_for_the_cup_chart(tmp_path, monkeypatch):
+    """杯柄圖的量能窗格需要 volumes；/stock/{code}/ohlc 原本只回 dates+candles。
+    缺量給 0（畫得出來的柱高），與分析用的 None 語意分開。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(create_app())
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    for i, ds in enumerate(["2026-09-0%d" % n for n in range(1, 4)]):
+        row = {"open": 60, "high": 61, "low": 59, "close": 60.5}
+        if i < 2:
+            row["volume_lots"] = 700 + i     # 第 3 天沒有量能資料
+        bulk_upsert_ohlc(c, ds, {"3022": row})
+    c.commit()
+
+    d = client.get("/api/stock/3022/ohlc?bars=400").json()
+    assert len(d["volumes"]) == len(d["dates"]) == len(d["candles"])   # 三個陣列等長
+    assert d["volumes"] == [700, 701, 0]                               # 缺量 → 0
