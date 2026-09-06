@@ -70,9 +70,18 @@ def backup_db(db_path: str, keep: int = 7, stamp: str | None = None) -> str | No
 
 
 def get_connection(db_path: str) -> sqlite3.Connection:
+    """開一條連線。**一律設 busy_timeout**——包含請求路徑上的連線。
+
+    沒有它時，只要有任何較長的寫入交易在進行（每日排程的 run_update、backup_db、
+    全市場計算…），其他請求就會**立刻**丟 `database is locked` 而不是等它做完。本站是
+    單 worker ＋ SQLite，總覽開頁同時打十幾支端點、其中多支要寫 ai_cache，正是最容易
+    撞在一起的形狀。背景執行緒（research／report backfill）早就各自設了 30 秒，
+    **請求路徑卻是裸連線**——這個不對稱是 production 全站 500 之後才發現的。
+    """
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=30.0)   # Python 層的等待上限
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=30000")       # SQLite 層（與背景執行緒同一個值）
     return conn
 
 

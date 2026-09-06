@@ -470,3 +470,18 @@ def test_get_ohlc_history_returns_volume_lots_for_the_chart(tmp_path):
 
     rows = get_ohlc_history(conn, "3022")
     assert [r["volume"] for r in rows] == [1234, None]   # 張；缺量給 None 不假造 0
+
+
+def test_get_connection_sets_busy_timeout_so_writers_wait_instead_of_failing(tmp_path):
+    """每一條連線都要有 busy_timeout——**包含請求路徑上的**，不能只有背景執行緒有。
+
+    沒有它時，只要有任何較長的寫入交易在進行，其他請求就會立刻丟
+    `sqlite3.OperationalError: database is locked` 而不是等它做完。本專案是單 worker ＋
+    SQLite，總覽開頁會同時打十幾支端點、其中多支要寫 ai_cache，正是最容易撞在一起的形狀。
+    背景執行緒（research／report backfill）早就設了 30 秒，請求路徑卻是裸連線——這個不對稱
+    是實測 production 全站 500（database is locked）後才發現的。
+    """
+    from stocks_power_rich.db import get_connection
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    assert c.execute("PRAGMA busy_timeout").fetchone()[0] >= 30000
