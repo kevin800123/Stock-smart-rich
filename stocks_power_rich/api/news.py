@@ -9,7 +9,7 @@ from .helpers import (get_ai_cache, set_ai_cache, ai_cooling_down,
                       note_ai_failure, bump_ai_calls)
 from .. import gemini, telegram_push
 from ..config import load_config
-from ..sources import news
+from ..sources import news, taifex
 
 router = APIRouter(prefix="/api")
 
@@ -22,10 +22,10 @@ _MARKET_META = {
     "jp": ("🇯🇵", "日股"),
 }
 _PUSH_PLAN = {
-    "morning": ("🌅 07:00 盤前早報", (("us", 6), ("jp", 6), ("tw", 6))),
-    "midday": ("☀️ 12:00 午間財經快訊", (("tw", 6), ("jp", 6), ("us", 6))),
-    "afternoon": ("🏁 17:00 收盤快訊", (("tw", 6), ("jp", 6), ("us", 6))),
-    "evening": ("🌙 21:10 晚間全球焦點", (("us", 6), ("jp", 6), ("tw", 6))),
+    "morning": ("🌅 07:00 盤前早報", (("us", 10), ("jp", 10), ("tw", 10))),
+    "midday": ("☀️ 12:00 午間財經快訊", (("tw", 10), ("jp", 10), ("us", 10))),
+    "afternoon": ("🏁 17:00 收盤快訊", (("tw", 10), ("jp", 10), ("us", 10))),
+    "evening": ("🌙 21:10 晚間全球焦點", (("us", 10), ("jp", 10), ("tw", 10))),
 }
 _DETAIL_LABELS = {"事件摘要", "事件", "市場影響", "影響", "後續指標", "關注", "關鍵數據"}
 
@@ -92,6 +92,19 @@ def _fmt_num(value, digits: int = 0) -> str:
     return f"{value:,.{digits}f}"
 
 
+def _should_show_night(slot: str, today=None) -> bool:
+    """台指期夜盤只在**平日的 17:00／21:10** 顯示（使用者規格）。
+
+    週末刻意不顯示是為了資料誠信，不是懶：週五夜盤到週六 05:00 就結束，週末推播能拿到的
+    必然是「上一個交易日夜盤的收盤」，掛在週日的訊息上會被讀成當下——同本專案「不可拿
+    別天的收盤冒充今天」那條規矩。與其加一堆註解解釋，不如不顯示。
+    07:00 夜盤早已收、12:00 夜盤還沒開，兩者本來就沒有「當下夜盤」可言。
+    """
+    import datetime as _dt
+    d = today or _dt.date.today()
+    return slot in ("afternoon", "evening") and d.weekday() < 5
+
+
 def render_snapshot_block(snapshot: dict, report_date: str = "") -> str:
     """盤面由程式輸出，AI 一律不得改寫（見 _snapshot_from_market_daily 的說明）。
 
@@ -120,6 +133,18 @@ def render_snapshot_block(snapshot: dict, report_date: str = "") -> str:
 
     tx = snapshot.get("台指期")
     lines.append(f"• 台指期　{_fmt_num(tx)}" if tx is not None else "• 台指期　—")
+
+    # 夜盤：**日期對不上就整行不出現**。實測期交所 Q_FUT 在非交易時段回的是「最後一個
+    # 交易時段」的數字（2026-09-06 21:58 打回來的是 09-04 的），不比對就會把上一個交易日
+    # 的夜盤當成當下。顯示與否由呼叫端的 _should_show_night 決定，這裡只管「有沒有資格畫」。
+    night, n_chg = snapshot.get("台指期夜盤"), snapshot.get("台指期夜盤漲跌")
+    n_date = snapshot.get("台指期夜盤日期")
+    if night is not None and n_date and (not date or n_date == date):
+        seg = f"• 台指期夜盤　{_fmt_num(night)}"
+        if n_chg is not None:
+            arrow = "▲" if n_chg > 0 else ("▼" if n_chg < 0 else "▬")
+            seg += f"　{arrow}{_fmt_num(abs(n_chg))}"
+        lines.append(seg)
     turnover = snapshot.get("成交金額(億)")
     lines.append(f"• 成交　{_fmt_num(turnover)} 億" if turnover is not None else "• 成交　—")
 
@@ -478,6 +503,17 @@ def news_logic(c, slot: str | None = None, refresh: int = 0) -> dict:
 
     cfg = load_config()
     snapshot = _snapshot_from_market_daily(c)
+    # 夜盤只在平日 17:00／21:10 抓（見 _should_show_night）——其餘時段沒有「當下夜盤」
+    # 可言，不必為此多打一次期交所。抓失敗就當作沒有，不讓它拖垮整則推播。
+    if _should_show_night(slot):
+        try:
+            nq = taifex.fetch_tx_night_quote()
+            if nq.get("tx_night_price") is not None:
+                snapshot["台指期夜盤"] = nq["tx_night_price"]
+                snapshot["台指期夜盤漲跌"] = nq["tx_night_chg"]
+                snapshot["台指期夜盤日期"] = nq["tx_night_date"]
+        except Exception:  # noqa: BLE001
+            pass
     request_payload = {"slot": slot, "report_date": today, "snapshot": snapshot, "markets": markets}
     if not refresh and ai_cooling_down(c):
         # 剛失敗過就先不打（免費層一天只有 20 次，重試要克制）。新聞標題照樣抓、

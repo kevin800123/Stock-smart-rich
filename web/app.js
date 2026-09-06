@@ -1058,9 +1058,9 @@ function markFacts(html) {
 function renderNewsMarkdown(text) {
   const sections = { intro: [], tw: [], us: [], jp: [], tail: [] };
   const marketHeaders = {
-    tw: "🇹🇼 台股｜6 則精選",
-    us: "🇺🇸 美股｜6 則精選",
-    jp: "🇯🇵 日股｜6 則精選",
+    tw: "🇹🇼 台股｜10 則精選",
+    us: "🇺🇸 美股｜10 則精選",
+    jp: "🇯🇵 日股｜10 則精選",
   };
   let current = "intro", sawMarket = false;
   String(text || "").replace(/\r\n?/g, "\n").split("\n").forEach((line) => {
@@ -1075,7 +1075,7 @@ function renderNewsMarkdown(text) {
   });
   const inline = (value) => esc(value).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   // 只在條列（標題／事件／關鍵數據／影響／關注）上標記，標題列不標——
-  // 「6 則精選」的 6 亮起來只是噪音，那不是讀者要找的數字。
+  // 「10 則精選」的 10 亮起來只是噪音，那不是讀者要找的數字。
   const marked = (value) => markFacts(inline(value));
   const toHtml = (lines) => lines.map((line) => {
     if (/^###\s+/.test(line)) return `<h3 class="news-md-title">${inline(line.replace(/^###\s+/, ""))}</h3>`;
@@ -1116,7 +1116,7 @@ function renderNews(data) {
   summary.classList.toggle("md", !!data.summary);
   if (data.summary) summary.innerHTML = renderNewsMarkdown(data.summary);
   ["tw", "us", "jp"].forEach((market) => {
-    $("news-" + market).innerHTML = renderNewsRows((data.markets && data.markets[market] || []).slice(0, 6));
+    $("news-" + market).innerHTML = renderNewsRows((data.markets && data.markets[market] || []).slice(0, 10));
   });
 }
 

@@ -157,3 +157,43 @@ def test_compute_oi_positions():
     assert out["tx_foreign_oi"] == 9999
     # 散戶小台淨未平倉（口）≈ -(三大法人小台淨額) = -600
     assert out["retail_oi_mtx"] == -600
+
+
+def test_parse_tx_night_price_picks_the_after_hours_row_and_reports_its_date():
+    """台指期夜盤（盤後）近月報價。
+
+    實測期交所 Q_FUT：**每個月份有兩列**，用 `TradingSession` 區分「一般」與「盤後」，
+    盤後列的 OpenInterest 是 '-'（既有 parse_tx_price 正是靠這點排除它）。
+
+    **一定要把 `Date` 一起回傳**：實測 2026-09-06(六) 21:58 打這個端點，拿到的是
+    20260904(五) 的數字——端點回的是「最後一個交易時段」而非即時。不檢查日期就會在
+    週一早上把上週五的夜盤當成當下（同 pick_close_for 那條「不可拿別天的收盤冒充今天」）。
+    """
+    from stocks_power_rich.sources.taifex import parse_tx_night_price
+
+    recs = [
+        {"Contract": "TX", "ContractMonth(Week)": "202609", "TradingSession": "一般",
+         "Date": "20260904", "Last": "46704", "Change": "885", "OpenInterest": "104112"},
+        {"Contract": "TX", "ContractMonth(Week)": "202609", "TradingSession": "盤後",
+         "Date": "20260904", "Last": "46487", "Change": "668", "OpenInterest": "-"},
+        {"Contract": "TX", "ContractMonth(Week)": "202610", "TradingSession": "盤後",
+         "Date": "20260904", "Last": "46650", "Change": "638", "OpenInterest": "-"},
+        # 週契約不得入選（同 parse_tx_price 的既有規則）
+        {"Contract": "TX", "ContractMonth(Week)": "202609W2", "TradingSession": "盤後",
+         "Date": "20260904", "Last": "99999", "Change": "1", "OpenInterest": "-"},
+    ]
+    out = parse_tx_night_price(recs)
+    assert out["tx_night_price"] == 46487.0     # 近月（最小月份）的盤後列
+    assert out["tx_night_chg"] == 668.0
+    assert out["tx_night_date"] == "2026-09-04"  # 正規化成 ISO，供呼叫端比對交易日
+
+
+def test_parse_tx_night_price_returns_none_when_no_after_hours_row():
+    """沒有盤後列（例如尚未開盤）就回 None——不可退回用一般盤的數字冒充夜盤。"""
+    from stocks_power_rich.sources.taifex import parse_tx_night_price
+
+    out = parse_tx_night_price([
+        {"Contract": "TX", "ContractMonth(Week)": "202609", "TradingSession": "一般",
+         "Date": "20260904", "Last": "46704", "Change": "885", "OpenInterest": "104112"},
+    ])
+    assert out == {"tx_night_price": None, "tx_night_chg": None, "tx_night_date": None}

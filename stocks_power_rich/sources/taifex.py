@@ -162,6 +162,38 @@ def parse_large_traders(records: list, contract_kw: str = "臺股期貨", month:
     }
 
 
+def parse_tx_night_price(fut_records: list, contract: str = "TX") -> dict:
+    """近月台指期**夜盤（盤後）**報價。與 parse_tx_price 是同一份來源的另一半。
+
+    期交所 Q_FUT 每個月份回**兩列**，用 `TradingSession` 區分「一般」與「盤後」；盤後列的
+    OpenInterest 是 '-'（parse_tx_price 正是靠這點把它排除掉）。這裡反過來只取盤後列。
+
+    **`tx_night_date` 一定要一起回傳。** 實測 2026-09-06(六) 21:58 打這個端點，拿到的是
+    20260904(五) 的數字——端點給的是「最後一個交易時段」而非即時。呼叫端必須拿這個日期
+    比對預期的交易日，否則會在週一早上把上週五的夜盤當成當下（同 pick_close_for
+    「不可拿別天的收盤冒充今天」）。沒有盤後列就整組回 None，**不可退回用一般盤冒充夜盤**。
+    """
+    rows = [
+        r for r in fut_records
+        if r.get("Contract") == contract
+        and str(r.get("TradingSession", "")).strip() == "盤後"
+        and "W" not in str(r.get("ContractMonth(Week)", ""))
+    ]
+    if not rows:
+        return {"tx_night_price": None, "tx_night_chg": None, "tx_night_date": None}
+    rows.sort(key=lambda r: str(r.get("ContractMonth(Week)", "")))
+    near = rows[0]
+    raw = str(near.get("Date", "")).strip()
+    iso = f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}" if len(raw) == 8 and raw.isdigit() else None
+    return {"tx_night_price": _f(near.get("Last")),
+            "tx_night_chg": _f(near.get("Change")),
+            "tx_night_date": iso}
+
+
+def fetch_tx_night_quote() -> dict:
+    return parse_tx_night_price(_get(Q_FUT))
+
+
 def fetch_put_call_ratio() -> dict:
     return parse_put_call_ratio(_get(Q_PCR))
 

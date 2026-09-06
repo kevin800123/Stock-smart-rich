@@ -239,11 +239,17 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             # 預設 schedule_time 也是 21:00（daily_update），兩個 job 排在同一分鐘
             # 雖不是致命錯誤（各自開自己的 sqlite3 連線），但同秒觸發純屬巧合式的資源
             # 競爭，能在排程時就避開，不必等「觀察到延遲」再事後搬。
-            for hh, mm, slot in ((7, 0, "morning"), (12, 0, "midday"),
-                                 (17, 0, "afternoon"), (21, 10, "evening")):
+            # 平日四場、週末兩場（使用者規格）：07:00 盤前與 17:00 收盤在沒有開盤的日子
+            # 沒有意義，週末只留 12:00 與 21:10。原本四個 job 都沒設 day_of_week，
+            # 等於**每天都跑**，週末的盤前/收盤快訊其實是在報上一個交易日的舊事。
+            for hh, mm, slot, dow in ((7, 0, "morning", "mon-fri"),
+                                      (12, 0, "midday", None),
+                                      (17, 0, "afternoon", "mon-fri"),
+                                      (21, 10, "evening", None)):
+                kw = {"day_of_week": dow} if dow else {}
                 app.state.scheduler.add_job(
                     news_job(slot), "cron", hour=hh, minute=mm,
-                    id=f"news_{slot}", replace_existing=True)
+                    id=f"news_{slot}", replace_existing=True, **kw)
         if cfg.line_token:
             app.state.scheduler.add_job(
                 intraday_watch_job, "cron", day_of_week="mon-fri",

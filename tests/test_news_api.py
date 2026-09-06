@@ -45,11 +45,30 @@ def test_news_endpoint_caches_enabled_summary_and_hides_telegram_secrets(tmp_pat
     assert "secret" not in str(settings)
 
 
-def test_all_telegram_slots_request_six_items_per_market():
+def test_all_telegram_slots_request_ten_items_per_market():
+    """四個時段一律每市場 10 則（2026-09 由 6 調整為 10，使用者要求）。
+
+    則數在 gemini.py 的 prompt 與這裡各有一份，改一邊不改另一邊會讓模型輸出與推播
+    計畫對不上。**市場切分本身不依賴則數**（前端比對旗標/名稱、後端只看 `####`），
+    所以則數變動不會再像 6 那次一樣連帶弄壞卡片切分。
+    """
     from stocks_power_rich.api.news import _PUSH_PLAN
 
     for _, (_, plan) in _PUSH_PLAN.items():
-        assert dict(plan) == {"tw": 6, "jp": 6, "us": 6}
+        assert dict(plan) == {"tw": 10, "jp": 10, "us": 10}
+
+
+def test_market_split_does_not_depend_on_the_item_count():
+    """市場標題的則數只是**顯示文字**，不可成為切分依據。
+
+    CLAUDE.md 曾記載「前端靠 `#### 🇹🇼 台股｜6 則精選` 字串比對，改則數會失效」——
+    程式後來已改成比對旗標/名稱，這條測試把那個穩健性釘住，讓 6→10→N 都不會再弄壞切分。
+    """
+    import re
+    js = (__import__("pathlib").Path(__file__).parents[1] / "web" / "app.js").read_text(encoding="utf-8")
+    # 前端切分只認 #### ＋ 旗標/名稱，沒有把則數寫進條件
+    assert 'line.includes("🇹🇼") || line.includes("台股")' in js
+    assert not re.search(r'includes\("[^"]*\d+\s*則', js)
 
 
 def test_news_test_endpoint_uses_telegram_wrapper(tmp_path, monkeypatch):
@@ -816,3 +835,43 @@ def test_stock_search_route_is_not_swallowed_by_the_code_route(tmp_path, monkeyp
     assert [r["code"] for r in body["items"]] == ["2317", "2330"]
     assert client.get("/api/stock/search?q=台積").json()["items"][0]["code"] == "2330"
     assert client.get("/api/stock/search?q=").json()["items"] == []
+
+
+# ---------- 台指期夜盤（只在平日 17:00／21:10 顯示） ----------
+
+def test_should_show_night_only_weekday_afternoon_and_evening():
+    """使用者規格：平日 17:00／21:10 顯示夜盤；**週末不顯示**。
+
+    週末刻意不顯示的理由是資料誠信：週五夜盤到週六 05:00 就結束，週末推播能拿到的
+    必然是「上一個交易日夜盤的收盤」，掛在週日的訊息上會被讀成當下——同本專案
+    「不可拿別天的收盤冒充今天」那條規矩。與其加註解釋，不如不顯示。
+    """
+    import datetime as dt
+    from stocks_power_rich.api.news import _should_show_night
+
+    wed, sat, sun = dt.date(2026, 9, 2), dt.date(2026, 9, 5), dt.date(2026, 9, 6)
+    assert _should_show_night("afternoon", wed) is True     # 平日 17:00
+    assert _should_show_night("evening", wed) is True       # 平日 21:10
+    assert _should_show_night("morning", wed) is False      # 平日 07:00 夜盤已收
+    assert _should_show_night("midday", wed) is False       # 平日 12:00 夜盤未開
+    for slot in ("midday", "evening", "afternoon", "morning"):
+        assert _should_show_night(slot, sat) is False       # 週末一律不顯示
+        assert _should_show_night(slot, sun) is False
+
+
+def test_snapshot_block_renders_night_only_with_a_matching_date():
+    """夜盤要顯示，但**日期對不上就不顯示**。
+
+    實測期交所 Q_FUT 在非交易時段回的是「最後一個交易時段」的數字（2026-09-06 21:58
+    打回來的是 09-04 的）。不比對日期就會把上一個交易日的夜盤當成當下。
+    """
+    from stocks_power_rich.api.news import render_snapshot_block
+
+    base = {"日期": "2026-09-04", "加權指數": 46551.0, "加權漲跌": 693.0, "台指期": 46704.0}
+    ok = render_snapshot_block({**base, "台指期夜盤": 46487.0, "台指期夜盤漲跌": 668.0,
+                                "台指期夜盤日期": "2026-09-04"}, "2026-09-04")
+    assert "夜盤" in ok and "46,487" in ok
+
+    stale = render_snapshot_block({**base, "台指期夜盤": 46487.0, "台指期夜盤漲跌": 668.0,
+                                   "台指期夜盤日期": "2026-09-03"}, "2026-09-04")
+    assert "夜盤" not in stale        # 日期對不上 → 整行不出現，不是顯示舊值
