@@ -70,6 +70,9 @@ def main() -> int:
     ap.add_argument("--user", default=os.getenv("SPR_BASIC_USER", ""))
     ap.add_argument("--password", default=os.getenv("SPR_BASIC_PASS", ""))
     ap.add_argument("--days", type=int, default=400, help="往回看幾個日曆天找缺口")
+    ap.add_argument("--force-days", type=int, default=0,
+                    help="強制重抓最近 N 個交易日（不管系統認為有沒有缺）。"
+                         "用於「日期有、但某些個股缺列或值是錯的」——匯入會覆蓋，所以直接重抓即可修好")
     ap.add_argument("--batch", type=int, default=5, help="每輪補幾個交易日（每日約 1 萬列，別設太大）")
     ap.add_argument("--throttle", type=float, default=0.4, help="每個日期之間的間隔秒（對官方溫柔）")
     ap.add_argument("--timeout", type=float, default=60)
@@ -102,8 +105,11 @@ def main() -> int:
         return None
 
     prev_remaining, stall = None, 0
+    before = ""          # 強制模式的往回分頁游標
+    forced_left = args.force_days
     for rnd in range(1, args.max_rounds + 1):
-        p = call("GET", f"/api/ohlc/pending?days={args.days}&limit={args.batch}")
+        p = call("GET", f"/api/ohlc/pending?days={args.days}&limit={args.batch}"
+                        f"&force_days={forced_left}&before={before}")
         if p is None:
             return 1
         dates, remaining = p.get("dates") or [], p.get("remaining", 0)
@@ -128,9 +134,20 @@ def main() -> int:
             if r is None:
                 return 1
             print(f"[{rnd}] 補 {list(payload)[-1]}~{list(payload)[0]}："
-                  f"抓 {got} 列 → 匯入 {r.get('imported')} 列，剩餘 {remaining - len(payload)}")
+                  f"抓 {got} 列 → 匯入 {r.get('imported')} 列"
+                  + (f"，強制模式尚餘 {max(0, forced_left - len(dates))} 天"
+                     if forced_left else f"，剩餘 {remaining - len(payload)}"))
         else:
             print(f"[{rnd}] 這批 {len(dates)} 天都沒有資料，跳過")
+
+        if forced_left:
+            # 強制模式沒有「remaining 會下降」可依靠（那些日期本來就都在），所以自己往回
+            # 分頁：游標移到這輪最舊的一天，並扣掉已重抓的天數，補滿要求的量就收工。
+            before = min(dates)
+            forced_left = max(0, forced_left - len(dates))
+            if forced_left == 0:
+                print(f"✓ 強制重抓完成（已回補到 {before}）"); return 0
+            continue
 
         # 進度停滯偵測：連續 3 輪 remaining 不動就收工（那些日期官方本來就沒有，
         # 再跑下去只是每輪重抓同一批——同 sync_report 的 plateau 判定）

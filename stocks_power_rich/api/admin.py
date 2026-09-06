@@ -402,7 +402,7 @@ def ohlc_backfill(days: int = 377, max_fetch: int = 60, reset: int = 0):
 # 解法：雲端只負責「回報缺哪幾天」與「收資料」，重活留在本機（見 scripts/sync_ohlc.py）。
 
 @router.get("/ohlc/pending")
-def ohlc_pending(days: int = 400, limit: int = 40):
+def ohlc_pending(days: int = 400, limit: int = 40, force_days: int = 0, before: str = ""):
     """回「market_daily 有、但 stock_ohlc 缺」的交易日（新的排前面），供本機腳本驅動。
 
     **交易日曆用 market_daily**：它每天都還在更新（停擺的是 stock_ohlc、不是排程），是這台
@@ -423,9 +423,51 @@ def ohlc_pending(days: int = 400, limit: int = 40):
     miss_otc = [d for d in cal if d not in have_otc]
     pending = sorted(set(miss_tw) | set(miss_otc), reverse=True)   # 新的先補，圖表最快變正常
     stored = have_tw | have_otc
-    return {"dates": pending[:max(1, min(limit, 200))], "remaining": len(pending),
+    # force_days＝強制重抓最近 N 個交易日的逃生門。上面的判定是**日期層級**（指標股有列就
+    # 算有），所以遇到「日期有、但某些個股缺列」時它會回 0、使用者完全沒辦法修（實測：
+    # pending 回報缺 0 天，而 3022 的 K 線停在四月）。匯入是 COALESCE 覆蓋，因此強制重抓
+    # 最近一段即可同時補缺列與蓋掉錯值，不必先查清根因。
+    forced = max(0, min(force_days, 400))
+    if forced:
+        # `before` 是往回分頁的游標：不帶＝從最新開始，帶了＝只回比它更舊的。沒有游標的話
+        # 每輪都會拿到同一批最新日期、原地打轉（這是改版時實際寫錯過的地方）。
+        window = [d for d in cal if not before or d < before][:forced]
+        return {"dates": window[:max(1, min(limit, 200))], "remaining": len(window),
+                "missing_twse": len(miss_tw), "missing_otc": len(miss_otc), "forced": True,
+                "calendar_days": len(cal), "latest_stored": max(stored) if stored else None}
+    return {"dates": pending[:max(1, min(limit, 200))], "remaining": len(pending), "forced": False,
             "missing_twse": len(miss_tw), "missing_otc": len(miss_otc),
             "calendar_days": len(cal), "latest_stored": max(stored) if stored else None}
+
+
+@router.get("/ohlc/coverage-for")
+def ohlc_coverage_for(codes: str = ""):
+    """診斷：指定代號在 stock_ohlc 的實際覆蓋——用來查「這一檔的 K 線為什麼停在某天」。
+
+    **為什麼需要這支**：/api/ohlc/pending 問的是「**這個日期**有沒有資料」（用指標股判定，
+    沿用 backfill_ohlc 的慣例），回答不了「**這一檔**有沒有資料」。實測踩到：pending 回報
+    「缺 0 個交易日、最新已存 2026-09-04」，而 3022 的 K 線卻停在 2026-04-06——兩者同時
+    成立，因為 2330 有那些日期的列、3022 沒有。
+
+    刻意分辨三種不同的「沒有」，它們的成因與解法都不同：
+      * rows / last_date        整列不存在（來源那天沒收到這一檔）
+      * null_close_rows         列在、但收盤是 NULL（畫不出 K 棒，圖上等於不存在）
+      * last_close_date         **有收盤價**的最後一天 ← 圖表實際看到的就是這個
+    再對照 latest_ohlc_date（全表最新日期）就知道這一檔落後多少。
+    """
+    c = conn()
+    want = [x.strip().split(".")[0] for x in (codes or "").split(",") if x.strip()][:50]
+    latest = c.execute("SELECT MAX(date) FROM stock_ohlc").fetchone()[0]
+    out = {}
+    for code in want:
+        r = c.execute(
+            "SELECT COUNT(*), MIN(date), MAX(date), "
+            "       SUM(CASE WHEN close IS NULL THEN 1 ELSE 0 END), "
+            "       MAX(CASE WHEN close IS NOT NULL THEN date END) "
+            "FROM stock_ohlc WHERE code=?", (code,)).fetchone()
+        out[code] = {"rows": r[0] or 0, "first_date": r[1], "last_date": r[2],
+                     "null_close_rows": r[3] or 0, "last_close_date": r[4]}
+    return {"codes": out, "latest_ohlc_date": latest}
 
 
 @router.post("/ohlc/import")

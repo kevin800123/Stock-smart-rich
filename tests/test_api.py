@@ -2944,3 +2944,63 @@ def test_ohlc_pending_and_import_roundtrip(tmp_path, monkeypatch):
     assert rows["2026-09-01"]["close"] == 99.0         # 壞值被官方值覆蓋
     assert rows["2026-09-02"]["volume"] == 500          # 量能一併帶進來（欄位別名為 volume）
     assert "2026-09-03" not in rows                    # 只有未知欄位 → 不建列
+
+
+def test_ohlc_coverage_for_distinguishes_missing_rows_from_null_prices(tmp_path, monkeypatch):
+    """診斷「這一檔為什麼沒資料」——日期層級的 pending 檢查回答不了這個問題。
+
+    實測踩到：/api/ohlc/pending 回報「缺 0 個交易日、最新已存 2026-09-04」（指標股 2330
+    在那些日期都有列），但 3022 的 K 線停在 2026-04-06。因為 pending 問的是「**這個日期**
+    有沒有資料」，而使用者的問題是「**這一檔**有沒有資料」。
+
+    這支要能分辨三種不同的「沒有」：整列不存在、列在但收盤是 NULL、以及有值但過期。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(create_app())
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    bulk_upsert_ohlc(c, "2026-09-01", {"2330": {"open": 1, "high": 2, "low": 1, "close": 1.5},
+                                       "3022": {"open": 1, "high": 2, "low": 1, "close": 60.0}})
+    # 09-02：2330 有價，3022 只有量、收盤是 NULL（列存在但畫不出 K 棒）
+    bulk_upsert_ohlc(c, "2026-09-02", {"2330": {"open": 1, "high": 2, "low": 1, "close": 1.6},
+                                       "3022": {"volume_lots": 500}})
+    # 09-03：3022 整列不存在
+    bulk_upsert_ohlc(c, "2026-09-03", {"2330": {"open": 1, "high": 2, "low": 1, "close": 1.7}})
+    c.commit()
+
+    d = client.get("/api/ohlc/coverage-for?codes=3022,2330").json()
+    a = d["codes"]["3022"]
+    assert a["rows"] == 2                    # 09-01、09-02（09-03 整列不存在）
+    assert a["last_date"] == "2026-09-02"    # 有列的最後一天
+    assert a["last_close_date"] == "2026-09-01"   # **有收盤價**的最後一天 ← 圖表看到的就是這個
+    assert a["null_close_rows"] == 1         # 列在、但收盤是 NULL
+    assert d["codes"]["2330"]["last_close_date"] == "2026-09-03"
+    assert d["latest_ohlc_date"] == "2026-09-03"   # 全表最新日期，用來對照個股落後多少
+
+
+def test_ohlc_pending_force_days_returns_recent_dates_regardless_of_coverage(tmp_path, monkeypatch):
+    """`force_days` ＝強制重抓最近 N 個交易日，不管系統認為那些日期「有沒有資料」。
+
+    需要這個逃生門的理由（實測）：pending 的判定是**日期層級**（指標股有列就算有），
+    所以「日期有、但某些個股缺列」時它回 0，使用者就卡住、沒有任何辦法修。匯入是
+    COALESCE 覆蓋，因此強制重抓最近一段時間即可同時補缺列與蓋掉錯值，**不必先知道根因**。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(create_app())
+    from stocks_power_rich.db import (get_connection, init_db, upsert_market_daily,
+                                      bulk_upsert_ohlc)
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    for d in ("2026-09-01", "2026-09-02", "2026-09-03"):
+        upsert_market_daily(c, {"date": d, "taiex": 20000.0})
+        bulk_upsert_ohlc(c, d, {"2330": {"open": 1, "high": 2, "low": 1, "close": 1.5},
+                                "8069": {"open": 1, "high": 2, "low": 1, "close": 1.5}})
+    c.commit()
+
+    assert client.get("/api/ohlc/pending").json()["dates"] == []      # 日期層級：全都有
+    f = client.get("/api/ohlc/pending?force_days=2").json()
+    assert f["dates"] == ["2026-09-03", "2026-09-02"]                 # 仍回最近 2 天供重抓
+    assert f["forced"] is True                                        # 讓呼叫端知道這不是「缺口」
