@@ -2899,3 +2899,48 @@ def test_settings_financials_freshness_flags_stale(tmp_path, monkeypatch):
     assert s["financials_latest_quarter"] == "2026Q1"
     assert s["financials_expected_quarter"] == "2026Q2"
     assert s["financials_stale"] is True
+
+
+def test_ohlc_pending_and_import_roundtrip(tmp_path, monkeypatch):
+    """本機抓→匯入 production 的 OHLC 版（繞過 Zeabur 打不動官方來源）。
+
+    實測證據：本機打 TWSE/TPEx 每個日期都拿得到（2026-09-04 有 1,083 檔），Zeabur 上卻
+    連續失敗到熔斷——同 mopsfin 完整報表那條「雲端打不動、本機打得動」的老路，解法沿用
+    同一套：雲端只回報缺哪幾天、本機抓好再 POST 上來。
+
+    交易日曆用 market_daily：它每天都還在更新（停擺的是 stock_ohlc 而非排程），是機器上
+    唯一可信的「哪幾天有開盤」，比自己列平日再猜國定假日可靠。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(create_app())
+    from stocks_power_rich.db import (get_connection, init_db, upsert_market_daily,
+                                      bulk_upsert_ohlc, get_ohlc_history)
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    for d in ("2026-09-01", "2026-09-02", "2026-09-03"):
+        upsert_market_daily(c, {"date": d, "taiex": 20000.0})
+    # 只有 09-01 有個股 OHLC（2330＝上市指標股、8069＝上櫃指標股）
+    bulk_upsert_ohlc(c, "2026-09-01", {"2330": {"open": 1, "high": 2, "low": 1, "close": 1.5},
+                                       "8069": {"open": 1, "high": 2, "low": 1, "close": 1.5}})
+    c.commit()
+
+    p = client.get("/api/ohlc/pending?days=400&limit=10").json()
+    assert p["dates"] == ["2026-09-03", "2026-09-02"]   # 新的先補；09-01 已有故不列
+    assert p["remaining"] == 2
+    assert p["latest_stored"] == "2026-09-01"
+
+    # 匯入：**非空值要能覆蓋既有值**——production 上有寫錯的價格（實測 3022 顯示 41.7，
+    # 官方同期約 60），這條路徑必須修得掉，不能只補空的。
+    r = client.post("/api/ohlc/import", json={"data": {
+        "2026-09-02": {"2330": {"open": 10, "high": 11, "low": 9, "close": 10.5,
+                                "volume_lots": 500, "amount_twd": 5e8}},
+        "2026-09-01": {"2330": {"close": 99.0}},      # 覆蓋既有的 1.5
+        "2026-09-03": {"2330": {"bogus": 1}},          # 未知欄位 → 整筆不寫
+    }}).json()
+    assert r["imported"] == 2                          # 兩個日期各 1 檔；bogus 那天不算
+
+    rows = {x["date"]: x for x in get_ohlc_history(get_connection(str(tmp_path / "t.sqlite")), "2330")}
+    assert rows["2026-09-01"]["close"] == 99.0         # 壞值被官方值覆蓋
+    assert rows["2026-09-02"]["volume"] == 500          # 量能一併帶進來（欄位別名為 volume）
+    assert "2026-09-03" not in rows                    # 只有未知欄位 → 不建列

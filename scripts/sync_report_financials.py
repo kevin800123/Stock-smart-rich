@@ -30,6 +30,15 @@ import httpx  # noqa: E402
 from stocks_power_rich import updater  # noqa: E402
 from stocks_power_rich.sources import financials  # noqa: E402
 
+# Windows 主控台預設是 cp950，編不出 ✓／✗／⚠ 這類符號——print 會直接拋 UnicodeEncodeError，
+# 把整支腳本**已經做完的工作**在最後一行炸掉（實測：資料都匯入成功了，卻以 traceback 收場，
+# 看起來像失敗）。errors="replace" 讓最壞情況只是顯示成 ?，不會中斷。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001 — 舊版 Python 或非 TextIO 就維持原樣
+    pass
+
 DEFAULT_BASE = "https://stock-power-rich.zeabur.app"
 
 

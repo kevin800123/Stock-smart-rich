@@ -20,7 +20,7 @@ from .helpers import (
 )
 from datetime import date
 from ..db import (get_setting, set_setting, get_snapshot_dates, get_tx_history, get_ai_cache,
-                  backup_db, get_connection, bulk_upsert_financials,
+                  backup_db, get_connection, bulk_upsert_financials, bulk_upsert_ohlc,
                   latest_financial_quarter, latest_revenue_month)
 from ..config import load_config
 from .. import updater, gemini, analysis, selfcheck, patterns
@@ -394,6 +394,68 @@ def ohlc_backfill(days: int = 377, max_fetch: int = 60, reset: int = 0):
                                      max_fetch=max(1, min(max_fetch, 120)))
     finally:
         _backfill_lock.release()
+
+# ===== 個股 OHLC：本機抓 → 匯入 production =====
+# 為什麼需要這條路徑：實測本機打 TWSE/TPEx 每個日期都拿得到（2026-09-04 有 1,083 檔、
+# 櫃買 861 檔），但 Zeabur 上 backfill_ohlc 連續失敗到兩個市場都熔斷、一天都補不進。
+# 這與 mopsfin 完整報表是同一類問題（雲端出站打不動、本機打得動），故沿用同一套已驗證的
+# 解法：雲端只負責「回報缺哪幾天」與「收資料」，重活留在本機（見 scripts/sync_ohlc.py）。
+
+@router.get("/ohlc/pending")
+def ohlc_pending(days: int = 400, limit: int = 40):
+    """回「market_daily 有、但 stock_ohlc 缺」的交易日（新的排前面），供本機腳本驅動。
+
+    **交易日曆用 market_daily**：它每天都還在更新（停擺的是 stock_ohlc、不是排程），是這台
+    機器上唯一可信的「哪幾天真的有開盤」——比自己列平日再去猜國定假日可靠，也不會像
+    backfill_ohlc 那樣把假日當成抓取失敗、累積成假的熔斷。
+
+    兩個市場各自用既有的指標股判定該日期有沒有資料（沿用 backfill_ohlc 的 _TW_BELL/_OTC_BELL
+    慣例），任一市場缺就列入待補。
+    """
+    from datetime import timedelta
+    c = conn()
+    cutoff = (date.today() - timedelta(days=max(5, min(days, 800)))).isoformat()
+    cal = [r[0] for r in c.execute(
+        "SELECT date FROM market_daily WHERE date>=? ORDER BY date DESC", (cutoff,)).fetchall()]
+    have_tw = updater._dates_with(c, updater._TW_BELL)
+    have_otc = updater._dates_with(c, updater._OTC_BELL)
+    miss_tw = [d for d in cal if d not in have_tw]
+    miss_otc = [d for d in cal if d not in have_otc]
+    pending = sorted(set(miss_tw) | set(miss_otc), reverse=True)   # 新的先補，圖表最快變正常
+    stored = have_tw | have_otc
+    return {"dates": pending[:max(1, min(limit, 200))], "remaining": len(pending),
+            "missing_twse": len(miss_tw), "missing_otc": len(miss_otc),
+            "calendar_days": len(cal), "latest_stored": max(stored) if stored else None}
+
+
+@router.post("/ohlc/import")
+def ohlc_import(payload: dict = Body(...)):
+    """收本機抓好的個股日 OHLC。body＝`{"data": {日期: {代號: {open,high,low,close,
+    volume_lots,amount_twd}}}}`。只收已知欄位，未知鍵整筆略過（這是開放的匯入端點，
+    不能讓任意欄位寫進資料表）。
+
+    bulk_upsert_ohlc 是 COALESCE(excluded, 既有)，所以**非空值會覆蓋既有值**——這正是需要
+    的：production 上存在寫錯的價格（實測 3022 圖上顯示 41.7，官方同期約 60），這條路徑
+    要修得掉，不能只補空的。回 `{"imported": 寫入列數, "dates": 收到幾個日期}`。
+    """
+    data = (payload or {}).get("data") or {}
+    allowed = {"open", "high", "low", "close", "volume_lots", "amount_twd"}
+    c = conn()
+    imported = 0
+    for ds, rows in (data.items() if isinstance(data, dict) else []):
+        if not isinstance(rows, dict):
+            continue
+        clean = {}
+        for code, vals in rows.items():
+            if isinstance(vals, dict):
+                keep = {k: v for k, v in vals.items() if k in allowed}
+                if keep:
+                    clean[str(code)] = keep
+        if clean:
+            imported += bulk_upsert_ohlc(c, ds, clean)
+    c.commit()
+    return {"imported": imported, "dates": len(data)}
+
 
 @router.post("/db/backup")
 def db_backup():
