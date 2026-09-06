@@ -51,6 +51,10 @@ View-switching SPA + ECharts (local `web/vendor/echarts.min.js`, no CDN — CSP 
 
 **兩個 ≤900px 的版面缺陷（2026-08）**：(1) **「展開組成」把 `.pulse-card` 從 352 撐成 745px**——`.overview-top` 是 `flex-wrap: wrap` 的直排容器，多行 flex 的 `align-items: stretch` 拉到的是「**該 flex line** 的 cross size」，而那條線的寬度由項目自己的 max-content 決定，不是容器寬度；裡面檢核表的說明欄 `nowrap` 長句 min-content 就 710px。**`min-width: 0` 治不了**（自動最小尺寸只作用在**主軸**，這裡撐開的是交叉軸），**也與 `flex` 值無關**（用改版前的值實測同樣 745px ＝既有缺陷非回歸）。修法是把 ≤900px 誤設成 `none` 的 `max-width` 改回 `100%`。(2) **市場儀表指針壓過讀數**：`center:["50%","68%"]`＋`offsetCenter:[0,"6%"]` 把讀數放在圓心正下方 4px，而起訖角 200°/−20° 兩端都指斜下方——幾何上的必然，**與螢幕寬度無關**。改成讀數移到弧線下方（`radius:66%`／`center:["50%","44%"]`／`offsetCenter:[0,"105%"]`／容器 176px，**這四個數字綁在一起，改一個要重算其他三個**）。驗證法：對 canvas `getImageData` 數「讀數方框內有幾個指針色的像素」，新幾何 7 個值全是 0，**且用舊幾何跑同一支檢查會得到 639~758**——證明這個檢查不是恆真。
 
+**兩張 K 線圖走同一套系統（2026-09）**：個股圖與杯柄圖都是「價格 59%／量能 13%」兩窗格，**日期標籤只出現在最底部那個窗格**（價格窗格的日期會與量能 y 軸刻度撞在一起，實測「2,800」與日期同一行）。量能單位一律**張**。杯柄圖的預設視窗由 `left_date` 的 index 推算（往前留 12% 前導、夾在 0~55%），不可寫死百分比——左緣落在畫面外就等於這張圖的唯一任務失效。左右緣是小圓錨點不是圖釘；**右緣點與壓力線起點同座標，兩個標籤必須往相反方向推開**（窄畫面下壓力線變短、中點標籤會貼上來，桌機看不出來）。`drawCupChart` 的 `setOption` 後**必須 `resize()`**（進頁才畫，正好踩 echarts 凍尺寸）。
+
+**個股 note 要說出「資料到哪一天、有沒有洞」**：category 軸按索引排列不按日期，缺口兩端會被畫成連續的，同時產生「日期沒更新」與「價格斷崖」兩個假象；>14 天才算缺口（週末與農曆年連假屬正常）。
+
 **Layout quirk**: `.view` is `display: flex; flex-direction: column;` so content-heavy pages (e.g., trading journal with 未平倉+已平倉 tables) can be compressed by flex-shrink. **Solution**: `.table-wrap` has `flex-shrink: 0` by default; `.table-wrap.fill` overrides to `flex-shrink: 1; flex: 1 1 0; min-height: 0` for tables that should occupy remaining space. Add `flex-shrink: 0` to any new table that must maintain readable height regardless of page overflow.
 
 ### Other backend pieces
@@ -76,8 +80,27 @@ View-switching SPA + ECharts (local `web/vendor/echarts.min.js`, no CDN — CSP 
 - **TDCC (集保)**: opendata `getOD.ashx?id=1-5` returns **the current week only** (trend accumulates weekly via `updater._accumulate_custody`, new-week-only). Requires `verify=False` (their cert lacks a Subject Key Identifier). Stock codes are **space-padded to 6 chars** — `.strip()`.
 - **TPEx (櫃買)**: `dailyTrade` by date; fields are parsed **by fixed column position** (the field labels 買進/賣出/買賣超股數 repeat and can't disambiguate groups).
 - **yfinance**: flaky / rate-limited from datacenter IPs → `kline._history` retries; the index K-line falls back to TWSE `MI_5MINS_HIST` OHLC; `.TW`→`.TWO` fallback covers OTC; `intl.fetch_intl_indices` falls back to the direct Yahoo v8 chart API (no cookie/crumb handshake — the part that fails on datacenter IPs; Stooq CSV endpoints are dead, 404).
+- **`kline._sanitize_series` 的跳動門檻會連鎖丟掉整條尾巴（2026-09 修）**：被拒時 `last` 不更新，所以一根壞值會讓後面**每一根**都相對它跳太多而被拒。實測 3022：41.7 那根相對前一根只跌 30%（低於 35% 門檻因而**被接受**），之後 5 個月的真實資料（~60→95.9）全數丟棄，圖表停在 41.7、停在四月，看起來像「資料沒更新」——**但 DB 是完整的**（`/api/ohlc/coverage-for` 顯示 643 列、末日 09-04、零空收盤）。兩道護欄缺一不可：`just_rejected`（拒絕過一根後下一根不套門檻）＋ `_adjacent`（>5 天視為有洞，跨洞不套「單日」門檻）。**刻意不收緊門檻**：除權息的合理大跌可能 >10%，收緊會誤刪真實走勢（測試已鎖住這個取捨）。教訓：**「畫面沒資料」先分清是資料層還是顯示層**，別急著回補。
+- **個股 K 線的量單位一律「張」**：yfinance 的 `Volume` 是**股數**、`stock_ohlc.volume_lots` 是**張**，差 1000 倍；在 `fetch_kline` 除 1000（只動個股路徑，指數另有口徑、有測試鎖住）。不統一＝「本機正常、雲端差 1000 倍」。另：`get_ohlc_history` 一定要 SELECT `volume_lots`——量能窗格其實早就做好了，只是沒帶資料出來，柱全 0 看起來像「功能沒做」。
 - **備援不能是「全有全無」——主來源可用 ≠ 主來源是最新的。** `/api/index/kline` 原本只在 yfinance 回不到 5 根時才改用官方 TWSE，於是 yfinance 只是**落後一天**時完全沒有補救：實測 2026-08-06，`^TWII` 只到 08-04 而 TWSE `MI_5MINS_HIST` 已有 08-05。症狀是「大盤×籌碼對照」的籌碼窗格有最新一天、K 線那格卻是 `'-'` 佔位——而那天通常正是使用者最想看的一天。`kline.merge_tail(base, rows, interval)` 只補**嚴格比主來源最後一天更新**的列（既有日期不覆蓋也不重複，缺收盤價的列跳過，沒得補就原樣回傳同一個物件、不重跑波浪），官方那份走既有的 `idxohlc:{YYYYMMDD}` 逐日快取所以一天最多一次網路呼叫。**加任何「主來源 → 備援」的降級路徑時都要問：主來源只是落後而不是掛掉時，會發生什麼事？**
 - **國際指數的「歷史」與「今天」是兩條路**：歷史走 yfinance（Zeabur 被 429 擋，只剩 gold/jpy/twd/btc 靠它）＋FRED（`vix`/`n225`，**慢一天**）＋**Nasdaq 公開 API（`sox`，2026-08 換掉長期斷線的 yfinance 路徑，見 `sources/nasdaq.py`／`updater._backfill_intl_nasdaq`，免金鑰、不受 Yahoo 那個 IP 封鎖影響）**；kospi 沒有可靠免費歷史源，維持現狀。**當日那一格**走 `updater._backfill_intl_tv` → TradingView scanner 帶日期快照（sox/vix/n225/kospi）。scanner 的 `time` 是該根日 K 的**開盤**時間戳（實測 SOX 09:30 NY、NI225/KOSPI 09:00 當地），**「日期解得出來」不等於「那一場收完了」**——09:05 台北打回來的 NI225/KOSPI 就是進行中的盤中值。所以 `intl.TV_DATED` 每個代碼自帶場次收盤時刻、由 `session_closed()`（ZoneInfo 比較，自動處理夏令時間）＋30 分緩衝把關；`INTL_SAME_DAY` 只填 `D == S`，其餘填所有 `D > S` 的洞，全部只填 NULL 不覆蓋。亞股時段回 `filled: []` 是**正確**結果。**`_backfill_intl(conn, intl_tickers)` 在 `intl_tickers` 濾完後若剛好變空會炸 SQL 語法錯誤**（`cols` 空字串 → `SELECT date,  FROM ...`）——把 `sox` 也排除到「有頂替來源」清單後才踩到，現已在 `keys` 為空時直接回傳 `[]`。
+
+### 個股日線「本機抓→匯入雲端」與 Windows 雙擊工具（2026-09）
+
+**Zeabur 打不動官方 OHLC 來源**（第三次同型問題，前兩次 Yahoo／mopsfin report）：本機打 TWSE `MI_INDEX`／櫃買 `dailyQuotes` 每個日期都拿得到（09-04 上市 1,083 檔），雲端 `backfill_ohlc` 卻連續失敗到兩市場熔斷。解法沿用季報那套：`GET /api/ohlc/pending`（交易日曆取自 `market_daily`，它仍每天更新，所以不會把國定假日誤判成失敗）＋ `POST /api/ohlc/import`（COALESCE，**非空值覆蓋**，錯值也修得掉）＋ `scripts/sync_ohlc.py` / `sync_ohlc.bat`。
+
+**`pending` 的判定是「日期層級」（指標股有列就算有），回答不了「這一檔有沒有」** ——實測回報「缺 0 天、最新 09-04」而某檔仍停在四月，使用者完全卡住。兩個補救：`GET /api/ohlc/coverage-for?codes=…` 分辨「整列不存在／列在但收盤 NULL／有值但過期」（`last_close_date` 才是圖表看到的那天）；`force_days`＋`before` 游標強制重抓最近 N 個交易日（**沒有游標會每輪拿到同一批最新日期原地打轉**）。`backfill_ohlc` 仍有兩個已知缺陷：終止條件只看已存交易日**數量**不看**連續性**（有洞照樣 `done: true`），熔斷只丟 `exhausted: true` 不說原因。**`stock_ohlc` 稀疏是常態**（643 列橫跨 9 年＝不到三成日子有列），判斷「夠不夠」要看 `rows` 相對日期範圍。
+
+**Windows 雙擊工具四個坑**（邏輯都對，只是在使用者環境跑不起來）：(1) **cp950 主控台印 `✓` 會 `UnicodeEncodeError` 炸掉整支腳本**——資料都匯入成功了卻以 traceback 收場，所有 sync 腳本加 `sys.stdout.reconfigure(errors="replace")`。(2) **`Get-Credential` 彈窗會被主控台蓋住**，使用者只看到一片空白，三支 `*_click.ps1` 全改 `Read-Host`。(3) **`New-Object Type($u,$p)` 會被誤解析**、userName 傳不進去，**必須 `-ArgumentList`**。(4) **不要用 Win+R 一行指令**（踩兩次：型別名稱被截、`--user` 拿不到值）——要帶參數就做成 `.bat`。驗證法：把目標 py 暫時換成印 `sys.argv` 的版本、跑**真正的** `.ps1`（跑完還原，`git diff` 應為空）；`Read-Host` 不吃管線輸入，要測互動路徑得用 `-Command` 先定義 `function global:Read-Host` 樁。
+
+### 自算選股第二輪與杯柄流動性（2026-09）
+
+- **自算 picks 進 `signal_ledger`**（`ledger.record_self_screen_signals`）：前瞻報酬不能事後回補，晚接一天歷史就永遠少一天。`signal_date` 用最新 CSV 日（與 `filtered_picks` 同一天才好對照）；**進場價取訊號日當天收盤，不可用最新收盤**（否則等於未來價、報酬灌水）。只掛每日排程，不進請求路徑。
+- **日期基準**：籌碼選股用 `chip_snapshot`（手動上傳）、自算選股原本用 `market_daily`（每日自動），實測差 09-04 vs 08-28。`/picks/self-screen` 加 `date` 並**預設最新 CSV 日**。**兩個並排比較的頁面，日期基準必須來自同一張表。**
+- **融資3日是參考欄、不進計分**（使用者決定，避免動搖木質 0–19 刻度與門檻）：`db.margin_3d_map`＝餘額(最新)−(3 交易日前)，**餘額是存量只能相減**（抄 `institutional_3d_map` 的 SUM 會大一個量級）。**刻意不著色**——融資減少是籌碼清洗不是下跌。
+- **7 條件勾選交叉檢視**：`analysis.SCREEN_CONDITIONS` 是唯一權威清單、由端點送前端渲染；`screen_pass(conds=None)` ＝全部套用＝原本行為；**狀態不持久化**（每次回到預設，避免隔天忘了自己關過某一關）。
+- **杯柄流動性濾網**：`patterns.avg_recent`／`filter_liquid`，門檻預設日均額 3,000 萬、設定頁可調，**必須進 `cuphandle:` 快取鍵**（否則調門檻拿到舊結果）。**`filter_liquid` 要 fail-open**：整批都量不到流動性時不過濾——預設開啟時 4 個既有測試被刷光，正暴露「production 缺量能會安靜清空畫面」。建議部位吃 `POSITION_ADV_CAP_PCT`(5%) 日均量上限（實測大華 44→6 張）。「量太少」與「線很奇怪」是**同一個根因**：冷門股的連續同價＋極端報價讓均線出現方塊平台。
+- **版圖只畫前 50 大子產業**（`SS_MAP_LIMIT`）＋標「顯示前 50 / 共 N」；版塊的「大戶買 N 檔」要帶限定詞——同畫面兩個不同定義的同名數字必須各自說清楚。
 
 ## Config (`config.py`, via .env / env vars)
 `GEMINI_API_KEY`, `SPR_SCHEDULE_TIME` (default 21:00), `SPR_DB_PATH`, `SPR_DATA_DIR` (Date/), `SPR_ENABLE_SCHEDULER`, `TZ`. On any non-Taipei host, `TZ=Asia/Taipei` is mandatory — the data-date/schedule logic uses naive local time.
