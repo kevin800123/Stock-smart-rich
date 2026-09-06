@@ -20,6 +20,9 @@ def _fmt_dt(d, interval: str) -> str:
 _MAX_DOD_JUMP = 0.35   # 台股個股單日漲跌幅上限 ±10%，日對日收盤跳動 >35% 必為壞值（0/半值/資料錯）
 
 
+SHARES_PER_LOT = 1000   # 台股一張＝1000 股（個股 K 線量能單位統一用「張」）
+
+
 def _sanitize_series(dates: list, candles: list, volumes: list) -> tuple:
     """丟棄明顯壞列，避免 MA/波浪被污染：任一 OHLC 非正、high<low、或收盤對「前一筆有效
     收盤」跳動 >35%（yfinance/官方源偶發 0 或半值時會出現）。回傳過濾後的三個並列陣列。"""
@@ -88,7 +91,13 @@ def fetch_kline(code: str, period: str = "1y", interval: str = "1d") -> dict:
             code, df = alt, alt_df
     if df is None or df.empty:
         return {"code": code, "dates": [], "candles": [], "volumes": [], "waves": {}}
-    return {"code": code, **_df_to_candles(df, interval)}
+    out = _df_to_candles(df, interval)
+    # **個股 K 線的量統一成「張」**：yfinance 的 Volume 是股數，後備來源 stock_ohlc 的
+    # volume_lots 是張。同一張圖在兩個環境會取到不同來源（雲端 yfinance 被擋一律走後備），
+    # 不統一就會變成「本機正常、雲端數字差 1000 倍」這種只在部署後才發現的錯。
+    # 只在這裡除——_df_to_candles 是與指數共用的，指數量能另有口徑，跟著除會改掉既有刻度。
+    out["volumes"] = [v / SHARES_PER_LOT for v in out.get("volumes") or []]
+    return {"code": code, **out}
 
 
 def fetch_index_kline(symbol: str, interval: str = "1d") -> dict:

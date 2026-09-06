@@ -643,16 +643,34 @@ def ohlc_dates(conn: sqlite3.Connection) -> list[str]:
 
 
 def get_all_ohlc(conn: sqlite3.Connection, min_bars: int = 1) -> dict:
-    """{code: {dates[], highs[], lows[], closes[]}}（各檔由舊到新）；不足 min_bars 者略過。"""
+    """{code: {dates[], highs[], lows[], closes[], volumes[], amounts[]}}（各檔由舊到新）；
+    不足 min_bars 者略過。
+
+    volumes（張）／amounts（元）是**流動性濾網**用的：杯柄型態掃描原本只拿得到 H/L/C，
+    等於結構上看不到成交量，冷門股才會一路被選進來（線畫出來也很怪——連續多日同價 ＋
+    偶發極端報價，會讓均線出現方塊狀平台）。
+
+    量能欄是 lazy migration 後才加的，早期回補的列沒有值，所以**缺量不丟整根 bar**：
+    型態只需要 H/L/C，若因為缺量就跳過整根，反而把型態本身算壞。缺的位置放 None，
+    與價格序列等長對齊（None 與 0 不可混為一談——「沒資料」不是「零成交」）。
+    """
     out: dict[str, dict] = {}
-    for code, d, h, l, c in conn.execute(
-            "SELECT code, date, high, low, close FROM stock_ohlc ORDER BY code, date"):
+
+    def _ok(v):
+        return v is not None and v == v and math.isfinite(v)
+
+    for code, d, h, l, c, vol, amt in conn.execute(
+            "SELECT code, date, high, low, close, volume_lots, amount_twd "
+            "FROM stock_ohlc ORDER BY code, date"):
         # SQLite 會把部分 NaN 寫成 NULL；其他來源也可能留下 NaN/Inf。型態計算要求
         # H/L/C 同列完整，所以整根壞 bar 略過，並保持三條價格序列與日期對齊。
         if any(v is None or v != v or not math.isfinite(v) for v in (h, l, c)):
             continue
-        s = out.setdefault(code, {"dates": [], "highs": [], "lows": [], "closes": []})
+        s = out.setdefault(code, {"dates": [], "highs": [], "lows": [], "closes": [],
+                                  "volumes": [], "amounts": []})
         s["dates"].append(d); s["highs"].append(h); s["lows"].append(l); s["closes"].append(c)
+        s["volumes"].append(vol if _ok(vol) else None)
+        s["amounts"].append(amt if _ok(amt) else None)
     return {code: s for code, s in out.items() if len(s["dates"]) >= min_bars}
 
 
@@ -697,10 +715,17 @@ def weekly_amounts(conn: sqlite3.Connection, ref_date: str) -> dict:
 
 
 def get_ohlc_history(conn: sqlite3.Connection, code: str) -> list[dict]:
-    return [{"date": d, "open": o, "high": h, "low": l, "close": c}
-            for d, o, h, l, c in conn.execute(
-                "SELECT date, open, high, low, close FROM stock_ohlc WHERE code=? ORDER BY date",
-                (code,))]
+    """個股歷史 OHLC（含成交量，單位**張**）。
+
+    `volume` 一定要一起帶出來：雲端 yfinance 被擋，個股 K 線一律走這條後備，而
+    kline.ohlc_candles 讀的是 r["volume"]——原本這裡沒 SELECT volume_lots，於是量能柱
+    永遠是 0，圖上那個成交量窗格看起來像一片空白（功能其實早就做好，只差資料沒接上）。
+    缺量給 None 而非 0：「沒抓到」與「零成交」是兩件不同的事。
+    """
+    return [{"date": d, "open": o, "high": h, "low": l, "close": c, "volume": v}
+            for d, o, h, l, c, v in conn.execute(
+                "SELECT date, open, high, low, close, volume_lots FROM stock_ohlc "
+                "WHERE code=? ORDER BY date", (code,))]
 
 
 def get_custody_trend(conn: sqlite3.Connection, code: str) -> list[dict]:

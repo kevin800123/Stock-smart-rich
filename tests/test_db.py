@@ -423,3 +423,50 @@ def test_bulk_upsert_financials_stores_by_quarter_and_reads_series(tmp_path):
     bulk_upsert_financials(conn, "debt_ratio", {"2330": {"2026Q1": 24.5}})
     assert get_financial_series(conn, "2330", "debt_ratio") == [("2026Q1", 24.5)]
     assert get_financial_series(conn, "2330", "roe") == [("2026Q1", 10.10), ("2025Q4", 9.63)]
+
+
+def test_get_all_ohlc_exposes_volume_and_amount_aligned_with_prices(tmp_path):
+    """杯柄篩選要做流動性濾網，就得看得到量——get_all_ohlc 原本只回 H/L/C，
+    等於整個型態掃描**結構上看不到成交量**，冷門股才會一路選進來。
+
+    量能欄是 lazy migration 後加的，早期回補的列沒有值，所以：
+    **缺量不可丟掉整根 bar**（型態只需要 H/L/C，丟了會把型態本身算壞），
+    改成該位置放 None、與價格序列等長對齊。
+    """
+    from stocks_power_rich.db import bulk_upsert_ohlc, get_all_ohlc
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    # 有量能的一天
+    bulk_upsert_ohlc(conn, "2026-09-01", {
+        "2330": {"open": 1, "high": 2, "low": 1, "close": 1.5,
+                 "volume_lots": 30000, "amount_twd": 4.5e9}})
+    # 只有價格、沒有量能（模擬早期回補、量能欄還不存在時寫下的列）
+    bulk_upsert_ohlc(conn, "2026-09-02", {
+        "2330": {"open": 1, "high": 2, "low": 1, "close": 1.6}})
+    conn.commit()
+
+    s = get_all_ohlc(conn)["2330"]
+    assert s["closes"] == [1.5, 1.6]
+    assert len(s["volumes"]) == len(s["dates"]) == 2   # 與價格等長，缺量那根仍在
+    assert s["volumes"] == [30000, None]
+    assert s["amounts"] == [4.5e9, None]
+
+
+def test_get_ohlc_history_returns_volume_lots_for_the_chart(tmp_path):
+    """個股 K 線的成交量窗格在雲端一定走 stock_ohlc 後備（yfinance 被擋），
+    但 get_ohlc_history 原本沒有 SELECT volume_lots → ohlc_candles 讀到的 volume 恆為 None
+    → 量能柱全部是 0，窗格看起來像空白。這是「功能其實已經做好、只差資料沒接上」的漏。
+    """
+    from stocks_power_rich.db import bulk_upsert_ohlc, get_ohlc_history
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    bulk_upsert_ohlc(conn, "2026-09-01", {
+        "3022": {"open": 62, "high": 63, "low": 61, "close": 62.5, "volume_lots": 1234}})
+    bulk_upsert_ohlc(conn, "2026-09-02", {
+        "3022": {"open": 62, "high": 63, "low": 61, "close": 62.0}})   # 缺量
+    conn.commit()
+
+    rows = get_ohlc_history(conn, "3022")
+    assert [r["volume"] for r in rows] == [1234, None]   # 張；缺量給 None 不假造 0

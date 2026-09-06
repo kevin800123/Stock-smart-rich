@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260817-ui40" />
+  <link rel="stylesheet" href="styles.css?v=20260817-ui42" />
   <script src="/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -672,6 +672,7 @@
           <div class="set-row"><label>Telegram 財經新聞</label><span id="set-telegram" class="set-badge"></span><button id="btn-telegram-test" class="file-label">📱 測試推播</button><span id="set-telegram-status" class="muted small"></span></div>
           <div class="set-row"><label>盤中突破哨兵</label><label class="wave-toggle" style="margin:0"><input type="checkbox" id="set-picks-only" /> 只警示「同時符合籌碼/基本選股」的突破</label><span class="muted small">（未勾＝全部杯柄股都盯，交集股標 ⭐）</span></div>
           <div class="set-row"><label>單筆可容忍虧損（元）</label><input type="number" id="set-loss-tol" class="stock-input" min="0" step="1000" placeholder="例如 20000" /><span class="muted small">（杯柄頁自動算建議部位＝此金額 ÷ 每股風險；建議填總資金的 1–2%，清空＝不啟用）</span></div>
+          <div class="set-row"><label>杯柄流動性門檻</label>日均成交額 ≥ <input type="number" id="set-cup-liq" class="mini-input" min="0" step="0.1" /> 億元<span class="muted small">（濾掉買不到/賣不掉的冷門股；它們的價格序列也是均線出現方塊平台的原因。填 0＝關閉濾網，清空＝回預設）</span></div>
           <div class="set-row"><label>自算選股門檻</label>木率 &gt; <input type="number" id="set-screen-mv" class="mini-input" min="0" step="1" /> ・ 木質 &gt; <input type="number" id="set-screen-ms" class="mini-input" min="0" step="1" /><span class="muted small">（「自算籌碼/基本選股」的入選門檻；預設 木率50、木質9）</span></div>
           <div class="set-row"><button id="btn-save-settings" class="file-label">💾 儲存設定</button><span id="set-saved" class="muted"></span></div>
         </div>
@@ -691,6 +692,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260817-ui40"></script>
+  <script src="app.js?v=20260817-ui42"></script>
 </body>
 </html>

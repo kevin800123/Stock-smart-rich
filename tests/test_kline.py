@@ -16,7 +16,10 @@ def test_fetch_kline_echarts_shape(monkeypatch):
     assert out["dates"] == ["2026-06-12", "2026-06-13"]
     # ECharts candlestick 順序：[open, close, low, high]
     assert out["candles"][0] == [10.0, 11.0, 9.0, 12.0]
-    assert out["volumes"] == [100.0, 200.0]
+    # **個股 K 線的量一律是「張」**：yfinance 的 Volume 是股數，這裡 /1000 正規化，
+    # 才能與後備來源 stock_ohlc.volume_lots（本來就是張）同一個單位。不統一的話，
+    # 本機（yfinance 通）與雲端（yfinance 被擋、走 stock_ohlc）畫出來的量會差 1000 倍。
+    assert out["volumes"] == [0.1, 0.2]
 
 
 def test_fetch_kline_falls_back_to_two(monkeypatch):
@@ -172,3 +175,32 @@ def test_merge_tail_skips_rows_without_a_close():
     from stocks_power_rich.sources import kline
     base = {"dates": ["2026-08-04"], "candles": [[1.0, 2.0, 0.5, 2.5]], "volumes": [1.0], "waves": {}}
     assert kline.merge_tail(base, [{"date": "2026-08-05", "close": None}], "1d") is base
+
+
+def test_fetch_kline_volume_is_lots_not_shares(monkeypatch):
+    """個股 K 線量能的單位契約＝張。yfinance 給的是股數，必須 /1000。
+
+    這條契約存在的理由是「同一張圖在兩個環境會有兩個來源」：雲端 yfinance 被擋、
+    一律走 stock_ohlc（volume_lots，本來就是張），本機 yfinance 通則走 Volume（股）。
+    不統一就會變成「本機看起來正常、雲端數字差 1000 倍」那類只在部署後才發現的錯。
+    """
+    def fake_history(self, period="1y", interval="1d"):
+        idx = pd.to_datetime(["2026-06-12"])
+        return pd.DataFrame({"Open": [10], "High": [12], "Low": [9], "Close": [11],
+                             "Volume": [1_234_000]}, index=idx)
+
+    monkeypatch.setattr(kline.yf.Ticker, "history", fake_history)
+    out = kline.fetch_kline("2330.TW", period="1mo")
+    assert out["volumes"] == [1234.0]        # 1,234,000 股 ＝ 1,234 張
+
+
+def test_fetch_index_kline_volume_is_not_divided(monkeypatch):
+    """指數 K 線**不套**個股那條 /1000：大盤量能另有口徑，跟著除會默默改掉既有圖的刻度。"""
+    def fake_history(self, period="1y", interval="1d"):
+        idx = pd.to_datetime(["2026-06-12"])
+        return pd.DataFrame({"Open": [10], "High": [12], "Low": [9], "Close": [11],
+                             "Volume": [1_234_000]}, index=idx)
+
+    monkeypatch.setattr(kline.yf.Ticker, "history", fake_history)
+    out = kline.fetch_index_kline("taiex")
+    assert out["volumes"] == [1_234_000.0]

@@ -374,6 +374,22 @@ def _note_line_quota_exceeded(c) -> None:
     set_setting(c, "line_quota_month", datetime.now().strftime("%Y-%m"))
 
 
+def cup_min_turnover_setting(c) -> float:
+    """杯柄流動性門檻（日均成交額，元）的**單一權威解析**——設定頁與篩選端點共用同一支，
+    免得兩邊對「未設」「空字串」「0」的處理漂移。
+
+    未設／空字串 → patterns 的預設值；明確設 0 → 回 0（＝關閉濾網，filter_liquid 不過濾）；
+    壞值 → 退回預設（寧可照預設篩，也不要因為一個爛設定值就把濾網整個關掉）。
+    """
+    raw = get_setting(c, "cup_min_turnover")
+    if raw in (None, ""):
+        return float(patterns.CUP_MIN_TURNOVER_DEFAULT)
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return float(patterns.CUP_MIN_TURNOVER_DEFAULT)
+
+
 def cup_handle_screen_logic(c, min_r: float = patterns.MIN_R_DEFAULT):
     from ..db import ohlc_dates, get_all_ohlc
     ods = ohlc_dates(c)
@@ -381,7 +397,10 @@ def cup_handle_screen_logic(c, min_r: float = patterns.MIN_R_DEFAULT):
         return {"date": None, "count": 0, "stocks": [],
                 "note": "尚未回補個股歷史，請先執行 /api/ohlc/backfill"}
     latest = ods[-1]
-    key = f"cuphandle:{latest}:{len(ods)}:{min_r:g}"
+    min_turnover = cup_min_turnover_setting(c)
+    # **門檻必須進快取鍵**：否則調了門檻卻拿到上一次的結果，看起來像「設定沒生效」
+    # （同 news:v7 版號那條教訓——換了語意就要換鍵）。
+    key = f"cuphandle:{latest}:{len(ods)}:{min_r:g}:{min_turnover:g}"
     result = get_ai_cache(c, key)
     if result is None:
         data = get_all_ohlc(c, min_bars=patterns.LOOKBACK)
@@ -389,12 +408,19 @@ def cup_handle_screen_logic(c, min_r: float = patterns.MIN_R_DEFAULT):
         for code, s in data.items():
             s["name"] = names.get(code) or code
         matches = patterns.screen_cup_handle(data, min_r=min_r)
+        scanned = len(matches)
+        matches, n_illiquid, n_no_vol = patterns.filter_liquid(matches, min_turnover)
         result = {"date": latest, "bars": len(ods), "count": len(matches),
-                  "min_r": min_r, "stocks": matches}
+                  "min_r": min_r, "stocks": matches,
+                  # 缺料不靜默：把「型態成立但被流動性刷掉」的檔數攤開來，
+                  # 否則量能覆蓋率不好時畫面會安靜地變少，看起來像程式壞了。
+                  "min_turnover": min_turnover, "matched_before_liquidity": scanned,
+                  "filtered_illiquid": n_illiquid, "filtered_no_volume": n_no_vol,
+                  "adv_cap_pct": patterns.POSITION_ADV_CAP_PCT}
         set_ai_cache(c, key, result)
         # 盤中哨兵/前瞻測試的訊號快照只在「預設嚴格度」時寫入——
         # 避免使用者在 UI 暫調寬鬆值污染警示與績效統計的訊號集
-        if min_r == patterns.MIN_R_DEFAULT:
+        if min_r == patterns.MIN_R_DEFAULT and min_turnover == patterns.CUP_MIN_TURNOVER_DEFAULT:
             sig_snapshot = []
             for m in matches:
                 o = c.execute("SELECT high, low, close FROM stock_ohlc WHERE code=? "

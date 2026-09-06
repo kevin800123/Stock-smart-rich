@@ -169,3 +169,92 @@ def test_backtest_cup_counts_expired_when_no_breakout():
     data = {"9999": {"name": "盤整股", "dates": dates, "highs": highs, "lows": lows, "closes": closes}}
     r = backtest.backtest_cup(data)
     assert r["trades_n"] == 0 and r["expired"] >= 1
+
+
+# ---------- 流動性濾網（杯柄選到冷門股的解法） ----------
+
+def test_avg_recent_ignores_missing_and_returns_none_when_all_missing():
+    """近 N 根的平均，None 略過。全部缺值回 None——「沒有量能資料」與「量能是 0」
+    是兩件不同的事，混為一談會把「查無資料」當成「零成交」而誤判。"""
+    from stocks_power_rich import patterns as p
+    assert p.avg_recent([1.0, 2.0, 3.0], days=3) == 2.0
+    assert p.avg_recent([100.0, 1.0, 2.0, 3.0], days=3) == 2.0     # 只看最後 3 根
+    assert p.avg_recent([1.0, None, 3.0], days=3) == 2.0           # None 略過、不當 0
+    assert p.avg_recent([None, None], days=3) is None
+    assert p.avg_recent([], days=3) is None
+
+
+def test_filter_liquid_separates_illiquid_from_missing_data():
+    """流動性濾網要把「量太少」與「查無量能資料」分開計數並回報。
+
+    缺料**不靜默**：若 production 的量能覆蓋率不好，畫面必須說得出「N 檔因無量能資料被排除」，
+    而不是安靜地變成 0 檔讓人以為程式壞了（同自算選股覆蓋列的既有作法）。
+    """
+    from stocks_power_rich import patterns as p
+    ms = [
+        {"code": "A", "avg_turnover": 5e8},    # 夠大
+        {"code": "B", "avg_turnover": 1e6},    # 太小
+        {"code": "C", "avg_turnover": None},   # 查無資料
+    ]
+    kept, n_illiquid, n_no_data = p.filter_liquid(ms, 3e7)
+    assert [m["code"] for m in kept] == ["A"]
+    assert (n_illiquid, n_no_data) == (1, 1)
+
+    # 門檻 None／0＝不過濾（向後相容：既有呼叫端行為完全不變）
+    for off in (None, 0):
+        kept, n_illiquid, n_no_data = p.filter_liquid(ms, off)
+        assert [m["code"] for m in kept] == ["A", "B", "C"]
+        assert (n_illiquid, n_no_data) == (0, 0)
+
+
+def test_screen_cup_handle_attaches_liquidity_metrics():
+    """screen_cup_handle 只負責『附上量能指標』，過濾交給 filter_liquid——
+    分開才能在 API 層算出「篩掉幾檔」的計數，也讓純函式保持單一職責。"""
+    from stocks_power_rich import patterns as p
+    n = p.LOOKBACK
+    highs = [10.0] * n; lows = [9.0] * n; closes = [9.5] * n
+    data = {"X": {"name": "測試", "dates": [f"d{i}" for i in range(n)],
+                  "highs": highs, "lows": lows, "closes": closes,
+                  "volumes": [None] * (n - 2) + [100.0, 200.0],
+                  "amounts": [None] * (n - 2) + [1e7, 3e7]}}
+    out = p.screen_cup_handle(data)
+    for m in out:                      # 這組平盤資料未必成型，成型才檢查欄位
+        assert m["avg_turnover"] == 2e7
+        assert m["avg_volume_lots"] == 150.0
+
+
+def test_cup_min_turnover_setting_resolves_unset_zero_and_garbage(tmp_path, monkeypatch):
+    """門檻解析只有一份權威版本（設定頁與篩選端點共用）：
+    未設/空字串→預設；明確 0→關閉濾網；壞值→退回預設（不因一個爛值就把濾網整個關掉）。"""
+    from stocks_power_rich.db import get_connection, init_db, set_setting
+    from stocks_power_rich.api.helpers import cup_min_turnover_setting
+    from stocks_power_rich import patterns as p
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    assert cup_min_turnover_setting(c) == p.CUP_MIN_TURNOVER_DEFAULT   # 未設
+    set_setting(c, "cup_min_turnover", "")
+    assert cup_min_turnover_setting(c) == p.CUP_MIN_TURNOVER_DEFAULT   # 空字串
+    set_setting(c, "cup_min_turnover", "0")
+    assert cup_min_turnover_setting(c) == 0.0                          # 明確關閉
+    set_setting(c, "cup_min_turnover", "5e7")
+    assert cup_min_turnover_setting(c) == 5e7
+    set_setting(c, "cup_min_turnover", "abc")
+    assert cup_min_turnover_setting(c) == p.CUP_MIN_TURNOVER_DEFAULT   # 壞值
+
+
+def test_filter_liquid_fails_open_when_no_volume_data_at_all():
+    """量能欄是後來才加的，早期回補的列沒有值。若整批**一檔都量不到流動性**，
+    照樣套門檻會讓畫面安靜地變成 0 檔——看起來像程式壞了，而不是像資料沒補。
+    這種情況直接不過濾（fail-open）；部分覆蓋則照常過濾並把缺口計數出來。"""
+    from stocks_power_rich import patterns as p
+    none_at_all = [{"code": "A", "avg_turnover": None}, {"code": "B", "avg_turnover": None}]
+    kept, n_illiquid, n_no_data = p.filter_liquid(none_at_all, 3e7)
+    assert [m["code"] for m in kept] == ["A", "B"]      # 全部保留，不是全部剔除
+    assert (n_illiquid, n_no_data) == (0, 0)
+
+    # 只要有一檔量得到，就恢復正常過濾（部分覆蓋不 fail-open）
+    partial = [{"code": "A", "avg_turnover": None}, {"code": "B", "avg_turnover": 5e8}]
+    kept, n_illiquid, n_no_data = p.filter_liquid(partial, 3e7)
+    assert [m["code"] for m in kept] == ["B"]
+    assert (n_illiquid, n_no_data) == (0, 1)

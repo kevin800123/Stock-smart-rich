@@ -222,10 +222,14 @@ function candlestickOption(data, startPct, showW, pct) {
     ],
     yAxis: [
       { scale: true, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 11, formatter: (v) => fmt(v, 0) }, splitLine: { lineStyle: { color: C.gridline, type: "dashed", opacity: 0.72 } } },
-      { gridIndex: 1, axisLabel: { show: false }, splitLine: { show: false } },
+      // 量能窗格原本連刻度都關掉，等於只看得出「相對高低」、讀不出實際張數。
+      // 窗格只有 13% 高，所以 splitNumber:2（再多會擠成一團）、萬張以上縮寫。
+      { gridIndex: 1, splitNumber: 2, splitLine: { show: false },
+        axisLabel: { color: C.muted, fontSize: 10,
+                     formatter: (v) => v >= 10000 ? fmt(v / 10000, 1) + "萬" : fmt(v, 0) } },
     ],
     dataZoom: klineDataZoom([0, 1], startPct),
-    series: [candle, ...maSeries, { name: "量", type: "bar", xAxisIndex: 1, yAxisIndex: 1, barWidth: 7, barCategoryGap: "32%", itemStyle: { opacity: 0.55 }, data: volumes }],
+    series: [candle, ...maSeries, { name: "成交量(張)", type: "bar", xAxisIndex: 1, yAxisIndex: 1, barWidth: 7, barCategoryGap: "32%", itemStyle: { opacity: 0.55 }, data: volumes }],
   };
 }
 
@@ -1148,6 +1152,11 @@ async function loadSettings() {
     tg.className = "set-badge " + (s.telegram_configured ? "ok" : "no");
     $("set-picks-only").checked = !!s.intraday_picks_only;
     $("set-loss-tol").value = s.loss_tolerance || "";
+    // 門檻以「億元」呈現（後端存的是元）。未設時帶入後端給的預設值，前端不寫死常數。
+    {
+      const liq = (s.cup_min_turnover != null ? s.cup_min_turnover : s.cup_min_turnover_default);
+      $("set-cup-liq").value = liq != null ? +(liq / 1e8).toFixed(2) : "";
+    }
     $("set-screen-mv").value = s.screen_mu_value_min;
     $("set-screen-ms").value = s.screen_mu_score_min;
     $("set-stats").innerHTML = [
@@ -1209,7 +1218,7 @@ async function renderStage2Sources() {
 async function saveSettings() {
   $("set-saved").textContent = "儲存中…";
   try {
-    await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ schedule_time: $("set-schedule").value, data_dir: $("set-datadir").value, intraday_picks_only: $("set-picks-only").checked, loss_tolerance: parseInt($("set-loss-tol").value, 10) || 0, screen_mu_value_min: parseInt($("set-screen-mv").value, 10), screen_mu_score_min: parseInt($("set-screen-ms").value, 10) }) });
+    await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ schedule_time: $("set-schedule").value, data_dir: $("set-datadir").value, intraday_picks_only: $("set-picks-only").checked, loss_tolerance: parseInt($("set-loss-tol").value, 10) || 0, screen_mu_value_min: parseInt($("set-screen-mv").value, 10), screen_mu_score_min: parseInt($("set-screen-ms").value, 10), cup_min_turnover: $("set-cup-liq").value === "" ? "" : (parseFloat($("set-cup-liq").value) || 0) * 1e8 }) });
     $("set-saved").textContent = "已儲存 ✓"; setTimeout(() => { $("set-saved").textContent = ""; }, 2000);
     loadSettings();
   } catch (e) { $("set-saved").textContent = "儲存失敗：" + e.message; }
@@ -1950,8 +1959,16 @@ function renderCupChips() {
   if (d.note) { list.innerHTML = `<span class="muted small">${esc(d.note)}</span>`; if (note) note.textContent = ""; return; }
   const all = d.stocks || [];
   cupMatches = cupPicksOnly ? all.filter((m) => m.in_picks) : all;
+  // 流動性濾網刷掉幾檔要明講：量能覆蓋率不好時畫面會安靜地變少，不寫出來會像程式壞了。
+  const liqBits = [];
+  if (d.min_turnover) {
+    liqBits.push(`日均額≥${fmt(d.min_turnover / 1e8, 2)}億`);
+    if (d.filtered_illiquid) liqBits.push(`量太少剔除 ${d.filtered_illiquid}`);
+    if (d.filtered_no_volume) liqBits.push(`無量能資料剔除 ${d.filtered_no_volume}`);
+  }
   if (note) note.textContent = `（${d.date}　%R≥${d.min_r ?? cupMinR}　符合 ${d.count} 檔`
-    + (d.has_picks ? `／同時符合籌碼基本 ${d.picks_count} 檔` : "") + `／掃描 ${d.bars} 根）`;
+    + (d.has_picks ? `／同時符合籌碼基本 ${d.picks_count} 檔` : "") + `／掃描 ${d.bars} 根`
+    + (liqBits.length ? `／${liqBits.join("・")}` : "") + `）`;
   if (cupPicksOnly && !d.has_picks) { list.innerHTML = '<span class="muted small">尚未載入當日 CSV，無「籌碼/基本選股」可交集（請先到該分頁上傳）</span>'; if (cupChart) cupChart.clear(); renderCupRisk(null); return; }
   if (!cupMatches.length) { list.innerHTML = `<span class="muted small">${cupPicksOnly ? "無同時符合兩者的個股" : "今日無符合杯柄型態的個股"}</span>`; if (cupChart) cupChart.clear(); renderCupRisk(null); return; }
   list.innerHTML = cupMatches.map((m, i) => {
@@ -1973,10 +1990,22 @@ function renderCupRisk(m) {
     + `（突破價 ${fmt(m.resistance, 2)} − 2×ATR ${fmt(m.atr, 2)}）`;
   const tol = cupData && cupData.loss_tolerance;
   if (tol && risk > 0) {
-    const sh = Math.floor(tol / risk);
+    let sh = Math.floor(tol / risk);
+    // **部位要吃流動性上限**：純風險公式算出的股數，在冷門股可能是好幾天的成交量，
+    // 光是進出場就會自己把價格推開（滑價），那個部位在現實中根本進不去。
+    // 上限＝日均量 × adv_cap_pct%（門檻在後端 patterns.POSITION_ADV_CAP_PCT，前端不寫死）。
+    const adv = m.avg_volume_lots, capPct = cupData.adv_cap_pct;
+    let capNote = "";
+    if (adv && capPct) {
+      const capSh = Math.floor(adv * 1000 * (capPct / 100));
+      if (capSh > 0 && capSh < sh) {
+        sh = capSh;
+        capNote = `　<span class="muted">受流動性上限（日均量 ${fmt(adv, 0)} 張的 ${fmt(capPct, 0)}%）</span>`;
+      }
+    }
     const lots = Math.floor(sh / 1000), odd = sh % 1000;
     const pos = lots ? `${lots} 張${odd ? ` + ${odd} 股` : ""}` : `${odd} 股`;
-    txt += `　💰 建議部位 <b>${pos}</b>（可容忍虧損 ${fmt(tol, 0)} 元 ÷ 每股風險 ${fmt(risk, 2)} 元）`;
+    txt += `　💰 建議部位 <b>${pos}</b>（可容忍虧損 ${fmt(tol, 0)} 元 ÷ 每股風險 ${fmt(risk, 2)} 元）` + capNote;
   } else {
     txt += `　<span class="muted">到「設定」填「單筆可容忍虧損」即自動算建議部位</span>`;
   }
@@ -3187,7 +3216,24 @@ async function loadStock(code, name) {
     stockChart.hideLoading();
     if (!d.candles || !d.candles.length) { stockChart.clear(); lastStockData = null; $("stock-note").textContent = `${code} 無 K 線資料`; return; }
     lastStockData = d;
-    $("stock-note").textContent = `${d.code || code} ${name || ""}`;
+    // 資料到哪一天、中間有沒有缺口，都要講出來。stock_ohlc 的覆蓋度取決於
+    // /api/ohlc/backfill 跑到哪，缺一大段時 category 軸會把缺口兩端直接畫在一起，
+    // 看起來就像「日期沒更新到最新」＋「價格突然斷崖」——其實是兩段不連續的資料被接在一起。
+    {
+      const ds = d.dates || [];
+      let t = `${d.code || code} ${name || ""}`;
+      if (ds.length) {
+        t += `　資料至 ${ds[ds.length - 1]}（${ds.length} 根）`;
+        let gap = 0, at = null;
+        for (let i = 1; i < ds.length; i++) {
+          const g = (new Date(ds[i]) - new Date(ds[i - 1])) / 86400000;
+          if (g > gap) { gap = g; at = [ds[i - 1], ds[i]]; }
+        }
+        // >14 天才算缺口：週末是 3 天、農曆年連假可到 ~10 天，都屬正常。
+        if (gap > 14) t += `　⚠ 資料有缺口 ${at[0]} → ${at[1]}（${Math.round(gap)} 天），請跑 /api/ohlc/backfill 補齊`;
+      }
+      $("stock-note").textContent = t;
+    }
     stockChart.resize();
     stockChart.setOption(candlestickOption(d, d.candles.length > 120 ? 60 : 0, stockWaves, wavePct), true);
   } catch (e) { stockChart.hideLoading(); $("stock-note").textContent = "載入失敗：" + e.message; }

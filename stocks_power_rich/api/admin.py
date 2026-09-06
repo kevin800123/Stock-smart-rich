@@ -10,6 +10,7 @@ from .helpers import (
     effective_schedule,
     effective_data_dir,
     _dir_within,
+    cup_min_turnover_setting,
     _push_line,
     _intraday_scan,
     _insti_for,
@@ -22,7 +23,7 @@ from ..db import (get_setting, set_setting, get_snapshot_dates, get_tx_history, 
                   backup_db, get_connection, bulk_upsert_financials,
                   latest_financial_quarter, latest_revenue_month)
 from ..config import load_config
-from .. import updater, gemini, analysis, selfcheck
+from .. import updater, gemini, analysis, selfcheck, patterns
 
 router = APIRouter(prefix="/api")
 
@@ -433,6 +434,10 @@ def get_settings(request: Request):
         "nav_order": (get_setting(c, "nav_order") or "").split(",") if get_setting(c, "nav_order") else None,
         "intraday_picks_only": get_setting(c, "intraday_picks_only") == "1",
         "loss_tolerance": int(get_setting(c, "loss_tolerance") or 0) or None,
+        # 杯柄流動性門檻（日均成交額，元）。未設＝用 patterns 的預設；明確設 0＝關閉濾網。
+        # 預設值一併回傳，讓設定頁顯示「預設 3,000 萬」而不必在 app.js 複製一份常數。
+        "cup_min_turnover": cup_min_turnover_setting(c),
+        "cup_min_turnover_default": patterns.CUP_MIN_TURNOVER_DEFAULT,
         # 自算籌碼/基本選股的木率/木質門檻（預設來自 analysis 常數，可調）
         "screen_mu_value_min": int(_screen_threshold(c, "screen_mu_value_min", analysis.SCREEN_MU_VALUE_MIN)),
         "screen_mu_score_min": int(_screen_threshold(c, "screen_mu_score_min", analysis.SCREEN_MU_SCORE_MIN)),
@@ -541,6 +546,17 @@ def update_settings(request: Request, payload: dict = Body(...)):
         except (TypeError, ValueError):
             v = 0
         set_setting(c, "loss_tolerance", str(v) if v > 0 else "")
+    if "cup_min_turnover" in payload:
+        # 空字串＝回到預設（不寫值）；0＝明確關閉濾網；負數視為 0。
+        raw = payload["cup_min_turnover"]
+        if raw in (None, ""):
+            set_setting(c, "cup_min_turnover", "")
+        else:
+            try:
+                v = max(0.0, float(raw))
+            except (TypeError, ValueError):
+                v = patterns.CUP_MIN_TURNOVER_DEFAULT
+            set_setting(c, "cup_min_turnover", str(v))
     for key in ("screen_mu_value_min", "screen_mu_score_min"):   # 木率/木質門檻（整數分數刻度）
         if key in payload:
             try:

@@ -159,8 +159,62 @@ def atr(highs, lows, closes, n: int = 14) -> float | None:
     return round(sum(trs) / n, 4)
 
 
+# ---- 流動性 ----
+# 杯柄型態原本只看價格形狀，完全沒有量能條件，於是冷門股一路被選進來：既買不到也賣不掉，
+# 而且它們的價格序列充滿「連續多日同價 ＋ 偶發極端報價」，均線會出現方塊狀平台（使用者
+# 回報的「線很奇怪」）。兩個症狀同一個根因，一道流動性濾網一起解決。
+LIQ_WINDOW = 20                    # 流動性看近 20 個交易日（量能欄的覆蓋率在近期最好）
+CUP_MIN_TURNOVER_DEFAULT = 3e7     # 日均成交額門檻預設 3,000 萬元（設定頁可調，見下）
+# 建議部位的流動性上限：不超過日均量的這個百分比。部位大於這個比例時，光是進出場就會
+# 自己把價格推開（滑價），算出來的「風險部位」在現實中根本進不去。
+POSITION_ADV_CAP_PCT = 5.0
+
+
+def avg_recent(values, days: int = LIQ_WINDOW):
+    """近 `days` 根裡有值的平均；None 略過。
+
+    全部缺值回 None——「沒有量能資料」與「量能是 0」是兩件不同的事實，混為一談會把
+    「查無資料」當成「零成交」而誤判（同 db.margin_3d_map 的取捨）。
+    """
+    if not values:
+        return None
+    tail = [v for v in values[-days:] if v is not None]
+    return sum(tail) / len(tail) if tail else None
+
+
+def filter_liquid(matches: list[dict], min_avg_turnover) -> tuple[list[dict], int, int]:
+    """依日均成交額過濾，回 (保留的, 因量太少剔除數, 因查無量能資料剔除數)。
+
+    **刻意與 screen_cup_handle 分開**：純掃描負責「附上量能指標」、這裡負責「政策」，
+    分開才算得出計數。缺料不靜默——若量能覆蓋率不佳，畫面要說得出「N 檔因無量能資料
+    被排除」，而不是安靜變成 0 檔讓人以為程式壞了（同自算選股覆蓋列的作法）。
+
+    `min_avg_turnover` 為 None／0 時完全不過濾（向後相容：既有呼叫端行為不變）。
+
+    **fail-open**：若「一檔都沒有量能資料」，視為這個環境根本量不到流動性，直接不過濾。
+    量能欄是後來才加的，早期回補的列沒有值——若在覆蓋率為零的機器上照樣套門檻，畫面會
+    安靜地變成 0 檔，看起來像程式壞了而不是像資料沒補。部分覆蓋則照常過濾，並由
+    no_data 計數把缺口攤開來（缺料不靜默，但也不因缺料就讓整個功能消失）。
+    """
+    if not min_avg_turnover:
+        return list(matches), 0, 0
+    if matches and all(m.get("avg_turnover") is None for m in matches):
+        return list(matches), 0, 0
+    kept, illiquid, no_data = [], 0, 0
+    for m in matches:
+        t = m.get("avg_turnover")
+        if t is None:
+            no_data += 1
+        elif t < min_avg_turnover:
+            illiquid += 1
+        else:
+            kept.append(m)
+    return kept, illiquid, no_data
+
+
 def screen_cup_handle(ohlc_by_code: dict, min_r: float = MIN_R_DEFAULT) -> list[dict]:
-    """對 {code: {name, dates[], highs[], lows[], closes[]}} 逐檔篩杯柄，回符合清單（附錨點）。"""
+    """對 {code: {name, dates[], highs[], lows[], closes[], volumes[], amounts[]}} 逐檔篩杯柄，
+    回符合清單（附錨點）。量能只「附上」不過濾——過濾交給 filter_liquid（見上）。"""
     out = []
     for code, d in ohlc_by_code.items():
         sig = cup_handle(d.get("highs") or [], d.get("lows") or [], d.get("closes") or [], min_r=min_r)
@@ -169,6 +223,8 @@ def screen_cup_handle(ohlc_by_code: dict, min_r: float = MIN_R_DEFAULT) -> list[
             sig["left_date"] = dates[sig["left_idx"]] if sig["left_idx"] < len(dates) else None
             sig["right_date"] = dates[sig["right_idx"]] if sig["right_idx"] < len(dates) else None
             sig["last_close"] = (d.get("closes") or [None])[-1]
+            sig["avg_turnover"] = avg_recent(d.get("amounts") or [])
+            sig["avg_volume_lots"] = avg_recent(d.get("volumes") or [])
             out.append({"code": code, "name": d.get("name"), **sig})
     out.sort(key=lambda m: -(m.get("percent_r") or 0))  # 強度（收盤位置）高→低
     return out
