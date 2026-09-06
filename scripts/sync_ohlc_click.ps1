@@ -28,7 +28,10 @@
 param(
   [string]$CredFile = "$env:LOCALAPPDATA\StocksPowerRich\spr_cred.xml",
   [switch]$ResetCredential,
-  [string]$BaseUrl = 'https://stock-power-rich.zeabur.app'
+  [string]$BaseUrl = 'https://stock-power-rich.zeabur.app',
+  # >0＝強制重抓最近 N 個交易日，忽略「有沒有缺」的判定。用於「日期有、但個股缺列或值是錯的」
+  # ——匯入是覆蓋寫入，所以直接重抓就修得好，不必先查清根因。由 sync_ohlc_full.bat 帶進來。
+  [int]$ForceDays = 0
 )
 
 function Fail([string]$Message) {
@@ -80,13 +83,19 @@ if (-not (Test-Path -LiteralPath $py)) {
 }
 $script = Join-Path $PSScriptRoot 'sync_ohlc.py'
 
-Write-Host "開始補個股日線（本機抓 → 匯入 $BaseUrl）。最新的缺口會最先補上，圖表通常幾輪就恢復；中途可關、重跑會續補…"
+if ($ForceDays -gt 0) {
+  Write-Host "開始【密集重抓】最近 $ForceDays 個交易日（本機抓 → 匯入 $BaseUrl）。忽略「有沒有缺」的判定，整段重抓補密；中途可關、重跑會續補…"
+} else {
+  Write-Host "開始補個股日線（本機抓 → 匯入 $BaseUrl）。最新的缺口會最先補上，圖表通常幾輪就恢復；中途可關、重跑會續補…"
+}
 Write-Host ""
 
 # 用環境變數把密碼傳給 python，不放進命令列參數（避免出現在行程清單）。
 $env:SPR_BASIC_PASS = $pass
 try {
-  & $py $script --base-url $BaseUrl --user $user
+  $argv = @('--base-url', $BaseUrl, '--user', $user)
+  if ($ForceDays -gt 0) { $argv += @('--force-days', $ForceDays) }
+  & $py $script @argv
   $code = $LASTEXITCODE
 } finally {
   Remove-Item Env:\SPR_BASIC_PASS -ErrorAction SilentlyContinue

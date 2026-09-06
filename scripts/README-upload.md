@@ -142,12 +142,19 @@ Zeabur 出站打不動**：本機打 TWSE `MI_INDEX` / 櫃買 `dailyQuotes` 每�
 
 **2. 強制重抓最近一段**（不必先查清根因——匯入是覆蓋，缺列會補上、錯值會被蓋掉）：
 
-```
-.venv\Scripts\python scripts\sync_ohlc.py --user admin --force-days 120
-```
+**雙擊 [`scripts\sync_ohlc_full.bat`](sync_ohlc_full.bat)** — 密集重抓最近 250 個交易日（約一年）。
 
-`--force-days N` 會忽略「有沒有缺」的判定，直接把最近 N 個交易日重抓一遍（往回分頁，
-可中斷續跑）。
+> **不要用 Win+R 打一行指令**。實測踩過兩次：Win+R 的引號解析會把參數吃掉，症狀是
+> `argument --user: expected one argument` 或型別名稱被截斷，看起來像程式壞了其實是
+> 命令列被改寫。雙擊 .bat 沒有這個問題（參數在檔案裡，不經過那層解析）。
+
+底層等同 `sync_ohlc.py --force-days N`：忽略「有沒有缺」的判定，把最近 N 個交易日整段
+重抓（往回分頁、可中斷續跑）。要改天數就編輯 `sync_ohlc_full.bat` 裡的 `-ForceDays 250`。
+
+**什麼時候需要它**：`coverage-for` 顯示 `rows` 相對於日期範圍**太少**時。例如 643 列卻
+橫跨 2017→2026（9 年約 2,200 個交易日），代表不到三成的日子有列——K 線是 category 軸
+（按索引排、不按日期），這些散落的列會被畫成連續的，於是出現「日期沒更新」與「價格斷崖」
+的假象。補密之後近一年的根數應該從一百多變成兩百多。
 
 ## 下一階段（Stage 2，尚未開始）
 
