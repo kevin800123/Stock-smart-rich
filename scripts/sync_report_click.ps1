@@ -44,8 +44,16 @@ if (-not (Test-Path -LiteralPath $credDir)) {
 
 if (-not (Test-Path -LiteralPath $CredFile)) {
   Write-Host "第一次執行，請輸入股力智富雲端帳密（與上傳工具共用同一份，之後會安全記住，只有這台電腦這個 Windows 帳號解得開，不會存成明文）："
-  $cred = Get-Credential -Message '股力智富雲端登入'
-  if (-not $cred) { Fail '未輸入帳密，已取消。' }
+  # **刻意用 Read-Host 而不是 Get-Credential**：後者會開一個獨立的彈窗，一旦它跑到
+  # 主控台後面或另一個螢幕，使用者看到的就只是一片空白、完全不知道程式在等什麼
+  # （實測發生過：畫面停在提示字後面什麼都沒有）。主控台輸入沒有這個失敗模式。
+  $u = Read-Host '帳號'
+  if (-not $u) { Fail '未輸入帳號，已取消。' }
+  $p = Read-Host '密碼（輸入時不會顯示字元，打完按 Enter）' -AsSecureString
+  if (-not $p -or $p.Length -eq 0) { Fail '未輸入密碼，已取消。' }
+  # **必須用 -ArgumentList**：`New-Object Type($u, $p)` 那種寫法在 PowerShell 會被誤解析，
+  # userName 傳不進去，跳「userName 引數的值無效」（實測踩到）。
+  $cred = New-Object System.Management.Automation.PSCredential -ArgumentList $u, $p
   try {
     $cred | Export-Clixml -LiteralPath $CredFile
   } catch {
