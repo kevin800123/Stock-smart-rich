@@ -499,6 +499,65 @@ def ohlc_import(payload: dict = Body(...)):
     return {"imported": imported, "dates": len(data)}
 
 
+@router.get("/db/diag")
+def db_diag():
+    """SQLite 健康診斷——查「database is locked 是誰造成的」。
+
+    2026-09 的全站 500 事件：traceback 只說 `database is locked`，那只表示「有人鎖著」、
+    沒說是誰，而 Zeabur 的日誌檢視器把堆疊中間的框架吃掉了。連續猜錯兩次（磁碟滿、資料被
+    清空）之後才做這支——**遠端環境要的是能一次分辨多種成因的診斷，不是逐個假設試**。
+
+    回報四件事，各自對應不同的成因與解法：
+      * `files`      /data 目錄內容。看得到 `-journal` 或 `-wal` 就是**中斷的寫入留下的
+                     hot journal**（大量匯入被砍時會發生），與「行程內有人鎖著」是不同的病。
+                     順便看 `backup/` 佔多少（每日 7 份完整複本＝8 倍放大）。
+      * `pragmas`    journal_mode／busy_timeout／page_count×page_size（＝實際 DB 大小）。
+      * `write_test` 真的試寫一筆再刪掉——**這才是「現在能不能寫」的直接證據**，
+                     比任何推論可靠。失敗就把錯誤原文帶回來。
+      * `integrity`  quick_check（大 DB 會慢，故用 quick 不用 full）。
+    """
+    import glob as _g
+    cfg = load_config()
+    dbp = cfg.db_path
+    d = os.path.dirname(dbp) or "."
+    out = {"db_path": dbp}
+    try:
+        found = [{"name": os.path.relpath(f, d),
+                  "mb": round(os.path.getsize(f) / 1048576, 1)}
+                 for f in _g.glob(os.path.join(d, "*")) + _g.glob(os.path.join(d, "backup", "*"))
+                 if os.path.isfile(f)]
+        out["files"] = sorted(found, key=lambda x: -x["mb"])[:20]
+    except Exception as e:  # noqa: BLE001
+        out["files_error"] = f"{type(e).__name__}: {e}"
+    c = conn()
+    out["pragmas"] = {}
+    for pg in ("journal_mode", "busy_timeout", "page_count", "page_size"):
+        try:
+            out["pragmas"][pg] = c.execute(f"PRAGMA {pg}").fetchone()[0]
+        except Exception as e:  # noqa: BLE001
+            out["pragmas"][pg] = f"ERR {type(e).__name__}: {e}"
+    try:
+        pc, ps = out["pragmas"].get("page_count"), out["pragmas"].get("page_size")
+        if isinstance(pc, int) and isinstance(ps, int):
+            out["db_size_mb"] = round(pc * ps / 1048576, 1)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        c.execute("CREATE TABLE IF NOT EXISTS _diag_probe (k TEXT PRIMARY KEY)")
+        c.execute("INSERT OR REPLACE INTO _diag_probe (k) VALUES ('probe')")
+        c.commit()
+        c.execute("DROP TABLE _diag_probe")
+        c.commit()
+        out["write_test"] = "ok"
+    except Exception as e:  # noqa: BLE001
+        out["write_test"] = f"{type(e).__name__}: {e}"
+    try:
+        out["integrity"] = c.execute("PRAGMA quick_check(1)").fetchone()[0]
+    except Exception as e:  # noqa: BLE001
+        out["integrity"] = f"ERR {type(e).__name__}: {e}"
+    return out
+
+
 @router.post("/db/backup")
 def db_backup():
     cfg = load_config()
