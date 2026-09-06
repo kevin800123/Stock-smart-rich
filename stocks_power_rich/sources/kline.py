@@ -17,17 +17,35 @@ def _fmt_dt(d, interval: str) -> str:
     return d.strftime("%Y-%m-%d %H:%M" if interval == "1h" else "%Y-%m-%d")
 
 
+import datetime as _dt
+
 _MAX_DOD_JUMP = 0.35   # 台股個股單日漲跌幅上限 ±10%，日對日收盤跳動 >35% 必為壞值（0/半值/資料錯）
 
 
 SHARES_PER_LOT = 1000   # 台股一張＝1000 股（個股 K 線量能單位統一用「張」）
 
 
+_ADJACENT_MAX_GAP_DAYS = 5   # 週末+一天假＝3 天；超過 5 天代表序列有洞，跨洞不可套「單日」門檻
+
+
 def _sanitize_series(dates: list, candles: list, volumes: list) -> tuple:
     """丟棄明顯壞列，避免 MA/波浪被污染：任一 OHLC 非正、high<low、或收盤對「前一筆有效
-    收盤」跳動 >35%（yfinance/官方源偶發 0 或半值時會出現）。回傳過濾後的三個並列陣列。"""
+    收盤」跳動 >35%（yfinance/官方源偶發 0 或半值時會出現）。回傳過濾後的三個並列陣列。
+
+    **跳動門檻有兩個必要的護欄，少一個都會把好資料整段丟掉**（實測 3022 踩到）：
+
+    1. `just_rejected`：被拒時 `last` 不會更新，所以一根壞值會讓後面**每一根**都相對它
+       跳太多而連鎖被拒。實測：41.7 這根壞值相對前一根只跌 30%（低於門檻）因而被接受，
+       之後 5 個月的真實資料（~60→95.9）全數被丟棄，圖表就停在 41.7、停在四月，看起來
+       像「資料沒更新」，其實資料庫是完整的。所以**一旦拒絕過一根，下一根就不再套門檻**
+       ——孤立壞值只丟自己，序列能回到真實水位。
+    2. 日期相鄰才套門檻：stock_ohlc 的覆蓋度取決於回補跑到哪，中間有洞是常態，而跨越
+       數月的價格變動本來就可能遠超過 35%，當成壞值丟掉會讓「補完資料」反而看不到東西。
+    """
     out_d, out_c, out_v = [], [], []
     last = None
+    last_date = None
+    just_rejected = False
     for i, c in enumerate(candles):
         o, cl, lo, hi = c
         # **NaN 必須明確擋掉，不能只靠 `None in c` 與大小比較**：NaN 不是 None，而且
@@ -39,10 +57,26 @@ def _sanitize_series(dates: list, candles: list, volumes: list) -> tuple:
         # `v != v` 是 NaN 的標準判定，不必 import math 也不挑型別。
         if any(v is None or v != v for v in c) or o <= 0 or cl <= 0 or lo <= 0 or hi <= 0 or hi < lo:
             continue
-        if last is not None and last > 0 and abs(cl / last - 1) > _MAX_DOD_JUMP:
+        if last is not None and last > 0 and not just_rejected and _adjacent(last_date, dates[i])                 and abs(cl / last - 1) > _MAX_DOD_JUMP:
+            just_rejected = True
             continue
-        out_d.append(dates[i]); out_c.append(c); out_v.append(volumes[i]); last = cl
+        just_rejected = False
+        out_d.append(dates[i]); out_c.append(c); out_v.append(volumes[i])
+        last = cl; last_date = dates[i]
     return out_d, out_c, out_v
+
+
+def _adjacent(prev_date, cur_date) -> bool:
+    """兩根 K 棒是否為「相鄰交易日」——只有相鄰時，單日跳動門檻才有意義。
+    日期解析不出來（週/月聚合標籤等）就當作相鄰，維持既有行為、不放寬檢查。"""
+    if not prev_date or not cur_date:
+        return True
+    try:
+        a = _dt.date.fromisoformat(str(prev_date)[:10])
+        b = _dt.date.fromisoformat(str(cur_date)[:10])
+    except ValueError:
+        return True
+    return (b - a).days <= _ADJACENT_MAX_GAP_DAYS
 
 
 def _pack_candles(dates: list, candles: list, volumes: list) -> dict:

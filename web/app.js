@@ -217,8 +217,12 @@ function candlestickOption(data, startPct, showW, pct) {
     legend: { top: 0, data: ["K線", ...MA_DEFS.map((m) => "MA" + m.n)], textStyle: { color: C.label } },
     grid: [{ left: 60, right: 20, top: 28, height: "59%" }, { left: 60, right: 20, top: "71%", height: "13%" }],
     xAxis: [
-      { type: "category", data: data.dates, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 11 } },
-      { type: "category", data: data.dates, gridIndex: 1, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false }, axisLabel: { show: false } },
+      // **日期標籤放在最下面那個窗格**（量能窗格），不是夾在兩個窗格中間：
+      // 價格窗格的日期標籤原本畫在它自己的底部，正好撞上量能窗格頂端的 y 軸刻度
+      // （加上量能刻度後才浮現，實測「2,800」與日期疊在同一行）。堆疊式 K 線圖的
+      // 慣例本來就是「日期只出現在最底部」，改過來同時解決碰撞與版面慣例。
+      { type: "category", data: data.dates, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false }, axisLabel: { show: false } },
+      { type: "category", data: data.dates, gridIndex: 1, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 11 } },
     ],
     yAxis: [
       { scale: true, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 11, formatter: (v) => fmt(v, 0) }, splitLine: { lineStyle: { color: C.gridline, type: "dashed", opacity: 0.72 } } },

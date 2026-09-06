@@ -204,3 +204,57 @@ def test_fetch_index_kline_volume_is_not_divided(monkeypatch):
     monkeypatch.setattr(kline.yf.Ticker, "history", fake_history)
     out = kline.fetch_index_kline("taiex")
     assert out["volumes"] == [1_234_000.0]
+
+
+def test_sanitize_series_does_not_drop_the_whole_tail_after_one_bad_bar():
+    """一根壞值不可以把後面整條序列連鎖丟光。
+
+    實測踩到（3022）：資料庫其實有到 2026-09-04 的完整日線，圖表卻停在 41.7、停在四月。
+    原因是 41.7 這根壞值相對前一根只跌 30%（低於 35% 門檻）因而**被接受**，之後每一根
+    真實價格（~60→95.9）相對 41.7 都跳 >35% 全被拒絕；而被拒時 `last` 不更新，於是
+    永遠追不回來——一根壞值吃掉五個月的真實資料。
+
+    正確行為：孤立壞值只該丟掉它自己，序列要能回到真實水位。
+    """
+    dates = ["2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06",
+             "2026-03-09", "2026-03-10", "2026-03-11", "2026-03-12"]      # 相鄰交易日
+    good = [60.0, 60.5, 61.0, 20.0, 60.8, 61.2, 62.0, 63.0, 64.0]         # 第 4 根是壞值
+    candles = [[p, p, p * 0.99, p * 1.01] for p in good]
+    volumes = [100.0] * len(good)
+    d, c, v = kline._sanitize_series(dates, candles, volumes)
+    closes = [x[1] for x in c]
+    assert 20.0 not in closes            # 超標的孤立壞值要被丟掉
+    assert len(closes) == 8              # 其餘 8 根全留著——修好前這裡只會剩 4 根
+    assert closes[-1] == 64.0            # 尾端必須存活（先前整段消失，圖表就停在壞值那天）
+    assert len(d) == len(c) == len(v)    # 三個陣列仍等長
+
+
+def test_sanitize_series_keeps_within_threshold_outliers_on_purpose():
+    """低於門檻的異常值**刻意保留**——不把門檻收緊是有理由的。
+
+    除權息造成的合理大跌可能超過 10%（原始價未還原時），收太緊會把真實走勢當壞值刪掉。
+    所以 -31.6% 這種仍會留在圖上；真正要防的是「一根壞值吃掉後面整段」，那個已由
+    just_rejected 護欄解決。這條測試把這個取捨釘住，避免日後有人「順手」把門檻改嚴。
+    """
+    dates = ["2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05"]
+    candles = [[p, p, p * 0.99, p * 1.01] for p in (60.0, 41.7, 60.8, 61.2)]
+    _, c, _ = kline._sanitize_series(dates, candles, [1.0] * 4)
+    closes = [x[1] for x in c]
+    assert 41.7 in closes          # 低於門檻 → 保留（不因除權息式的大跌而誤刪）
+    assert closes[-1] == 61.2      # **序列在一根之內就回到真實水位**，不會再往後連鎖
+    # 已知且接受的代價：異常值「之後那一根」仍會被丟掉一根（護欄要下一根才生效）。
+    # 要完全不丟就得往前看一根，複雜度不划算——重點是不再吃掉整個尾巴。
+    assert 60.8 not in closes
+
+
+def test_sanitize_series_allows_large_moves_across_a_data_gap():
+    """序列有洞時，跨洞的大幅變動是合理的，不該套「單日跳動」門檻。
+
+    stock_ohlc 的覆蓋度取決於回補跑到哪，中間有洞是常態；跨越數月的價格變動本來就可能
+    遠超過 35%，把它當壞值丟掉會讓「補完資料」反而看不到東西。
+    """
+    dates = ["2026-01-05", "2026-01-06", "2026-06-01"]   # 第 3 筆隔了快 5 個月
+    good = [60.0, 60.5, 95.9]                             # 跨洞 +58%，是真實走勢
+    candles = [[p, p, p * 0.99, p * 1.01] for p in good]
+    d, c, _ = kline._sanitize_series(dates, candles, [1.0] * 3)
+    assert [x[1] for x in c] == [60.0, 60.5, 95.9]        # 跨洞那筆要留著
