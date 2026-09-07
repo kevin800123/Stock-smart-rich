@@ -309,3 +309,34 @@ def test_model_list_excludes_models_the_free_tier_cannot_use():
     for m in gemini.MODELS:
         assert not m.startswith("gemini-2."), m
         assert "latest" not in m
+
+
+def test_news_prompt_asks_for_the_figures_the_condensed_title_dropped(monkeypatch):
+    """「關鍵數據」原本寫的是「僅填快照或標題中的數字」，而組裝端（useful_data）
+    正好把這兩類全部剃掉——這一格因此只能靠巧合活下來：實測 2026-08-18 那場 18 則
+    只有 5 則送得出數據，另有 5 則模型直接寫「來源未提供可驗證數據」。
+
+    但同一場的 58 則**原始標題**裡有 35 則含數字，落差來自模型把標題壓成 28 字時
+    把數字丟了。所以這一格的任務要講明白：**補回被捨棄的原始數字**。
+    """
+    captured = {}
+
+    def fake_run(prompt, api_key, **kw):
+        captured["p"] = prompt
+        return {"enabled": True, "text": "ok"}
+
+    monkeypatch.setattr(gemini, "_run", fake_run)
+    gemini.summarize_news(
+        {"slot": "afternoon", "report_date": "2026-08-18", "snapshot": {},
+         "markets": {"tw": [{"title": "台股標題", "source": "Example"}]}},
+        api_key="k")
+
+    p = captured["p"]
+    assert "該則原始新聞標題" in p
+    assert "沒寫進去" in p
+    assert "『無』" in p                       # 佔位語縮短（省 token 也省版面）
+    assert "不得複述你自己標題裡已經有的數字" in p
+    # 盤面那幾個讀數程式已經算過，模型再講一次就是「同一個數字兩個來源」
+    for term in ("加權指數", "成交金額", "台指期", "費半", "VIX"):
+        assert term in p
+    assert "不可自行推算" in p or "絕不可自行推算" in p

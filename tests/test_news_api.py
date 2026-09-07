@@ -794,8 +794,8 @@ def test_news_headlines_reads_the_latest_cached_slot(tmp_path, monkeypatch):
 
     c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
     today = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
-    set_ai_cache(c, f"news:v7:{today}:morning", {"markets": {"tw": [{"title": "早上", "url": "a"}]}})
-    set_ai_cache(c, f"news:v7:{today}:afternoon", {"markets": {"tw": [{"title": "下午", "url": "b"}]}})
+    set_ai_cache(c, f"news:v8:{today}:morning", {"markets": {"tw": [{"title": "早上", "url": "a"}]}})
+    set_ai_cache(c, f"news:v8:{today}:afternoon", {"markets": {"tw": [{"title": "下午", "url": "b"}]}})
 
     calls = []
     monkeypatch.setattr(news_api.news, "fetch_market_news",
@@ -817,7 +817,7 @@ def test_news_headlines_falls_back_to_yesterday_before_the_morning_run(tmp_path,
 
     c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
     y = (datetime.now(timezone(timedelta(hours=8))) - timedelta(days=1)).strftime("%Y-%m-%d")
-    set_ai_cache(c, f"news:v7:{y}:evening", {"markets": {"us": [{"title": "昨晚美股", "url": "u"}]}})
+    set_ai_cache(c, f"news:v8:{y}:evening", {"markets": {"us": [{"title": "昨晚美股", "url": "u"}]}})
 
     body = TestClient(create_app()).get("/api/news/headlines").json()
     assert body["date"] == y and body["slot"] == "evening"
@@ -926,3 +926,62 @@ def test_reading_links_skip_items_without_url_and_truncate_long_titles():
 def test_reading_links_empty_when_nothing_has_a_url():
     from stocks_power_rich.api.news import build_reading_links
     assert build_reading_links({"tw": [{"title": "無連結", "source": "X"}]}, per_market=3) == ""
+
+
+def test_useful_data_splits_on_the_comma_the_model_actually_writes():
+    """實跑輸出（2026-08-18）用的是「，」不是「、」：
+
+        加權指數收在 45308.68 點，下挫 548.59 點，震盪幅度逾 800 點。
+
+    舊版只以「、」切句，整串因此被當成**一個**含盤面詞的子句而全丟——
+    連帶把後面真正的增量一起丟掉。實測 18 則裡有 8 則被丟，其中數則是這個原因。
+    """
+    from stocks_power_rich.api.news import useful_data
+
+    title = "SK海力士第二季營業利益暴增6.6倍 連續5季刷新高"
+    data = "營業利益 9.2 兆韓元，市場預期 8.1 兆韓元"
+    assert useful_data(title, data) == "營業利益 9.2 兆韓元、市場預期 8.1 兆韓元"
+
+    # 前半是盤面、後半是增量：只剃前半
+    mixed = "加權指數收在 45308.68 點，外資期貨空單突破 9 萬口"
+    assert useful_data("台股震盪", mixed) == "外資期貨空單突破 9 萬口"
+
+
+def test_useful_data_drops_clauses_that_only_restate_snapshot_numbers():
+    """盤面區塊是程式從 market_daily 算出來的；LLM 轉述同一個數字一旦有出入，
+    同一則訊息就會自相矛盾。`_SNAPSHOT_TERMS` 只擋得住「有講出欄位名」的子句
+    ——實跑輸出過「下挫 548.59 點」這種**沒有欄位名、數字卻正是盤面漲跌**的寫法，
+    所以要比數字而不是只比詞。"""
+    from stocks_power_rich.api.news import useful_data
+
+    snap = {"日期": "2026-08-18", "加權指數": 45308.68, "加權漲跌": -548.59,
+            "成交金額(億)": 6120.5}
+    assert useful_data("台股高低震盪逾800點", "下挫 548.59 點", snap) == ""
+    # 沒帶盤面時維持原行為（純函式可單獨使用）
+    assert useful_data("台股高低震盪逾800點", "下挫 548.59 點") == "下挫 548.59 點"
+    # 盤面沒有的數字不受影響
+    assert useful_data("台股高低震盪", "外資賣超 119 億元", snap) == "外資賣超 119 億元"
+
+
+def test_useful_data_treats_the_short_no_data_placeholder_as_empty():
+    """prompt 把冗長的『來源未提供可驗證數據』換成『無』（省 token 也省版面），
+    兩種寫法都必須當成「沒有數據」。"""
+    from stocks_power_rich.api.news import useful_data
+
+    for placeholder in ("無", "無。", "來源未提供可驗證數據"):
+        assert useful_data("某標題", placeholder) == ""
+
+
+def test_telegram_digest_uses_the_snapshot_to_filter_key_figures():
+    """digest 是唯一會把關鍵數據送進推播的地方，盤面過濾必須走到那裡才有意義。"""
+    from stocks_power_rich.api.news import telegram_digest
+
+    brief = (
+        "#### 🇹🇼 台股｜10 則精選\n"
+        "* 🔥 **台股收黑**\n"
+        "  * 🔢 **關鍵數據**：下挫 548.59 點，外資賣超 119 億元\n"
+    )
+    snap = {"加權漲跌": -548.59}
+    out = telegram_digest(brief, "afternoon", "2026-08-18", snap)
+    assert "外資賣超 119 億元" in out
+    assert "548.59" not in out

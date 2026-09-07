@@ -333,6 +333,41 @@ _NUM = re.compile(r"\d+(?:[.,]\d+)*")
 _SNAPSHOT_TERMS = ("加權指數", "加權漲跌", "成交金額", "成交值", "台指期",
                    "日經225", "日經指數", "費半", "費城半導體", "VIX")
 
+# 模型寫「關鍵數據」時混用頓號與逗號——實跑輸出（2026-08-18）用的是「，」：
+#   「加權指數收在 45308.68 點，下挫 548.59 點，震盪幅度逾 800 點。」
+# 只以「、」切句時整串會被當成**一個**含盤面詞的子句而全部丟掉，連同後面真正的增量。
+_CLAUSE_SEP = re.compile(r"[、，,；;]")
+
+# 模型沒有可驗證數字時的佔位語。『無』是新 prompt 的寫法（省 token 也省版面），
+# 『來源未提供…』是舊 prompt 的，兩者都要當成「沒有數據」。
+_NO_DATA = ("來源未提供", "無可驗證", "尚無數據")
+
+
+def snapshot_numbers(snapshot: dict | None) -> frozenset:
+    """盤面區塊用到的數字（取小數點前的整數部分），供 `useful_data` 比對。
+
+    `_SNAPSHOT_TERMS` 只擋得住「有講出欄位名」的子句；實跑輸出過「下挫 548.59 點」
+    這種**沒有欄位名、數字卻正是盤面漲跌**的寫法。盤面是程式從 market_daily 算的、
+    這裡是 LLM 轉述，一旦有出入就會在同一則訊息裡自相矛盾，所以要比數字不只比詞。
+    """
+    out = set()
+
+    def walk(value):
+        if isinstance(value, dict):
+            for v in value.values():
+                walk(v)
+        elif isinstance(value, bool):
+            pass
+        elif isinstance(value, (int, float)):
+            out.add(str(abs(int(value))))
+        elif isinstance(value, str):
+            for n in _NUM.findall(value):
+                out.add(n.split(".")[0].replace(",", ""))
+
+    walk(snapshot or {})
+    out.discard("")
+    return frozenset(out)
+
 
 def headline_digest(markets: dict, slot: str, per_market: int = 6) -> str:
     """AI 不可用時的替代內文：**直接列原始新聞標題**。
@@ -363,33 +398,43 @@ def headline_digest(markets: dict, slot: str, per_market: int = 6) -> str:
     return "\n\n".join(blocks)
 
 
-def useful_data(title: str, data: str) -> str:
+def useful_data(title: str, data: str, snapshot: dict | None = None) -> str:
     """關鍵數據只有在「標題與盤面都沒講過」時才值得附上，否則就是噪音。
 
-    兩層處理：
-    1. **剃掉複述盤面的子句**（見 `_SNAPSHOT_TERMS`）。實跑輸出過
-       「…　加權指數 43386.41 點、加權漲跌 266.66 點、成交金額 8855.1 億元。」——
-       這三個數字上方 📈 盤面 已經講過，是移除第二支 LLM 呼叫後跑掉的規則。
-       以「、」逐句剃而不是整段丟，因為同一串常混著真的增量
-       （「外資期貨空單突破 9 萬口、台指期 43230 點」只有後半要剃）。
-    2. 剩下的再比**數字**而不是比字串：取小數點前的整數部分，全部都已出現在標題裡
-       就丟掉；有任何一個是新的就保留（「日經指數續跌…　255 日圓」的 255 是增量）。
+    **逐子句判斷**（不是整段一起留或一起丟）。實測 2026-08-18 那場 18 則裡只有
+    5 則的關鍵數據送得出去，一半的損失來自整段丟：模型用「，」而不是「、」連接，
+    舊版只以「、」切句，於是「加權指數收在 45308.68 點，下挫 548.59 點，震盪幅度
+    逾 800 點」被當成**一個**含盤面詞的子句而整串消失。
+
+    一個子句要留下來，四關都得過：
+    1. 不含盤面欄位名（見 `_SNAPSHOT_TERMS`）——那些讀數 📈 盤面 已經用程式算過。
+    2. 真的有數字。沒有數字的「關鍵數據」多半是複述，不值得占版面。
+    3. 數字不是標題已經講過的（比**數字**不比字串：取小數點前的整數部分、去千分位）。
+    4. 數字不是盤面已經講過的（`snapshot` 有帶才比）。第 1 關只擋得住有講出欄位名的
+       寫法，實跑輸出過「下挫 548.59 點」這種沒有欄位名、數字卻正是盤面漲跌的句子。
     """
-    if not data or "來源未提供" in data:
+    if not data or any(t in data for t in _NO_DATA):
         return ""
-    kept = [seg for seg in data.split("、")
-            if seg.strip() and not any(t in seg for t in _SNAPSHOT_TERMS)]
-    data = "、".join(kept).strip(" 、。")
-    if not data:
-        return ""
-    nums = [n.split(".")[0].replace(",", "") for n in _NUM.findall(data)]
-    if not nums:
-        return ""                      # 沒有數字的「關鍵數據」多半是複述，不值得占版面
+    snap_nums = snapshot_numbers(snapshot) if snapshot else frozenset()
     bare = title.replace(",", "")
-    return "" if all(n in bare for n in nums) else data
+    kept = []
+    for seg in _CLAUSE_SEP.split(data):
+        seg = seg.strip().strip(" 。.")
+        if not seg or any(t in seg for t in _SNAPSHOT_TERMS):
+            continue
+        nums = [n.split(".")[0].replace(",", "") for n in _NUM.findall(seg)]
+        if not nums:
+            continue
+        if all(n in bare for n in nums):
+            continue
+        if snap_nums and all(n in snap_nums for n in nums):
+            continue
+        kept.append(seg)
+    return "、".join(kept)
 
 
-def telegram_digest(summary: str, slot: str, report_date: str = "") -> str:
+def telegram_digest(summary: str, slot: str, report_date: str = "",
+                    snapshot: dict | None = None) -> str:
     """把完整版摘要（markdown）在 Python 端壓成推播用的條列，**不再多打一次 Gemini**。
 
     先前是「Gemini 寫完整版 → 再叫 Gemini 壓縮成推播版」，等於同一份素材付兩次錢，
@@ -441,7 +486,7 @@ def telegram_digest(summary: str, slot: str, report_date: str = "") -> str:
         flag, name = _MARKET_META[market]
         lines = [f"{flag} {name}｜重點掃描"]
         for item in chosen:
-            data = useful_data(item["title"], item["data"])
+            data = useful_data(item["title"], item["data"], snapshot)
             lines.append(f"• {item['title']}" + (f"　{data}" if data else ""))
         blocks.append("\n".join(lines))
     blocks.append("⚠️ 非投資建議，資訊僅供研究參考")
@@ -509,8 +554,9 @@ def news_logic(c, slot: str | None = None, refresh: int = 0) -> dict:
     # 推播格式改版（盤面區塊／投資建議過濾／行內連結／MarkdownV2 跳脫）→ 進版號，
     # 否則舊格式的快取會被當成今天的結果直接送出（同 dist 快取那次的教訓）。
     # v7：盤面加上國際指數漲跌%＋日經缺值也顯示，推播內文加上粗體／底線強調。
+    # v8：關鍵數據改為「補回濃縮標題時捨棄的原始數字」，佔位語由『來源未提供…』縮為『無』。
     # 推播格式一改就要進版，否則今天稍早存的舊格式快取會被當成今天的結果直接送出。
-    key = f"news:v7:{today}:{slot}"
+    key = f"news:v8:{today}:{slot}"
     cached = get_ai_cache(c, key)
     if cached and not refresh:
         return cached
@@ -552,7 +598,7 @@ def news_logic(c, slot: str | None = None, refresh: int = 0) -> dict:
     # AI 不可用時**不要只送一句道歉**：新聞這時候其實都已經抓回來了（三個市場共 60 則
     # 標題就在 markets 裡），退成「標題快覽」至少還是今天的新聞。實際發生過一次
     # 21:10 推播只有盤面加一句「AI 摘要暫時無法使用」，內容整段消失。
-    raw_push = (telegram_digest(summary, slot, today) if result.get("enabled")
+    raw_push = (telegram_digest(summary, slot, today, snapshot) if result.get("enabled")
                 else headline_digest(markets, slot))
     telegram_text = compose_push_message(raw_push, snapshot, markets, slot, today)
     payload = {"date": today, "slot": slot, "summary": summary,
@@ -586,7 +632,7 @@ def headlines_logic(c, n: int = 3) -> dict:
     這一格是「順帶看一眼」，不值得為它付出代價。直接叫 news_logic 會有兩個問題：
     快取沒中時它會去抓三個市場的新聞（株探還要遵守 3 秒 Crawl-delay），然後打一次
     Gemini——**開一次總覽就吃掉一格免費層額度（一天只有 20 次）**。所以這裡只掃
-    `news:v7:{date}:{slot}` 這些既有的鍵，全都沒有就回空陣列，前端整塊不顯示。
+    `news:v8:{date}:{slot}` 這些既有的鍵，全都沒有就回空陣列，前端整塊不顯示。
 
     掃描順序是今天由晚到早、再退到昨天：07:00 之前今天還沒有任何一場，
     這時顯示昨晚那場並標上它的日期，比顯示空白有用。
@@ -595,7 +641,7 @@ def headlines_logic(c, n: int = 3) -> dict:
     for day in (today, today - timedelta(days=1)):
         ds = day.strftime("%Y-%m-%d")
         for slot in ("evening", "afternoon", "midday", "morning"):
-            cached = get_ai_cache(c, f"news:v7:{ds}:{slot}")
+            cached = get_ai_cache(c, f"news:v8:{ds}:{slot}")
             if not cached:
                 continue
             items = pick_headlines(cached.get("markets") or {})[:max(1, n)]

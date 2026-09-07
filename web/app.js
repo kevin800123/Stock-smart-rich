@@ -1055,6 +1055,10 @@ function markFacts(html) {
   }).join("");
 }
 
+// 關鍵數據那一列的佔位語：『無』是現行 prompt 的寫法，『來源未提供…』是舊版的，
+// 兩種都要當成「這則沒有數據」。只認關鍵數據那一列——別的欄位寫到「無」是正常敘述。
+const NEWS_NO_DATA = /\*\*\s*關鍵數據\s*[:：]?\s*\*\*\s*[:：]?\s*(無[。.]?|來源未提供.*|無可驗證.*|尚無數據.*)\s*$/;
+
 function renderNewsMarkdown(text) {
   const sections = { intro: [], tw: [], us: [], jp: [], tail: [] };
   const marketHeaders = {
@@ -1082,6 +1086,9 @@ function renderNewsMarkdown(text) {
     if (/^####\s+/.test(line)) return `<h4 class="news-md-heading">${inline(line.replace(/^####\s+/, ""))}</h4>`;
     if (/^\s*[*-]\s+/.test(line)) {
       const value = line.replace(/^\s*[*-]\s+/, "");
+      // 「關鍵數據：無」整列不畫。原始標題本來就沒有數字時模型會這樣寫，印出來
+      // 只是一行廢話，還讓每則新聞多佔一行——沒有數據跟「數據是無」是同一件事。
+      if (NEWS_NO_DATA.test(value)) return "";
       const cls = value.includes("🔥") ? "news-md-item news-story-title" : "news-md-item news-story-detail";
       return `<div class="${cls}">${marked(value)}</div>`;
     }
