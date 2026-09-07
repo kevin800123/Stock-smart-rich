@@ -534,6 +534,15 @@ if last is not None and abs(cl / last - 1) > _MAX_DOD_JUMP:
 - **`drawCupChart` 缺 `setOption` 後的 `resize()`** → 容器未啟用時 init 把尺寸記成 0、整張圖空白（本檔多處記載過的坑，杯柄圖正好走進頁才畫那條路徑）。
 - **右緣點與壓力線起點是同一座標**，窄畫面下壓力線變短、其中點標籤會貼上右緣標籤（實測 375px 疊在一起，桌機因線夠長看不出來）。**共用錨點的兩個標籤必須往相反方向推開**——這是只有跑過每個斷點才會發現的碰撞。
 
+### 新聞第二輪：10 則、平日/週末分流、夜盤、擴充延伸閱讀（ui45，2026-09）
+
+- **時段分流**：原本四個 news job **都沒設 `day_of_week`，等於每天都跑**——週末的「盤前早報」與「收盤快訊」其實在報上一個交易日的舊事。改為平日 07:00/12:00/17:00/21:10、週末只留 12:00/21:10。
+- **每市場 6 → 10 則**：`gemini.py` 的 prompt、`_PUSH_PLAN`、`web/app.js` 的標籤與每市場列表上限四處同步。**CLAUDE.md 原本那條「前端靠 `｜6 則精選` 字串比對切分市場卡片、改則數會失效」已經過期**——程式後來改成比對旗標/名稱（`line.includes("🇹🇼") || line.includes("台股")`）、後端只看 `startswith("####")`，則數不再是切分依據。已加測試把這個穩健性鎖住。
+- **台指期夜盤**（`taifex.parse_tx_night_price`）：期交所 Q_FUT **每個月份回兩列**，用 `TradingSession` 區分「一般」與「盤後」，盤後列的 `OpenInterest` 是 `'-'`（既有 `parse_tx_price` 正是靠這點排除它）。兩道防呆缺一不可：
+  - **只在平日 17:00／21:10 顯示**（`_should_show_night`）。週末不顯示是使用者的決定，也正好避開資料誠信問題——週五夜盤到週六 05:00 就結束，週末能拿到的必然是上一個交易日的收盤；07:00 夜盤已收、12:00 還沒開，本來就沒有「當下夜盤」。
+  - **日期對不上就整行不出現**。實測 2026-09-06(六) 21:58 打 Q_FUT，回的是 **20260904(五)** 的數字——端點給的是「最後一個交易時段」而非即時。不比對日期就會在週一早上把上週五的夜盤當成當下（同 `pick_close_for` 的規矩）。
+- **延伸閱讀從「每市場 1 條、只顯示媒體名」擴充為「每市場 3 條、顯示原始標題」**。使用者原本要的是**每一條 bullet 都掛連結**，討論後改成這樣，理由是**歸屬正確性**：摘要是 AI 綜合改寫，一句可能併了兩三則，「這句出自哪一篇」沒有唯一答案；就算讓模型輸出來源編號、由 Python 附網址（網址不會亂編），仍擋不住「編號選錯」——結果是連結看起來正常、點下去卻是另一篇，而**讀者不點開根本發現不了**，那比沒有連結更糟。改成獨立列出原始標題後歸屬 100% 正確，「延伸閱讀」這個名稱也終於名實相符。實測 9 條約 3,145 UTF-16 units，整則訊息約 6,400 → 會被 `split_message` 切成 2 則（**它在換行處切、不會切壞行內連結**，這點先前擔心過但查證後確認安全）。
+
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.

@@ -175,20 +175,26 @@ def test_mark_lead_bullets_flags_first_item_of_each_market():
     assert out.count("🔥") == 2
 
 
-def test_build_reading_links_uses_short_visible_label_per_market():
-    """Google 新聞網址實測 174～354 字元且解不出短網址，只能靠行內連結縮短「可見長度」。"""
+def test_build_reading_links_uses_the_headline_and_preserves_the_long_url():
+    """Google 新聞網址實測 174～354 字元且解不出短網址，只能靠行內連結縮短「可見長度」。
+
+    2026-09 契約變更：連結文字從「🇹🇼 中央社」這種**媒體名**改成**原始標題**，
+    每市場也從 1 條擴充為多條。理由見 build_reading_links 的說明——這一段現在是
+    「原始文章本身」，用標題才看得出那篇在講什麼，只寫媒體名等於要讀者盲點。
+    """
     from stocks_power_rich.api.news import build_reading_links
 
     long_url = "https://news.google.com/rss/articles/" + "A" * 200
-    markets = {"tw": [{"title": "t", "url": long_url, "source": "中央社"}],
-               "jp": [{"title": "j", "url": "https://kabutan.jp/news/?b=n1", "source": "株探"}],
-               "us": [{"title": "u", "url": long_url, "source": "Reuters"}]}
+    markets = {"tw": [{"title": "台積電法說會釋出正向展望", "url": long_url, "source": "中央社"}],
+               "jp": [{"title": "日経平均が続伸", "url": "https://kabutan.jp/news/?b=n1", "source": "株探"}],
+               "us": [{"title": "Fed holds rates steady", "url": long_url, "source": "Reuters"}]}
     out = build_reading_links(markets)
     assert "延伸閱讀" in out
-    assert "[🇹🇼 中央社](" in out and "[🇯🇵 株探](" in out and "[🇺🇸 Reuters](" in out
-    assert long_url in out                      # 網址完整保留、沒被跳脫破壞
-    assert out.count("](") == 3                 # 每市場一條
-    assert "來源" not in out                     # 刻意叫「延伸閱讀」，不宣稱是引用出處
+    assert "台積電法說會釋出正向展望" in out          # 連結文字＝原始標題
+    assert "日経平均が続伸" in out and "Fed holds rates steady" in out
+    assert long_url in out                          # 網址完整保留、沒被跳脫破壞
+    assert out.count("](") == 3                     # 這組資料每市場各只有 1 則可用
+    assert "來源" not in out                         # 仍叫「延伸閱讀」，不宣稱是引用出處
 
 
 def test_build_reading_links_empty_when_no_urls():
@@ -875,3 +881,48 @@ def test_snapshot_block_renders_night_only_with_a_matching_date():
     stale = render_snapshot_block({**base, "台指期夜盤": 46487.0, "台指期夜盤漲跌": 668.0,
                                    "台指期夜盤日期": "2026-09-03"}, "2026-09-04")
     assert "夜盤" not in stale        # 日期對不上 → 整行不出現，不是顯示舊值
+
+
+# ---------- 擴充延伸閱讀（每市場多則、掛原始標題） ----------
+
+def _mk(n, market):
+    return [{"title": f"{market}標題{i}", "url": f"https://news.google.com/rss/articles/CBMi{market}{i}",
+             "source": f"{market}媒體{i}"} for i in range(1, n + 1)]
+
+
+def test_reading_links_group_by_market_and_use_the_original_headline():
+    """延伸閱讀從「每市場 1 條、只顯示媒體名」擴充為「每市場數條、顯示原始標題」。
+
+    **為什麼是這個設計而不是逐則掛連結**：摘要是 AI 綜合改寫，一句可能併了兩三則，
+    「這句出自哪一篇」沒有唯一答案；把連結掛在改寫過的句子上，會產生**讀者無法察覺**
+    的錯誤歸屬（點下去是另一篇）。這裡改成獨立列出原始標題配原始網址——歸屬 100% 正確，
+    而且「延伸閱讀」這個名稱也終於名實相符。
+    """
+    from stocks_power_rich.api.news import build_reading_links
+
+    out = build_reading_links({"tw": _mk(5, "台"), "jp": _mk(5, "日"), "us": _mk(5, "美")},
+                              per_market=3)
+    assert "🔗 延伸閱讀" in out
+    for flag in ("🇹🇼", "🇯🇵", "🇺🇸"):        # 三個市場各自成段
+        assert flag in out
+    assert out.count("](https://news.google.com/rss/articles/") == 9   # 3 市場 × 3 則
+    assert "台標題1" in out and "台標題3" in out      # 用**原始標題**當連結文字
+    assert "台標題4" not in out                        # 超過 per_market 的不列
+
+
+def test_reading_links_skip_items_without_url_and_truncate_long_titles():
+    """沒有網址的項目要略過（不能掛一個死連結）；過長標題截斷，避免一行洗版。"""
+    from stocks_power_rich.api.news import build_reading_links
+
+    long_title = "非常長的標題" * 20
+    out = build_reading_links({"tw": [{"title": "沒網址", "source": "X"},
+                                      {"title": long_title, "url": "https://a.example/1"}]},
+                              per_market=3)
+    assert "沒網址" not in out
+    assert "…" in out                      # 有截斷記號
+    assert long_title not in out           # 不整串塞進去
+
+
+def test_reading_links_empty_when_nothing_has_a_url():
+    from stocks_power_rich.api.news import build_reading_links
+    assert build_reading_links({"tw": [{"title": "無連結", "source": "X"}]}, per_market=3) == ""

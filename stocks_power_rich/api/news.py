@@ -178,23 +178,44 @@ def render_snapshot_block(snapshot: dict, report_date: str = "") -> str:
     return "\n".join(lines)
 
 
-def build_reading_links(markets: dict, per_market: int = 1) -> str:
-    """底部「延伸閱讀」——每市場一則原始新聞的行內連結。
+_READ_TITLE_MAX = 38     # 連結文字長度上限；超過截斷，避免一行在手機上洗版
 
-    刻意叫「延伸閱讀」而不是「來源」：這些是**餵給 AI 的輸入清單**的首則，不宣稱是
-    某一條 bullet 的引用出處（AI 是綜合改寫，無法逐條回溯），標成「來源」會誤導。
-    只放 3 條：Google 新聞網址實測 174～354 字元且無法縮短，多放會逼近 4096 上限。
+
+def build_reading_links(markets: dict, per_market: int = 3) -> str:
+    """底部「延伸閱讀」——**分市場列出原始標題**，每則掛該篇的原始網址。
+
+    仍叫「延伸閱讀」而不是「來源」，但意義已比以前強：這些**就是原始文章本身**
+    （原標題配原網址），不是對某一條 bullet 的引用宣稱。
+
+    **為什麼不把連結掛在每一條 bullet 上**（使用者原本的想法，討論後改成這樣）：
+    摘要是 AI 綜合改寫，一句可能併了兩三則新聞，「這句出自哪一篇」本身沒有唯一答案。
+    就算讓模型輸出來源編號、由 Python 附網址（網址不會亂編），仍擋不住「編號選錯」——
+    結果是連結看起來正常、點下去卻是另一篇，而**讀者不點開根本發現不了**。那比沒有
+    連結更糟。改成獨立列出原始標題後，歸屬 100% 正確，這個風險整個消失。
+
+    長度：Google 新聞的 CBMi… 網址實測 174～354 字元且解不出短網址（protobuf 編碼），
+    所以 per_market 直接決定訊息長度。預設 3（9 條約 +2,500 字元）；調大要留意 4096
+    上限——telegram_push.split_message 會在換行處切、不會切壞連結，但訊息則數會變多。
     """
-    rows = []
+    blocks = []
     for key in ("tw", "jp", "us"):
         flag, name = _MARKET_META[key]
-        for item in (markets.get(key) or [])[:per_market]:
+        rows = []
+        for item in (markets.get(key) or []):
             url = item.get("url")
-            if url:
-                rows.append(telegram_push.mdv2_link(f"{flag} {item.get('source') or name}", url))
-    if not rows:
+            if not url:
+                continue                      # 沒網址就略過，不掛死連結
+            title = str(item.get("title") or item.get("source") or name).strip()
+            if len(title) > _READ_TITLE_MAX:
+                title = title[:_READ_TITLE_MAX] + "…"
+            rows.append("• " + telegram_push.mdv2_link(title, url))
+            if len(rows) >= max(1, per_market):
+                break
+        if rows:
+            blocks.append(telegram_push.escape_mdv2(f"{flag} {name}") + "\n" + "\n".join(rows))
+    if not blocks:
         return ""
-    return telegram_push.escape_mdv2("🔗 延伸閱讀") + "\n" + "　".join(rows)
+    return telegram_push.escape_mdv2("🔗 延伸閱讀") + "\n" + "\n".join(blocks)
 
 
 # Telegram 端的強調。與網頁同一套分工：**數字用粗體、關鍵詞用底線**——兩個不同的軸，
