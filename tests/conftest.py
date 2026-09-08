@@ -71,3 +71,30 @@ def make_big5_csv(tmp_path):
         return _make_csv(tmp_path / f"s{counter['n']}.csv", data_rows, date_line, encoding, preamble_lines)
 
     return factory
+
+
+@pytest.fixture(autouse=True)
+def _no_calendar_network(request, monkeypatch):
+    """下週行事曆會去打 BLS／Fed／MOPS／Nasdaq 四個外部網站，而它只在**週日**才觸發。
+
+    不擋的話整份測試會「星期天跑跟平日跑不一樣」——`slot=evening` 的既有測試在週日
+    會真的連外，慢、看網路臉色，而且失敗原因與被測的東西無關。這是「本機全綠、
+    production 壞掉」那類問題的鏡像版本：同一份程式碼、不同環境（這裡是不同星期幾）
+    走到不同路徑。
+
+    預設回「本週無事件」。
+    要**測 `build_week_calendar` 本身**的測試標 `@pytest.mark.real_calendar` 退出這一層
+    （它們自己會樁掉底下四個 fetcher，一樣不連外）。沒有這個出口的話，那些測試會在
+    不知不覺中測到樁、斷言永遠成立。
+    """
+    if request.node.get_closest_marker("real_calendar"):
+        return
+    from stocks_power_rich.api import news as _news
+
+    monkeypatch.setattr(_news, "build_week_calendar",
+                        lambda *a, **kw: [], raising=True)
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "real_calendar: 不套用 _no_calendar_network 的樁（測試自行樁掉 fetcher）")

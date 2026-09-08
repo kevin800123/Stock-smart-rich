@@ -1,15 +1,17 @@
 """每日財經新聞：台股／美股／日股新聞 → Gemini 統整 → 供頁面顯示與 Telegram 推播共用。"""
 import re
+import time
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter
 
 from .deps import conn
 from .helpers import (get_ai_cache, set_ai_cache, ai_cooling_down,
-                      note_ai_failure, bump_ai_calls)
-from .. import gemini, telegram_push
+                      note_ai_failure, bump_ai_calls,
+                      _industry_map, _otc_industry)
+from .. import calendar_events, gemini, telegram_push
 from ..config import load_config
-from ..sources import news, taifex
+from ..sources import econ_calendar, news, taifex
 
 router = APIRouter(prefix="/api")
 
@@ -290,7 +292,8 @@ def apply_mdv2_marks(escaped: str) -> str:
 
 
 def compose_push_message(ai_text: str, snapshot: dict, markets: dict,
-                        slot: str = "afternoon", report_date: str = "") -> str:
+                        slot: str = "afternoon", report_date: str = "",
+                        calendar_block: str = "") -> str:
     """組最終 Telegram 訊息：標題＋盤面（程式）＋新聞（AI，過濾後）＋延伸閱讀（程式）。
 
     標題與盤面都由程式產生，AI 只負責中間那段新聞判讀。標題若讓 AI 出，它會連同
@@ -316,6 +319,10 @@ def compose_push_message(ai_text: str, snapshot: dict, markets: dict,
         # 先在未跳脫的文字上塞哨兵 → 跳脫 → 再換成 * 與 __（見 emphasize_push_body）
         parts.append(apply_mdv2_marks(
             telegram_push.escape_mdv2(emphasize_push_body(body))))
+    # 行事曆排在新聞之後、延伸閱讀之前：它是「接下來會發生什麼」，屬於讀完今天
+    # 之後的下一步；連結永遠留在最尾端（同既有的優先序，尾端才是被裁掉的那一段）。
+    if calendar_block:
+        parts.append(calendar_block)
     links = build_reading_links(markets)
     if links:
         parts.append(links)
@@ -493,6 +500,232 @@ def telegram_digest(summary: str, slot: str, report_date: str = "",
     return "\n\n".join(blocks)
 
 
+def _should_show_calendar(slot: str, today=None) -> bool:
+    """下週行事曆只在**週日 21:10** 那場帶（使用者規格）。
+
+    平日帶的話「下週」還很遠，而且每天重複同一份清單；週日 12:00 那場也不帶，
+    一天之內送兩次同樣的行事曆沒有意義。
+    """
+    import datetime as _dt
+    d = today or _dt.date.today()
+    return slot == "evening" and d.weekday() == 6
+
+
+def render_calendar_block(events: list, start: str, end: str) -> str:
+    """下週行事曆區塊（已跳脫的 MarkdownV2）。
+
+    **空的一週就回空字串**——印一個空框只是噪音，安靜的一週本來就該安靜。
+
+    **`macro`（FOMC／CPI／非農）標粗體＋底線，法說會與個股財報維持素面。**
+    指標是這份行事曆的主體、背景是誰要開會；全部都強調等於都不強調。強調沿用推播
+    內文既有的哨兵機制（`_B0`/`_U0` 先塞在**未跳脫**的字上，`apply_mdv2_marks` 在跳脫
+    後才換成符號）——直接在跳脫後的字串塞 `*` 會踩到反斜線（見 apply_mdv2_marks）。
+    """
+    if not events:
+        return ""
+    head = (f"🗓️ 下週行事曆（{start[5:].replace('-', '/')}"
+            f"～{end[5:].replace('-', '/')}）")
+    lines = [head]
+    last = None
+    for e in calendar_events.sort_events(events):
+        iso = e.get("date") or ""
+        if iso != last:
+            lines.append(f"{iso[5:].replace('-', '/')}"
+                         f"（{calendar_events.zh_weekday(iso)}）")
+            last = iso
+        label = e.get("label") or ""
+        if e.get("kind") == "macro":
+            label = _B0 + _U0 + label + _U1 + _B1
+        lines.append(f"　• {label}")
+    return apply_mdv2_marks(telegram_push.escape_mdv2("\n".join(lines)))
+
+
+def build_week_calendar(c, start: str, end: str, refresh: int = 0) -> list:
+    """組下週行事曆：官方總經排程 ＋ 台股法說會 ＋ 美股財報。
+
+    每個來源各自 try/except——**一個掛掉不該讓整份行事曆消失**，也不該讓整則推播
+    炸掉（同 run_update 每個 task 獨立的既有做法）。
+
+    MSCI／富時的指數調整**刻意不收**：那兩者沒有可靠的免費端點（MSCI 頁面是 JS
+    渲染、FTSE 的行事曆頁 404），只能手填一張每年會過期的表，使用者決定不放。
+
+    快取分兩層，因為兩者的變動頻率完全不同：
+      * `econcal:{year}` —— BLS／FOMC 的年度排程，一年才變一次。
+      * `weekcal:{start}` —— 法說會與財報是逐週的，以那一週的起日為鍵。
+    **兩層都讓 `refresh=1` 穿透，年度那層也不例外。** 週日排程本來就帶 refresh=1，
+    所以年度排程每週會重抓一次——這是刻意的：BLS 偶爾會改公布日（政府停擺那類），
+    一份鎖一整年的快取會讓那個修訂永遠讀不到，而錯的日期讀者無從發現。
+    每週 3 個請求的代價，換掉「安靜地拿舊日期」的風險。
+    照本專案慣例，**抓失敗一律不寫快取**，免得把失敗永久化。
+    """
+    # 跨年那一週（12/28～01/03）要兩個年度都抓。只抓起日那一年的話，落在 1 月的
+    # 事件會**安靜消失**——一年出現一次，而且沒有任何跡象顯示少了東西。
+    years = sorted({int(start[:4]), int(end[:4])})
+    macro = {"cpi": [], "empsit": [], "fomc": []}
+    for year in years:
+        got = get_ai_cache(c, f"econcal:{year}") if not refresh else None
+        if not got:
+            got = {"cpi": [], "empsit": [], "fomc": []}
+            for key, fn in (
+                    ("cpi", lambda: econ_calendar.fetch_bls_schedule("cpi")),
+                    ("empsit", lambda: econ_calendar.fetch_bls_schedule("empsit")),
+                    ("fomc", lambda y=year: econ_calendar.fetch_fomc_calendar(y))):
+                try:
+                    got[key] = fn()
+                except Exception:  # noqa: BLE001
+                    pass
+            if any(got.values()):
+                set_ai_cache(c, f"econcal:{year}", got)
+        for key in macro:
+            macro[key] += got.get(key) or []
+
+    events = []
+    for row in macro.get("cpi") or []:
+        if start <= row["date"] <= end:
+            events.append({"date": row["date"], "kind": "macro",
+                           "label": f"美國 CPI（{_ref_zh(row.get('ref'))}）"})
+    for row in macro.get("empsit") or []:
+        if start <= row["date"] <= end:
+            events.append({"date": row["date"], "kind": "macro",
+                           "label": f"美國非農就業（{_ref_zh(row.get('ref'))}）"})
+    for row in macro.get("fomc") or []:
+        if start <= row["date"] <= end:
+            tail = "（含經濟預測）" if row.get("projections") else ""
+            events.append({"date": row["date"], "kind": "macro",
+                           "label": f"FOMC 利率決議{tail}"})
+
+    week = get_ai_cache(c, f"weekcal:{start}") if not refresh else None
+    if not week:
+        week = {"tw": [], "jp": [], "us": []}
+        for key, fn in (("tw", lambda: _tw_conferences_for(c, start, end)),
+                        ("jp", lambda: _jp_earnings_for(start, end)),
+                        ("us", lambda: _us_earnings_for(start, end))):
+            try:
+                week[key] = fn()
+            except Exception:  # noqa: BLE001 — 一個市場掛掉不該讓另外兩個消失
+                pass
+        if any(week.values()):
+            set_ai_cache(c, f"weekcal:{start}", week)
+    for key in ("tw", "jp", "us"):
+        events += week.get(key) or []
+
+    return calendar_events.sort_events(events)
+
+
+_REF_MONTH = re.compile(r"^([A-Z][a-z]+)\s+(\d{4})$")
+_REF_ZH = {"January": "1 月", "February": "2 月", "March": "3 月", "April": "4 月",
+           "May": "5 月", "June": "6 月", "July": "7 月", "August": "8 月",
+           "September": "9 月", "October": "10 月", "November": "11 月",
+           "December": "12 月"}
+
+
+def _ref_zh(ref: str | None) -> str:
+    """BLS 的參考月（"August 2026"）→「8 月」。認不出來就原樣帶過，不硬翻。"""
+    m = _REF_MONTH.match((ref or "").strip())
+    return _REF_ZH.get(m.group(1), ref) if m else (ref or "")
+
+
+def _tw_conferences_for(c, start: str, end: str) -> list:
+    """台股法說會，只留大型權值股。
+
+    全市場一個月 150+ 場，全列出來沒人看；「大型」用**市值**判定
+    （已發行股數 × 最近收盤），股數來自既有的 `_industry_map`／`_otc_industry`
+    月快取，不另開資料源。查不到股數或收盤的就不列——寧可少列，也不要把一檔
+    小公司混進「權值股」清單。
+    """
+    months = {(int(d[:4]) - 1911, int(d[5:7]))
+              for d in (start, end)}          # 跨月的一週要抓兩個月
+    rows = []
+    for roc_year, month in sorted(months):
+        for market in ("sii", "otc"):
+            try:
+                rows += econ_calendar.fetch_tw_conferences(roc_year, month, market)
+            except Exception:  # noqa: BLE001
+                pass
+
+    universe = {**_otc_industry(c), **_industry_map(c)}
+    closes = dict(c.execute(
+        "SELECT code, close FROM stock_ohlc WHERE date=("
+        "SELECT MAX(date) FROM stock_ohlc) AND close IS NOT NULL").fetchall())
+
+    out = []
+    for r in rows:
+        if not (start <= r["date"] <= end):
+            continue
+        info = universe.get(r["code"]) or {}
+        shares, close = info.get("shares"), closes.get(r["code"])
+        if not shares or not close:
+            continue
+        cap = float(shares) * float(close)
+        if cap < calendar_events.TW_LARGECAP_MIN:
+            continue
+        out.append({"date": r["date"], "kind": "conference", "market_cap": cap,
+                    "code": r["code"],
+                    "label": f"{r['name']}（{r['code']}）法說會 {r['time']}".strip()})
+    # 去重排在限額之前：同一檔同一天的第二場會吃掉一個名額（實跑踩到，見 dedupe_by_day）
+    out = calendar_events.dedupe_by_day(out, "code")
+    return [{k: v for k, v in e.items() if k not in ("market_cap", "code")}
+            for e in calendar_events.pick_big_caps(
+                out, calendar_events.TW_LARGECAP_MIN,
+                calendar_events.EARNINGS_LIMIT)]
+
+
+def _jp_earnings_for(start: str, end: str) -> list:
+    """日股財報，只留大型權值股。
+
+    排程走 **JPX 官方「決算発表予定日」xlsx**（每個會計月份一個檔、檔名帶更新日期，
+    所以連結要從頁面解析）。那份檔案**沒有市值**，而不濾的話這一段會塞滿小型股
+    （實測 2026-09-14 那週前幾筆是 ANAP／アスクル／サツドラ）——市值改由本專案
+    既有的 TradingView scanner 補（同海期監控那個端點，已證實從 Zeabur 打得到），
+    一次 POST 涵蓋整週的候選代號。`market_cap_basic` 實測回**美元**，所以與美股共用
+    同一條門檻，不必另立一個日圓門檻。
+    """
+    rows = [r for r in econ_calendar.fetch_jp_earnings_schedule()
+            if start <= r["date"] <= end]
+    rows = calendar_events.dedupe_by_day(rows, "code")
+    if not rows:
+        return []
+    caps = econ_calendar.fetch_market_caps(
+        sorted({f"TSE:{r['code']}" for r in rows}))
+    if not caps:
+        return []          # 拿不到市值就整段略過——沒有市值就無從判斷「大型」
+    for r in rows:
+        r["market_cap"] = caps.get(r["code"], 0.0)
+    picked = calendar_events.pick_big_caps(
+        rows, calendar_events.US_MEGACAP_MIN, calendar_events.EARNINGS_LIMIT)
+    return [{"date": r["date"], "kind": "earnings",
+             "label": f"{r['name']}（{r['code']}）{r['kind'] or '決算'}".strip()}
+            for r in picked]
+
+
+def _us_earnings_for(start: str, end: str) -> list:
+    """美股財報，只留大型權值股。Nasdaq 的行事曆一天一個請求，故逐日抓平日五天。"""
+    import datetime as _dt
+
+    d0 = _dt.date.fromisoformat(start)
+    rows = []
+    for i in range(7):
+        d = d0 + _dt.timedelta(days=i)
+        if d.weekday() >= 5 or d.isoformat() > end:
+            continue
+        try:
+            rows += econ_calendar.fetch_us_earnings(d.isoformat())
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.3)
+    picked = calendar_events.pick_big_caps(
+        rows, calendar_events.US_MEGACAP_MIN, calendar_events.EARNINGS_LIMIT)
+    # 「名稱（代號）」與台股法說會、日股決算同一種格式——只寫代號的話 `V 財報`／
+    # `PEP 財報` 看不出是誰（使用者要求補上）。Nasdaq 的 name 帶法律後綴，先清掉。
+    out = []
+    for r in picked:
+        who = calendar_events.clean_company_name(r["name"]) or r["symbol"]
+        sess = f"（{r['session']}）" if r["session"] else ""
+        out.append({"date": r["date"], "kind": "earnings",
+                    "label": f"{who}（{r['symbol']}）財報{sess}"})
+    return out
+
+
 def _current_slot(now: datetime | None = None) -> str:
     """依台北時間判斷最接近哪個時段（07:00／17:00／21:00），供未帶 slot 的手動呼叫使用。"""
     h = (now or datetime.now(_TAIPEI)).hour
@@ -600,7 +833,19 @@ def news_logic(c, slot: str | None = None, refresh: int = 0) -> dict:
     # 21:10 推播只有盤面加一句「AI 摘要暫時無法使用」，內容整段消失。
     raw_push = (telegram_digest(summary, slot, today, snapshot) if result.get("enabled")
                 else headline_digest(markets, slot))
-    telegram_text = compose_push_message(raw_push, snapshot, markets, slot, today)
+    # 下週行事曆只掛在週日 21:10 那場。整段用 try 包住——行事曆的四個來源都是
+    # 外部網站，任何一個出狀況都不該讓今天的新聞推播消失。
+    calendar_block = ""
+    if _should_show_calendar(slot):
+        try:
+            start, end = calendar_events.next_week_range(
+                datetime.now(_TAIPEI).date())
+            events = build_week_calendar(c, start, end, refresh=refresh)
+            calendar_block = render_calendar_block(events, start, end)
+        except Exception:  # noqa: BLE001
+            calendar_block = ""
+    telegram_text = compose_push_message(raw_push, snapshot, markets, slot,
+                                         today, calendar_block)
     payload = {"date": today, "slot": slot, "summary": summary,
               "telegram_text": telegram_text,
               "enabled": result.get("enabled", False),

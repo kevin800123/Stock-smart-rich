@@ -1,3 +1,4 @@
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -985,3 +986,184 @@ def test_telegram_digest_uses_the_snapshot_to_filter_key_figures():
     out = telegram_digest(brief, "afternoon", "2026-08-18", snap)
     assert "外資賣超 119 億元" in out
     assert "548.59" not in out
+
+
+def test_calendar_only_appears_on_the_sunday_evening_push():
+    """使用者規格：週日 21:10 那場才帶下週行事曆。平日帶的話「下週」還很遠，
+    而且每天重複同一份清單。"""
+    from datetime import date
+    from stocks_power_rich.api.news import _should_show_calendar
+
+    sunday, monday, friday = date(2026, 9, 13), date(2026, 9, 14), date(2026, 9, 18)
+    assert _should_show_calendar("evening", sunday) is True
+    assert _should_show_calendar("midday", sunday) is False       # 週日 12:00 不帶
+    assert _should_show_calendar("evening", monday) is False
+    assert _should_show_calendar("evening", friday) is False
+
+
+def test_render_calendar_block_groups_by_day_with_weekday():
+    from stocks_power_rich.api.news import render_calendar_block
+
+    out = render_calendar_block([
+        {"date": "2026-09-15", "kind": "macro", "label": "美國 8 月 CPI"},
+        {"date": "2026-09-16", "kind": "macro", "label": "FOMC 利率決議（含經濟預測）"},
+        {"date": "2026-09-16", "kind": "earnings", "label": "ORCL 財報（盤後）"},
+    ], "2026-09-14", "2026-09-20")
+
+    assert "下週行事曆" in out
+    assert "09/15" in out and "（二）" in out
+    assert "美國 8 月 CPI" in out and "FOMC" in out and "ORCL" in out
+    # 同一天兩筆只印一次日期
+    assert out.count("09/16") == 1
+
+
+def test_render_calendar_block_says_nothing_when_the_week_is_empty():
+    """安靜的一週就該安靜——印一個空框只是噪音。"""
+    from stocks_power_rich.api.news import render_calendar_block
+    assert render_calendar_block([], "2026-09-14", "2026-09-20") == ""
+
+
+def test_calendar_block_survives_markdownv2_escaping():
+    """行事曆的內容會帶 MarkdownV2 保留字元（`.`、`(`、`)`、`-`）。跳脫漏掉會讓
+    整則退回純文字——訊息照送、粗體與行內連結全失效，而且是**無聲的**
+    （見 compose_push_message 的說明）。"""
+    from stocks_power_rich.api.news import render_calendar_block
+
+    out = render_calendar_block(
+        [{"date": "2026-09-15", "kind": "earnings",
+          "label": "ORCL Q1 (after-hours) rev. up 12.3%"}],
+        "2026-09-14", "2026-09-20")
+
+    for ch in ".()-":
+        assert f"\{ch}" in out, ch
+    # 反證：不能有「沒被反斜線保護」的保留字元。寫成 `assert "(after" not in out`
+    # 是錯的——跳脫後的 `\(after` 本身就含有那個子字串，那個斷言恆真。
+    naked = [i for i, ch in enumerate(out)
+             if ch in ".()-" and (i == 0 or out[i - 1] != "\\")]
+    assert naked == [], [out[max(0, i - 6):i + 3] for i in naked]
+
+
+def test_sunday_evening_push_actually_asks_for_the_calendar(tmp_path, monkeypatch):
+    """conftest 的 autouse fixture 把 `build_week_calendar` 樁掉了（免得測試在**週日**
+    真的去連 BLS／Fed／MOPS／Nasdaq），所以要另外驗一次整條接線：週日 21:10 那場
+    真的會去要行事曆，而且結果有進到 telegram_text。少了這一條，那個樁會讓接線在
+    完全沒有測試涵蓋的情況下悄悄斷掉。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.api import news as news_api
+    from stocks_power_rich.main import create_app
+
+    called = {}
+
+    def fake_build(c, start, end, refresh=0):
+        called["range"] = (start, end)
+        return [{"date": start, "kind": "macro", "label": "美國 CPI（8 月）"}]
+
+    monkeypatch.setattr(news_api, "build_week_calendar", fake_build)
+    monkeypatch.setattr(news_api, "_should_show_calendar", lambda slot, today=None: True)
+    monkeypatch.setattr(news_api.news, "fetch_market_news",
+                        lambda market, n=20, now=None: ([{"title": f"{market} 頭條",
+                                                          "url": "https://x", "source": "來源"}], False))
+    monkeypatch.setattr(news_api.gemini, "summarize_news",
+                        lambda *a, **k: {"enabled": False, "text": ""})
+
+    text = TestClient(create_app()).get("/api/news?slot=evening").json()["telegram_text"]
+    assert "下週行事曆" in text and "美國 CPI" in text
+    assert called["range"][0] < called["range"][1]
+    # 行事曆排在延伸閱讀之前（連結永遠在最尾端＝被裁掉的那一段）
+    assert text.index("下週行事曆") < text.index("延伸閱讀")
+
+
+def test_calendar_is_absent_from_a_weekday_push(tmp_path, monkeypatch):
+    """反證：不是「只要接上去就一定看得到」——平日那幾場必須沒有這一段。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t2.sqlite"))
+    from stocks_power_rich.api import news as news_api
+    from stocks_power_rich.main import create_app
+
+    monkeypatch.setattr(news_api, "build_week_calendar",
+                        lambda *a, **kw: [{"date": "2026-09-14", "kind": "macro",
+                                           "label": "美國 CPI（8 月）"}])
+    monkeypatch.setattr(news_api, "_should_show_calendar", lambda slot, today=None: False)
+    monkeypatch.setattr(news_api.news, "fetch_market_news",
+                        lambda market, n=20, now=None: ([{"title": f"{market} 頭條",
+                                                          "url": "https://x", "source": "來源"}], False))
+    monkeypatch.setattr(news_api.gemini, "summarize_news",
+                        lambda *a, **k: {"enabled": False, "text": ""})
+
+    text = TestClient(create_app()).get("/api/news?slot=midday").json()["telegram_text"]
+    assert "下週行事曆" not in text
+
+
+@pytest.mark.real_calendar
+def test_week_calendar_covers_both_years_when_the_week_crosses_new_year(tmp_path, monkeypatch):
+    """跨年那一週（12/28～01/03）如果只抓起日那一年的排程，**落在 1 月的事件會安靜
+    消失**——一年出現一次、剛好是行事曆最該正確的時候之一，而且沒有任何跡象。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db
+    from stocks_power_rich.api import news as news_api
+
+    asked = []
+
+    def fake_bls(kind):
+        return [{"date": "2027-01-04", "ref": "December 2026"}] if kind == "cpi" else []
+
+    def fake_fomc(year):
+        asked.append(year)
+        return [{"date": f"{year}-01-02", "projections": False}]
+
+    monkeypatch.setattr(news_api.econ_calendar, "fetch_bls_schedule", fake_bls)
+    monkeypatch.setattr(news_api.econ_calendar, "fetch_fomc_calendar", fake_fomc)
+    monkeypatch.setattr(news_api, "_tw_conferences_for", lambda *a: [])
+    monkeypatch.setattr(news_api, "_us_earnings_for", lambda *a: [])
+
+    c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
+    events = news_api.build_week_calendar(c, "2026-12-28", "2027-01-03", refresh=1)
+
+    assert sorted(asked) == [2026, 2027], asked
+    assert any(e["date"] == "2027-01-02" for e in events), events
+
+
+def test_macro_indicators_are_bold_and_underlined():
+    """FOMC／CPI／非農這類**指標**是這份行事曆的主體，法說會與個股財報是背景。
+    強調沿用推播內文既有的那套哨兵機制（`_B0`/`_U0` → 跳脫後才換成符號），
+    不另寫第二套——直接在跳脫後的字串塞 `*` 會踩到反斜線（見 apply_mdv2_marks）。"""
+    from stocks_power_rich.api.news import render_calendar_block
+
+    out = render_calendar_block([
+        {"date": "2026-09-16", "kind": "macro", "label": "FOMC 利率決議"},
+        {"date": "2026-09-16", "kind": "conference", "label": "廣達（2382）法說會 09:00"},
+        {"date": "2026-09-17", "kind": "earnings", "label": "AAPL 財報"},
+    ], "2026-09-14", "2026-09-20")
+
+    assert "*__FOMC 利率決議__*" in out
+    # 法說會與財報維持素面——全部都強調等於都不強調
+    assert "*__廣達" not in out and "__AAPL" not in out
+
+
+def test_marked_label_keeps_its_inner_characters_escaped():
+    """強調不能繞過跳脫：`（8 月）` 的全形括號沒事，但 `.`、`(`、`-` 這些仍要跳脫，
+    漏一個整則就退回純文字（無聲失效）。"""
+    from stocks_power_rich.api.news import render_calendar_block
+
+    out = render_calendar_block(
+        [{"date": "2026-09-11", "kind": "macro", "label": "美國 CPI (8 月) rev. 2.1%"}],
+        "2026-09-07", "2026-09-13")
+
+    bs = chr(92)
+    naked = [i for i, ch in enumerate(out)
+             if ch in ".()-" and (i == 0 or out[i - 1] != bs)]
+    assert naked == [], [out[max(0, i - 6):i + 3] for i in naked]
+    assert out.count("*__") == 1 and out.count("__*") == 1
+
+
+def test_two_macro_events_in_a_row_do_not_produce_a_broken_marker_pair():
+    """相鄰的兩段標記會併出 `____`，Telegram 認不出配對就**整則退回純文字**
+    （訊息照送、格式全失效，而且無聲）。行事曆每筆自成一行，這裡鎖住這個前提。"""
+    from stocks_power_rich.api.news import render_calendar_block
+
+    out = render_calendar_block([
+        {"date": "2026-09-16", "kind": "macro", "label": "FOMC 利率決議"},
+        {"date": "2026-09-16", "kind": "macro", "label": "美國 CPI"},
+    ], "2026-09-14", "2026-09-20")
+
+    assert "____" not in out and "**" not in out
+    assert out.count("*__") == 2 and out.count("__*") == 2

@@ -127,6 +127,25 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - **誠實標註**：逗號 bug 是真的但在該樣本救回 0 則，改善要靠 prompt。**不要因為「修了一個真 bug」就宣稱改善幅度**。
 - **網頁把「關鍵數據：無」整列隱藏**（`NEWS_NO_DATA`）。`無` 這個選項**必須錨死**否則「無償配股 12 億元」會被吃掉；`來源未提供…` 後面還有字，不能用同一種錨點。實跑真實輸出驗證 18→13 列、其餘 78 列未受影響。
 - **快取版號進 `news:v8:`**（含 `headlines_logic` 掃的鍵）。
+
+### 下週行事曆（週日 21:10，2026-09；純推播，無前端改動故不跳 ui 版號）
+
+`calendar_events.py`（純組裝）＋`sources/econ_calendar.py`（四來源 parse/fetch）＋`api/news.py` 的 `_should_show_calendar`／`build_week_calendar`／`render_calendar_block`。只掛週日 21:10。
+
+- **唯一風險是「日期寫錯」，而錯的日期讀者無從發現**。紀律：**日期一律取自官方排程，不用可計算規則推算**。實測「非農＝每月第一個週五」2026 年 12 個月會錯 4 個月（2026/01 發布在 **2/11 週三**、2026/06 在 7/02 週四撞國慶）。改抓 BLS `bls.gov/schedule/news_release/{cpi,empsit}.htm`，**只取日期不取時間**（08:30 ET 隨日光節約在台北 20:30／21:30 跳動）。
+- **台指期結算（第三個週三）刻意不納入**——遇假日位移，性質同上面被否決的規則。
+- **FOMC 的月份與日期必須同一個 match 成對擷取**。寫成「兩份 findall 再 zip」實跑得到 4 筆，**只有第一筆是對的**，其餘是交叉配對出來的假日期。正解 8 場，取「27-28」的**第二天**（決議日），`*`＝含經濟預測；一頁多年度，要先切年度區塊。
+- 法說會走 **`mopsov`**（`mops.twse.com.tw` 回 FOR SECURITY REASONS），用市值濾到 3,000 億；美股財報走 Nasdaq `api.nasdaq.com/api/calendar/earnings`（免金鑰、**自帶 marketCap**，門檻取代手動名單）。**同一天同一檔要去重、且去重排在限額之前**（實測廣達同日兩場會吃掉名額）。
+- **`macro`（FOMC／CPI／非農）標粗體＋底線、法說會與財報素面**（使用者要求）；沿用推播內文既有的哨兵機制，相鄰兩段會併出 `____` 讓 Telegram 整則無聲退純文字，每筆自成一行所以不相鄰（有測試鎖住）。
+- **日股財報走 JPX 官方 xlsx**（檔名帶日期會變，連結要從頁面解析）；那份檔**沒有市值**，用既有的 TradingView scanner 補（`market_cap_basic` 實測是**美元**，故與美股共用門檻）。JPX 只公布已結束的會計季 → 可見視窗約 6～8 週，日本淡季整週空白是正確結果（實測 8/25～10/23 全市場僅 1 檔過 $50B，那週確實有亮）。
+- **三市場統一「名稱（代號）」**（使用者要求補股號）；美股原本只有 ticker，`clean_company_name` 剝掉 Nasdaq 的法律後綴（長後綴要排前面，否則 `Corp.` 吃掉 `Corporation` 前半）。
+- **MSCI／富時查證後無可靠免費端點**（MSCI JS 渲染、FTSE 404）→ 只能手填每年會過期的表，**使用者決定不放**，這兩類完全不收。要加回來也只能手填＋標明涵蓋範圍，不可憑規則推算。
+- 空的一週回空字串。美股財報空窗期整週掛零是**正確**結果（實測 09/14 那週最大僅 TCOM 260 億美元；10/26 那週 AAPL／AMZN／TSLA 全在）。
+- **跨年那一週要抓兩個年度的排程。** 只用起日那一年（`int(start[:4])`）的話，
+  12/28～01/03 那一週落在 1 月的事件會**安靜消失**——一年只出現一次，而且沒有任何
+  跡象顯示少了東西。`years = {int(start[:4]), int(end[:4])}` 逐年抓、逐年快取後合併。
+- **測試不可以「星期天跑跟平日跑不一樣」**：`slot=evening` 的既有測試在週日會真的連外，`tests/conftest.py` 用 autouse fixture 把 `build_week_calendar` 樁掉，另補兩條鎖住接線。守衛做過反證（覆寫 fixture 後實測 12.2 秒＝確實在連外）。
+- 兩層快取（`econcal:{year}`／`weekcal:{start}`）都讓 `refresh=1` 穿透——週日排程本來就帶 refresh=1，年度排程每週重抓一次是刻意的（BLS 會改公布日）。
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.
