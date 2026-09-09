@@ -1518,10 +1518,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260817-ui47"' in html.text
-    assert 'href="/styles.css?v=20260817-ui47"' in html.text
-    assert 'src="app.js?v=20260817-ui47"' not in html.text
-    assert 'href="styles.css?v=20260817-ui47"' not in html.text
+    assert 'src="/app.js?v=20260817-ui48"' in html.text
+    assert 'href="/styles.css?v=20260817-ui48"' in html.text
+    assert 'src="app.js?v=20260817-ui48"' not in html.text
+    assert 'href="styles.css?v=20260817-ui48"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",
@@ -3105,3 +3105,54 @@ def test_refresh_self_screen_cache_says_why_it_skipped(tmp_path, monkeypatch):
     upsert_market_daily(conn, {"date": "2026-09-07", "taiex": 20000.0})
     conn.commit()
     assert H.refresh_self_screen_cache(conn)["skipped"] == "empty_universe"
+
+
+def test_snapshots_endpoint_reports_how_far_behind_the_csv_is(tmp_path, monkeypatch):
+    """籌碼選股頁吃 CSV，使用者決定停止每日上傳但**保留這一頁**。那一頁原本只有一個
+    日期下拉選單——看得到日期，卻**沒有任何參照告訴你那是不是今天**，於是它會安靜地
+    一直顯示同一份選股。端點回市場最新日與落後天數，前端才有東西可比。
+
+    落差用**日曆天**而非交易日，沿用 renderFreshness 的既有決定：跨週末說「落後 3 天」
+    是事實，硬換算成「落後 1 個交易日」會讓週一早上看起來像資料很新。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(create_app())
+    from stocks_power_rich.db import (get_connection, init_db, upsert_market_daily,
+                                      insert_chip_snapshot)
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-09-07", "taiex": 20000.0})
+    insert_chip_snapshot(c, "2026-08-28", [{"code": "2330.TW", "name": "台積電"}])
+    c.commit()
+
+    d = client.get("/api/snapshots").json()
+    assert d["dates"] == ["2026-08-28"]
+    assert d["market_date"] == "2026-09-07"
+    assert d["behind_days"] == 10          # 08-28 → 09-07 的日曆天
+
+
+def test_snapshots_behind_days_is_zero_when_the_csv_is_current(tmp_path, monkeypatch):
+    """還在天天上傳時這個提示必須完全不出現——不然它會變成永遠亮著的裝飾。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(create_app())
+    from stocks_power_rich.db import (get_connection, init_db, upsert_market_daily,
+                                      insert_chip_snapshot)
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-09-07", "taiex": 20000.0})
+    insert_chip_snapshot(c, "2026-09-07", [{"code": "2330.TW", "name": "台積電"}])
+    c.commit()
+
+    d = client.get("/api/snapshots").json()
+    assert d["behind_days"] == 0
+
+
+def test_snapshots_behind_days_is_none_when_either_side_is_missing(tmp_path, monkeypatch):
+    """沒有 CSV 或沒有市場資料時**算不出來就回 None**，不要回 0 假裝「很新」
+    ——那正是這條提示要防的那種安靜的錯（同全站「算不出回 None」的慣例）。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    client = TestClient(create_app())
+    d = client.get("/api/snapshots").json()
+    assert d["dates"] == [] and d["market_date"] is None and d["behind_days"] is None

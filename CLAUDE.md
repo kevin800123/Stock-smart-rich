@@ -763,6 +763,32 @@ CSV 一停就會**永遠送出最後一份名單、而且沒有任何跡象**—
   無 OHLC≥55），不是故障。
 - **本機量到的 0.42s 不具代表性**：dev DB 沒有季報也沒有 OHLC≥55，貴的那半根本沒跑滿
   （本機入選恆 0，見「本機驗證的陷阱」那條）。production 的實際耗時要部署後才知道。
+
+### 籌碼選股頁保留，但要讓「CSV 已經凍住」看得見（ui48，2026-09）
+
+使用者決定**停止每日上傳 CSV，但保留籌碼選股頁**（不退役）。那一頁本來只有一個日期
+下拉選單——**看得到日期，卻沒有任何參照告訴你那是不是今天**，所以停止上傳之後它會
+安靜地一直顯示同一份選股。這正是「寧可大聲壞掉，也不要安靜地錯」那條原則要防的。
+
+- `GET /api/snapshots` 從只回 `dates` 改成同時回 `market_date` 與 `behind_days`。
+  **任一邊缺就回 `None`，不回 0 假裝很新**——那正是這條提示要防的那種安靜的錯
+  （同全站「算不出回 None」的慣例）。
+- **落差用日曆天而非交易日**，沿用 `renderFreshness` 的既有決定：跨週末說「落後 3 天」
+  是事實，硬換算成「落後 1 個交易日」會讓週一早上看起來像資料很新。
+- **`CSV_STALE_DAYS = 2` 才提示**：落後 1 天是常態（21:00 才更新、假日不上傳），
+  1 天就叫會變成永遠亮著的裝飾。
+- **沿用既有的 `.freshness` / `.freshness.stale`，不另開一份近乎一樣的樣式。**
+  第一版自己寫了 `.csv-stale`，還用了一個**根本不存在的 token** `--accent-warn`
+  （靠 fallback 值僥倖看起來正確）。全站琥珀是 `var(--accent)`，而 `.freshness`
+  連 `:empty { display:none }`、圓角、字級都已經是要的樣子——複製一份只會像
+  `#selfcheck-table` / `#self-screen-table` 那樣各自漂移（CLAUDE.md 記過）。
+- **實跑四種狀態驗過**（今天剛上傳 0 天／昨天 1 天／停了 10 天／算不出來），
+  只有第三種會顯示，色值確認是 `rgb(245,181,68)` ＝ `--accent`。不是恆真的裝飾。
+
+**尚未處理的其餘三處**仍是 `filtered_picks(get_snapshot(...))`：`api/market.py`
+（族群 picks）、`api/public.py`（公開總覽）、`api/helpers.py` 的 `_picks_code_set`
+（盤中突破警示的 ⭐ 標記）。週報那條已有守衛（`weekly_line_job` 檢查快照距今 >7 天），
+每日 LINE 推播則是以 `market_daily` 是否為今日把關、不看 CSV。
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.

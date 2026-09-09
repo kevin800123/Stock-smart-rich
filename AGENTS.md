@@ -157,6 +157,13 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - 順帶解掉一個會持續惡化的成本：舊版每次全表掃 `chip_snapshot`（每上傳一次就長一截），實測 **35.2ms → 1.7ms**。
 - **刷新掛在資料寫入邊界（`insert_chip_snapshot`）而非 `csv_import`**——掛呼叫端會讓其他寫入者悄悄落後（既有 `build_self_screen` 測試當場掛掉）。全表重掃是刻意的：補匯入舊 CSV 時仍要保持取最新。
 - **核心契約有測試鎖住**：`chip_snapshot` 清空後 `sub_industry_map` 仍回得到值。凍結表對現在全市場 1,974 檔涵蓋 89.8%，缺的退回官方類股、由 `coverage.with_subindustry` 揭露。
+### 籌碼選股頁保留但標出 CSV 已凍住（ui48，2026-09）
+
+- 使用者決定**停止上傳但保留這一頁**。它原本只有日期下拉選單，看得到日期卻沒有參照——停止上傳後會安靜顯示同一份選股。
+- `GET /api/snapshots` 加 `market_date`／`behind_days`（**任一邊缺回 None，不回 0 假裝很新**）；落差用**日曆天**（同 renderFreshness）；`CSV_STALE_DAYS=2` 才提示（落後 1 天是常態）。
+- **沿用既有 `.freshness.stale`**，不另開樣式——第一版自寫 `.csv-stale` 還用了不存在的 token `--accent-warn`（靠 fallback 僥倖正確）。全站琥珀是 `var(--accent)`。
+- 實跑四種狀態驗過，只有「落後 ≥2 天」會顯示。
+
 - **⚠️ 停止上傳 CSV 仍會凍住四個地方**（尚未處理）：`api/csv.py`（選股頁）、`api/helpers.py`（**LINE／Telegram 推播的今日精選與週報**）、`api/market.py`（族群 picks）、`api/public.py`（公開總覽）——都是 `filtered_picks(get_snapshot(...))`，會永遠送出最後一份名單且無跡象。第五個（`record_self_screen_signals` 的前瞻追蹤）已於「每日排程預算＋快取」那批修掉。
 
 ### 自算選股改「每日排程預算＋快取」（2026-09）

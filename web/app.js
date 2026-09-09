@@ -45,6 +45,8 @@ let hmDetailExpanded = false;
 // 大戶買進版圖只畫前 50 大子產業：全市場常有 ~400 個子產業，長尾在固定版圖裡是
 // 小於一個標籤寬的微格、讀不到，只把右側糊成一團（見 renderSelfScreenBubbles）。
 const SS_MAP_LIMIT = 50;
+// CSV 落後幾天才提示。1 天是常態（21:00 才更新、假日不上傳），2 天起才值得說。
+const CSV_STALE_DAYS = 2;
 let cupChart = null, cupMatches = [], cupLoaded = false;
 // 自算籌碼/基本選股（全市場自算池）：進頁才載入（比照 cupLoaded）。
 let selfScreenLoaded = false;
@@ -3104,8 +3106,21 @@ async function loadDaily(date) {
 }
 async function loadDates() {
   try {
-    const dates = (await getJSON("/api/snapshots")).dates || [];
-    $("date-select").innerHTML = dates.map((d) => `<option value="${d}">${d}</option>`).join("");
+    const d = await getJSON("/api/snapshots");
+    const dates = d.dates || [];
+    $("date-select").innerHTML = dates.map((x) => `<option value="${x}">${x}</option>`).join("");
+    // 這一頁吃 CSV。停止上傳之後它會安靜地一直顯示同一份選股——日期看得到，卻沒有
+    // 任何參照告訴你那是不是今天。落後才顯示（`:empty` 讓它平時整塊消失），天數用
+    // 日曆天，同頂欄新鮮度徽章的既有決定。
+    // 沿用頂欄新鮮度徽章那個 class，不另開一份近乎一樣的樣式（會漂移，CLAUDE.md 記過）
+    const st = $("csv-stale");
+    if (st) {
+      const n = d.behind_days;
+      const late = n != null && n >= CSV_STALE_DAYS;
+      st.className = late ? "freshness stale" : "freshness";
+      st.textContent = late ? `⚠ 落後市場 ${n} 天，未再上傳` : "";
+      st.title = n != null ? `CSV 資料日 ${dates[dates.length - 1] || "—"}／市場最新 ${d.market_date}` : "";
+    }
     await loadDaily(dates[dates.length - 1]);
   } catch (e) { $("upload-info").innerHTML = `<span class="err-text">載入資料日期失敗：${esc(e.message)}</span>`; }
 }

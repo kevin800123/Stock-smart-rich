@@ -1,9 +1,11 @@
 import os
 import tempfile
+from datetime import date
 from fastapi import APIRouter, File, UploadFile
 from .deps import conn
 from .helpers import (
     _clear_csv_cache,
+    _latest_date,
     effective_data_dir,
     MAX_UPLOAD_BYTES,
     UPLOAD_EXTS
@@ -82,4 +84,20 @@ def import_all():
 
 @router.get("/snapshots")
 def snapshots():
-    return {"dates": get_snapshot_dates(conn())}
+    """CSV 快照日清單 ＋ **它落後市場多少天**。
+
+    籌碼選股頁吃 CSV，而使用者已決定停止每日上傳、只保留這一頁。那一頁原本只有一個
+    日期下拉選單——看得到日期，卻**沒有任何參照告訴你那是不是今天**，於是停止上傳後
+    它會安靜地一直顯示同一份選股。有了市場最新日，前端才有東西可比。
+
+    落差用**日曆天**而非交易日，沿用 renderFreshness 的既有決定：跨週末說「落後 3 天」
+    是事實，硬換算成「落後 1 個交易日」會讓週一早上看起來像資料很新。
+    任一邊缺就回 None，**不回 0 假裝很新**——那正是這條提示要防的那種安靜的錯。
+    """
+    c = conn()
+    dates = get_snapshot_dates(c)
+    market = _latest_date(c)
+    behind = None
+    if dates and market:
+        behind = (date.fromisoformat(market) - date.fromisoformat(dates[-1])).days
+    return {"dates": dates, "market_date": market, "behind_days": behind}
