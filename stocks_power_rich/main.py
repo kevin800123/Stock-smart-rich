@@ -28,6 +28,7 @@ from .api.helpers import (
     _check_update_result_and_alert,
     _os_futures,
     _intraday_scan,
+    refresh_self_screen_cache as _refresh_self_screen_cache,
     line_quota_paused,
     _is_quota_exceeded,
     _note_line_quota_exceeded,
@@ -148,35 +149,10 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         except Exception:  # noqa: BLE001
             pass
         try:
-            # 自算選股：每日排程**算一次、存一次**，網頁／推播／公開頁都吃這份快取。
-            # 全市場逐檔自算（季報／月營收／集保／法人／OHLC 約 2,000 檔）不能放進請求路徑
-            # ——同「請求裡不要放無界時間的同步計算」那條教訓（stock-flow/research 與
-            # financials/backfill-report 都踩過）。前瞻追蹤（signal_ledger）吃同一份，
-            # 不重算。universe 從 api.helpers 取——ledger/selfcheck 屬核心層不反向依賴，
-            # 由這裡（協調層）餵進去。獨立 try：它失敗不該影響上面既有的 ledger 記錄。
-            from .ledger import record_self_screen_signals
-            from .api.helpers import _industry_map, _otc_industry, _latest_date
-            from .db import get_setting
-            from . import analysis as _an, selfcheck as _sc
-
-            def _th(key, dflt):
-                raw = get_setting(c, key)
-                try:
-                    return float(raw) if raw is not None else dflt
-                except (TypeError, ValueError):
-                    return dflt
-
-            universe = {**_otc_industry(c), **_industry_map(c)}
-            day = _latest_date(c)
-            pre = None
-            if day and universe:
-                pre = _sc.compute_self_screen(c, day, universe)
-                _sc.save_precomputed(c, pre)
-            record_self_screen_signals(
-                c, universe,
-                _th("screen_mu_value_min", _an.SCREEN_MU_VALUE_MIN),
-                _th("screen_mu_score_min", _an.SCREEN_MU_SCORE_MIN),
-                precomputed=pre)
+            # 自算選股：每日排程算一次、存快取，前瞻追蹤（signal_ledger）吃同一份。
+            # 邏輯在 api/helpers（排程 Job 的既定分工），這裡只呼叫——寫在閉包裡就測不到、
+            # 也沒辦法單獨跑一次驗證，而它被 except 包著、壞掉不會有聲音。
+            _refresh_self_screen_cache(c)
         except Exception:  # noqa: BLE001
             pass
 

@@ -733,6 +733,11 @@ async function loadSelfScreen(date, conds) {
       `可估金額 <b>${cov.with_mcap || 0}</b>`,
       `細分類 <b>${cov.with_subindustry || 0}</b>`,
       `入選 <b>${cov.picked || 0}</b>`,
+      // 「今晚排程有沒有把這份預算好」要看得見。全市場逐檔自算不能放進請求路徑，
+      // 排程失敗時它被 except 吞掉、不會有任何聲音——畫面上標出來才發現得了。
+      (d.precomputed
+        ? `<span title="每日 21:00 排程預先算好、存在快取">來源 <b>排程預算</b></span>`
+        : `<span title="快取沒有這一天，本次為即時計算">來源 <b>現算</b></span>`),
       `門檻 木率&gt;<b>${th.mu_value_min}</b>・木質&gt;<b>${th.mu_score_min}</b>`,
       // 非預設條件時明講，否則「入選變多」看起來會像資料出錯
       ...(ssConds && ssConds.length < (d.conditions || []).length

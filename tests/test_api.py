@@ -1518,10 +1518,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260817-ui46"' in html.text
-    assert 'href="/styles.css?v=20260817-ui46"' in html.text
-    assert 'src="app.js?v=20260817-ui46"' not in html.text
-    assert 'href="styles.css?v=20260817-ui46"' not in html.text
+    assert 'src="/app.js?v=20260817-ui47"' in html.text
+    assert 'href="/styles.css?v=20260817-ui47"' in html.text
+    assert 'src="app.js?v=20260817-ui47"' not in html.text
+    assert 'href="styles.css?v=20260817-ui47"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",
@@ -3066,3 +3066,42 @@ def test_self_screen_endpoint_uses_the_daily_precomputed_cache(tmp_path, monkeyp
     older = client.get("/api/picks/self-screen?date=2026-08-18").json()
     assert older["precomputed"] is False
     assert [r["code"] for r in older["rows"]] == []
+
+
+def test_refresh_self_screen_cache_writes_the_cache_and_reports_what_it_did(tmp_path, monkeypatch):
+    """排程那段被 `except: pass` 包著，壞掉不會有任何聲音——所以它必須是**可測、可單獨
+    跑一次**的具名函式，而不是寫在 main.py 閉包裡（本專案既定分工：排程 Job 的邏輯先放
+    api/helpers）。回傳值就是「這次到底做了什麼」，呼叫端不必去猜。"""
+    from stocks_power_rich.api import helpers as H
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily, get_ai_cache
+
+    monkeypatch.setattr(H, "_industry_map",
+                        lambda c: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1e9}})
+    monkeypatch.setattr(H, "_otc_industry", lambda c: {})
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    upsert_market_daily(conn, {"date": "2026-09-07", "taiex": 20000.0})
+    conn.commit()
+
+    res = H.refresh_self_screen_cache(conn)
+    assert res["cached"] is True and res["date"] == "2026-09-07"
+    assert res["universe"] == 1 and res["rows"] == 1
+    cached = get_ai_cache(conn, "selfscreen:v1")
+    assert cached and cached["date"] == "2026-09-07"
+
+
+def test_refresh_self_screen_cache_says_why_it_skipped(tmp_path, monkeypatch):
+    """「今天沒做」與「今天做了但沒選到股」是兩件事。缺市場日期或候選池為空時要講出原因，
+    不能安靜回一個看起來成功的結果。"""
+    from stocks_power_rich.api import helpers as H
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    monkeypatch.setattr(H, "_industry_map", lambda c: {})
+    monkeypatch.setattr(H, "_otc_industry", lambda c: {})
+
+    assert H.refresh_self_screen_cache(conn)["skipped"] == "no_market_date"
+    upsert_market_daily(conn, {"date": "2026-09-07", "taiex": 20000.0})
+    conn.commit()
+    assert H.refresh_self_screen_cache(conn)["skipped"] == "empty_universe"

@@ -715,6 +715,50 @@ def _os_futures(refresh: bool = False) -> dict:
     return result
 
 
+
+def refresh_self_screen_cache(c) -> dict:
+    """每日排程的自算選股：**算一次、存一次**，前瞻追蹤吃同一份。回一份可觀察的結果。
+
+    放在 helpers 而不是 main.py 的閉包裡，是本專案的既定分工（「排程 Job 需要的邏輯先
+    放 api/helpers.py，main.py 只呼叫」）——寫在閉包裡就**測不到、也沒辦法單獨跑一次
+    看它到底有沒有成功**，而它在排程裡被 `except: pass` 包著，壞掉不會有任何聲音。
+
+    全市場逐檔自算（季報／月營收／集保／法人／OHLC 約 2,000 檔）不能放進請求路徑
+    ——同「請求裡不要放無界時間的同步計算」那條教訓（stock-flow/research 與
+    financials/backfill-report 都踩過）。
+
+    回傳的 dict 就是「這次到底做了什麼」：`date`／`universe`／`cached`／`picked`／
+    `skipped`（沒做的原因）。呼叫端可以印出來，不必去猜。
+    """
+    from ..ledger import record_self_screen_signals
+    from .. import analysis, selfcheck
+
+    universe = {**_otc_industry(c), **_industry_map(c)}
+    day = _latest_date(c)
+    if not day or not universe:
+        # 缺哪一邊要講出來——「今天沒做」與「今天做了但沒選到股」是兩件事
+        return {"cached": False, "date": day, "universe": len(universe),
+                "skipped": "no_market_date" if not day else "empty_universe"}
+
+    def _th(key, dflt):
+        raw = get_setting(c, key)
+        try:
+            return float(raw) if raw is not None else dflt
+        except (TypeError, ValueError):
+            return dflt
+
+    vmin = _th("screen_mu_value_min", analysis.SCREEN_MU_VALUE_MIN)
+    smin = _th("screen_mu_score_min", analysis.SCREEN_MU_SCORE_MIN)
+    pre = selfcheck.compute_self_screen(c, day, universe)
+    selfcheck.save_precomputed(c, pre)
+    # 前瞻追蹤吃同一份，不重算（見 record_self_screen_signals 的說明）
+    record_self_screen_signals(c, universe, vmin, smin, precomputed=pre)
+    picked = len(selfcheck.build_self_screen(
+        c, day, universe, vmin, smin, precomputed=pre)["rows"])
+    return {"cached": True, "date": day, "universe": len(universe),
+            "rows": len(pre["rows"]), "sectors": len(pre["heatmap"]), "picked": picked}
+
+
 def _intraday_scan(c, push: bool = True) -> dict:
     cfg = load_config()
     # 每 5 分鐘一次的排程最容易在額度用盡當天反覆撞 429——已知本月用盡就直接不送，
