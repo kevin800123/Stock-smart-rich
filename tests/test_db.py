@@ -526,3 +526,121 @@ def test_backup_compresses_older_copies_but_keeps_newest_ready_to_restore(tmp_pa
         fo.write(fi.read())
     assert get_connection(restored).execute(
         "SELECT taiex FROM market_daily").fetchone()[0] == 47000.0
+
+
+def _seed_chip(conn, rows):
+    """rows＝[(snap_date, code, sub_industry)]，只寫細分類所需欄位。"""
+    for snap, code, sub in rows:
+        conn.execute("INSERT OR REPLACE INTO chip_snapshot (snap_date, code, sub_industry) "
+                     "VALUES (?,?,?)", (snap, code, sub))
+    conn.commit()
+
+
+def test_sub_industry_ref_is_seeded_from_chip_snapshot_taking_the_latest_value(tmp_path):
+    """細分類（記憶體／被動元件…）**只存在 XQ CSV**，官方產業別只有 ~30 大類，
+    查證過沒有免費來源能取代（產業價值鏈平台只有 69 段、35% 多重歸屬、語意是
+    「產業鏈環節」而非「公司分類」）。使用者決定停止每日上傳 CSV，所以把已累積的
+    對照表**凍結成獨立表**，不再每次全表掃 chip_snapshot（本機就已 17,698 列）。
+    同一檔跨多個 CSV 日期時取**最新**那天的值（公司會改分類）。"""
+    from stocks_power_rich.db import sub_industry_map
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _seed_chip(conn, [("2026-06-01", "2330.TW", "晶圓代工"),
+                      ("2026-06-02", "2330.TW", "先進封裝"),      # 較新 → 應勝出
+                      ("2026-06-02", "2408.TW", "記憶體"),
+                      ("2026-06-02", "6488.TWO", "被動元件")])
+    from stocks_power_rich.db import seed_sub_industry_ref
+    seed_sub_industry_ref(conn)
+
+    m = sub_industry_map(conn)
+    assert m["2330"] == "先進封裝"
+    assert m["2408"] == "記憶體" and m["6488"] == "被動元件"   # .TW/.TWO 後綴要去掉
+
+
+def test_sub_industry_survives_chip_snapshot_being_emptied(tmp_path):
+    """**這是「凍結」的核心契約**：停止上傳 CSV 之後，就算 chip_snapshot 整個消失，
+    細分類仍然讀得到——泡泡圖的分群不會跟著 CSV 一起停擺。"""
+    from stocks_power_rich.db import sub_industry_map, seed_sub_industry_ref
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _seed_chip(conn, [("2026-06-02", "2408.TW", "記憶體")])
+    seed_sub_industry_ref(conn)
+
+    conn.execute("DELETE FROM chip_snapshot")
+    conn.commit()
+    assert sub_industry_map(conn) == {"2408": "記憶體"}
+
+
+def test_sub_industry_ref_refreshes_when_a_new_csv_still_arrives(tmp_path):
+    """凍結不等於封死：使用者偶爾還是可能上傳 CSV，那時要順手更新對照表
+    （新股補進來、改過分類的更新掉），否則凍結會變成「永遠停在某一天」。"""
+    from stocks_power_rich.db import sub_industry_map, seed_sub_industry_ref
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _seed_chip(conn, [("2026-06-02", "2408.TW", "記憶體")])
+    seed_sub_industry_ref(conn)
+
+    _seed_chip(conn, [("2026-07-01", "2408.TW", "DRAM"),        # 改分類
+                      ("2026-07-01", "3711.TW", "封測")])        # 新股
+    seed_sub_industry_ref(conn)
+
+    m = sub_industry_map(conn)
+    assert m["2408"] == "DRAM" and m["3711"] == "封測"
+
+
+def test_seeding_never_blanks_an_existing_entry_with_an_empty_value(tmp_path):
+    """空字串／NULL 是「這列沒填」而不是「這檔沒有細分類」——沿用本專案
+    `bulk_upsert_ohlc` 那條 COALESCE 的規矩，缺值絕不洗掉既有值。"""
+    from stocks_power_rich.db import sub_industry_map, seed_sub_industry_ref
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _seed_chip(conn, [("2026-06-02", "2408.TW", "記憶體")])
+    seed_sub_industry_ref(conn)
+    _seed_chip(conn, [("2026-07-01", "2408.TW", "")])
+    seed_sub_industry_ref(conn)
+    assert sub_industry_map(conn)["2408"] == "記憶體"
+
+
+def test_init_db_migrates_an_existing_deployment_in_one_pass(tmp_path):
+    """既有部署的細分類還躺在 chip_snapshot 裡。**遷移要自己發生**，不能等人記得去
+    呼叫——沿用本專案 lazy migration 的慣例（ALTER TABLE 那批）。只在對照表是空的
+    時候做，之後由 CSV 匯入負責更新。"""
+    from stocks_power_rich.db import sub_industry_map
+
+    path = str(tmp_path / "t.sqlite")
+    conn = get_connection(path)
+    init_db(conn)                                   # 舊版：只有 chip_snapshot
+    _seed_chip(conn, [("2026-06-02", "2408.TW", "記憶體")])
+    conn.execute("DELETE FROM sub_industry_ref")    # 模擬「這個部署還沒遷移過」
+    conn.commit()
+
+    init_db(conn)                                   # 新版啟動 → 自動遷移
+    assert sub_industry_map(conn) == {"2408": "記憶體"}
+
+    # 遷移只做一次：對照表非空之後，init_db 不會再回頭覆寫（避免舊 CSV 蓋掉新值）
+    conn.execute("UPDATE sub_industry_ref SET sub_industry='DRAM'")
+    conn.commit()
+    init_db(conn)
+    assert sub_industry_map(conn) == {"2408": "DRAM"}
+
+
+def test_insert_chip_snapshot_keeps_the_frozen_table_in_sync(tmp_path):
+    """刷新掛在**資料寫入邊界**而不是某個呼叫端。原本掛在 `csv_import.import_csv`，
+    結果任何其他寫入者（包含測試自己用原生 SQL 灌資料）都會讓對照表悄悄落後——
+    實際就是這樣讓 `test_build_self_screen_filters_sorts_and_builds_heatmap` 掛掉的。"""
+    from stocks_power_rich.db import insert_chip_snapshot, sub_industry_map
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    insert_chip_snapshot(conn, "2026-08-20",
+                         [{"code": "2330.TW", "name": "台積電", "sub_industry": "IC設計"}])
+    assert sub_industry_map(conn) == {"2330": "IC設計"}
+
+    # 補匯入一份**較舊**的 CSV 不可以蓋掉新值——全表重掃＋後日期覆蓋前日期正是為了這個
+    insert_chip_snapshot(conn, "2026-07-01",
+                         [{"code": "2330.TW", "name": "台積電", "sub_industry": "晶圓代工"}])
+    assert sub_industry_map(conn) == {"2330": "IC設計"}

@@ -669,6 +669,59 @@ if last is not None and abs(cl / last - 1) > _MAX_DOD_JUMP:
 再對**真實頁面**實跑四個 parser，並對三個不同的週實跑整個區塊。跳脫的反證原本寫成
 `assert "(after" not in out` 是**恆真的錯誤斷言**——跳脫後的 `\(after` 本身就含有那個
 子字串；改成「掃出每一個沒被反斜線保護的保留字元」才真的在檢查。
+
+### 細分類凍結成獨立表（`sub_industry_ref`，2026-09）
+
+使用者決定**停止每日上傳 XQ CSV**，所以要先處理唯一無替代的欄位：細分類
+（記憶體／被動元件…，本機量到 **1,777 檔、530 種**）。官方 TWSE 產業別只有 ~30 大類。
+
+**查過唯一像樣的公開來源，結論是不能用。** 產業價值鏈資訊平台
+（`ic.tpex.org.tw`，證交所／櫃買共同建置、免金鑰、47 條產業鏈）實測：涵蓋 2,429 檔、
+對 XQ 那 1,777 檔涵蓋率 **97.9%**——數字很漂亮，但兩個致命問題：
+
+- **粒度只有 69 個分段**（XQ 是 530），粗 7.7 倍。
+- **35%（855 檔）同時屬於多個分段，而且語意根本不同**：它答的是「這家公司出現在
+  產業鏈的哪些環節」（上下游投入產出），不是「這家公司屬於哪一類」。實測嘉泥(1103)
+  被列進 5 段、含**貨櫃航運**與**金控業**（那是轉投資）；台泥(1101) 標的是「石灰石」
+  「水泥製品」而 XQ 就一個字：水泥。拿它當分類會直接說謊。
+  公司頁 `company_basic.php` 是 JS 殼、靜態 HTML 沒有單一主分類，補不了這個洞。
+
+**所以決定凍結，並且不混用兩套分類法**——泡泡圖是按細分類分群的，若 90% 的泡泡叫
+「記憶體」而 10% 叫「石灰石」「金控業」，整張圖的分群就失去意義，比乾淨的 fallback 更糟。
+
+- `sub_industry_ref(code PK, sub_industry, source, updated_at)`；`seed_sub_industry_ref()`
+  從 chip_snapshot 取**每檔最新日期**的值（公司會改分類）；**空字串／NULL 絕不洗掉既有值**
+  （同 `bulk_upsert_ohlc` 那條 COALESCE 的規矩）。
+- **凍結不等於封死**：`csv_import.import_csv` 仍會呼叫它，偶爾再上傳一次就會把新股補進來、
+  改過分類的更新掉，否則「凍結」會變成「永遠停在某一天」。
+- **一次性遷移放在 `init_db`**（對照表為空時才做，沿用既有 lazy migration 慣例）——既有
+  部署的資料還躺在 chip_snapshot 裡，不能等人記得去呼叫。**只做一次**：非空之後 init_db
+  不再回頭覆寫，免得舊 CSV 蓋掉新值（有測試鎖住這兩件事）。
+- **順帶解掉一個會持續惡化的成本**：舊的 `sub_industry_map` 每次呼叫都全表掃
+  `chip_snapshot`，而那張表每上傳一次就長一截。實測本機（10 個日期／17,698 列）
+  **35.2ms → 1.7ms**，且新做法與日期數無關。
+- 缺這一檔時呼叫端退回官方類股（`build_self_screen` 本來就這樣處理），覆蓋率由
+  `coverage.with_subindustry` 揭露、不靜默。實測凍結表對**現在全市場 1,974 檔**涵蓋
+  1,773 檔（89.8%）——缺的 201 檔是從沒通過 XQ 選股條件、因此從沒進過 CSV 的股。
+
+- **刷新掛在資料寫入邊界（`insert_chip_snapshot`），不是掛在 `csv_import`。** 第一版掛在
+  呼叫端，結果任何其他寫入者都會讓對照表悄悄落後——`build_self_screen` 那條既有測試
+  用原生 SQL 灌 chip_snapshot，當場掛掉。順帶把那條測試改走正式寫入路徑（原本繞過管線，
+  改成凍結表之後就測不到真正的行為了）。**全表重掃是刻意的**：只有「掃完整段歷史、
+  後日期覆蓋前日期」才能在補匯入舊 CSV 時仍保持取最新，有測試鎖住這件事。
+- **這次也踩到 CLAUDE.md 開頭那條自己寫的規矩**：背景跑 `pytest -q | tail -4`，
+  管線把離開碼吃掉，工作回報 `exit code 0` 而摘要其實是 `1 failed, 726 passed`。
+  幸好有讀摘要行才發現。**pytest 不要接管線**。
+
+**核心契約由測試鎖住**：`chip_snapshot` 整個清空後，`sub_industry_map` 仍回得到值。
+
+**⚠️ 停止上傳 CSV 還會凍住四個地方，這批尚未處理**：`api/csv.py`（籌碼選股頁）、
+`api/helpers.py`（**LINE／Telegram 推播的今日精選與週報前五個股**）、`api/market.py`
+（族群輪動 picks）、`api/public.py`（公開總覽）。四者都是 `filtered_picks(get_snapshot(...))`，
+CSV 一停就會**永遠送出最後一份名單、而且沒有任何跡象**——推播每天照送舊資料比選股頁
+不更新嚴重得多。真正停用 CSV 之前必須先把這四處換成自算全市場選股（`build_self_screen`），
+而它是全市場計算、不能直接放進推播與公開頁的請求路徑，需要每日排程預算＋快取。
+排序基準也要從**蘭值**換成**木率**（蘭值是蘭弦付費指標，本站算不出來）。
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.

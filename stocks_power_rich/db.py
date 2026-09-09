@@ -156,6 +156,10 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS watchlist (code TEXT PRIMARY KEY, name TEXT, added_at TEXT)")
     conn.execute("CREATE TABLE IF NOT EXISTS custody_dist (week TEXT, code TEXT, big1000_pct REAL, "
                  "big400_pct REAL, big_holders REAL, PRIMARY KEY(week, code))")
+    # 細分類對照（凍結自 XQ CSV，見 seed_sub_industry_ref）。獨立成表有兩個理由：
+    # 停止上傳 CSV 後它仍要活著，以及不必每次全表掃 chip_snapshot（成本隨上傳次數成長）。
+    conn.execute("CREATE TABLE IF NOT EXISTS sub_industry_ref (code TEXT PRIMARY KEY, "
+                 "sub_industry TEXT NOT NULL, source TEXT, updated_at TEXT)")
     # 全市場個股每日 OHLC（型態選股用；由 MI_INDEX ALLBUT0999 逐日回補與累積）
     conn.execute("CREATE TABLE IF NOT EXISTS stock_ohlc (date TEXT, code TEXT, open REAL, high REAL, "
                  "low REAL, close REAL, volume_lots REAL, amount_twd REAL, PRIMARY KEY(date, code))")
@@ -235,6 +239,10 @@ def init_db(conn: sqlite3.Connection) -> None:
     # 一次性資料修正：jpy 語意由「日圓兌台幣(~0.2)」改為「美元兌日圓(~150)」，清掉舊語意殘值
     conn.execute("UPDATE market_daily SET jpy=NULL, jpy_chg=NULL WHERE jpy IS NOT NULL AND jpy < 10")
     conn.commit()
+    # 一次性遷移：既有部署的細分類還躺在 chip_snapshot 裡，把它凍進 sub_industry_ref。
+    # 只在對照表是空的時候做，之後由 CSV 匯入負責更新（見 seed_sub_industry_ref）。
+    if not conn.execute("SELECT 1 FROM sub_industry_ref LIMIT 1").fetchone():
+        seed_sub_industry_ref(conn)
 
 
 def _on_conflict(keys: str, updates: str) -> str:
@@ -272,6 +280,11 @@ def insert_chip_snapshot(conn: sqlite3.Connection, snap_date: str, rows: list[di
             vals,
         )
     conn.commit()
+    # 細分類對照掛在**資料寫入邊界**而不是某個呼叫端（原本掛在 csv_import，任何其他
+    # 寫入者就會讓對照表悄悄落後）。凍結不等於封死：偶爾再上傳一次 CSV，新股會補進來、
+    # 改過分類的會更新掉。全表重掃是刻意的——只有「掃完整段歷史、後日期覆蓋前日期」
+    # 才能在補匯入舊 CSV 時仍保持「取最新」，而它一次只花數十毫秒、每次匯入才跑一次。
+    seed_sub_industry_ref(conn)
 
 
 def get_snapshot_dates(conn: sqlite3.Connection) -> list[str]:
@@ -403,18 +416,46 @@ def custody_change_map(conn: sqlite3.Connection, as_of: str | None = None) -> di
     return out
 
 
-def sub_industry_map(conn: sqlite3.Connection) -> dict:
-    """{bare_code: 子產業}——來自 XQ CSV（chip_snapshot.sub_industry），跨所有日期取最新非空。
+def seed_sub_industry_ref(conn: sqlite3.Connection) -> int:
+    """把 chip_snapshot 累積的細分類**凍結**進 `sub_industry_ref`，回寫入筆數。
 
-    官方 TWSE 產業別（_industry_map）只有 ~30 大類；「記憶體/被動元件」等**細分類只存在 XQ
-    匯入**，故覆蓋＝曾出現在 CSV 的股（大戶在買的通常都在內）。chip_snapshot 的 code 帶 .TW/.TWO
-    後綴（CSV 慣例）→ 去後綴，對齊全市場 bare code。"""
-    out: dict = {}
+    細分類（記憶體／被動元件…）只存在 XQ CSV。查證過沒有免費來源能取代：官方產業別
+    只有 ~30 大類；產業價值鏈資訊平台（ic.tpex.org.tw）雖然涵蓋 97.9%，但只有 69 個
+    分段、35% 的公司同時屬於多段，而且它答的是「這家公司出現在產業鏈的哪些環節」
+    而非「屬於哪一類」——嘉泥被列進「貨櫃航運」「金控業」，拿來當分類會直接說謊。
+    使用者因此決定停止每日上傳 CSV、把已累積的對照凍結起來。
+
+    同一檔跨多個 CSV 日期時取**最新**那天的值（公司會改分類）；**空字串／NULL 是
+    「這列沒填」而不是「這檔沒有細分類」，絕不用它洗掉既有值**（同 bulk_upsert_ohlc
+    那條 COALESCE 的規矩）。所以偶爾再上傳一次 CSV 仍會順手把對照表更新掉。
+    """
+    latest: dict[str, str] = {}
     for code, sub in conn.execute(
             "SELECT code, sub_industry FROM chip_snapshot "
             "WHERE sub_industry IS NOT NULL AND sub_industry<>'' ORDER BY snap_date"):
-        out[str(code).split(".")[0]] = sub   # 後日期覆蓋前日期＝取最新
-    return out
+        latest[str(code).split(".")[0]] = sub      # 後日期覆蓋前日期＝取最新
+    if not latest:
+        return 0
+    now = datetime.now().isoformat(timespec="seconds")
+    conn.executemany(
+        "INSERT INTO sub_industry_ref (code, sub_industry, source, updated_at) "
+        "VALUES (?,?,'xq_csv',?) ON CONFLICT(code) DO UPDATE SET "
+        "sub_industry=excluded.sub_industry, source=excluded.source, "
+        "updated_at=excluded.updated_at",
+        [(c, s, now) for c, s in latest.items()])
+    conn.commit()
+    return len(latest)
+
+
+def sub_industry_map(conn: sqlite3.Connection) -> dict:
+    """{bare_code: 子產業}——讀**凍結後的** `sub_industry_ref`，不再全表掃 chip_snapshot。
+
+    掃 chip_snapshot 的成本隨每次上傳線性成長（本機 10 個日期就已 17,698 列），而這份
+    對照本質是靜態的。缺這一檔時呼叫端退回官方類股（`build_self_screen` 已如此處理，
+    覆蓋率由 `coverage.with_subindustry` 揭露，不靜默）。
+    """
+    return {code: sub for code, sub in conn.execute(
+        "SELECT code, sub_industry FROM sub_industry_ref")}
 
 
 def bulk_upsert_ohlc(conn: sqlite3.Connection, date: str, rows: dict) -> int:

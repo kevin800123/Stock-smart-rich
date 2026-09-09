@@ -164,6 +164,7 @@ def import_csv(conn, path: str, store_dir: str = "data/csv"):
     from .db import insert_chip_snapshot
 
     snap_date, rows = parse_csv(path)
+    # 細分類對照表由 insert_chip_snapshot 自己維護（見 seed_sub_industry_ref），這裡不重複呼叫
     insert_chip_snapshot(conn, snap_date, rows)
     os.makedirs(store_dir, exist_ok=True)
     stored = os.path.join(store_dir, f"{snap_date}.csv")

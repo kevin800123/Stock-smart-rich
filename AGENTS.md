@@ -146,6 +146,18 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
   跡象顯示少了東西。`years = {int(start[:4]), int(end[:4])}` 逐年抓、逐年快取後合併。
 - **測試不可以「星期天跑跟平日跑不一樣」**：`slot=evening` 的既有測試在週日會真的連外，`tests/conftest.py` 用 autouse fixture 把 `build_week_calendar` 樁掉，另補兩條鎖住接線。守衛做過反證（覆寫 fixture 後實測 12.2 秒＝確實在連外）。
 - 兩層快取（`econcal:{year}`／`weekcal:{start}`）都讓 `refresh=1` 穿透——週日排程本來就帶 refresh=1，年度排程每週重抓一次是刻意的（BLS 會改公布日）。
+
+### 細分類凍結成獨立表（`sub_industry_ref`，2026-09）
+
+使用者決定**停止每日上傳 XQ CSV**，先處理唯一無替代的欄位：細分類（1,777 檔／530 種）。
+
+- **查過的公開來源不能用**：產業價值鏈平台（`ic.tpex.org.tw`，官方免金鑰）涵蓋 97.9%，但只有 **69 個分段**（XQ 是 530）、**35% 的公司同時屬於多段**，而且語意是「出現在產業鏈的哪些環節」而非「屬於哪一類」——嘉泥被列進「貨櫃航運」「金控業」。**不混用兩套分類法**：泡泡圖按細分類分群，90% 叫「記憶體」而 10% 叫「石灰石」會讓整張圖失去意義。
+- `sub_industry_ref(code PK, sub_industry, source, updated_at)`；`seed_sub_industry_ref()` 取每檔**最新日期**的值，**空字串／NULL 絕不洗掉既有值**。`csv_import` 仍會呼叫它（凍結不等於封死）。
+- **一次性遷移放在 `init_db`**（表為空才做，lazy migration 慣例），**只做一次**——非空之後不再回頭覆寫，免得舊 CSV 蓋掉新值。
+- 順帶解掉一個會持續惡化的成本：舊版每次全表掃 `chip_snapshot`（每上傳一次就長一截），實測 **35.2ms → 1.7ms**。
+- **刷新掛在資料寫入邊界（`insert_chip_snapshot`）而非 `csv_import`**——掛呼叫端會讓其他寫入者悄悄落後（既有 `build_self_screen` 測試當場掛掉）。全表重掃是刻意的：補匯入舊 CSV 時仍要保持取最新。
+- **核心契約有測試鎖住**：`chip_snapshot` 清空後 `sub_industry_map` 仍回得到值。凍結表對現在全市場 1,974 檔涵蓋 89.8%，缺的退回官方類股、由 `coverage.with_subindustry` 揭露。
+- **⚠️ 停止上傳 CSV 還會凍住四個地方**（尚未處理）：`api/csv.py`（選股頁）、`api/helpers.py`（**LINE／Telegram 推播的今日精選與週報**）、`api/market.py`（族群 picks）、`api/public.py`（公開總覽）——它們都是 `filtered_picks(get_snapshot(...))`，會永遠顯示最後一份 CSV 的名單且無跡象。要停用 CSV 前必須先把這四處換成自算選股。
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.

@@ -252,8 +252,11 @@ def _seed_full_market(conn):
     conn.execute("INSERT INTO stock_ohlc(code,date,close,amount_twd) VALUES('1101','2026-08-17',100,500)")
     # 細分類（子產業）只存在 XQ CSV（chip_snapshot），code 帶 .TW（CSV 慣例）。2330 標「IC設計」，
     # 1101 沒標 → 退回 universe 的官方類股「水泥」。
-    conn.execute("INSERT INTO chip_snapshot(snap_date,code,name,sub_industry) "
-                 "VALUES('2026-08-20','2330.TW','台積電','IC設計')")
+    # 走正式寫入路徑（insert_chip_snapshot），它會同步維護凍結後的細分類對照表；
+    # 原本這裡用原生 SQL 繞過管線，改成凍結表之後就測不到真正的行為了。
+    from stocks_power_rich.db import insert_chip_snapshot
+    insert_chip_snapshot(conn, "2026-08-20",
+                         [{"code": "2330.TW", "name": "台積電", "sub_industry": "IC設計"}])
     conn.commit()
 
 
