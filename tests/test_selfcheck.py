@@ -312,3 +312,92 @@ def test_build_self_screen_thresholds_exclude_by_mu_value(tmp_path):
     mv = selfcheck.build_self_screen(conn, "2026-08-19", _UNIVERSE, 0, 0)["rows"][0]["vals"]["mu_value"]
     hi = selfcheck.build_self_screen(conn, "2026-08-19", _UNIVERSE, mv + 1, 0)
     assert [r["code"] for r in hi["rows"]] == []
+
+
+def test_compute_self_screen_is_independent_of_thresholds(tmp_path):
+    """把**貴的那半**（全市場逐檔自算：季報／月營收／集保／法人／OHLC）跟**便宜的那半**
+    （套門檻篩選）分開，才有東西可以快取——門檻與勾選條件一改就重算全市場是不划算的。
+    這條鎖住「computed 這一半完全不看門檻」。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _seed_full_market(conn)
+
+    a = selfcheck.compute_self_screen(conn, "2026-08-19", _UNIVERSE)
+    assert "thresholds" not in a and "conds" not in a
+    # rows 是**全市場未篩選**（1101 沒通過條件但仍在），篩選是後面那半的事
+    assert {r["code"] for r in a["rows"]} == {"2330", "1101"}
+    assert "picked" not in a["coverage"]
+
+
+def test_build_self_screen_with_precomputed_matches_a_fresh_computation(tmp_path):
+    """等價測試（同 cup_handle 向量版 vs 純量版的既有做法）：吃快取跟現算必須一模一樣，
+    否則快取會變成「看起來對、其實是另一份結果」。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _seed_full_market(conn)
+
+    fresh = selfcheck.build_self_screen(conn, "2026-08-19", _UNIVERSE, 0, 0)
+    pre = selfcheck.compute_self_screen(conn, "2026-08-19", _UNIVERSE)
+    cached = selfcheck.build_self_screen(conn, "2026-08-19", _UNIVERSE, 0, 0, precomputed=pre)
+    assert cached == fresh
+
+
+def test_precomputed_still_honours_the_thresholds_and_conds_given_at_request_time(tmp_path):
+    """快取的是全市場自算值，門檻與勾選條件仍在請求當下套用——不然「交叉檢視」
+    每動一次就得重算全市場。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _seed_full_market(conn)
+    pre = selfcheck.compute_self_screen(conn, "2026-08-19", _UNIVERSE)
+
+    strict = selfcheck.build_self_screen(conn, "2026-08-19", _UNIVERSE, 9e9, 0, precomputed=pre)
+    assert strict["rows"] == [] and strict["coverage"]["picked"] == 0
+
+    # 只留「大戶增比>0」一條：1101 也會入選（它原本卡在人數降比與推估EPS）
+    loose = selfcheck.build_self_screen(conn, "2026-08-19", _UNIVERSE, 0, 0,
+                                        conds=["big_holder_ratio"], precomputed=pre)
+    assert {r["code"] for r in loose["rows"]} == {"2330", "1101"}
+
+
+def test_precomputed_payload_survives_a_json_round_trip(tmp_path):
+    """它要存進 ai_cache（TEXT），所以必須是純 JSON 可序列化的結構——
+    帶了 tuple/set 之類的東西會在寫入時才炸，而那是排程路徑、失敗會被吞掉。"""
+    import json
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _seed_full_market(conn)
+    pre = selfcheck.compute_self_screen(conn, "2026-08-19", _UNIVERSE)
+
+    revived = json.loads(json.dumps(pre))
+    assert revived == pre
+    assert (selfcheck.build_self_screen(conn, "2026-08-19", _UNIVERSE, 0, 0, precomputed=revived)
+            == selfcheck.build_self_screen(conn, "2026-08-19", _UNIVERSE, 0, 0))
+
+
+def test_self_screen_cache_is_a_single_row_keyed_on_its_own_date(tmp_path):
+    """**只存最新那一天、一列**。每天各存一列的話，一份約數百 KB × 250 個交易日
+    ＝一年多出上百 MB（DB 已 253MB、Volume 曾衝到 6.34GB）。日期選單挑舊日期時
+    現算就好——那是偶爾的操作，不值得為它長期佔空間。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _seed_full_market(conn)
+
+    pre = selfcheck.compute_self_screen(conn, "2026-08-19", _UNIVERSE)
+    selfcheck.save_precomputed(conn, pre)
+    assert selfcheck.load_precomputed(conn, "2026-08-19") == pre
+
+    # 日期對不上就當作沒有——絕不可拿別天的計算冒充今天（同 pick_close_for 的規矩）
+    assert selfcheck.load_precomputed(conn, "2026-08-18") is None
+
+    # 換一天算完覆蓋掉舊的，仍然只有一列
+    selfcheck.save_precomputed(conn, selfcheck.compute_self_screen(conn, "2026-08-20", _UNIVERSE))
+    n = conn.execute("SELECT COUNT(*) FROM ai_cache WHERE cache_key LIKE 'selfscreen%'").fetchone()[0]
+    assert n == 1
+    assert selfcheck.load_precomputed(conn, "2026-08-19") is None
+
+
+def test_load_precomputed_returns_none_when_nothing_cached(tmp_path):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    assert selfcheck.load_precomputed(conn, "2026-08-19") is None

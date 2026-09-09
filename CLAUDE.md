@@ -715,13 +715,43 @@ if last is not None and abs(cl / last - 1) > _MAX_DOD_JUMP:
 
 **核心契約由測試鎖住**：`chip_snapshot` 整個清空後，`sub_industry_map` 仍回得到值。
 
-**⚠️ 停止上傳 CSV 還會凍住四個地方，這批尚未處理**：`api/csv.py`（籌碼選股頁）、
+**⚠️ 停止上傳 CSV 仍會凍住四個地方，尚未處理**（第五個——前瞻追蹤 `record_self_screen_signals`
+——已在「每日排程預算＋快取」那批修掉）：`api/csv.py`（籌碼選股頁）、
 `api/helpers.py`（**LINE／Telegram 推播的今日精選與週報前五個股**）、`api/market.py`
 （族群輪動 picks）、`api/public.py`（公開總覽）。四者都是 `filtered_picks(get_snapshot(...))`，
 CSV 一停就會**永遠送出最後一份名單、而且沒有任何跡象**——推播每天照送舊資料比選股頁
 不更新嚴重得多。真正停用 CSV 之前必須先把這四處換成自算全市場選股（`build_self_screen`），
 而它是全市場計算、不能直接放進推播與公開頁的請求路徑，需要每日排程預算＋快取。
 排序基準也要從**蘭值**換成**木率**（蘭值是蘭弦付費指標，本站算不出來）。
+
+### 自算選股改成「每日排程預算＋快取」（2026-09）
+
+脫離 CSV 的前置：`build_self_screen` 是全市場計算，推播與公開頁那些請求路徑用不起它
+（同 `stock-flow/research` 與 `financials/backfill-report` 那兩次 502 的教訓——
+**請求裡不要放無界時間的同步計算**）。
+
+- **拆成貴的一半與便宜的一半。** `compute_self_screen(conn, date, universe)` 做全市場約
+  2,000 檔逐檔自算（季報／月營收／集保／法人／OHLC 各一次 bulk 查詢＋逐檔 `_row_self`）
+  ＋大戶買進版圖；`build_self_screen(..., precomputed=)` 只套 `screen_pass` 與排序。
+  **門檻與勾選條件完全不影響貴的那半**，所以一份快取服務任意門檻與任意勾選組合，
+  不必為每種組合各存一份（勾選有 2^7 種）。
+- **等價測試鎖住「吃快取 == 現算」**（同 cup_handle 向量版 vs 純量版的既有做法），
+  另有一條 **JSON round-trip** 測試——它要進 `ai_cache` 的 TEXT 欄，帶了 tuple/set
+  會在寫入時才炸，而那是排程路徑、失敗會被 `except` 吞掉。
+- **只存最新那一天、一列**（`selfscreen:v1`）。實測一份 **729 KB**（1,974 列＋381 個版塊），
+  每天各存一列的話 × 250 個交易日 ＝ 一年多出 **180 MB**（DB 已 253MB、Volume 曾衝到
+  6.34GB）。日期選單挑舊日期是偶爾的操作，現算就好。**日期對不上一律當作沒有**——
+  絕不拿別天的計算冒充今天（同 `pick_close_for` 的規矩）。端點回 `precomputed: bool`
+  讓「這次是現算還是吃快取」看得見。
+- **`record_self_screen_signals` 的 signal_date 從 CSV 快照日改成市場最新交易日。**
+  它原本跟著 `MAX(snap_date)` 走，**CSV 一停前瞻追蹤就跟著停**——這是「停止上傳會凍住
+  哪些地方」清單裡我一開始漏掉的第五個。自算這條線零 CSV 依賴，訊號日沒有理由由上傳
+  頻率決定；實測也出現過 CSV 停在 08-28 而市場資料已到 09-04。改成市場日之後它每個
+  交易日都記一筆。**鎖著舊契約的那條測試是刻意更新的**，理由寫在它的 docstring 裡。
+- **每日排程本來就在算這份東西**（ledger 內部呼叫 `build_self_screen`），算完只取 picks
+  記帳、結果丟掉。現在排程算一次 → 存快取 → 用 `precomputed=` 餵給 ledger，兩邊共用。
+- **本機量到的 0.42s 不具代表性**：dev DB 沒有季報也沒有 OHLC≥55，貴的那半根本沒跑滿
+  （本機入選恆 0，見「本機驗證的陷阱」那條）。production 的實際耗時要部署後才知道。
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.

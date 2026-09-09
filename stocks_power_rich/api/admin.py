@@ -378,8 +378,13 @@ def picks_self_screen(date: str | None = None, conds: str | None = None,
     if conds is not None:
         known = {k for k, _ in analysis.SCREEN_CONDITIONS}
         picked_conds = [k for k in conds.split(",") if k in known]
-    result = selfcheck.build_self_screen(c, chosen, universe, vmin, smin, picked_conds)
+    # 每日排程會把「貴的那一半」（全市場逐檔自算）預算好存進 ai_cache；日期對得上就直接用。
+    # 對不上（使用者從選單挑了較舊的日期）才現算——那是偶爾的操作，不值得為它長期佔空間。
+    pre = selfcheck.load_precomputed(c, chosen)
+    result = selfcheck.build_self_screen(c, chosen, universe, vmin, smin, picked_conds,
+                                         precomputed=pre)
     result["snap_dates"] = snap_dates
+    result["precomputed"] = pre is not None      # 讓「今天是現算還是吃快取」看得見
     return result
 
 @router.get("/ohlc/backfill")

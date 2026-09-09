@@ -3025,3 +3025,44 @@ def test_stock_ohlc_endpoint_returns_volumes_for_the_cup_chart(tmp_path, monkeyp
     d = client.get("/api/stock/3022/ohlc?bars=400").json()
     assert len(d["volumes"]) == len(d["dates"]) == len(d["candles"])   # 三個陣列等長
     assert d["volumes"] == [700, 701, 0]                               # 缺量 → 0
+
+
+def test_self_screen_endpoint_uses_the_daily_precomputed_cache(tmp_path, monkeypatch):
+    """每日排程把「貴的那一半」（全市場逐檔自算）預算好；端點日期對得上就直接吃，
+    不重算。用一個現算絕對產不出來的哨兵列證明它真的讀了快取——否則這個檢查會恆真。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    from stocks_power_rich.api import admin as admin_mod
+    monkeypatch.setattr(admin_mod, "_industry_map",
+                        lambda c: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1e9}})
+    monkeypatch.setattr(admin_mod, "_otc_industry", lambda c: {})
+    client = TestClient(create_app())
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich import selfcheck
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-08-19", "taiex": 20000.0})
+    c.commit()
+
+    # 值要真的通過 7 條件（人數降比必須<0），否則測到的只是「哨兵被篩掉」
+    sentinel = {"code": "9999", "name": "哨兵", "sector": "測試",
+                "vals": {"rev_yoy": 10.0, "w55": 1, "big_holder_ratio": 1.0,
+                         "holder_drop_ratio": -1.0, "trust_3d": 0, "foreign_3d": 0,
+                         "lan_score": 12, "est_profit": 2.0, "mu_score": 15,
+                         "mu_value": 99.0, "margin_3d": 0}}
+    selfcheck.save_precomputed(c, {
+        "date": "2026-08-19", "rows": [sentinel],
+        "heatmap": [{"sector": "測試", "buy_value": 1, "amount": 1, "prev_amount": 0,
+                     "wow_pct": None, "avg_big_holder": 1.0, "count": 1, "children": []}],
+        "coverage": {"universe": 1, "big_holder_pos": 1, "with_amount": 1,
+                     "with_mcap": 1, "with_subindustry": 0}})
+
+    d = client.get("/api/picks/self-screen").json()
+    assert d["precomputed"] is True
+    assert [r["code"] for r in d["rows"]] == ["9999"]     # 現算絕不會產出這一列
+    assert d["heatmap"][0]["sector"] == "測試"
+
+    # 日期對不上就當作沒有——絕不拿別天的計算冒充（同 pick_close_for 的規矩）
+    older = client.get("/api/picks/self-screen?date=2026-08-18").json()
+    assert older["precomputed"] is False
+    assert [r["code"] for r in older["rows"]] == []

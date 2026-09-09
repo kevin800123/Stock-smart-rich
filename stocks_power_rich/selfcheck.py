@@ -161,15 +161,17 @@ def build_selfcheck(conn, date: str | None) -> dict:
     }
 
 
-def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min, conds=None) -> dict:
-    """自算籌碼/基本選股：**全市場自算池**（零 CSV 依賴），與 build_selfcheck 共用 _row_self。
+def compute_self_screen(conn, date, universe: dict) -> dict:
+    """自算選股的**貴的那一半**：全市場逐檔自算 ＋ 大戶買進版圖，**與門檻無關**。
 
-    universe＝`{code: {sector, name, shares}}`（由端點用 _industry_map/_otc_industry 組好傳入，
-    讓網路／月快取留在 api 層、selfcheck 保持不依賴 api.helpers）。回傳：
-    - heatmap：大戶增比>0 的股依「類股」分組，版塊大小＝本週成交額、顏色資料＝avg 大戶增比、
-      WoW＝本週 vs 上週同期成交額（見 db.weekly_amounts）。
-    - rows：7 條件（見 analysis.screen_pass）篩選後依木率(mu_value)由大到小，欄位同 selfcheck。
-    - coverage：universe / 大戶增比>0 / 有成交額 / 入選 的檔數，讓覆蓋缺口不被靜默吃掉。
+    貴在這裡——季報／月營收／集保／法人／全市場 OHLC 各一次 bulk 查詢，再逐檔跑
+    `_row_self`（約 2,000 檔）。門檻與勾選條件只是最後的一道 `screen_pass`，很便宜。
+    分開之後這一半才能每日排程算一次、存進 `ai_cache`，讓推播與公開頁那些請求路徑
+    也用得起（同「請求裡不要放無界時間的同步計算」那條教訓）。
+
+    回傳的 `rows` 是**全市場未篩選**的自算值，篩選交給 `build_self_screen`——快取一份
+    就能服務任意門檻與任意勾選組合，不必為每種組合各存一份。整包必須是純 JSON
+    可序列化的結構（要進 ai_cache 的 TEXT 欄）。
     """
     yoy = db.revenue_yoy_map(conn, as_of=date) if date else {}
     custody = db.custody_change_map(conn, as_of=date) if date else {}
@@ -178,44 +180,44 @@ def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min, co
     mrev = db.monthly_revenue_bulk(conn, as_of=date) if date else {}
     ohlc = db.get_all_ohlc(conn, min_bars=55)
     wk = db.weekly_amounts(conn, date) if date else {}
-    submap = db.sub_industry_map(conn) if date else {}   # 細分類（子產業）：XQ CSV 才有，退回官方類股
+    submap = db.sub_industry_map(conn) if date else {}   # 細分類（子產業）：凍結自 XQ CSV，退回官方類股
     margin = db.margin_3d_map(conn, as_of=date) if date else {}   # 融資3日：參考欄、不進 screen_pass
 
     groups: dict = {}
-    picked, big_pos, with_amount, with_mcap, with_subindustry = [], 0, 0, 0, 0
+    rows, big_pos, with_amount, with_mcap, with_subindustry = [], 0, 0, 0, 0
     for code, info in universe.items():
         s = _row_self(code, info.get("shares"), yoy, custody, inst3d, fin, mrev, ohlc, date, margin)
         gk = submap.get(code) or info.get("sector") or "未分類"   # 細分類優先、退回官方類股
+        rows.append({"code": code, "name": info.get("name") or code, "sector": gk, "vals": s})
         bhr = s["big_holder_ratio"]
-        if bhr is not None and bhr > 0:
-            big_pos += 1
-            amt = wk.get(code)
-            if amt:                       # 只納入本週有成交額的（缺料不靜默併進版塊）
-                with_amount += 1
-                if submap.get(code):
-                    with_subindustry += 1
-                # 大戶淨買進金額估計＝大戶增比% × 市值（股數×收盤）——大戶當週實際加碼的錢。
-                # 缺股數或收盤（無 55 根 K）就算不出，不計入該類股 buy_value（with_mcap 揭露缺口）。
-                shares = info.get("shares")
-                closes = (ohlc.get(code) or {}).get("closes")
-                price = closes[-1] if closes else None
-                buy_value = (bhr / 100 * shares * price) if (shares and price) else None
-                if buy_value is not None:
-                    with_mcap += 1
-                g = groups.setdefault(gk, {"this": 0.0, "prev": 0.0, "bhr": 0.0,
-                                           "buy": 0.0, "n": 0, "children": []})
-                g["this"] += amt["this"]
-                g["prev"] += amt["prev"]
-                g["bhr"] += bhr
-                g["n"] += 1
-                if buy_value is not None:
-                    g["buy"] += buy_value
-                g["children"].append({"code": code, "name": info.get("name") or code,
-                                      "amount": amt["this"], "big_holder_ratio": bhr,
-                                      "buy_value": round(buy_value) if buy_value is not None else None})
-        if analysis.screen_pass(s, mu_value_min, mu_score_min, conds):
-            picked.append({"code": code, "name": info.get("name") or code,
-                           "sector": gk, "vals": s})   # 用細分類，drill-down 才對得上泡泡
+        if bhr is None or bhr <= 0:
+            continue
+        big_pos += 1
+        amt = wk.get(code)
+        if not amt:                       # 只納入本週有成交額的（缺料不靜默併進版塊）
+            continue
+        with_amount += 1
+        if submap.get(code):
+            with_subindustry += 1
+        # 大戶淨買進金額估計＝大戶增比% × 市值（股數×收盤）——大戶當週實際加碼的錢。
+        # 缺股數或收盤（無 55 根 K）就算不出，不計入該類股 buy_value（with_mcap 揭露缺口）。
+        shares = info.get("shares")
+        closes = (ohlc.get(code) or {}).get("closes")
+        price = closes[-1] if closes else None
+        buy_value = (bhr / 100 * shares * price) if (shares and price) else None
+        if buy_value is not None:
+            with_mcap += 1
+        g = groups.setdefault(gk, {"this": 0.0, "prev": 0.0, "bhr": 0.0,
+                                   "buy": 0.0, "n": 0, "children": []})
+        g["this"] += amt["this"]
+        g["prev"] += amt["prev"]
+        g["bhr"] += bhr
+        g["n"] += 1
+        if buy_value is not None:
+            g["buy"] += buy_value
+        g["children"].append({"code": code, "name": info.get("name") or code,
+                              "amount": amt["this"], "big_holder_ratio": bhr,
+                              "buy_value": round(buy_value) if buy_value is not None else None})
 
     heatmap = []
     for sector, g in groups.items():
@@ -226,16 +228,59 @@ def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min, co
                         "wow_pct": wow, "avg_big_holder": round(g["bhr"] / g["n"], 2),
                         "count": g["n"], "children": g["children"]})
     heatmap.sort(key=lambda x: x["buy_value"], reverse=True)   # 依大戶淨買進金額由大到小
+    return {
+        "date": date, "heatmap": heatmap, "rows": rows,
+        "coverage": {"universe": len(universe), "big_holder_pos": big_pos,
+                     "with_amount": with_amount, "with_mcap": with_mcap,
+                     "with_subindustry": with_subindustry},
+    }
+
+
+def build_self_screen(conn, date, universe: dict, mu_value_min, mu_score_min,
+                      conds=None, precomputed: dict | None = None) -> dict:
+    """自算籌碼/基本選股：**全市場自算池**（零 CSV 依賴），與 build_selfcheck 共用 _row_self。
+
+    `precomputed` 帶的是 `compute_self_screen` 的輸出（每日排程算好存在 ai_cache）；
+    不帶就現算。**篩選一律在這裡做**，所以同一份快取服務任意門檻與任意勾選組合。
+
+    universe＝`{code: {sector, name, shares}}`（由端點用 _industry_map/_otc_industry 組好傳入，
+    讓網路／月快取留在 api 層、selfcheck 保持不依賴 api.helpers）。回傳：
+    - heatmap：大戶增比>0 的股依細分類分組，版塊大小＝本週成交額、顏色資料＝avg 大戶增比、
+      WoW＝本週 vs 上週同期成交額（見 db.weekly_amounts）。
+    - rows：7 條件（見 analysis.screen_pass）篩選後依木率(mu_value)由大到小，欄位同 selfcheck。
+    - coverage：universe / 大戶增比>0 / 有成交額 / 入選 的檔數，讓覆蓋缺口不被靜默吃掉。
+    """
+    base = precomputed if precomputed is not None else compute_self_screen(conn, date, universe)
+    picked = [r for r in base["rows"]
+              if analysis.screen_pass(r["vals"], mu_value_min, mu_score_min, conds)]
     picked.sort(key=lambda r: (r["vals"]["mu_value"] if r["vals"]["mu_value"] is not None
                                else float("-inf")), reverse=True)
     return {
-        "date": date,
+        "date": base["date"],
         "thresholds": {"mu_value_min": mu_value_min, "mu_score_min": mu_score_min},
         # 勾選 UI 的清單與目前生效的條件都由後端給（前端不得自己寫死一份，見 SCREEN_CONDITIONS）
         "conditions": [{"key": k, "label": lb} for k, lb in analysis.SCREEN_CONDITIONS],
         "conds": ([k for k, _ in analysis.SCREEN_CONDITIONS] if conds is None else list(conds)),
-        "heatmap": heatmap, "rows": picked,
-        "coverage": {"universe": len(universe), "big_holder_pos": big_pos,
-                     "with_amount": with_amount, "with_mcap": with_mcap,
-                     "with_subindustry": with_subindustry, "picked": len(picked)},
+        "heatmap": base["heatmap"], "rows": picked,
+        "coverage": {**base["coverage"], "picked": len(picked)},
     }
+
+
+# 自算選股的預算結果：**只存最新那一天、一列**。每天各存一列的話，一份數百 KB
+# × 250 個交易日＝一年上百 MB（DB 已 253MB、Volume 曾衝到 6.34GB）。日期選單挑
+# 舊日期是偶爾的操作，現算就好，不值得為它長期佔空間。版號在 payload 形狀改變時要進，
+# 否則舊格式會被當成今天的結果直接用（同 news:v8 那條教訓）。
+SELF_SCREEN_CACHE_KEY = "selfscreen:v1"
+
+
+def save_precomputed(conn, payload: dict) -> None:
+    db.set_ai_cache(conn, SELF_SCREEN_CACHE_KEY, payload)
+
+
+def load_precomputed(conn, date) -> dict | None:
+    """快取的日期不等於要的日期就回 None——**絕不拿別天的計算冒充今天**
+    （同 pick_close_for 那條規矩）。呼叫端據此退回現算。"""
+    cached = db.get_ai_cache(conn, SELF_SCREEN_CACHE_KEY)
+    if not cached or not date or cached.get("date") != date:
+        return None
+    return cached

@@ -157,7 +157,15 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - 順帶解掉一個會持續惡化的成本：舊版每次全表掃 `chip_snapshot`（每上傳一次就長一截），實測 **35.2ms → 1.7ms**。
 - **刷新掛在資料寫入邊界（`insert_chip_snapshot`）而非 `csv_import`**——掛呼叫端會讓其他寫入者悄悄落後（既有 `build_self_screen` 測試當場掛掉）。全表重掃是刻意的：補匯入舊 CSV 時仍要保持取最新。
 - **核心契約有測試鎖住**：`chip_snapshot` 清空後 `sub_industry_map` 仍回得到值。凍結表對現在全市場 1,974 檔涵蓋 89.8%，缺的退回官方類股、由 `coverage.with_subindustry` 揭露。
-- **⚠️ 停止上傳 CSV 還會凍住四個地方**（尚未處理）：`api/csv.py`（選股頁）、`api/helpers.py`（**LINE／Telegram 推播的今日精選與週報**）、`api/market.py`（族群 picks）、`api/public.py`（公開總覽）——它們都是 `filtered_picks(get_snapshot(...))`，會永遠顯示最後一份 CSV 的名單且無跡象。要停用 CSV 前必須先把這四處換成自算選股。
+- **⚠️ 停止上傳 CSV 仍會凍住四個地方**（尚未處理）：`api/csv.py`（選股頁）、`api/helpers.py`（**LINE／Telegram 推播的今日精選與週報**）、`api/market.py`（族群 picks）、`api/public.py`（公開總覽）——都是 `filtered_picks(get_snapshot(...))`，會永遠送出最後一份名單且無跡象。第五個（`record_self_screen_signals` 的前瞻追蹤）已於「每日排程預算＋快取」那批修掉。
+
+### 自算選股改「每日排程預算＋快取」（2026-09）
+
+- 拆成 `compute_self_screen`（貴：全市場 ~2,000 檔逐檔自算＋版圖）與 `build_self_screen(precomputed=)`（便宜：套門檻排序）。門檻/勾選不影響貴的那半 → 一份快取服務所有組合（勾選有 2^7 種）。**等價測試**＋**JSON round-trip 測試**（要進 ai_cache TEXT）鎖住。
+- **只存最新一天、一列**（`selfscreen:v1`）：實測一份 729 KB，每天存一列＝一年 180MB。日期對不上一律當沒有，端點回 `precomputed: bool`。
+- **`record_self_screen_signals` 改用市場最新交易日**（原本 `MAX(snap_date)`，CSV 一停前瞻追蹤就停——漏列的第五個凍結點）。排程算一次、ledger 吃同一份。
+- 本機 0.42s 不具代表性（dev DB 無季報/OHLC≥55，貴的那半沒跑滿）。
+
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.
