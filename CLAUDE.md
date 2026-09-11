@@ -510,7 +510,26 @@ if last is not None and abs(cl / last - 1) > _MAX_DOD_JUMP:
 - **`pending` 的判定是「日期層級」，這是它的盲點**：用指標股（`_TW_BELL`/`_OTC_BELL`）判斷「這天有沒有資料」，回答不了「**這一檔**有沒有資料」。實測回報「缺 0 個交易日、最新已存 2026-09-04」，而某檔的 K 線仍停在四月，使用者完全卡住、沒有任何辦法修。兩個補救：
   - `GET /api/ohlc/coverage-for?codes=…`（比照既有 `/api/financials/coverage-for`）**分辨三種不同的「沒有」**：整列不存在、列在但收盤是 NULL（畫不出 K 棒）、有值但過期。`last_close_date` 才是圖表實際看到的那一天。
   - `force_days` ＋ `before` 游標：**強制重抓最近 N 個交易日**，忽略「有沒有缺」的判定。匯入是覆蓋，所以不必先查清根因就能修好。**沒有 `before` 游標會每輪拿到同一批最新日期原地打轉**——這是改版時實際寫錯、靠端到端測試才抓到的。
-- **`backfill_ohlc` 仍有兩個已知缺陷**（`sync_ohlc` 已繞過它，但它會誤導下一個人）：(1) 終止條件只看「已存交易日**數量**」達不達標，**不看連續性**，所以中間有洞照樣回報 `done: true`（實測 `twse_days=643 ≥ target 377` → 迴圈一次都沒跑、`added: 0`）；(2) 熔斷只丟一個 `exhausted: true`，**不說原因**，無法分辨「真的沒有更早的歷史」與「來源被限流」。
+- **`backfill_ohlc` 那兩個已知缺陷已修（2026-09）**：
+  - **`done` 只數天數不看窗口** → `_dates_with` 加 `since` 參數，**計數與掃描共用同一個
+    `floor`**（`today - target*2 - 40`）。兩者分家正是根因：production 的 643 列橫跨
+    2017→2026，`643 >= target 377` 讓它判 `done: true`、迴圈一次都沒跑、`added: 0`。
+    **修正不是把 `done` 變成永遠 False**——窗口真的補滿仍回 True，否則呼叫端的「重複
+    呼叫直到完成」會變無窮迴圈，有反證測試鎖住。
+  - **一個天數說不出「有沒有洞」** → 回傳 `coverage.{twse,otc}` 的 `days`/`oldest`/
+    `newest`/`max_gap_days`（日曆天）與 `window_start`，讓 `done: true` 可以被一眼複驗
+    （同 `/api/ohlc/coverage-for` 分辨三種「沒有」的精神）。缺口**不由程式下結論**——
+    週末 3 天、農曆年 ~10 天屬正常，攤開讓讀者判斷。
+  - **熔斷不說原因** → 記錄 `exhausted_at.{twse,otc}`＝放棄時的那個日期。**刻意不發明
+    分類器**（我們無從確知是「真的沒有更早的歷史」還是「來源被擋」），只把判斷得出來的
+    事實講出來：停在 1990 年是歷史底線、停在上週就是來源出問題，讀者自己看得出來。
+    `reset_ohlc_progress` 一併清掉這兩個新鍵，否則重置後還留著上次的熔斷日期。
+  - **實測**：真實本機 DB（2330 僅 28 列、2026-06-30~09-09）跑出 `done: False`、
+    `max_gap_days: 12`——舊版只回一個天數，那個 12 天的洞完全看不出來。9 年稀疏那個
+    情境本機重現不了（那是 production 的表），由單元測試涵蓋。
+  - **測試一開始寫錯過**：第一版讓 mock 一直成功、斷言 `done is False`——那種情況它
+    本來就該跑完並判完成，測不到這個 bug。改成「抓不到資料 ＋ 400 筆遠古列」才真的
+    分得出新舊行為。
 - **`stock_ohlc` 稀疏是常態**：643 列橫跨 2017→2026（9 年約 2,200 個交易日）＝不到三成的日子有列。覆蓋度取決於回補跑到哪，判斷「資料夠不夠」要看 `rows` **相對於日期範圍**，不是只看末日。
 
 ### Windows 雙擊工具的四個坑（`scripts/*.bat` / `*_click.ps1`，2026-09）
@@ -789,6 +808,49 @@ CSV 一停就會**永遠送出最後一份名單、而且沒有任何跡象**—
 （族群 picks）、`api/public.py`（公開總覽）、`api/helpers.py` 的 `_picks_code_set`
 （盤中突破警示的 ⭐ 標記）。週報那條已有守衛（`weekly_line_job` 檢查快照距今 >7 天），
 每日 LINE 推播則是以 `market_daily` 是否為今日把關、不看 CSV。
+
+### `conn()` 不關連線：查證後**刻意不修**（2026-09）
+
+`api/deps.py::conn()` 每次呼叫都開一條新的 sqlite 連線，沒有人關。曾被列為「上次
+`database is locked` 全站 500 的同一塊程式碼、是真 bug」——**實測之後這個說法要修正。**
+
+**先量（TestClient 打真實端點，非推論）**：
+
+| 量測 | 結果 |
+|---|---|
+| 引用計數有沒有回收 | **沒有**（相依套件內部有循環參照），要等 gc 世代回收 |
+| 連開 5 次總覽（50 個請求）尖峰 | **44 條**同時開著 |
+| `gc.collect()` 之後 | 0～1 條 |
+| 殘留連線中**握著寫入鎖**的 | **0 條**（寫入都有 commit） |
+| 反證：刻意開一條不 commit 的寫入 | 檢查抓到 1 條 ✓（證明上一列不是恆真） |
+
+**所以它不是那次事故的成因**，也不是無界洩漏——是「清理時機交給 GC」的資源浪費
+（GC 之前累積數十個檔案 handle）。嚴重度遠低於原本的描述。
+
+**試過的修法失敗了，原因值得記**：用 `contextvars` 登記「這個請求開過哪些連線」＋
+中介層在回應後關掉（刻意不改成 FastAPI 的 `Depends(yield)`，那要動 89 個呼叫點的
+端點簽章）。contextvar 確實傳得到同步與非同步端點、登記也成功（bucket 長度 1），
+但關不掉：
+
+```
+sqlite3.ProgrammingError: SQLite objects created in a thread can only be used
+in that same thread. created in thread 8960, this is thread 11200
+```
+
+**同步端點跑在 threadpool 的工作執行緒、連線在那裡建立；中介層跑在 event loop
+執行緒**，而 `sqlite3` 預設 `check_same_thread=True`，跨執行緒關閉直接拋例外。
+
+**更該記的是第二層**：我在 `request_scope` 寫了 `except sqlite3.Error: pass`
+當「安全網」，而 `ProgrammingError` 正是 `sqlite3.Error` 的子類——例外被整個吃掉，
+中介層看起來有在跑、實際一條都沒關，**而且完全沒有聲音**。這正是本專案一直在打的
+「安靜地失敗」，是被自己加的 try/except 製造出來的。**替清理動作加寬鬆的 except 之前，
+先問「它失敗時我看得見嗎」。**
+
+**剩下的選項都不成比例**：(a) `check_same_thread=False` — 為了省檔案 handle 拆掉
+sqlite 的執行緒安全檢查；(b) 改 89 個呼叫點用 `Depends(yield)` — blast radius 是
+整個請求路徑；(c) 每執行緒登記、下次 `conn()` 時關掉上一批 — 聰明但隱晦，且仍不確定性。
+對照收益（幾十個 GC 之前會自己消失的 handle、零鎖競爭），**維持現狀**。
+真的要動的時機是「量到檔案 handle 或記憶體確實造成問題」，不是現在。
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.

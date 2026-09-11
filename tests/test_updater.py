@@ -1031,3 +1031,92 @@ def test_expected_published_quarter_uses_tw_filing_deadlines():
     assert eq(date(2026, 3, 31)) == "2025Q4"   # 年報 3/31
     assert eq(date(2026, 3, 30)) == "2025Q3"   # 年報前，最新是前年 Q3
     assert eq(date(2027, 1, 10)) == "2026Q3"
+
+
+def test_backfill_ohlc_done_counts_only_the_window_it_actually_scans(tmp_path, monkeypatch):
+    """**實測踩到的誤判**：`_dates_with` 數的是「指標股有列的**所有**日期」，完全沒有
+    時間窗。production 的 `stock_ohlc` 有 643 列橫跨 2017→2026（9 年約 2,200 個交易日，
+    不到三成的日子有列），於是 `643 >= target 377` 直接判 `done: true`、迴圈**一次都沒跑**、
+    `added: 0`——使用者看到「完成」，而最近半年其實一天都沒有。
+
+    `target` 的語意是「從今天往回 N 個交易日」（`floor` 也是這樣算的），所以計數必須
+    限制在同一個窗口內，否則遠古的零星歷史會把門檻灌滿。
+
+    用**抓不到資料**的來源來測：舊寫法會因為 400 筆遠古列直接判完成，新寫法窗口內是 0
+    所以不完成。（一開始寫成「mock 一直成功、斷言 done is False」是錯的——那種情況它
+    本來就該跑完並判完成，測不到這個 bug。）"""
+    from datetime import date as _d, timedelta as _td
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    old = _d.today() - _td(days=9 * 365)
+    for i in range(400):
+        ds = (old + _td(days=i)).isoformat()
+        for code in ("2330", "8069"):
+            conn.execute("INSERT OR REPLACE INTO stock_ohlc(date,code,close) VALUES(?,?,1.0)",
+                         (ds, code))
+    conn.commit()
+
+    calls = []
+    monkeypatch.setattr(updater.twse, "fetch_stock_ohlc", lambda d: calls.append(d) or {})
+    monkeypatch.setattr(updater.tpex, "fetch_otc_ohlc", lambda d: {})
+
+    r = updater.backfill_ohlc(conn, target=20, max_fetch=5)
+    assert r["twse_days"] == 0, "遠古的 400 筆不在窗口內，不該算進 target"
+    assert r["done"] is False, "窗口內一天都沒有卻判完成，正是實測看到的症狀"
+    assert calls, "舊寫法在這裡連迴圈都不會進（added: 0）"
+
+
+def test_backfill_ohlc_done_still_true_once_the_window_is_really_filled(tmp_path, monkeypatch):
+    """反證：修正不是把 `done` 變成永遠 False——窗口真的補滿時仍要回 True，
+    否則呼叫端的「重複呼叫直到完成」會變成無窮迴圈。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    monkeypatch.setattr(updater.twse, "fetch_stock_ohlc", lambda d: {"2330": {"close": 1.0}})
+    monkeypatch.setattr(updater.tpex, "fetch_otc_ohlc", lambda d: {"8069": {"close": 1.0}})
+
+    r = updater.backfill_ohlc(conn, target=5, max_fetch=60)
+    assert r["done"] is True and r["twse_days"] >= 5
+
+def test_backfill_ohlc_reports_the_coverage_shape_not_just_a_count(tmp_path, monkeypatch):
+    """一個數字說不出「有沒有洞」。回報窗口內的最舊／最新與**最大缺口**，
+    讓 `done: true` 可以被人一眼複驗——同 `/api/ohlc/coverage-for` 分辨三種「沒有」的精神。"""
+    from datetime import date as _d, timedelta as _td
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    today = _d.today()
+    # 最近 3 天有、再往前挖一個 30 天的洞、然後又有 3 天
+    for off in (1, 2, 3, 34, 35, 36):
+        ds = (today - _td(days=off)).isoformat()
+        for code in ("2330", "8069"):
+            conn.execute("INSERT OR REPLACE INTO stock_ohlc(date,code,close) VALUES(?,?,1.0)",
+                         (ds, code))
+    conn.commit()
+    monkeypatch.setattr(updater.twse, "fetch_stock_ohlc", lambda d: {})
+    monkeypatch.setattr(updater.tpex, "fetch_otc_ohlc", lambda d: {})
+
+    r = updater.backfill_ohlc(conn, target=100, max_fetch=2)
+    cov = r["coverage"]["twse"]
+    assert cov["newest"] == (today - _td(days=1)).isoformat()
+    assert cov["oldest"] == (today - _td(days=36)).isoformat()
+    assert cov["max_gap_days"] >= 30, "窗口內有 30 天的洞就要講出來"
+
+
+def test_backfill_ohlc_exhausted_says_where_it_gave_up(tmp_path, monkeypatch):
+    """熔斷只丟一個 `exhausted: true` 分不出「真的沒有更早的歷史」與「來源被限流」。
+    **不發明分類器**（我們無從確知），但要把判斷得出來的事實講出來：在哪一天放棄的。
+    停在 1990 年是歷史底線，停在上週就是來源出問題——這個差別讀者自己看得出來。"""
+    from datetime import date as _d, timedelta as _td
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    monkeypatch.setattr(updater.twse, "fetch_stock_ohlc", lambda d: {"2330": {"close": 1.0}})
+    monkeypatch.setattr(updater.tpex, "fetch_otc_ohlc", lambda d: {})   # 上櫃永遠抓不到
+
+    r = updater.backfill_ohlc(conn, target=50, max_fetch=200)
+    assert r["otc_exhausted"] is True
+    at = r["exhausted_at"]["otc"]
+    assert at and at <= _d.today().isoformat()
+    # 上市沒熔斷就不該有日期
+    assert r["exhausted_at"]["twse"] is None

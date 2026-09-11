@@ -707,11 +707,40 @@ _TW_BELL = ("2330",)
 _OTC_BELL = ("8069", "5483", "3105")
 
 
-def _dates_with(conn, codes) -> set:
-    ph = ",".join("?" * len(codes))
-    return {r[0] for r in conn.execute(
-        f"SELECT DISTINCT date FROM stock_ohlc WHERE code IN ({ph})", list(codes))}
+def _dates_with(conn, codes, since: str | None = None) -> set:
+    """指標股有列的日期集合。`since` 限制在回補窗口內。
 
+    **沒有 `since` 就是在數「有史以來」**——實測 production 的 `stock_ohlc` 有 643 列
+    橫跨 2017→2026（9 年約 2,200 個交易日、不到三成的日子有列），於是
+    `643 >= target 377` 讓 `backfill_ohlc` 直接判 `done: true`、迴圈一次都沒跑、
+    `added: 0`，使用者看到「完成」而最近半年一天都沒有。
+    `target` 的語意是「從今天往回 N 個交易日」（`floor` 也是這樣算的），計數必須在同一個
+    窗口內，否則遠古的零星歷史會把門檻灌滿。
+    """
+    ph = ",".join("?" * len(codes))
+    sql = f"SELECT DISTINCT date FROM stock_ohlc WHERE code IN ({ph})"
+    args = list(codes)
+    if since:
+        sql += " AND date >= ?"
+        args.append(since)
+    return {r[0] for r in conn.execute(sql, args)}
+
+
+def _coverage_shape(dates: set) -> dict:
+    """窗口內的覆蓋形狀：最舊／最新／最大缺口（日曆天）。
+
+    **一個數字說不出「有沒有洞」。** `done` 只回一個天數時，「377 天連續」與
+    「377 天散落在九年裡」長得一模一樣；把形狀攤開才複驗得了（同
+    `/api/ohlc/coverage-for` 分辨三種「沒有」的精神）。缺口用日曆天——週末 3 天、
+    農曆年連假 ~10 天屬正常，所以讀者要自己判斷，不由程式替他下結論。
+    """
+    if not dates:
+        return {"days": 0, "oldest": None, "newest": None, "max_gap_days": None}
+    ds = sorted(dates)
+    gap = 0
+    for a, b in zip(ds, ds[1:]):
+        gap = max(gap, (_date.fromisoformat(b) - _date.fromisoformat(a)).days)
+    return {"days": len(ds), "oldest": ds[0], "newest": ds[-1], "max_gap_days": gap}
 
 _FAIL_ABORT = 20     # 單一市場「累計」連續失敗 N 個日期 → 熔斷該市場（判定為歷史底線）
                      # 需大於台股最長連續休市（農曆春節封關最多約 5~6 個工作日），否則假期
@@ -775,8 +804,10 @@ def backfill_ohlc(conn, target: int = 377, max_fetch: int = 60) -> dict:
     殘餘限制：若來源發生跨越多次呼叫的長時間暫時性故障（非假期、非真底線），失敗計數仍可能
     累積到門檻而誤判熔斷；此情境機率低、且僅影響「提早放棄該市場」，非資料錯誤，故接受此權衡。
     """
-    have_tw = _dates_with(conn, _TW_BELL)
-    have_otc = _dates_with(conn, _OTC_BELL)
+    # **計數與掃描用同一個窗口下限**：兩者分家正是「643 列橫跨 9 年卻判 done」的根因。
+    floor = _date.today() - timedelta(days=target * 2 + 40)  # 日曆下限，避免無限迴圈
+    have_tw = _dates_with(conn, _TW_BELL, since=floor.isoformat())
+    have_otc = _dates_with(conn, _OTC_BELL, since=floor.isoformat())
     added = 0
     start = time.monotonic()
     anchor = _get_date_setting(conn, "ohlc_cursor", _date.today())
@@ -784,7 +815,6 @@ def backfill_ohlc(conn, target: int = 377, max_fetch: int = 60) -> dict:
     otc_fails = _get_int_setting(conn, "ohlc_fails_otc")
     tw_aborted = get_setting(conn, "ohlc_exhausted_tw") == "1"
     otc_aborted = get_setting(conn, "ohlc_exhausted_otc") == "1"
-    floor = _date.today() - timedelta(days=target * 2 + 40)  # 日曆下限，避免無限迴圈
     while (len(have_tw) < target or len(have_otc) < target) and added < max_fetch and anchor >= floor:
         if time.monotonic() - start > _TIME_BUDGET:
             break
@@ -802,7 +832,9 @@ def backfill_ohlc(conn, target: int = 377, max_fetch: int = 60) -> dict:
                 tw_fails = 0
             else:
                 tw_fails += 1
-                tw_aborted = tw_fails >= _FAIL_ABORT
+                if tw_fails >= _FAIL_ABORT and not tw_aborted:
+                    tw_aborted = True
+                    set_setting(conn, "ohlc_exhausted_at_tw", ds)
         if ds not in have_otc and len(have_otc) < target and not otc_aborted:
             attempted = True
             rows = _fetch_capped(tpex.fetch_otc_ohlc, anchor)
@@ -812,7 +844,9 @@ def backfill_ohlc(conn, target: int = 377, max_fetch: int = 60) -> dict:
                 otc_fails = 0
             else:
                 otc_fails += 1
-                otc_aborted = otc_fails >= _FAIL_ABORT
+                if otc_fails >= _FAIL_ABORT and not otc_aborted:
+                    otc_aborted = True
+                    set_setting(conn, "ohlc_exhausted_at_otc", ds)
         if attempted:
             added += 1  # 以「處理過的日數」計次，確保單次呼叫有界
             time.sleep(_THROTTLE)
@@ -827,8 +861,16 @@ def backfill_ohlc(conn, target: int = 377, max_fetch: int = 60) -> dict:
     if otc_aborted:
         set_setting(conn, "ohlc_exhausted_otc", "1")
     done = len(have_tw) >= target and (len(have_otc) >= target or otc_aborted)
+    # `done` 只是一個天數比較，說不出「窗口內有沒有洞」——把覆蓋形狀一起回傳讓它可複驗。
+    # 熔斷日期則是為了分辨「真的沒有更早的歷史」與「來源被擋」：**刻意不發明分類器**
+    # （我們無從確知是哪一種），只把判斷得出來的事實講出來——停在 1990 年是歷史底線、
+    # 停在上週就是來源出問題，這個差別讀者自己看得出來。
     return {"stored_days": min(len(have_tw), len(have_otc)),
             "twse_days": len(have_tw), "otc_days": len(have_otc),
+            "window_start": floor.isoformat(),
+            "coverage": {"twse": _coverage_shape(have_tw), "otc": _coverage_shape(have_otc)},
+            "exhausted_at": {"twse": get_setting(conn, "ohlc_exhausted_at_tw"),
+                             "otc": get_setting(conn, "ohlc_exhausted_at_otc")},
             "added": added, "twse_exhausted": tw_aborted, "otc_exhausted": otc_aborted, "done": done}
 
 
@@ -840,7 +882,8 @@ def reset_ohlc_progress(conn) -> None:
     判定一次機會（例如懷疑先前是暫時性問題被誤判成永久底線時使用）。
     """
     for key in ("ohlc_cursor", "ohlc_fails_tw", "ohlc_fails_otc",
-                "ohlc_exhausted_tw", "ohlc_exhausted_otc"):
+                "ohlc_exhausted_tw", "ohlc_exhausted_otc",
+                "ohlc_exhausted_at_tw", "ohlc_exhausted_at_otc"):
         conn.execute("DELETE FROM settings WHERE key=?", (key,))
     conn.commit()
 

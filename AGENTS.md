@@ -175,6 +175,20 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - **畫面標出「來源：排程預算／現算」**，排程失敗時端點會安靜退回現算，不標就發現不了。
 - 本機 0.42s 不具代表性（dev DB 無季報/OHLC≥55，貴的那半沒跑滿）。
 
+### `conn()` 不關連線：查證後刻意不修（2026-09）
+
+- **先量**：引用計數不回收（相依套件有循環參照），50 個請求尖峰 **44 條**開著，`gc.collect()` 後歸零，**握著寫入鎖的 0 條**（反證：刻意不 commit 的連線抓得到）。**不是那次 `database is locked` 的成因**，是資源浪費不是鎖競爭。
+- **試過的修法失敗**：contextvars 登記＋中介層關閉 → `sqlite3.ProgrammingError: created in thread X, this is thread Y`——同步端點在 threadpool 建連線、中介層在 event loop，`check_same_thread=True` 不准跨執行緒關。
+- **更該記的**：我寫的 `except sqlite3.Error: pass` 把那個例外整個吃掉，中介層看似在跑、實際一條沒關且無聲。**替清理動作加寬鬆 except 之前，先問「它失敗時我看得見嗎」。**
+- 剩下選項（拆 `check_same_thread`／改 89 個呼叫點／每執行緒延後關閉）都不成比例，**維持現狀**。
+
+### `backfill_ohlc` 的 done／exhausted 判定（2026-09）
+
+- **`done` 只數天數不看窗口** → `_dates_with(since=)`，**計數與掃描共用同一個 `floor`**。根因是兩者分家：production 643 列橫跨 9 年 → `643>=377` 判完成、迴圈沒跑、`added: 0`。**不是把 done 變成永遠 False**，窗口補滿仍回 True（有反證測試）。
+- **一個天數說不出有沒有洞** → 回 `coverage.{twse,otc}` 的 days/oldest/newest/`max_gap_days` ＋ `window_start`。缺口不由程式下結論（週末 3 天、農曆年 ~10 天屬正常）。
+- **熔斷不說原因** → 記 `exhausted_at.{twse,otc}`。**刻意不發明分類器**，只講事實：停在 1990 年是歷史底線、停在上週是來源出問題。`reset_ohlc_progress` 一併清掉新鍵。
+- 實測真實本機 DB：`done: False`、`max_gap_days: 12`（舊版看不出那個洞）。
+
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.
