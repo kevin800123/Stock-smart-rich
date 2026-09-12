@@ -177,7 +177,10 @@ def test_accumulate_custody_stores_new_week_then_skips(tmp_path, monkeypatch):
 
 
 def test_refresh_monthly_revenue_stores_both_markets(tmp_path, monkeypatch):
-    """兩個市場各自失敗互不影響（同 stock_source_coverage 的既有精神），且回傳兩市場共入了幾檔。"""
+    """兩個市場各自失敗互不影響（同 stock_source_coverage 的既有精神），且回傳兩市場共入了幾檔。
+
+    **回傳形狀是刻意改的**（原本 `{market: 檔數}`）：只有一個數字時，逾時／HTTP 狀態／
+    TLS／端點回空全部長成同一個 0，告警就只能寫「查無資料或抓取失敗」。"""
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
     monkeypatch.setattr(updater.revenue, "fetch_twse_revenue", lambda: {
@@ -195,7 +198,8 @@ def test_refresh_monthly_revenue_stores_both_markets(tmp_path, monkeypatch):
                  "accum_yoy_pct": 13.2, "note": None},
     })
     counts = updater._refresh_monthly_revenue(conn)
-    assert counts == {"TWSE": 1, "TPEx": 1}
+    assert counts == {"TWSE": {"count": 1, "error": None},
+                      "TPEx": {"count": 1, "error": None}}
     twse_row = conn.execute(
         "SELECT market, yoy_pct FROM stock_revenue_monthly WHERE code='2330'").fetchone()
     assert tuple(twse_row) == ("TWSE", 25.0)
@@ -220,7 +224,10 @@ def test_refresh_monthly_revenue_one_market_failing_does_not_block_other(tmp_pat
                  "accum_yoy_pct": 13.2, "note": None},
     })
     counts = updater._refresh_monthly_revenue(conn)
-    assert counts == {"TWSE": 0, "TPEx": 1}
+    assert counts["TPEx"] == {"count": 1, "error": None}
+    # 失敗那一邊要留下原因，不是只留一個 0——這正是 2026-09-12 那則告警查不出來的原因
+    assert counts["TWSE"]["count"] == 0
+    assert "RuntimeError" in counts["TWSE"]["error"] and "network down" in counts["TWSE"]["error"]
 
 
 def _hist_row(ym):
@@ -1120,3 +1127,37 @@ def test_backfill_ohlc_exhausted_says_where_it_gave_up(tmp_path, monkeypatch):
     assert at and at <= _d.today().isoformat()
     # 上市沒熔斷就不該有日期
     assert r["exhausted_at"]["twse"] is None
+
+
+def test_refresh_monthly_revenue_keeps_the_failure_reason(tmp_path, monkeypatch):
+    """「查無資料」與「抓取失敗」是兩件事，而且失敗還分逾時／HTTP 狀態／TLS。
+    原本 `except Exception: counts[market] = 0` 讓三者長得一模一樣，告警只能寫一句
+    模稜兩可的「查無資料或抓取失敗」（實測 2026-09-12 收到，事後完全無從追查）。"""
+    import httpx
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+
+    def boom():
+        raise httpx.ConnectTimeout("timed out")
+
+    monkeypatch.setattr(updater.revenue, "fetch_twse_revenue", boom)
+    monkeypatch.setattr(updater.revenue, "fetch_otc_revenue", lambda: {})   # 200 但沒資料
+
+    out = updater._refresh_monthly_revenue(conn)
+    assert out["TWSE"]["count"] == 0 and "ConnectTimeout" in out["TWSE"]["error"]
+    # 端點回 200 卻沒有資料＝查無資料，**不是**抓取失敗，兩者要分得出來
+    assert out["TPEx"]["count"] == 0 and out["TPEx"]["error"] == "端點回空（查無資料）"
+
+
+def test_refresh_monthly_revenue_success_has_no_error(tmp_path, monkeypatch):
+    """反證：成功時 error 必須是 None，否則告警會天天亮。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    row = {"2330": {"year_month": "2026-08", "report_date": "2026-09-10", "revenue": 1.0}}
+    monkeypatch.setattr(updater.revenue, "fetch_twse_revenue", lambda: row)
+    monkeypatch.setattr(updater.revenue, "fetch_otc_revenue", lambda: row)
+
+    out = updater._refresh_monthly_revenue(conn)
+    assert out["TWSE"] == {"count": 1, "error": None}
+    assert out["TPEx"] == {"count": 1, "error": None}

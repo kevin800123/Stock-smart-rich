@@ -146,3 +146,27 @@ def test_expected_after_close_data_is_not_a_line_alert(tmp_path, monkeypatch):
         ],
     })
     assert sent == []
+
+
+def test_alert_names_the_source_so_two_markets_are_distinguishable(monkeypatch, tmp_path):
+    """月營收是**逐市場**判定的（上市 twse／上櫃 tpex 各自失敗），但告警只印 `name`，
+    所以使用者看到的永遠是「revenue」——分不出是哪一邊。實測 2026-09-12 收到那則時
+    完全無從判斷（`source` 其實一直都記著，只是沒印出來）。"""
+    from stocks_power_rich.api.helpers import _check_update_result_and_alert
+    from stocks_power_rich import line_push
+    from stocks_power_rich.db import get_connection, init_db
+
+    sent = []
+    monkeypatch.setattr(line_push, "broadcast_text", lambda token, msg: sent.append(msg) or {"ok": True})
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "x")
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+
+    _check_update_result_and_alert(conn, {
+        "date": (date.today() - timedelta(days=1)).isoformat(),
+        "success": [],
+        "failed": [{"source": "tpex", "name": "revenue", "error": "ConnectTimeout: timed out"}],
+    })
+    assert sent, "應該要送出告警"
+    assert "revenue" in sent[0] and "tpex" in sent[0], sent[0]
+    assert "ConnectTimeout" in sent[0], "原因也要帶上，否則還是查不出來"

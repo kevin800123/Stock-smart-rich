@@ -3,6 +3,8 @@
 樣本列取自實測回應（2026-08-11 出表，2026-07 資料年月），保留真實出現過的邊界案例：
 去年同月營收為 0 時「去年同月增減(%)」是空字串（非 "-"、也非負數），備註有實際內容 vs "-"。
 """
+import pytest
+
 from stocks_power_rich.sources import revenue
 
 _TWSE_2330 = {
@@ -91,6 +93,9 @@ def test_fetch_twse_revenue_uses_openapi(monkeypatch):
     def fake_get(url, **kwargs):
         calls.append(url)
         class _Resp:
+            def raise_for_status(self):      # 真實 httpx.Response 有這支，替身要跟上
+                return None
+
             def json(self):
                 return [_TWSE_2330]
         return _Resp()
@@ -101,14 +106,6 @@ def test_fetch_twse_revenue_uses_openapi(monkeypatch):
     assert calls[0] == "https://openapi.twse.com.tw/v1/opendata/t187ap05_L"
 
 
-def test_fetch_twse_revenue_returns_empty_on_error(monkeypatch):
-    def fake_get(url, **kwargs):
-        raise RuntimeError("network down")
-
-    monkeypatch.setattr(revenue.httpx, "get", fake_get)
-    assert revenue.fetch_twse_revenue() == {}
-
-
 def test_fetch_otc_revenue_uses_verify_false(monkeypatch):
     """www.tpex.org.tw 憑證缺 SKI，同 sources/tpex.py 其他 fetcher 的既有規矩——
     忘記帶 verify=False 在 Windows 本機測不出來，只有雲端(Linux)才會靜默失敗。"""
@@ -117,6 +114,9 @@ def test_fetch_otc_revenue_uses_verify_false(monkeypatch):
     def fake_get(url, **kwargs):
         calls.append(kwargs)
         class _Resp:
+            def raise_for_status(self):      # 真實 httpx.Response 有這支，替身要跟上
+                return None
+
             def json(self):
                 return [_TPEX_1240]
         return _Resp()
@@ -125,14 +125,6 @@ def test_fetch_otc_revenue_uses_verify_false(monkeypatch):
     out = revenue.fetch_otc_revenue()
     assert out["1240"]["yoy_pct"] == 13.254097977863914
     assert calls[0].get("verify") is False
-
-
-def test_fetch_otc_revenue_returns_empty_on_error(monkeypatch):
-    def fake_get(url, **kwargs):
-        raise RuntimeError("network down")
-
-    monkeypatch.setattr(revenue.httpx, "get", fake_get)
-    assert revenue.fetch_otc_revenue() == {}
 
 
 # ── 歷史月營收（MOPS t21sc03 HTML；openapi 只給最新月，這條才能回補過去月份）──────────
@@ -226,3 +218,46 @@ def test_fetch_monthly_revenue_history_returns_empty_on_error(monkeypatch):
 
     monkeypatch.setattr(revenue.httpx, "get", fake_get)
     assert revenue.fetch_monthly_revenue_history(115, 6, "twse") == {}
+
+
+def test_fetch_revenue_lets_the_failure_reason_out(monkeypatch):
+    """**原本這兩支自己 `except Exception: return {}`，把原因就地消滅。**
+    結果是 LINE 告警只能寫「查無資料或抓取失敗」——那不是在描述狀況，是程式在承認
+    它自己也分不出是哪一種（實測 2026-09-12 收到這則，事後完全無從追查）。
+
+    改成讓例外往上拋，由唯一的呼叫端 `updater._refresh_monthly_revenue` 逐市場接住並
+    記下原因；它本來就有 per-market try/except，所以對使用者不會變得更吵。
+    這條測試是**刻意更新**舊契約（「查無/失敗回空 dict」），不是為了讓程式通過。"""
+    def fake_get(url, **kwargs):
+        raise RuntimeError("network down")
+
+    monkeypatch.setattr(revenue.httpx, "get", fake_get)
+    for fn in (revenue.fetch_twse_revenue, revenue.fetch_otc_revenue):
+        with pytest.raises(RuntimeError, match="network down"):
+            fn()
+
+
+def test_fetch_revenue_reports_http_status_instead_of_a_confusing_json_error(monkeypatch):
+    """沒有 `raise_for_status()` 時，一個 503 會在 `.json()` 才炸成 JSONDecodeError
+    ——錯誤訊息完全看不出是伺服器回了 503。要能一眼看出「來源掛了」而不是「我們解析壞了」。"""
+    import httpx as _httpx
+
+    class _Resp:
+        status_code = 503
+        def raise_for_status(self):
+            raise _httpx.HTTPStatusError("503", request=None, response=None)
+        def json(self):
+            raise AssertionError("狀態碼已經是 503，不該還走到 json()")
+
+    monkeypatch.setattr(revenue.httpx, "get", lambda url, **kw: _Resp())
+    with pytest.raises(_httpx.HTTPStatusError):
+        revenue.fetch_twse_revenue()
+
+
+def test_fetch_revenue_still_returns_rows_on_success(monkeypatch):
+    """反證：改成會拋之後，成功路徑必須完全不受影響。"""
+    monkeypatch.setattr(revenue.httpx, "get",
+                        lambda url, **kw: type("R", (), {
+                            "raise_for_status": lambda self: None,
+                            "json": lambda self: [_TWSE_2330]})())
+    assert revenue.fetch_twse_revenue()["2330"]["yoy_pct"] == 44.68755126916978

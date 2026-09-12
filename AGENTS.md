@@ -189,6 +189,14 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - **熔斷不說原因** → 記 `exhausted_at.{twse,otc}`。**刻意不發明分類器**，只講事實：停在 1990 年是歷史底線、停在上週是來源出問題。`reset_ohlc_progress` 一併清掉新鍵。
 - 實測真實本機 DB：`done: False`、`max_gap_days: 12`（舊版看不出那個洞）。
 
+### 月營收告警查不出原因：例外被吞了兩層（2026-09）
+
+- 使用者收到「revenue（查無資料或抓取失敗）」來問原因，**程式已經把答案丟掉了**。第一層在 `sources/revenue.py` 的 fetcher 自己 `except: return {}`，所以 updater 那層的 except 幾乎不會觸發——**只修第二層等於白做**。
+- `fetch_*_revenue` 改成往上拋＋`raise_for_status()`（沒有它時 503 會拖到 `.json()` 才炸成 JSONDecodeError，看起來像我們解析壞掉）。
+- `_refresh_monthly_revenue` 回 `{market: {count, error}}`，**「端點回 200 沒資料」與「抓取失敗」分開**（月營收 10 日前本來就可能還沒公告）。
+- **告警要印 `source`**：月營收逐市場判定，只印 name 永遠看到「revenue」分不出上市/上櫃——`source` 一直都記著只是沒印。
+- 兩條鎖舊契約的測試（回空 dict）**刻意刪改**；成功路徑的假 response 補 `raise_for_status`（替身跟著真實介面走）。
+
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.

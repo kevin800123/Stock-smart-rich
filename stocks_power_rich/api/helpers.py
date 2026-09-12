@@ -837,11 +837,16 @@ def _check_update_result_and_alert(c, result: dict) -> None:
     alertable = [f for f in failed if not expected_later(f)]
     if alertable or lagging:
         failed_sources = []
+        # **要印 source**：月營收是逐市場判定的（上市 twse／上櫃 tpex 各自失敗），
+        # 只印 name 的話使用者永遠看到「revenue」、分不出是哪一邊——實測 2026-09-12
+        # 收到那則時完全無從判斷，而 source 其實一直都記著、只是沒印出來。
         for f in alertable:
             err_str = f.get("error") or ""
-            if len(err_str) > 30:
-                err_str = err_str[:27] + "..."
-            failed_sources.append(f"{f.get('name')}（{err_str}）")
+            if len(err_str) > 40:
+                err_str = err_str[:37] + "..."
+            src = f.get("source")
+            label = f"{f.get('name')}／{src}" if src else f"{f.get('name')}"
+            failed_sources.append(f"{label}（{err_str}）")
 
         failed_sources_str = "、".join(failed_sources) if failed_sources else "無"
         lag_msg = f"（落後 {lag_days} 個交易日）" if lagging else ""

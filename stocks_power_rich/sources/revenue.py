@@ -84,26 +84,33 @@ def parse_monthly_revenue(payload: list) -> dict:
 
 
 def fetch_twse_revenue() -> dict:
-    """上市月營收 {代號: {...}}。查無/失敗回空 dict。"""
-    try:
-        j = httpx.get(TWSE_REVENUE_URL, timeout=30, follow_redirects=True).json()
-        return parse_monthly_revenue(j)
-    except Exception:  # noqa: BLE001
-        return {}
+    """上市月營收 {代號: {...}}。**失敗會拋例外，不吞。**
+
+    原本這裡 `except Exception: return {}`，把失敗原因就地消滅——結果是每晚的 LINE
+    告警只能寫「查無資料或抓取失敗」，那不是在描述狀況，是程式在承認它自己也分不出是
+    哪一種（實測 2026-09-12 收到這則，事後完全無從追查）。唯一的呼叫端
+    `updater._refresh_monthly_revenue` 本來就有 per-market try/except 會接住，所以
+    改成往上拋不會讓任何路徑變得更吵，只是把原因留下來（同全站「寧可大聲壞掉」的取捨）。
+
+    `raise_for_status()` 是必要的：沒有它時一個 503 會拖到 `.json()` 才炸成
+    JSONDecodeError，訊息完全看不出是伺服器回了 503、看起來像我們解析壞掉。
+    「端點回 200 但沒有資料」則照常回空 dict——那是**查無資料**，與抓取失敗是兩件事。
+    """
+    r = httpx.get(TWSE_REVENUE_URL, timeout=30, follow_redirects=True)
+    r.raise_for_status()
+    return parse_monthly_revenue(r.json())
 
 
 def fetch_otc_revenue() -> dict:
-    """上櫃月營收 {代號: {...}}。查無/失敗回空 dict。
+    """上櫃月營收 {代號: {...}}。**失敗會拋例外**（理由同 fetch_twse_revenue）。
 
     verify=False：www.tpex.org.tw 憑證缺 Subject Key Identifier，與本模組其餘打
     同一主機的 fetcher（見 sources/tpex.py）同一個毛病，Windows 容忍、Zeabur(Linux) 不容忍。
     """
-    try:
-        j = httpx.get(OTC_REVENUE_URL, timeout=30, verify=False,
-                      headers={"User-Agent": "Mozilla/5.0"}).json()
-        return parse_monthly_revenue(j)
-    except Exception:  # noqa: BLE001
-        return {}
+    r = httpx.get(OTC_REVENUE_URL, timeout=30, verify=False,
+                  headers={"User-Agent": "Mozilla/5.0"})
+    r.raise_for_status()
+    return parse_monthly_revenue(r.json())
 
 
 _TAG_RE = re.compile(r"<[^>]+>")

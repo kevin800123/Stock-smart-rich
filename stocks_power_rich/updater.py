@@ -295,16 +295,27 @@ def _refresh_monthly_revenue(conn) -> dict:
     端點本身只給「當下最新已公告的月份」（見 sources/revenue.py），沒有歷史查詢，所以
     這裡每次呼叫都直接覆寫，不像 _accumulate_custody 那樣需要「偵測到新一週才抓」的節流
     ——同一個月被重複覆寫是無害的冪等操作，換來不必自己判斷「現在是否有新月份」。
-    回傳 {"TWSE": 入庫檔數, "TPEx": 入庫檔數}，任一市場失敗記 0 而非讓例外中斷另一市場。
+    回傳 `{"TWSE": {"count": n, "error": str|None}, "TPEx": {...}}`——**原因要留下來**。
+    舊版是 `except Exception: counts[market] = 0`，把逾時／HTTP 狀態／TLS／端點回空
+    全部壓成同一個 0，於是每晚的 LINE 告警只能寫「查無資料或抓取失敗」；實測
+    2026-09-12 真的收到這一則，事後完全無從追查是哪一種、哪一個市場。
+    `fetch_*_revenue` 也已改成往上拋（原本它們自己也吞一次，在資料源那層就先消滅了原因）。
+
+    **「端點回 200 但沒有資料」與「抓取失敗」要分得出來**：前者是查無資料（月營收在
+    每月 10 日前本來就可能還沒公告），後者才是真的出問題。
     """
-    counts = {}
+    out = {}
     for market, fetch in (("TWSE", revenue.fetch_twse_revenue), ("TPEx", revenue.fetch_otc_revenue)):
         try:
             rows = fetch()
-            counts[market] = bulk_upsert_revenue(conn, market, rows) if rows else 0
-        except Exception:  # noqa: BLE001 — 單一市場失敗不影響另一市場
-            counts[market] = 0
-    return counts
+        except Exception as e:  # noqa: BLE001 — 單一市場失敗不影響另一市場
+            out[market] = {"count": 0, "error": f"{type(e).__name__}: {e}".strip().rstrip(":")}
+            continue
+        if not rows:
+            out[market] = {"count": 0, "error": "端點回空（查無資料）"}
+            continue
+        out[market] = {"count": bulk_upsert_revenue(conn, market, rows), "error": None}
+    return out
 
 
 def _prev_calendar_month(today) -> tuple:
@@ -1031,11 +1042,11 @@ def run_update(conn, intl_tickers: dict) -> dict:
 
     # 月營收：兩市場獨立抓取，任一失敗不影響另一（見 _refresh_monthly_revenue docstring）
     rev_counts = _refresh_monthly_revenue(conn)
-    for market, n in rev_counts.items():
-        if n:
-            success.append(f"revenue_{market.lower()}:{n}")
+    for market, r in rev_counts.items():
+        if r["count"]:
+            success.append(f"revenue_{market.lower()}:{r['count']}")
         else:
-            failed.append({"source": market.lower(), "name": "revenue", "error": "查無資料或抓取失敗"})
+            failed.append({"source": market.lower(), "name": "revenue", "error": r["error"]})
 
     # 台指期歷史日K（期交所官方下載），刷新近期
     try:

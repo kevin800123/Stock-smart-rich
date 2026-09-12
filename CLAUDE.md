@@ -851,6 +851,50 @@ sqlite 的執行緒安全檢查；(b) 改 89 個呼叫點用 `Depends(yield)` �
 整個請求路徑；(c) 每執行緒登記、下次 `conn()` 時關掉上一批 — 聰明但隱晦，且仍不確定性。
 對照收益（幾十個 GC 之前會自己消失的 handle、零鎖競爭），**維持現狀**。
 真的要動的時機是「量到檔案 handle 或記憶體確實造成問題」，不是現在。
+
+### 月營收告警查不出原因：例外被吞了兩層（2026-09）
+
+使用者 2026-09-12 收到 LINE 告警「失敗來源：**revenue（查無資料或抓取失敗）**」，
+來問發生什麼事——而**程式已經把答案丟掉了**，我只能回答「查不出來」。
+
+**根因是例外被吞了兩層，其中第一層才是致命的**：
+
+1. `sources/revenue.py` 的 `fetch_twse_revenue`／`fetch_otc_revenue` **自己**就
+   `except Exception: return {}`。原因在**資料源那一層**就被消滅，所以
+2. `updater._refresh_monthly_revenue` 的 `except Exception: counts[market] = 0`
+   幾乎永遠不會觸發——它看到的永遠只是一個空 dict。
+
+於是逾時／TLS／HTTP 503／端點回空全部壓成同一個 `0`，那句「查無資料或抓取失敗」
+不是在描述狀況，**是程式在承認它自己也分不出是哪一種**。只修第二層等於白做。
+
+- **`fetch_*_revenue` 改成往上拋**，並加 `raise_for_status()`。唯一的呼叫端本來就有
+  per-market try/except 會接住，所以對使用者不會變得更吵，只是把原因留下來（同全站
+  「寧可大聲壞掉，也不要安靜地錯」）。**`raise_for_status()` 是必要的**：沒有它時
+  一個 503 會拖到 `.json()` 才炸成 JSONDecodeError，訊息看起來像「我們解析壞掉」
+  而不是「伺服器回了 503」。
+- **`_refresh_monthly_revenue` 回傳形狀改成 `{market: {"count": n, "error": str|None}}`**，
+  並且**把「端點回 200 但沒有資料」與「抓取失敗」分開**——月營收在每月 10 日前本來
+  就可能還沒公告，那是查無資料、不是故障。
+- **告警要印 `source`**（`revenue／tpex`）。月營收是**逐市場**判定的，但訊息只印 `name`，
+  使用者看到的永遠是「revenue」、分不出上市還是上櫃——而 `source` 其實一直都記著、
+  只是沒印出來。錯誤訊息截斷長度 30→40 字，免得把 `ConnectTimeout` 這種字首切掉。
+
+實際差別：
+```
+舊：失敗來源：revenue（查無資料或抓取失敗）
+新：失敗來源：revenue／tpex（ConnectTimeout: timed out）
+新：失敗來源：revenue／twse（端點回空（查無資料））
+```
+
+**那次事件本身查不出來，但不是資料損壞**：月營收是冪等覆寫、每天重抓，實測兩個端點
+當下都正常（上市 1,070 檔／上櫃 891 檔、皆 2026-08），且上櫃有公司的 `report_date`
+正好是 9/12 當天（法定截止 9/10，最後才申報的），所以「21:00 跑的時候端點正在更新」
+是合理解釋之一。設定頁的「月營收」那格可確認實際入庫到哪個月。
+
+**測試改動說明**：`test_fetch_*_revenue_returns_empty_on_error` 兩條鎖的是舊契約
+（「查無/失敗回空 dict」），**刻意刪除並改寫**，理由寫在新測試的 docstring 裡。
+兩條成功路徑測試的假 response 補上 `raise_for_status`——測試替身要跟著真實介面走，
+不是放寬斷言。
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.
