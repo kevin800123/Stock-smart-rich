@@ -895,6 +895,47 @@ sqlite 的執行緒安全檢查；(b) 改 89 個呼叫點用 `Depends(yield)` �
 （「查無/失敗回空 dict」），**刻意刪除並改寫**，理由寫在新測試的 docstring 裡。
 兩條成功路徑測試的假 response 補上 `raise_for_status`——測試替身要跟著真實介面走，
 不是放寬斷言。
+### 訊號前瞻追蹤：寫得進去、讀不出來（ui49，2026-09）
+
+使用者決定**暫時不停 XQ CSV**，理由是「自算的還沒經過時間驗證」。查下去才發現那個
+驗證**沒有出口**：`api/trades.py::signals_performance` 的來源寫死成
+`("filtered_picks", "cup_handle")`，`self_screen` 不在裡面。
+
+**這個洞的症狀是完全無聲的**：`record_self_screen_signals` 照常每個交易日寫一筆、
+`update_ledger_returns` 不分來源照常回填 5/10/20 日報酬，資料一路在累積——只有唯一的
+讀出口把它擋在外面。等下去不會自己長出結論，而**前瞻報酬不能事後回補**（回補即有存活者
+偏誤），漏讀的那段時間補不回來。自算那條線是 2026-09-09 上線的，所以歷史從那天起算。
+
+- `LEDGER_SOURCES` 提成模組常數並補上 `self_screen`。**新增來源時只有這裡會漏**——
+  記錄端與回填端都不分來源，`db.py` 的 schema 註解也一併補了提醒。
+- **每個來源多回 `signals`／`since`／`latest`**：「有訊號但還沒到期」與「根本沒在記」
+  是兩件事（同全站「查無資料 vs 抓取失敗」的分法）。剛接上的來源必然三個橫幅
+  count 全是 0，只看 count 會把正常的等待期讀成故障。本機實測正好示範了這件事：
+  filtered_picks 有 364 筆訊號、0 筆成熟，沒有 `signals` 就與「完全沒在記」長得一樣。
+- **`PERF_MIN_SAMPLE`(20) 放後端、經回應送前端**，不在 `app.js` 另寫一份（同 bands/
+  Elliott 的規矩）。n=4 的 100% 勝率是巧合不是發現，未達門檻標「樣本不足」。
+
+**設定頁加一列最小顯示**（`#set-signal-perf` → `renderSignalPerf`），三個來源並排 ×
+5/10/20 日——並排是這一格存在的理由，不並排就答不了「自算有沒有比 CSV 準」。
+
+- **刻意不用紅綠也不用琥珀。** 這是「這個訊號有沒有用」的統計讀數，與法人研究實驗室
+  同一類；那邊的結論色就是刻意避開暖色，因為**任何暖色在這種畫面上都會被讀成「可以買」**。
+  平均報酬雖然是真的報酬%，但這裡量的是訊號品質而非今天的行情。驗證方式是掃出這一塊
+  **實際算出來的**文字顏色：只有 4 個值，全是中性灰白，紅/綠/琥珀一個都沒有。
+- **手機那條規則第一版靜默失效**：`.sp-src` 是掛在 `<td>` **自己**身上，寫成後代選擇器
+  `td:first-child .sp-src` 永遠匹配不到，而 CSS 選擇器不匹配**不會報錯**。先前用
+  `!important` 在 live 頁試打時之所以「看起來會動」，正是因為那次寫的是 `.sp-src`
+  直接命中 td。改成 `td:first-child.sp-src`（無空格、同一個元素）。
+- 375px 實測表格 400px、容器 350px，**只讓「來源」欄換行**就剛好不用橫捲（350/350），
+  代價 +44px 高。值得——要橫捲才看得到 20 日那欄等於比不了。沿用檢核表那條「只讓第一欄
+  換行、其餘照舊」的既有取捨。
+- **快取版號在四個地方**（`web/index.html` 的 link 與 script、`api/public.py` 的兩條
+  replace、`tests/test_api.py` 的四條斷言）。這次只改了 script 那一處，
+  `test_public_overview_shares_internal_frontend` 當場紅燈——那條測試存在的理由就是這個。
+
+**時間表**：Ret5 約 09-16、Ret10 約 09-24、Ret20 約 10-08 才有數字。在那之前
+self_screen 三格都會是「尚未到期」，那是**正確**顯示不是故障。
+
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.

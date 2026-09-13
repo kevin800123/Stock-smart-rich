@@ -1415,6 +1415,31 @@ a.stock:hover { text-decoration: underline; }
 .stat-k { font-size: var(--fs-sm); color: var(--muted); }
 .stat-v { font-size: var(--fs-lg); font-weight: 700; margin-top: 3px; }
 
+/* 訊號前瞻追蹤（唯讀）。與法人研究實驗室同一類的統計讀數 → **不用紅綠也不用琥珀**：
+   任何暖色在「這個訊號有沒有用」的畫面上都會被讀成「可以買」。平均報酬雖是真的報酬%，
+   但這裡量的是訊號品質而非今天的行情。層級只靠亮度與字級。 */
+.sig-perf { max-width: 900px; }
+.sp-table { width: 100%; border-collapse: collapse; font-size: var(--fs-data); }
+.sp-table th { text-align: left; font-size: var(--fs-xs); font-weight: 600; color: var(--muted);
+  padding: 4px 10px 6px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+.sp-table td { padding: 8px 10px; border-bottom: 1px solid var(--border-subtle); vertical-align: top; }
+.sp-table tr:last-child td { border-bottom: 0; }
+.sp-src { color: var(--text); font-weight: 600; white-space: nowrap; }
+.sp-main { color: var(--text); white-space: nowrap; }
+.sp-meta { font-size: var(--fs-xs); color: var(--muted); font-weight: 400; margin-top: 2px; }
+/* 「還沒到期」與「沒在記」是兩件事，不可都顯示成破折號 */
+.sp-wait { color: var(--label); font-size: var(--fs-xs); }
+.sp-none { color: var(--text-disabled); }
+.sp-weak .sp-main { color: var(--label); }
+.sp-note { font-size: var(--fs-xs); color: var(--muted); margin-top: 8px; max-width: 640px; line-height: 1.6; }
+/* 375px 實測表格 400px、容器 350px：只讓「來源」欄換行就剛好不用橫捲（350/350），
+   代價是 +44px 高。值得——這張表存在的理由就是三個來源並排比較，要橫捲才看得到
+   20 日那欄等於比不了。沿用檢核表那條「只讓第一欄換行、其餘照舊」的既有取捨。 */
+@media (max-width: 600px) {
+  /* .sp-src 是掛在 td 自己身上（不是子元素），寫成後代選擇器會靜默不生效 */
+  .sp-table td:first-child.sp-src { max-width: 7em; white-space: normal; }
+}
+
 /* 評分規則（木質/木率，唯讀）。分數不是漲跌 → 中性藍，不碰紅綠/琥珀。 */
 .scoring-rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; max-width: 900px; }
 .sr-card { background: var(--card); border: 1px solid var(--border); border-left: 3px solid var(--info); border-radius: var(--r-lg); padding: 10px 12px; }

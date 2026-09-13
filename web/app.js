@@ -1187,8 +1187,65 @@ async function loadSettings() {
       else ff.innerHTML = `<span class="set-badge ok">季報最新 ${esc(fq)} ✓</span><span class="muted small">月營收最新 ${esc(rm)}（每日自動更新）。</span>`;
     }
   } catch (e) { /* 忽略 */ }
+  renderSignalPerf();
   renderScoringRules();
   renderStage2Sources();
+}
+
+// 訊號前瞻追蹤（唯讀）。三個來源並排是重點——這一格存在的理由就是「自算到底有沒有比
+// CSV 那套準」，不並排就答不了。
+//
+// **刻意不用紅綠，也不用琥珀。** 這是「這個訊號有沒有用」的統計讀數，與法人研究實驗室
+// 同一類；那邊的結論色就是刻意避開暖色，因為任何暖色在這種畫面上都會被讀成「可以買」。
+// 平均報酬雖然是真的報酬%，但這裡量的是訊號品質不是今天的行情，著色只會把判讀變成背書。
+//
+// 樣本門檻取自後端的 min_sample，**不在這裡另寫一份**（同 bands/Elliott 的規矩）。
+const SIG_SOURCE_LABELS = {
+  filtered_picks: ["籌碼/基本選股", "XQ CSV 匯入"],
+  self_screen: ["自算籌碼/基本選股", "自算，零 CSV 依賴"],
+  cup_handle: ["杯柄選股", "價格型態"],
+};
+const SIG_HORIZONS = [["ret5", "5 日"], ["ret10", "10 日"], ["ret20", "20 日"]];
+
+// 一個橫幅一格。三種狀態必須分得出來，否則剛接上的來源會看起來像壞掉：
+//   有成熟報酬 → 勝率／平均／n；有訊號但沒到期 → 尚未到期；根本沒在記 → —
+function sigPerfCell(d, signals, minN) {
+  if (!d || !d.count) {
+    return signals
+      ? `<td class="sp-wait">尚未到期</td>`
+      : `<td class="sp-none">—</td>`;
+  }
+  const weak = d.count < minN;
+  const sign = d.avg_ret > 0 ? "+" : "";
+  return `<td${weak ? ' class="sp-weak"' : ""}>`
+    + `<div class="sp-main">勝率 ${fmt(d.win_rate, 1)}%</div>`
+    + `<div class="sp-main">平均 ${sign}${fmt(d.avg_ret, 2)}%</div>`
+    + `<div class="sp-meta">n=${d.count}${weak ? "・樣本不足" : ""}</div></td>`;
+}
+
+async function renderSignalPerf() {
+  const box = $("set-signal-perf");
+  if (!box) return;
+  try {
+    const r = await getJSON("/api/signals/performance");
+    const perf = r.performance || {}, minN = r.min_sample || 20;
+    const rows = (r.sources || Object.keys(perf)).map((src) => {
+      const d = perf[src] || {};
+      const [name, sub] = SIG_SOURCE_LABELS[src] || [src, ""];
+      const since = d.since ? `自 ${esc(d.since.slice(5))} 起` : "尚無訊號";
+      return `<tr><td class="sp-src">${esc(name)}<div class="sp-meta">${esc(sub)}</div></td>`
+        + `<td class="sp-src">${d.signals || 0}<div class="sp-meta">${since}</div></td>`
+        + SIG_HORIZONS.map(([k]) => sigPerfCell(d[k], d.signals, minN)).join("")
+        + `</tr>`;
+    }).join("");
+    box.innerHTML =
+      `<div class="table-wrap"><table class="sp-table"><thead><tr>`
+      + `<th scope="col">來源</th><th scope="col">訊號</th>`
+      + SIG_HORIZONS.map(([, lbl]) => `<th scope="col">${lbl}</th>`).join("")
+      + `</tr></thead><tbody>${rows}</tbody></table></div>`
+      + `<div class="sp-note">勝率＝報酬為正的比例；平均＝等權平均報酬。未滿 ${minN} 筆標「樣本不足」，`
+      + `不足以下結論。這是訊號的歷史統計，不是投資建議。</div>`;
+  } catch (e) { box.innerHTML = ""; }
 }
 
 // 木質/木率 評分規則（唯讀）。規則文字全來自後端 /api/scoring-rules——單一權威版本，

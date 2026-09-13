@@ -125,3 +125,45 @@ def test_ledger_flow_and_api(tmp_path, monkeypatch):
     assert body["performance"]["filtered_picks"]["ret5"]["win_rate"] == 100.0
     assert body["performance"]["filtered_picks"]["ret5"]["avg_ret"] == 5.0
     assert body["performance"]["filtered_picks"]["ret10"]["count"] == 0
+
+
+def test_signals_performance_reports_every_ledger_source(tmp_path, monkeypatch):
+    """三個來源都要出現在績效讀出口，**self_screen 不可漏**。
+
+    它漏掉時的症狀是完全無聲的：`record_self_screen_signals` 照常每個交易日寫一筆、
+    `update_ledger_returns` 不分來源照常回填報酬，只有這個唯一的讀出口看不到它——
+    於是「自算到底有沒有比 CSV 那套準」永遠拿不出證據，而前瞻報酬**不能事後回補**。
+
+    同時鎖住「有訊號但還沒到期」與「根本沒在記」要分得出來：剛接上的來源必然三個
+    橫幅都 count=0，只看 count 會把正常的等待期誤讀成故障（同全站「查無資料 vs
+    抓取失敗」的分法）。
+    """
+    db_file = str(tmp_path / "t.sqlite")
+    monkeypatch.setenv("SPR_DB_PATH", db_file)
+    conn = get_connection(db_file)
+    init_db(conn)
+    # self_screen：已成熟（有 ret5）；cup_handle：有訊號但未到期；filtered_picks：完全沒記
+    conn.execute("INSERT INTO signal_ledger (signal_date, code, name, source, entry_ref_price, ret5)"
+                 " VALUES (?,?,?,?,?,?)", ("2026-09-09", "2330", "台積電", "self_screen", 1000.0, 5.0))
+    conn.execute("INSERT INTO signal_ledger (signal_date, code, name, source, entry_ref_price)"
+                 " VALUES (?,?,?,?,?)", ("2026-09-10", "2317", "鴻海", "cup_handle", 200.0))
+    conn.commit()
+
+    body = TestClient(create_app()).get("/api/signals/performance").json()
+    perf = body["performance"]
+
+    # 舊版把來源寫死成 ("filtered_picks", "cup_handle")，這一行就是會紅的那一行
+    assert "self_screen" in perf
+    assert perf["self_screen"]["ret5"] == {"win_rate": 100.0, "avg_ret": 5.0, "count": 1}
+    assert perf["self_screen"]["signals"] == 1
+    assert perf["self_screen"]["since"] == "2026-09-09"
+
+    # 「等待到期」與「沒在記」不可混為一談：兩者 count 都是 0，要靠 signals 分辨
+    assert perf["cup_handle"]["ret5"]["count"] == 0 and perf["cup_handle"]["signals"] == 1
+    assert perf["filtered_picks"]["ret5"]["count"] == 0 and perf["filtered_picks"]["signals"] == 0
+    assert perf["cup_handle"]["since"] == "2026-09-10"
+    assert perf["filtered_picks"]["since"] is None
+
+    # 樣本不足的門檻由後端給，前端不得自己寫死一份（同 bands/Elliott 的規矩）
+    assert body["min_sample"] > 0
+    assert body["sources"] == ["filtered_picks", "self_screen", "cup_handle"]

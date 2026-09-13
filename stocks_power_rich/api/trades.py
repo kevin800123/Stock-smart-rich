@@ -6,6 +6,14 @@ from ..db import add_trade, close_trade, delete_trade
 
 router = APIRouter(prefix="/api")
 
+# signal_ledger 的三個訊號來源。**新增來源時這裡一定要跟著加**——記錄端與報酬回填端
+# 都不分來源，唯一會漏掉新來源的就是這個讀出口（self_screen 就是這樣漏掉的）。
+LEDGER_SOURCES = ("filtered_picks", "self_screen", "cup_handle")
+
+# 低於這個成熟筆數只標「樣本不足」、不當成結論：n=3 的 100% 勝率是巧合不是發現。
+# 門檻放後端、經回應送到前端，**不在 app.js 另寫一份**（同 bands/Elliott 的規矩）。
+PERF_MIN_SAMPLE = 20
+
 @router.get("/trades")
 def trades_list():
     return _trades_payload(conn())
@@ -84,10 +92,26 @@ def signals_snapshot():
 
 @router.get("/signals/performance")
 def signals_performance():
+    """訊號前瞻績效：三個來源 × 5/10/20 日已成熟報酬的勝率與平均。
+
+    **self_screen 以前不在這個迴圈裡，等於自算那條線寫了等於沒寫。**
+    `record_self_screen_signals` 每個交易日都在記、`update_ledger_returns` 也不分來源
+    照樣回填報酬，資料一路在累積——只有這個唯一的讀出口把來源寫死成兩個，把它擋在外面。
+    「自算到底有沒有比 CSV 那套準」因此永遠讀不出來，而前瞻報酬**不能事後回補**
+    （回補即有存活者偏誤），漏讀的那段時間是補不回來的。
+
+    每個來源另外回 `signals`／`since`／`latest`：**「還沒到期」與「根本沒在記」是兩件事**
+    （同全站「查無資料 vs 抓取失敗」的分法）。剛接上的來源必然三個橫幅都是 count=0，
+    只看 count 會看起來像壞掉。
+    """
     c = conn()
     perf = {}
-    for source in ("filtered_picks", "cup_handle"):
-        perf[source] = {}
+    for source in LEDGER_SOURCES:
+        head = c.execute(
+            "SELECT COUNT(*), MIN(signal_date), MAX(signal_date) FROM signal_ledger WHERE source=?",
+            (source,)
+        ).fetchone()
+        perf[source] = {"signals": head[0], "since": head[1], "latest": head[2]}
         for ret_col in ("ret5", "ret10", "ret20"):
             rows = c.execute(
                 f"SELECT {ret_col} FROM signal_ledger WHERE source=? AND {ret_col} IS NOT NULL",
@@ -118,6 +142,8 @@ def signals_performance():
     return {
         "ok": True,
         "performance": perf,
+        "sources": list(LEDGER_SOURCES),
+        "min_sample": PERF_MIN_SAMPLE,
         "user_stats": user_stats,
         "total_records": total_records,  # 帳本已快照筆數（0＝尚未種入任何訊號）
     }

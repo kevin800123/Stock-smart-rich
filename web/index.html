@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260817-ui48" />
+  <link rel="stylesheet" href="styles.css?v=20260817-ui49" />
   <script src="/vendor/echarts.min.js"></script>
 </head>
 <body>
@@ -683,6 +683,9 @@
         <div class="ai-head" style="margin-top:8px"><span>財報新鮮度</span><span class="muted small">季報一季一更（財報公布後跑一次本機 sync_report.bat）；月營收每日自動</span></div>
         <div id="set-fin-fresh" class="set-row"></div>
 
+        <div class="ai-head" style="margin-top:8px"><span>訊號前瞻追蹤</span><span class="muted small">每日記下當天命中，滿 5／10／20 個交易日才回填報酬。不可事後回補（回補即有存活者偏誤），所以只會愈記愈長</span></div>
+        <div id="set-signal-perf" class="sig-perf"></div>
+
         <div class="ai-head" style="margin-top:8px"><span>評分規則</span><span class="muted small">木質／木率（唯讀，規則來自後端）</span></div>
         <div id="set-scoring" class="scoring-rules"></div>
 
@@ -692,6 +695,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260817-ui48"></script>
+  <script src="app.js?v=20260817-ui49"></script>
 </body>
 </html>
