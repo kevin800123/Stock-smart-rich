@@ -978,6 +978,73 @@ self_screen 三格都會是「尚未到期」，那是**正確**顯示不是故�
 （同「非農＝第一個週五」那條的教訓）。真要做時間校正，得先逐 5 分鐘累積真實的盤中
 量能剖面，用量到的、不是假設的。
 
+### 櫃買 openapi 傳到一半被切斷：斷線續傳（`tpex.get_resumable`，2026-09）
+
+上一條「月營收失敗要留下原因」修完之後，**隔天的告警就把原因帶出來了**：
+`revenue／tpex（ReadError: [Errno 104] Connection reset…）`。那條修正的價值就在這裡——
+09-12 那則查不出任何東西，09-13 這則一眼看得出是連線被對方切斷。
+
+**本機當場重現，而且不是偶發**：21:10 前後連打 6 次全失敗。伺服器回 `200` 並宣告
+`Content-Length: 496010`，卻每次在送到 **65～212 KB** 時切斷（curl exit 56、httpx
+`RemoteProtocolError`；Zeabur 的 Linux 堆疊上同一件事表現成 `ReadError Errno 104`）。
+換瀏覽器 UA、換 `Accept-Encoding` 全都一樣斷；**同時段上市 openapi 正常**；公司基本資料
+`mopsfin_t187ap03_O`（本站 `_otc_names`／`_otc_industry` 在用）**也一樣被切**。
+約 10 分鐘後自行恢復，之後連打 16 次全成功。兩晚都落在 21:00 的每日排程裡；
+09-12／13 是週六日，那天排程幾乎只剩月營收會連外，所以告警裡只看得到它。
+
+**單純重試救不了**——壞掉的那段時間每一次都斷。但回應標頭有 `Accept-Ranges: bytes`
+與 `ETag`（nginx 送的靜態檔），所以斷在哪就從哪接著要剩下的。
+
+- **`If-Range` 一定要帶 ETag**：下載途中檔案若被重新產生，伺服器回 200 整份新檔，必須
+  從頭來過。少了它會拿到「舊檔前半＋新檔後半」，而那種拼接 JSON **可能解析得過、看起來
+  完全正常**。反證：拿掉 `If-Range` → 2 條測試紅。
+- **回 200 而非「從 offset 起算的 206」就從頭來過**，不可把整份接在前半段後面。反證：
+  拿掉這個判斷 → 2 條測試紅。
+- **`Accept-Encoding: identity`**：Range 的位移是傳輸中的位元組，經 gzip 就對不上內容。
+- **放棄條件是「連續 `RESUME_MAX_STALLS`(3) 次沒有任何進度」不是總次數**——有進度的斷線
+  代表還在前進，每次只給 10 bytes 也要能補完（另有 `RESUME_MAX_REQUESTS`=20 硬上限）。
+  放棄時把最後一個例外**原樣**往上拋，告警才看得到原因。
+- **HTTP 錯誤碼不重試**（`HTTPStatusError` 不是 `TransportError`）：那不是斷線。
+- **對真實伺服器驗過續傳本身**（假伺服器證明不了這件事）：`Range: bytes=200000-` 回
+  `206 bytes 200000-496009/496010`，拼接後與整份逐位元相同；`If-Range` 帶錯的 ETag 回
+  `200` 整份——正是重來邏輯依賴的行為。
+
+**沒驗到、要老實講的一件事**：壞掉的那段時間已經過了，所以「續傳請求在故障期間是否
+也會在 0 byte 就被切」無法實測。若是，連續 3 次沒進度就會放棄並照常告警，原因仍看得見。
+真的反覆發生的話，下一步是退到 MOPS `t21sc03`（另一台主機），但那條的 `report_date`
+是次月 10 日的近似值，月初會被 `revenue_yoy_map(as_of)` 濾掉，接之前要先處理這件事。
+
+**測試替身跟著改**：`test_all_tpex_www_fetchers_use_verify_false` 的 `httpx.get` 呼叫從
+8 次變 6 次（公司基本資料兩支改走續傳），`get_resumable` 自己的 `verify=False` 另有測試。
+`fetch_otc_names`／`fetch_otc_industry` **仍維持「失敗回空 dict」的舊契約**——呼叫端的
+月快取讀寫兩端都擋了空值，不會把失敗永久化，所以這次不動它。
+
+### LINE 週六日不推（2026-09）
+
+**使用者規則：六日台股沒開盤，LINE 只要週六的選股週報（`weekly_line`），其他一律不推。**
+使用者表示之前就講過，但 2026-09-12(六)／13(日) 21:00 仍各收到一則「資料更新警告」。
+
+逐一查過所有會 broadcast 的路徑，**週末真正會送出去的只有資料告警這一條**：
+
+| 路徑 | 週末 |
+|---|---|
+| `weekly_line`（週六 17:00 選股週報） | **保留**，使用者要的 |
+| `intraday_watch` 盤中突破／MIS 失效提示 | 本來就 `mon-fri` |
+| `_push_line` 每日卡片 | 本來就擋：`market_daily` 最新日 ≠ 今天就略過 |
+| `_check_update_result_and_alert` 資料告警 | **漏網**：`lagging` 有看星期幾，失敗來源那一支沒有 |
+
+- **修在告警函式、不動排程**：每日排程週末照跑是對的（月營收每天重抓、備份、自算選股快取），
+  只是不推。**週末失敗不會被遺漏**：同一個來源週一還失敗，週一那次就會講。
+- **週末也不記去重鍵 `last_alert_key`**，否則週一同樣的失敗會被當成「已經講過」而不推——
+  測試裡明確斷言了這件事。
+- **「現在」抽成 `helpers._now()`**。那天正好是星期天：直接吃 `datetime.now()` 的話，
+  `tests/test_health.py` 既有三條告警測試會「星期天紅、星期一綠」，失敗原因與被測的東西無關
+  （同 conftest 行事曆樁那條）。該檔用 autouse fixture 固定在最近一個平日 21:00，
+  要測週末的測試自己覆寫。反證：拿掉週末判斷 → 新測試紅。
+- **Telegram 財經新聞不受此限**：那是另一條線，週末 12:00／21:10 保留是先前的決定。
+- 順帶量到：`test_alert_deduplication_logic` 單條就要 **~143 秒**（改動前量的，既有問題），
+  因為它跑整支 `scheduled_job`、裡面會真的連外。
+
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.

@@ -14,9 +14,12 @@
 因此設計成「每天呼叫、直接覆寫」而非只在偵測到新月份時才呼叫——反正同一個月重複覆寫是無害的
 冪等操作，換來的是不必自己判斷「現在是不是有新月份可以抓」這種容易出錯的邊界。
 """
+import json
 import re
 
 import httpx
+
+from . import tpex
 
 TWSE_REVENUE_URL = "https://openapi.twse.com.tw/v1/opendata/t187ap05_L"
 OTC_REVENUE_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap05_O"
@@ -104,13 +107,11 @@ def fetch_twse_revenue() -> dict:
 def fetch_otc_revenue() -> dict:
     """上櫃月營收 {代號: {...}}。**失敗會拋例外**（理由同 fetch_twse_revenue）。
 
-    verify=False：www.tpex.org.tw 憑證缺 Subject Key Identifier，與本模組其餘打
-    同一主機的 fetcher（見 sources/tpex.py）同一個毛病，Windows 容忍、Zeabur(Linux) 不容忍。
+    走 `tpex.get_resumable`（斷線續傳）：2026-09-12／13 兩晚 21:00 這支都被櫃買伺服器
+    在傳到一半時切斷（宣告 496 KB、只送 65～212 KB），單純重試那段時間每次都斷。
+    verify=False 與 HTTP 錯誤碼照拋的規矩都在那支裡。
     """
-    r = httpx.get(OTC_REVENUE_URL, timeout=30, verify=False,
-                  headers={"User-Agent": "Mozilla/5.0"})
-    r.raise_for_status()
-    return parse_monthly_revenue(r.json())
+    return parse_monthly_revenue(json.loads(tpex.get_resumable(OTC_REVENUE_URL)))
 
 
 _TAG_RE = re.compile(r"<[^>]+>")

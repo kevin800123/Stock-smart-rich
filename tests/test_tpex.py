@@ -1,3 +1,5 @@
+import pytest
+
 from stocks_power_rich.sources import tpex
 
 # 24 欄：0代號 1名稱 …4外資買賣超 …13投信 …16自營(合計) …末欄三大法人合計
@@ -144,6 +146,9 @@ def test_all_tpex_www_fetchers_use_verify_false(monkeypatch):
         return _Resp()
 
     monkeypatch.setattr(tpex.httpx, "get", fake_get)
+    # 公司基本資料改走斷線續傳（get_resumable 自己的 verify=False 另有測試鎖住）
+    resumable = []
+    monkeypatch.setattr(tpex, "get_resumable", lambda url, **kw: resumable.append(url) or b"[]")
 
     tpex.fetch_otc_names()
     tpex.fetch_otc_industry()
@@ -154,6 +159,133 @@ def test_all_tpex_www_fetchers_use_verify_false(monkeypatch):
     tpex.fetch_otc_margin()
     tpex.fetch_tpex_insti()
 
-    assert len(calls) == 8
+    assert resumable == [tpex.OTC_COMPANY_URL, tpex.OTC_COMPANY_URL]
+    assert len(calls) == 6
     for kwargs in calls:
         assert kwargs.get("verify") is False
+
+
+# ── 斷線續傳（get_resumable）──────────────────────────────────────────────────
+# 2026-09-12／13 兩晚 21:00 的月營收告警：櫃買 openapi 回 200 + Content-Length 496010，
+# 卻在傳到 65～212 KB 時把連線切斷（本機 curl exit 56、httpx RemoteProtocolError，
+# Zeabur 上是 ReadError Errno 104）。約 10 分鐘後自行恢復。上市 openapi 同時段正常。
+# 伺服器宣告 Accept-Ranges: bytes + ETag，所以斷了可以從斷點接著要剩下的部分。
+import httpx as _httpx
+
+_BODY = b'[{"a":"' + b"x" * 90 + b'"}]'   # 100 bytes，可被 json.loads
+
+
+class _Trunc(_httpx.SyncByteStream):
+    """先吐 data，再像真的伺服器那樣半路斷線。cut=None 表示完整送完。"""
+    def __init__(self, data, cut=None):
+        self.data, self.cut = data, cut
+
+    def __iter__(self):
+        if self.cut is None:
+            yield self.data
+            return
+        yield self.data[:self.cut]
+        raise _httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+
+
+def _server(body, etag='"e1"', cuts=(), ignore_range=False, log=None):
+    """模擬 nginx 靜態檔：支援 Range/If-Range，第 i 次回應在 cuts[i] bytes 處斷線。"""
+    state = {"n": 0}
+
+    def handler(req):
+        i = state["n"]; state["n"] += 1
+        if log is not None:
+            log.append(dict(req.headers))
+        cut = cuts[i] if i < len(cuts) else None
+        rng, if_range = req.headers.get("range"), req.headers.get("if-range")
+        if rng and not ignore_range and (if_range is None or if_range == etag):
+            start = int(rng.split("=")[1].rstrip("-"))
+            part = body[start:]
+            return _httpx.Response(206, headers={
+                "content-length": str(len(part)), "etag": etag,
+                "content-range": f"bytes {start}-{len(body)-1}/{len(body)}"},
+                stream=_Trunc(part, cut))
+        return _httpx.Response(200, headers={"content-length": str(len(body)), "etag": etag},
+                               stream=_Trunc(body, cut))
+    return handler
+
+
+def _get(handler, **kw):
+    return tpex.get_resumable("https://www.tpex.org.tw/openapi/v1/x",
+                              transport=_httpx.MockTransport(handler),
+                              sleep=lambda s: None, **kw)
+
+
+def test_get_resumable_stitches_a_body_cut_off_mid_transfer():
+    """斷兩次、第三次補完：結果必須與完整檔逐位元相同，且續傳要帶正確的 Range/If-Range。"""
+    log = []
+    out = _get(_server(_BODY, cuts=(30, 25), log=log))
+    assert out == _BODY
+    assert "range" not in log[0]
+    assert log[1]["range"] == "bytes=30-" and log[1]["if-range"] == '"e1"'
+    assert log[2]["range"] == "bytes=55-"
+    assert len(log) == 3
+
+
+def test_get_resumable_restarts_when_server_ignores_range():
+    """伺服器不理 Range、回 200 整份時必須**從頭來過**，不可把整份接在前半段後面。"""
+    out = _get(_server(_BODY, cuts=(40,), ignore_range=True))
+    assert out == _BODY
+
+
+def test_get_resumable_never_stitches_two_versions_of_the_file():
+    """下載途中檔案被重新產生（ETag 變了）：If-Range 不符 → 伺服器回 200 新檔，
+    結果必須**整份是新檔**，絕不能是「舊檔前半＋新檔後半」——那種拼接 JSON 仍可能
+    解析得過，而且看起來完全正常。"""
+    new = _BODY.replace(b"x", b"y")
+    state = {"n": 0}
+    old_h, new_h = _server(_BODY, etag='"old"', cuts=(50,)), _server(new, etag='"new"')
+
+    def handler(req):
+        state["n"] += 1
+        return old_h(req) if state["n"] == 1 else new_h(req)
+    assert _get(handler) == new
+
+
+def test_get_resumable_gives_up_after_repeated_no_progress_and_keeps_the_reason():
+    """連續多次一個 byte 都拿不到才放棄，並把原本的例外往上拋（告警要看得到原因）。"""
+    calls = {"n": 0}
+
+    def handler(req):
+        calls["n"] += 1
+        raise _httpx.ReadError("[Errno 104] Connection reset by peer")
+    with pytest.raises(_httpx.ReadError, match="104"):
+        _get(handler)
+    assert calls["n"] == tpex.RESUME_MAX_STALLS
+
+
+def test_get_resumable_keeps_going_while_making_progress():
+    """有進度的斷線不算進放棄次數：每次只拿到一點點也要能補完。"""
+    cuts = tuple([10] * 9)            # 每次只給 10 bytes，共要 10 次
+    assert tpex.RESUME_MAX_STALLS < len(cuts)
+    assert _get(_server(_BODY, cuts=cuts)) == _BODY
+
+
+def test_get_resumable_does_not_retry_http_errors():
+    """HTTP 錯誤碼不是斷線，重試無濟於事，立刻拋出讓原因原樣留下。"""
+    calls = {"n": 0}
+
+    def handler(req):
+        calls["n"] += 1
+        return _httpx.Response(503)
+    with pytest.raises(_httpx.HTTPStatusError):
+        _get(handler)
+    assert calls["n"] == 1
+
+
+def test_get_resumable_uses_verify_false(monkeypatch):
+    """同本檔 test_all_tpex_www_fetchers_use_verify_false 的理由：www.tpex.org.tw 憑證缺 SKI。"""
+    seen = {}
+    real = tpex.httpx.Client
+
+    def spy(**kw):
+        seen.update(kw)
+        return real(**kw)
+    monkeypatch.setattr(tpex.httpx, "Client", spy)
+    _get(_server(_BODY))
+    assert seen.get("verify") is False

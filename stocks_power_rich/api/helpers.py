@@ -828,15 +828,27 @@ def _intraday_scan(c, push: bool = True) -> dict:
     return {"checked": len(pending), "hits": hits, "held_by_volume": held}
 
 
+def _now() -> datetime:
+    """告警用的「現在」。獨立成函式是為了讓測試固定星期幾——週末不推告警之後，
+    直接吃 datetime.now() 會讓測試「星期天紅、星期一綠」。"""
+    return datetime.now()
+
+
 def _check_update_result_and_alert(c, result: dict) -> None:
     from datetime import date as _dt_date
     cfg = load_config()
-    today_dt = datetime.now()
+    today_dt = _now()
     today_str = today_dt.strftime("%Y-%m-%d")
     failed = result.get("failed") or []
     res_date_str = result.get("date")
 
     is_weekday = today_dt.weekday() < 5
+    # **週六日一律不推資料告警**（使用者決定：六日台股沒開盤，LINE 只要週六的選股週報）。
+    # 2026-09-12(六)／13(日) 21:00 各收到一則，才發現這條路徑從來沒看星期幾——底下的
+    # lagging 有擋週末，失敗來源那一支卻沒有。每日排程週末照跑是對的（月營收每天重抓、
+    # 備份、自算選股快取），只是不推。**也不記去重鍵**：週一同一個來源還失敗，週一照樣要講。
+    if not is_weekday:
+        return
     lagging = False
     lag_days = 0
     if res_date_str and res_date_str != today_str and is_weekday:

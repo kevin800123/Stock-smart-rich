@@ -106,25 +106,21 @@ def test_fetch_twse_revenue_uses_openapi(monkeypatch):
     assert calls[0] == "https://openapi.twse.com.tw/v1/opendata/t187ap05_L"
 
 
-def test_fetch_otc_revenue_uses_verify_false(monkeypatch):
-    """www.tpex.org.tw 憑證缺 SKI，同 sources/tpex.py 其他 fetcher 的既有規矩——
-    忘記帶 verify=False 在 Windows 本機測不出來，只有雲端(Linux)才會靜默失敗。"""
-    calls = []
+def test_fetch_otc_revenue_goes_through_the_resumable_download(monkeypatch):
+    """上櫃月營收必須走 `tpex.get_resumable`（斷線續傳），不可退回單發 httpx.get。
 
-    def fake_get(url, **kwargs):
-        calls.append(kwargs)
-        class _Resp:
-            def raise_for_status(self):      # 真實 httpx.Response 有這支，替身要跟上
-                return None
-
-            def json(self):
-                return [_TPEX_1240]
-        return _Resp()
-
-    monkeypatch.setattr(revenue.httpx, "get", fake_get)
+    2026-09-12／13 兩晚 21:00 櫃買伺服器都在傳到一半時切斷（宣告 496 KB、只送 65～212 KB），
+    單發請求那段時間每次都失敗。verify=False 已由 test_tpex 的 get_resumable 測試鎖住。"""
+    import json as _json
+    from stocks_power_rich.sources import tpex
+    seen = []
+    monkeypatch.setattr(tpex, "get_resumable",
+                        lambda url, **kw: seen.append(url) or _json.dumps([_TPEX_1240]).encode())
+    monkeypatch.setattr(revenue.httpx, "get",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("不該走單發 httpx.get")))
     out = revenue.fetch_otc_revenue()
     assert out["1240"]["yoy_pct"] == 13.254097977863914
-    assert calls[0].get("verify") is False
+    assert seen == [revenue.OTC_REVENUE_URL]
 
 
 # ── 歷史月營收（MOPS t21sc03 HTML；openapi 只給最新月，這條才能回補過去月份）──────────
@@ -231,7 +227,9 @@ def test_fetch_revenue_lets_the_failure_reason_out(monkeypatch):
     def fake_get(url, **kwargs):
         raise RuntimeError("network down")
 
+    from stocks_power_rich.sources import tpex
     monkeypatch.setattr(revenue.httpx, "get", fake_get)
+    monkeypatch.setattr(tpex, "get_resumable", lambda url, **kw: fake_get(url))
     for fn in (revenue.fetch_twse_revenue, revenue.fetch_otc_revenue):
         with pytest.raises(RuntimeError, match="network down"):
             fn()

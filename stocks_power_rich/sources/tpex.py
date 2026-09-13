@@ -5,6 +5,8 @@
 末欄 三大法人買賣超股數合計。
 """
 import datetime
+import json
+import time
 
 import httpx
 
@@ -13,6 +15,93 @@ OTC_COMPANY_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"  # 上
 DAILY_QUOTES_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes"  # 上櫃盤後每日行情
 OTC_MARGIN_URL = "https://www.tpex.org.tw/www/zh-tw/margin/balance"  # 上櫃融資融券餘額
 
+
+
+# 連續幾次「一個 byte 都沒拿到」才放棄。有進度的斷線不算——只要還在前進就繼續接。
+RESUME_MAX_STALLS = 3
+# 總請求數的硬上限，防止伺服器每次只吐極少量時無限拖下去。
+RESUME_MAX_REQUESTS = 20
+
+
+def get_resumable(url: str, *, timeout: float = 30, transport=None, sleep=time.sleep) -> bytes:
+    """抓櫃買的靜態 JSON 檔，**傳到一半被切斷就從斷點續傳**。
+
+    **為什麼需要**：2026-09-12／13 兩晚 21:00 的月營收告警，實測是櫃買 openapi 回 200 且
+    宣告 `Content-Length: 496010`，卻在傳到 65～212 KB 時把連線切斷——本機 curl exit 56、
+    httpx `RemoteProtocolError`，Zeabur(Linux) 上則是 `ReadError: [Errno 104]`。
+    換 User-Agent、換 Accept-Encoding 都一樣斷；約 10 分鐘後自行恢復；同時段上市 openapi 正常。
+    **單純重試救不了**：那段時間每一次都斷。但伺服器宣告了 `Accept-Ranges: bytes` 與 `ETag`
+    （它是 nginx 送的靜態檔），所以斷在哪就從哪接著要剩下的部分。
+
+    三條不能省的規則：
+    - **`If-Range` 帶 ETag**：下載途中檔案若被重新產生，伺服器會回 200 整份新檔，此時必須
+      從頭來過。否則會得到「舊檔前半＋新檔後半」——那種拼接的 JSON 仍可能解析得過，
+      而且內容看起來完全正常。
+    - **回 200 而非 206 就從頭來過**（伺服器不理 Range 時同理），不可把整份接在前半段後面。
+    - **`Accept-Encoding: identity`**：Range 的位移是「傳輸中的位元組」，若經 gzip 壓縮，
+      位移就對不上解壓後的內容。
+
+    放棄的條件是**連續 `RESUME_MAX_STALLS` 次沒有任何進度**，不是總次數——有進度的斷線
+    代表還在前進。放棄時把最後一個例外原樣往上拋，呼叫端的告警才看得到原因。
+    **HTTP 錯誤碼（如 503）不重試**：那不是斷線，重試無濟於事。
+
+    verify=False：www.tpex.org.tw 憑證缺 Subject Key Identifier（見 fetch_otc_names）。
+    """
+    headers = {"User-Agent": "Mozilla/5.0", "Accept-Encoding": "identity"}
+    buf = bytearray()
+    total = etag = None
+    stalls = 0
+    last_exc = None
+    with httpx.Client(verify=False, timeout=timeout, transport=transport,
+                      follow_redirects=True) as client:
+        for attempt in range(RESUME_MAX_REQUESTS):
+            h = dict(headers)
+            resuming = bool(buf) and total is not None
+            if resuming:
+                h["Range"] = f"bytes={len(buf)}-"
+                if etag:
+                    h["If-Range"] = etag
+            before = len(buf)
+            try:
+                with client.stream("GET", url, headers=h) as r:
+                    r.raise_for_status()
+                    if resuming and not _continues_at(r, len(buf)):
+                        buf.clear()           # 伺服器回整份（不理 Range 或檔案已換）→ 從頭來過
+                        total = None
+                    if not buf:
+                        cl = r.headers.get("content-length")
+                        total = int(cl) if cl and cl.isdigit() else None
+                        etag = r.headers.get("etag")
+                        before = 0
+                    for chunk in r.iter_raw():
+                        buf.extend(chunk)
+                if total is None or len(buf) >= total:
+                    return bytes(buf)
+            except httpx.TransportError as e:   # 斷線／逾時／連不上；HTTPStatusError 不在此列
+                last_exc = e
+            if total is None:
+                buf.clear()                   # 不知道總長就無從續傳，下一次從頭抓
+            if len(buf) > before:
+                stalls = 0
+                continue                      # 有進度：立刻接著要，不必等
+            stalls += 1
+            if stalls >= RESUME_MAX_STALLS:
+                break
+            sleep(min(2 ** (stalls - 1), 4))
+    if last_exc is not None:
+        raise last_exc
+    raise httpx.RemoteProtocolError(f"只取得 {len(buf)}/{total} bytes 就放棄")
+
+
+def _continues_at(r, offset: int) -> bool:
+    """206 且 Content-Range 恰好從 offset 開始，才算是接續上一段。"""
+    if r.status_code != 206:
+        return False
+    cr = r.headers.get("content-range", "")        # "bytes 30-99/100"
+    try:
+        return int(cr.split()[1].split("-")[0]) == offset
+    except (IndexError, ValueError):
+        return False
 
 def _f(v):
     try:
@@ -60,9 +149,8 @@ def fetch_otc_names() -> dict:
     verify=False：櫃買憑證缺 Subject Key Identifier，與 TDCC 同一個毛病。
     """
     try:
-        j = httpx.get(OTC_COMPANY_URL, timeout=25, verify=False,
-                      headers={"User-Agent": "Mozilla/5.0"}).json()
-        return parse_otc_names(j)
+        # 同一組 openapi 靜態檔，2026-09-13 21:13 實測也被切在一半 → 走斷線續傳
+        return parse_otc_names(json.loads(get_resumable(OTC_COMPANY_URL, timeout=25)))
     except Exception:  # noqa: BLE001
         return {}
 
@@ -93,9 +181,8 @@ def fetch_otc_industry() -> dict:
     verify=False：櫃買憑證缺 Subject Key Identifier，與 TDCC 同一個毛病。
     """
     try:
-        j = httpx.get(OTC_COMPANY_URL, timeout=25, verify=False,
-                      headers={"User-Agent": "Mozilla/5.0"}).json()
-        return parse_otc_industry(j)
+        # 同一組 openapi 靜態檔，2026-09-13 21:13 實測也被切在一半 → 走斷線續傳
+        return parse_otc_industry(json.loads(get_resumable(OTC_COMPANY_URL, timeout=25)))
     except Exception:  # noqa: BLE001
         return {}
 

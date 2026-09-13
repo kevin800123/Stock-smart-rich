@@ -6,6 +6,21 @@ from stocks_power_rich.main import create_app
 from stocks_power_rich.db import get_connection, init_db, upsert_market_daily, insert_chip_snapshot, bulk_upsert_custody, get_setting, set_setting
 
 
+@pytest.fixture(autouse=True)
+def _alert_clock_on_a_weekday(monkeypatch):
+    """告警週六日不推，所以判斷依據的「現在」必須固定，不能吃系統時間。
+
+    否則這個檔案的告警測試會「星期天跑紅、星期一跑綠」——而失敗原因跟被測的東西無關
+    （同 conftest 那支行事曆樁的理由）。固定在最近一個平日 21:00；要測週末的測試自己覆寫。
+    """
+    from datetime import datetime
+    from stocks_power_rich.api import helpers
+    d = datetime.now().replace(hour=21, minute=0, second=0, microsecond=0)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    monkeypatch.setattr(helpers, "_now", lambda: d)
+
+
 def test_health_endpoint_calculation(tmp_path, monkeypatch):
     db_file = str(tmp_path / "t.sqlite")
     monkeypatch.setenv("SPR_DB_PATH", db_file)
@@ -170,3 +185,33 @@ def test_alert_names_the_source_so_two_markets_are_distinguishable(monkeypatch, 
     assert sent, "應該要送出告警"
     assert "revenue" in sent[0] and "tpex" in sent[0], sent[0]
     assert "ConnectTimeout" in sent[0], "原因也要帶上，否則還是查不出來"
+
+
+def test_no_data_alert_on_weekends(monkeypatch, tmp_path):
+    """**週六日不推資料更新告警**（使用者決定：六日台股沒開盤，LINE 只要週六的選股週報）。
+
+    實際發生過：2026-09-12(六)、09-13(日) 21:00 各收到一則「資料更新警告」。每日排程週末
+    照跑是對的（月營收每天重抓、備份、自算選股快取），錯的是把週末的失敗推上 LINE。
+    週末的失敗不會被遺漏：同一個來源週一還失敗的話，週一那次就會告警。
+    """
+    from datetime import datetime
+    from stocks_power_rich.api import helpers
+    from stocks_power_rich import line_push
+
+    sent = []
+    monkeypatch.setattr(line_push, "broadcast_text", lambda token, msg: sent.append(msg) or {"ok": True})
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    failure = {"date": "2026-09-11", "success": [],
+               "failed": [{"source": "tpex", "name": "revenue", "error": "ReadError: [Errno 104]"}]}
+
+    for weekend in (datetime(2026, 9, 12, 21, 0), datetime(2026, 9, 13, 21, 0)):   # 六、日
+        monkeypatch.setattr(helpers, "_now", lambda d=weekend: d)
+        helpers._check_update_result_and_alert(conn, failure)
+    assert sent == []
+    # 週末沒推，就不能把去重鍵記下來，否則週一同樣的失敗會被當成「已經講過」而不推
+    assert get_setting(conn, "last_alert_key") in (None, "")
+
+    monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 14, 21, 0))       # 一
+    helpers._check_update_result_and_alert(conn, {**failure, "date": "2026-09-14"})
+    assert len(sent) == 1 and "revenue" in sent[0]
