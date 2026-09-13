@@ -91,7 +91,29 @@ def test_alert_deduplication_logic(tmp_path, monkeypatch):
 
     # Import the app to get the inner function _check_update_result_and_alert
     from stocks_power_rich import updater
-    
+
+    # 這條測的只有「告警去重」。daily_update 其他步驟（CSV 匯入、AI 摘要、LINE 卡片、備份、
+    # 前瞻記帳、自算選股）全部樁掉——原本沒樁，整支排程真的連外，單條要 ~143 秒。
+    from stocks_power_rich import main as _main, csv_import, ledger
+    from stocks_power_rich.api import market as _market, public as _public
+    monkeypatch.setattr(csv_import, "find_latest_file", lambda d: None)
+    monkeypatch.setattr(_market, "market_summary_logic", lambda *a, **k: {})
+    monkeypatch.setattr(_public, "summary_logic", lambda *a, **k: {})
+    monkeypatch.setattr(_main, "_push_line", lambda *a, **k: {"ok": False, "error": "stubbed"})
+    monkeypatch.setattr(_main, "backup_db", lambda p: None)
+    monkeypatch.setattr(ledger, "record_daily_signals", lambda c_: None)
+    monkeypatch.setattr(ledger, "update_ledger_returns", lambda c_: None)
+    monkeypatch.setattr(_main, "_refresh_self_screen_cache", lambda c_: {"skipped": "stubbed"})
+    # 網路絆線：任何 DNS 查詢或 socket 連線都記下來並直接失敗，最後斷言一次都沒有
+    import socket
+    tripped = []
+
+    def _trip(*a, **k):
+        tripped.append(a[:2])
+        raise RuntimeError("network tripwire: 這條測試不可以連外")
+    monkeypatch.setattr(socket, "getaddrinfo", _trip)
+    monkeypatch.setattr(socket.socket, "connect", _trip)
+
     # Run 1: failure alert
     failed_result = {
         "date": (date.today() - timedelta(days=2)).isoformat(),
@@ -117,7 +139,9 @@ def test_alert_deduplication_logic(tmp_path, monkeypatch):
     app = create_app(enable_scheduler=True)
     try:
         assert "scheduled_job" in captured_jobs
-        job = captured_jobs["scheduled_job"]
+        # 排程器拿到的是 run_job 包過的版本（同一天第二次呼叫會被 job_runs 去重略過），
+        # 這裡測的是告警本身的去重，所以呼叫原始 job（app.state.jobs）
+        job = app.state.jobs["daily_update"]
 
         job()
 
@@ -137,6 +161,7 @@ def test_alert_deduplication_logic(tmp_path, monkeypatch):
 
         job()
         assert len(sent_messages) == 2  # Sent again!
+        assert tripped == [], f"排程在測試裡連外了：{tripped[:3]}"
     finally:
         if getattr(app.state, "scheduler", None):
             app.state.scheduler.shutdown(wait=False)

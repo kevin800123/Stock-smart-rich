@@ -1,5 +1,7 @@
 """Gemini 統整：CSV 籌碼洞察與大盤盤勢摘要。無金鑰或呼叫失敗時自動降級。"""
 import json
+import logging
+log = logging.getLogger("spr.gemini")
 
 # 2026-08 從 gemini-2.5-flash 換過來：2.5-flash 已「不再開放給新使用者」，換到新的
 # Google 專案後直接 404（`models.list()` 還列得出來，但 generateContent 就是不給用），
@@ -87,7 +89,7 @@ def _run(prompt: str, api_key: str, *, thinking: bool = True) -> dict:
     try:
         client = genai_client(api_key)
     except Exception as e:  # noqa: BLE001 — 建 client 就失敗（金鑰格式等）也要降級，不可往外拋
-        print(f"[gemini] ERROR client {type(e).__name__}: {e}", flush=True)
+        log.error("[gemini] ERROR client %s: %s", type(e).__name__, e)
         return {"enabled": False, "text": friendly_error(e)}
     last = None
     for i, model in enumerate(MODELS):
@@ -98,10 +100,10 @@ def _run(prompt: str, api_key: str, *, thinking: bool = True) -> dict:
             return {"enabled": True, "text": resp.text, "model": model}
         except Exception as e:  # noqa: BLE001 — 失敗即降級，不影響數據功能
             last = e
-            print(f"[gemini] ERROR model={model} {type(e).__name__}: {e}", flush=True)
+            log.error("[gemini] ERROR model=%s %s: %s", model, type(e).__name__, e)
             if not _is_quota_error(e) or i == len(MODELS) - 1:
                 break
-            print(f"[gemini] 配額用盡，改試下一個模型：{MODELS[i + 1]}", flush=True)
+            log.warning("[gemini] 配額用盡，改試下一個模型：%s", MODELS[i + 1])
     # 完整例外只進日誌；畫面上給一句人看得懂的話（見 friendly_error）
     return {"enabled": False, "text": friendly_error(last)}
 
@@ -114,10 +116,9 @@ def _log_usage(resp, thinking: bool, model: str = MODEL) -> None:
     """
     try:
         u = resp.usage_metadata
-        print(f"[gemini] model={model} thinking={'on' if thinking else 'off'} "
-              f"in={u.prompt_token_count} out={u.candidates_token_count} "
-              f"thoughts={getattr(u, 'thoughts_token_count', None)} "
-              f"total={u.total_token_count}", flush=True)
+        log.info("[gemini] model=%s thinking=%s in=%s out=%s thoughts=%s total=%s",
+                 model, "on" if thinking else "off", u.prompt_token_count, u.candidates_token_count,
+                 getattr(u, "thoughts_token_count", None), u.total_token_count)
     except Exception:  # noqa: BLE001 — 記帳失敗不能影響摘要本身
         pass
 

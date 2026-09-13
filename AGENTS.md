@@ -203,6 +203,16 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - **告警要印 `source`**：月營收逐市場判定，只印 name 永遠看到「revenue」分不出上市/上櫃——`source` 一直都記著只是沒印。
 - 兩條鎖舊契約的測試（回空 dict）**刻意刪改**；成功路徑的假 response 補 `raise_for_status`（替身跟著真實介面走）。
 
+### 排程補跑 ＋ 執行紀錄表 ＋ logging（2026-09）
+
+- **問題**：APScheduler 記憶體 jobstore；push 到 main → Zeabur 重啟，橫跨排程時間那一場整場消失、無告警（告警就在那支 job 裡）。**`misfire_grace_time` 救不了**：它只管「排程器活著但來不及跑」，重啟後 jobstore 不知道錯過了什麼。
+- **`job_runs` 表**（`db.py`）：job_id／run_key／trigger／started_at／finished_at／status（running→ok／partial／failed；`interrupted`＝啟動時標掉上一個程序留下的 running）／error／note。`JOB_RUN_DONE=("ok","partial")`＝跑過了。每日排程清 60 天前。
+- **`run_job`**（`api/helpers.py`）包每支 job：寫紀錄、進出各一行 log，**同 (job_id, run_key) 已 ok／partial／running 就略過**（Telegram 沒去重，靠這裡）。**真正的去重是 DB 唯一鍵 `uq_job_runs_running`**（partial UNIQUE `(job_id, run_key) WHERE status='running'`），先查只是省一次失敗的 INSERT；撞鍵 `IntegrityError` → skipped，**撞鍵後必 `rollback()`**（否則輸的連線握著寫入鎖、贏的那條 finish 時等滿 busy_timeout）。紀錄失敗不吞、往上丟。intraday_watch 的 run_key 是當下分鐘（每 5 分一個 key）；self_screen_early 三場各自 `日期:HH:MM`，17:30 data_not_ready 記 ok＋note，18:30 照跑。`main.py` 的 job **不再 `except: pass`**：`scheduled_job` 逐步失敗收進 `failed_steps` → partial；其他 job 例外直達 run_job。
+- **排程規格唯一版本 `job_schedule(cfg, schedule_time)`**：註冊與補跑共用。`family`＝補跑分組、`catchup=False`＝不補（intraday_watch）。run_key：一天一場＝日期、多場＝`日期:HH:MM`。
+- **啟動補跑 `catchup_missed_jobs`**：daemon 執行緒 `spr-catchup`（不阻塞啟動），先標 interrupted，再依 `catchup_plan` 走 `run_job(trigger="catchup")`。**走同一支 job 函式**→ 週末不推 LINE、資料日≠今天不推卡片等守衛自動生效。**範圍（使用者拍板）：只補今天、同 family 只補最近錯過的一場**（整天停機晚上恢復只補 21:10 一場新聞；最近一場 ok 就整族不補）。
+- `/api/health` 多 `jobs`（各 job 最近一列）。logging 取代 print（`spr`／`spr.jobs`／`spr.gemini`），cli.py 的 print 保留。
+- **測試**：`tests/test_job_runs.py`；`test_health.py` 只改一處（`test_alert_deduplication_logic` 改呼叫 `app.state.jobs["daily_update"]`，排程器拿到的已是 run_job 包過、同日第二次呼叫會被去重）；`test_gemini.py` 三條 `capsys` 改 `caplog`。時間走 `helpers._now`；`main.py` 改成 `_helpers._now()` 呼叫時取（`from … import _now` 綁死的名字 patch 不到）。conftest autouse 樁掉 `catchup_missed_jobs`（否則每條起排程器的測試都會真的連外），要測補跑標 `@pytest.mark.real_catchup`。七個守衛都做過反證（含拿掉唯一鍵 → 3 條並發測試紅；並發測試把先查弄瞎、鎖換成不互斥仍只跑一次）。`test_alert_deduplication_logic` 樁掉六步＋網路絆線（socket 層記錄並拋，斷言零次；反證：樁換成真 `httpx.get` → 紅）。`pytest -k not_again` 會把 `not` 當運算子，反證要用完整名稱。
+
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.

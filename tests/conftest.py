@@ -95,6 +95,23 @@ def _no_calendar_network(request, monkeypatch):
                         lambda *a, **kw: [], raising=True)
 
 
+@pytest.fixture(autouse=True)
+def _no_startup_catchup(request, monkeypatch):
+    """create_app(enable_scheduler=True) 會在背景執行緒做啟動補跑——「今天該跑卻沒紀錄」的
+    job 在測試裡永遠成立（tmp DB 是空的），不擋的話每條起排程器的測試都會真的跑
+    daily_update／新聞推播去連外。預設樁成 no-op；要測補跑本身的測試直接呼叫底層
+    `catchup_missed_jobs`／`catchup_plan`（它們自己樁掉 job 函式），標
+    `@pytest.mark.real_catchup` 可退出這一層。"""
+    if request.node.get_closest_marker("real_catchup"):
+        return
+    from stocks_power_rich.api import helpers as _h
+
+    monkeypatch.setattr(_h, "catchup_missed_jobs",
+                        lambda *a, **kw: {"stubbed": True}, raising=True)
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers", "real_calendar: 不套用 _no_calendar_network 的樁（測試自行樁掉 fetcher）")
+    config.addinivalue_line(
+        "markers", "real_catchup: 不套用 _no_startup_catchup 的樁（測試自行樁掉 job 函式）")

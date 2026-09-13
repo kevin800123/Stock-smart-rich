@@ -285,6 +285,7 @@ _BANDS = {
 @router.get("/health")
 def health():
     from datetime import date
+    from ..db import latest_job_runs
     c = conn()
 
     r_market = c.execute("SELECT MAX(date) FROM market_daily").fetchone()
@@ -341,6 +342,9 @@ def health():
         "chip_snapshot": {"latest": latest_chip},
         "stock_ohlc": {"latest": latest_ohlc},
         "custody_dist": {"latest_week": latest_custody},
+        # 各排程 job 最近一次的執行紀錄（job_runs），讓「昨晚到底有沒有跑」看得到：
+        # status ok／partial／failed／interrupted／running，partial 的 error 列出失敗步驟。
+        "jobs": latest_job_runs(c),
         "ok": ok
     }
 

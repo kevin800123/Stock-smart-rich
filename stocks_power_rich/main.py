@@ -1,8 +1,10 @@
 import os
 import base64
 import binascii
+import logging
 import secrets
-from datetime import datetime
+import threading
+from datetime import date
 
 from fastapi import FastAPI, Response
 from fastapi.staticfiles import StaticFiles
@@ -33,8 +35,12 @@ from .api.helpers import (
     _is_quota_exceeded,
     _note_line_quota_exceeded,
     data_is_stale,
+    job_schedule,
+    run_job,
+    scheduled_run_key,
     WEB_DIR,
 )
+from .api import helpers as _helpers
 
 # Import routers
 from .api.market import router as market_router
@@ -50,6 +56,11 @@ from .api.stock_flow import router as stock_flow_router
 # 免帳密的前端靜態資產（精確比對）：/public/overview 與站內共用同一套前端，需能載入這些檔。
 # 僅限程式碼與樣式，不含 index.html（站內入口維持鎖住）。
 _PUBLIC_FILES = {"/styles.css", "/app.js"}
+
+# logging 取代 print：Zeabur 收 stdout，每支排程 job 進出各一行（見 api/helpers.run_job）。
+# basicConfig 在 root 已有 handler 時是 no-op，不會跟 uvicorn／pytest 的設定打架。
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("spr")
 
 
 def create_app(enable_scheduler: bool = False) -> FastAPI:
@@ -102,67 +113,72 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
     app.include_router(news_router)
     app.include_router(stock_flow_router)
 
-    # 註冊排程 job
+    # 註冊排程 job。每支 job 只做事、不自己吞例外：外層 run_job 負責寫 job_runs 與 log，
+    # 例外進 failed、有步驟失敗回 partial——不再是 except: pass 的無聲失敗。
     def scheduled_job():
+        """每日更新（預設 21:00）。各步驟獨立 try/except 是刻意的（一步失敗不拖垮其他步驟），
+        但失敗要收進 failed_steps 回傳，run_job 據此標 partial，設定頁／health 才看得到。"""
         c = conn()
-        path = csv_import.find_latest_file(effective_data_dir(c))
-        if path:
+        failed_steps: list[str] = []
+        summary: dict = {"failed_steps": failed_steps}
+
+        def step(name, fn):
             try:
+                return fn()
+            except Exception as e:  # noqa: BLE001
+                log.exception("[daily_update] 步驟 %s 失敗", name)
+                failed_steps.append(f"{name}: {type(e).__name__}: {e}")
+                return None
+
+        def _import_csv():
+            path = csv_import.find_latest_file(effective_data_dir(c))
+            if path:
                 snap_date, _ = csv_import.import_csv(c, path)
                 _clear_csv_cache(c, snap_date)
-            except Exception:  # noqa: BLE001
-                pass
-        res = None
-        try:
-            res = updater.run_update(c, cfg.intl_tickers)
-        except Exception:  # noqa: BLE001
-            pass
+        step("csv_import", _import_csv)
+        res = step("run_update", lambda: updater.run_update(c, cfg.intl_tickers))
         if res:
-            try:
-                _check_update_result_and_alert(c, res)
-            except Exception:  # noqa: BLE001
-                pass
-        
+            summary["date"] = res.get("date")
+            summary["failed_sources"] = len(res.get("failed") or [])
+            step("alert", lambda: _check_update_result_and_alert(c, res))
+
         # 摘要生成
         from .api.market import market_summary_logic
         from .api.public import summary_logic
-        for gen in (lambda: market_summary_logic(c, refresh=0), lambda: summary_logic(c, refresh=0)):
-            try:
-                gen()
-            except Exception:  # noqa: BLE001
-                pass
-        try:
-            _push_line(c, full=True)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
+        step("market_summary", lambda: market_summary_logic(c, refresh=0))
+        step("public_summary", lambda: summary_logic(c, refresh=0))
+        step("push_line", lambda: _push_line(c, full=True))
+
+        def _backup():
             dest = backup_db(cfg.db_path)
             if dest:
                 from .offsite_backup import push_offsite
                 push_offsite(dest)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
+        step("backup", _backup)
+
+        def _ledger():
             from .ledger import record_daily_signals, update_ledger_returns
             record_daily_signals(c)
             update_ledger_returns(c)
-        except Exception:  # noqa: BLE001
-            pass
-        try:
-            # 自算選股：每日排程算一次、存快取，前瞻追蹤（signal_ledger）吃同一份。
-            # 邏輯在 api/helpers（排程 Job 的既定分工），這裡只呼叫——寫在閉包裡就測不到、
-            # 也沒辦法單獨跑一次驗證，而它被 except 包著、壞掉不會有聲音。
-            _refresh_self_screen_cache(c)
-        except Exception:  # noqa: BLE001
-            pass
+        step("ledger", _ledger)
+        # 自算選股：每日排程算一次、存快取，前瞻追蹤（signal_ledger）吃同一份。
+        # 邏輯在 api/helpers（排程 Job 的既定分工），這裡只呼叫——寫在閉包裡就測不到。
+        r = step("self_screen", lambda: _refresh_self_screen_cache(c))
+        if isinstance(r, dict):
+            summary["self_screen"] = r.get("skipped") or f"picked={r.get('picked')}"
+
+        def _prune():
+            from datetime import timedelta
+            from .db import prune_job_runs
+            prune_job_runs(c, (_helpers._now() - timedelta(days=60)).isoformat(timespec="seconds"))
+        step("prune_job_runs", _prune)
+        return summary
 
     def self_screen_early_job():
-        """自算選股提早算（使用者要求最晚 20:00 更新好）。邏輯在 api/helpers.early_self_screen。"""
-        try:
-            from .api.helpers import early_self_screen
-            print(f"[self_screen_early] {early_self_screen(conn())}")
-        except Exception as e:  # noqa: BLE001 — 失敗不影響其他排程；21:00 那次仍會照常算
-            print(f"[self_screen_early] 失敗：{type(e).__name__}: {e}")
+        """自算選股提早算（使用者要求最晚 20:00 更新好）。邏輯在 api/helpers.early_self_screen。
+        失敗由 run_job 記成 failed；21:00 那次仍會照常算。"""
+        from .api.helpers import early_self_screen
+        return early_self_screen(conn())
 
     def osfut_job():
         """海期監控排程：一天固定兩次（07:30／21:30），取代舊的「每 2 分鐘輪詢」。
@@ -171,92 +187,92 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         實測 yfinance 與 chart API 備援皆遭拒）；改成排程後請求量大幅降低，且與 LINE
         是否設定無關——獨立掛兩個 cron，不搭在每日 21:00 完整推播工作上。
         """
-        try:
-            _os_futures(refresh=True)
-        except Exception:  # noqa: BLE001
-            pass
+        r = _os_futures(refresh=True)
+        return {"has_remote": bool(r.get("has_remote")), "updated_at": r.get("updated_at")}
 
     def intraday_watch_job():
-        now = datetime.now()
+        now = _helpers._now()
         if now.hour == 13 and now.minute > 35:
-            return
-        try:
-            _intraday_scan(conn(), push=True)
-        except Exception:  # noqa: BLE001
-            pass
+            return {"skipped": "after_close"}
+        r = _intraday_scan(conn(), push=True)
+        return {"checked": r.get("checked"), "hits": len(r.get("hits") or [])}
 
     def weekly_line_job():
         """週六 17:00 籌碼週報：跨週變化（週對週）＋ AI 籌碼分析師 → LINE 廣播。"""
-        try:
-            from datetime import date, timedelta
-            from .api.helpers import _weekly_messages
-            from .db import get_snapshot_dates
-            c = conn()
-            if line_quota_paused(c):
-                return
-            dates = get_snapshot_dates(c)
-            # staleness guard：最新快照距今 >7 天代表本週沒匯 CSV，別重複推舊內容
-            if not dates or (date.today() - date.fromisoformat(dates[-1])) > timedelta(days=7):
-                return
-            r = line_push.broadcast_messages(cfg.line_token, _weekly_messages(c))
-            if not r.get("ok") and _is_quota_exceeded(r):
-                _note_line_quota_exceeded(c)
-        except Exception:  # noqa: BLE001 — 推播失敗不影響其他排程
-            pass
+        from datetime import timedelta
+        from .api.helpers import _weekly_messages
+        from .db import get_snapshot_dates
+        c = conn()
+        if line_quota_paused(c):
+            return {"skipped": "line_quota_paused"}
+        dates = get_snapshot_dates(c)
+        # staleness guard：最新快照距今 >7 天代表本週沒匯 CSV，別重複推舊內容
+        if not dates or (_helpers._now().date() - date.fromisoformat(dates[-1])) > timedelta(days=7):
+            return {"skipped": "snapshot_stale"}
+        r = line_push.broadcast_messages(cfg.line_token, _weekly_messages(c))
+        if not r.get("ok") and _is_quota_exceeded(r):
+            _note_line_quota_exceeded(c)
+        return {"ok": bool(r.get("ok"))}
 
     def news_job(slot: str):
         """每日財經新聞：四時段各自的必含主題不同，快取鍵也各自獨立（見 news_logic），
         所以每個時段是一個獨立的 job 而非同一支函式帶參數重複註冊。"""
         def _run():
-            try:
-                payload = news_logic(conn(), slot=slot, refresh=1)
-                text = payload.get("telegram_text") or payload.get("summary")
-                if text:
-                    telegram_push.send_message(cfg.telegram_token, cfg.telegram_chat_id, text)
-            except Exception:  # noqa: BLE001 — 推播失敗不影響其他排程
-                pass
+            payload = news_logic(conn(), slot=slot, refresh=1)
+            text = payload.get("telegram_text") or payload.get("summary")
+            if not text:
+                return {"sent": False, "reason": "empty"}
+            r = telegram_push.send_message(cfg.telegram_token, cfg.telegram_chat_id, text)
+            return {"sent": bool(r.get("ok")), "parse_mode": r.get("parse_mode_used")}
         return _run
 
-    if enable_scheduler:
-        from .scheduler import build_trigger_kwargs, start_scheduler
+    # job id → 原始函式。補跑走這份（自己算 run_key），排程走包了 run_job 的版本。
+    raw_jobs = {
+        "daily_update": scheduled_job,
+        "osfut_morning": osfut_job,
+        "osfut_evening": osfut_job,
+        "self_screen_early": self_screen_early_job,
+        "intraday_watch": intraday_watch_job,
+        "weekly_line": weekly_line_job,
+        **{f"news_{slot}": news_job(slot) for slot in ("morning", "midday", "afternoon", "evening")},
+    }
+    app.state.jobs = raw_jobs
 
-        app.state.scheduler = start_scheduler(scheduled_job, effective_schedule(conn()))
-        # 海期監控：固定兩次，與 LINE 是否設定無關（不歸在下面的 line_token 區塊內）
-        app.state.scheduler.add_job(
-            osfut_job, "cron", hour=7, minute=30, id="osfut_morning", replace_existing=True)
-        app.state.scheduler.add_job(
-            osfut_job, "cron", hour=21, minute=30, id="osfut_evening", replace_existing=True)
-        # 自算選股：平日 17:30／18:30／19:30 各試一次，資料到齊就算、算好就略過。最後一次在
-        # 20:00 之前（使用者要求）。與 LINE 是否設定無關。實測 2026-08-26 19:27 行情與法人已到齊、
-        # 只差融資；T86 約 16:00 後公布。
-        app.state.scheduler.add_job(
-            self_screen_early_job, "cron", day_of_week="mon-fri", hour="17,18,19", minute=30,
-            id="self_screen_early", replace_existing=True)
-        # token 與目標 chat 缺一不可。只檢查 token 會註冊三個永遠送不出去、又被
-        # job 內例外吞掉的工作，設定頁也會誤以為已啟用。
-        if cfg.telegram_token and cfg.telegram_chat_id:
-            # 07:00/17:00 對齊每日財經參考專案的原始三時段；21:00 那格改到 21:10——
-            # 預設 schedule_time 也是 21:00（daily_update），兩個 job 排在同一分鐘
-            # 雖不是致命錯誤（各自開自己的 sqlite3 連線），但同秒觸發純屬巧合式的資源
-            # 競爭，能在排程時就避開，不必等「觀察到延遲」再事後搬。
-            # 平日四場、週末兩場（使用者規格）：07:00 盤前與 17:00 收盤在沒有開盤的日子
-            # 沒有意義，週末只留 12:00 與 21:10。原本四個 job 都沒設 day_of_week，
-            # 等於**每天都跑**，週末的盤前/收盤快訊其實是在報上一個交易日的舊事。
-            for hh, mm, slot, dow in ((7, 0, "morning", "mon-fri"),
-                                      (12, 0, "midday", None),
-                                      (17, 0, "afternoon", "mon-fri"),
-                                      (21, 10, "evening", None)):
-                kw = {"day_of_week": dow} if dow else {}
-                app.state.scheduler.add_job(
-                    news_job(slot), "cron", hour=hh, minute=mm,
-                    id=f"news_{slot}", replace_existing=True, **kw)
-        if cfg.line_token:
-            app.state.scheduler.add_job(
-                intraday_watch_job, "cron", day_of_week="mon-fri",
-                hour="9-13", minute="*/5", id="intraday_watch", replace_existing=True)
-            app.state.scheduler.add_job(
-                weekly_line_job, "cron", **build_trigger_kwargs(cfg.weekly_push_time),
-                day_of_week="sat", id="weekly_line", replace_existing=True)
+    if enable_scheduler:
+        from .scheduler import start_scheduler
+
+        # 排程規格只有一份（api/helpers.job_schedule）：註冊與啟動補跑都吃它。
+        # daily_update 的時間讀設定頁（effective_schedule），可在設定頁 reschedule。
+        specs = job_schedule(cfg, effective_schedule(conn()))
+        by_id = {sp["id"]: sp for sp in specs}
+
+        def wrapped(job_id: str):
+            spec, fn = by_id[job_id], raw_jobs[job_id]
+
+            def _job():
+                return run_job(job_id, scheduled_run_key(spec, _helpers._now()), fn)
+            _job.__name__ = job_id      # APScheduler 的 log 用函式名，不然全是 <lambda>
+            return _job
+
+        app.state.scheduler = start_scheduler(wrapped("daily_update"), effective_schedule(conn()))
+        for sp in specs:
+            if sp["id"] == "daily_update":
+                continue
+            kw = {"hour": sp["hour"], "minute": sp["minute"]}
+            if sp.get("dow"):
+                kw["day_of_week"] = sp["dow"]
+            app.state.scheduler.add_job(wrapped(sp["id"]), "cron", id=sp["id"],
+                                        replace_existing=True, **kw)
+
+        # 啟動補跑：今天該觸發卻沒有成功紀錄的場次，在背景執行緒依序補（不阻塞啟動——
+        # Zeabur 會把啟動太久當成失敗）。透過模組屬性呼叫，測試才樁得掉。
+        def _catchup():
+            try:
+                r = _helpers.catchup_missed_jobs(conn(), specs, raw_jobs)
+                log.info("啟動補跑完成：%s", r.get("ran") or "無")
+            except Exception:  # noqa: BLE001
+                log.exception("啟動補跑失敗")
+        threading.Thread(target=_catchup, name="spr-catchup", daemon=True).start()
 
     if os.path.isdir(WEB_DIR):
         app.mount("/", _NoCacheStatic(directory=WEB_DIR, html=True), name="web")

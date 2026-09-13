@@ -158,9 +158,11 @@ def test_model_is_pinned_to_an_explicit_version_not_a_latest_alias():
     assert gemini.MODEL != "gemini-2.5-flash", "2.5-flash 已不開放新專案，會 404"
 
 
-def test_usage_logging_never_breaks_the_summary(capsys):
-    """記帳失敗不能影響摘要本身；成功時要印出一行可回推額度的用量。"""
+def test_usage_logging_never_breaks_the_summary(caplog):
+    """記帳失敗不能影響摘要本身；成功時要記一行可回推額度的用量（logging，Zeabur 收 stdout）。"""
+    import logging
     from stocks_power_rich.gemini import _log_usage
+    caplog.set_level(logging.INFO, logger="spr.gemini")
 
     class U:
         prompt_token_count, candidates_token_count = 6710, 2800
@@ -170,7 +172,7 @@ def test_usage_logging_never_breaks_the_summary(capsys):
         usage_metadata = U()
 
     _log_usage(R(), False)
-    out = capsys.readouterr().out
+    out = caplog.text
     assert "in=6710" in out and "out=2800" in out and "thinking=off" in out
 
     class Broken:
@@ -216,9 +218,11 @@ def test_friendly_error_distinguishes_the_failure_kinds():
     assert len(long) < 140 and "\n" not in long
 
 
-def test_run_logs_the_full_error_but_returns_only_the_short_one(monkeypatch, capsys):
-    """診斷資訊不能消失——完整例外要進 stdout（Zeabur 收得到）。"""
+def test_run_logs_the_full_error_but_returns_only_the_short_one(monkeypatch, caplog):
+    """診斷資訊不能消失——完整例外要進 log（Zeabur 收得到）。"""
+    import logging
     from stocks_power_rich import gemini
+    caplog.set_level(logging.INFO, logger="spr.gemini")
 
     def boom(api_key):
         raise RuntimeError("429 RESOURCE_EXHAUSTED free_tier PerDay limit: 20")
@@ -227,7 +231,7 @@ def test_run_logs_the_full_error_but_returns_only_the_short_one(monkeypatch, cap
     out = gemini._run("p", "k")
     assert out["enabled"] is False
     assert "今日免費額度" in out["text"]
-    logged = capsys.readouterr().out
+    logged = caplog.text
     assert "RESOURCE_EXHAUSTED" in logged and "PerDay" in logged
 
 
@@ -247,10 +251,12 @@ def _fake_client(behaviour):
     return type("C", (), {"models": Models()})()
 
 
-def test_run_falls_over_to_the_next_model_when_the_daily_quota_is_gone(monkeypatch, capsys):
+def test_run_falls_over_to_the_next_model_when_the_daily_quota_is_gone(monkeypatch, caplog):
     """免費層額度是「每日 × 每專案 × 每模型」，所以主力用完還有別的可用。
     自動退比等人發現「今天推播都沒有 AI」再手動改 MODEL 重新部署好。"""
+    import logging
     from stocks_power_rich import gemini
+    caplog.set_level(logging.INFO, logger="spr.gemini")
 
     quota = Exception("429 RESOURCE_EXHAUSTED free_tier PerDay limit: 20")
     monkeypatch.setattr(gemini, "MODELS", ("m-a", "m-b", "m-c"))
@@ -261,7 +267,7 @@ def test_run_falls_over_to_the_next_model_when_the_daily_quota_is_gone(monkeypat
     assert out["enabled"] is True
     assert out["text"] == "成功"
     assert out["model"] == "m-c"
-    assert "改試下一個模型" in capsys.readouterr().out
+    assert "改試下一個模型" in caplog.text
 
 
 def test_run_does_not_burn_other_models_on_a_non_quota_error(monkeypatch):

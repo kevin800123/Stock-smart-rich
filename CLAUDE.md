@@ -119,7 +119,7 @@ Same flex container bites line-clamping: **`-webkit-line-clamp` does not work on
 - `ledger.py`: signal forward-test. `record_daily_signals` snapshots each day's `filtered_picks` + cup-handle hits into `signal_ledger`; a RetN updater later backfills 5/10/20-day realized returns from `stock_ohlc`. Bias-free (no survivorship) counterpart to `backtest.py`'s one-shot historical cup backtest; the performance-aggregation API compares "signals-all" vs the trade journal's actual alpha. **The 訊號追蹤 view was removed (user decision, 2026-07) but the recording deliberately keeps running** — forward-test data can't be backfilled without reintroducing bias, so the ledger accumulates silently; re-adding a view later shows full history. Read via `GET /api/signals/performance`. Do not "clean up" the ledger calls as dead code.
 - **`traders/` (操盤手)**: a registry of trading-persona analyzers behind the「操盤手」view. Each persona = one module exposing `META = {id,name,emoji,tagline,desc}` + `analyze(conn) -> {date, sections[], disclaimer}`, registered in `traders/__init__._MODULES`. `sections` are generic typed blocks (`checklist` / `table` / `routine` / `note`) the frontend renders without bespoke code, so **adding a persona = one new module, no endpoint/frontend change**. Endpoints: `GET /api/traders` (list for the picker) + `GET /api/traders/{id}` (that persona's analysis, `{**META, **analyze()}`). `traders/ss.py` is the first persona; its pure rule engine lives in `ss_trader.py` (quantifiable subset of the "Ss" methodology — full qualitative distillation in `.claude/skills/ss-trader/SKILL.md`): market checklist (融資維持率 13X% 抄底區, 融資 vs 大盤 wash, VIX contrarian, USD/TWD via the `twd` intl ticker, volume×position, 小那 vs 小道 fund flow, night-session ratio, settlement week) + 一紅吃三黑 candle signal + 季季高-approx picks. Every persona's output carries a mandatory not-advice disclaimer.
 - `offsite_backup.py`: after the 21:00 `backup_db`, pushes the rotated backup to a remote Git repo (env-gated; silently skips if unset). `mask_secrets` scrubs OAuth tokens from logs via `re.sub(r'https?://[^@\s]+@', 'https://***@', text)` — never log a raw remote URL.
-- `scheduler.py` (APScheduler, `timezone="Asia/Taipei"`) runs the daily update in-process; needs the process alive. Intraday breakout scanning runs every 5min during market hours. `cli.py` is the equivalent for Windows Task Scheduler.
+- `scheduler.py` (APScheduler, `timezone="Asia/Taipei"`) runs the daily update in-process; needs the process alive. Intraday breakout scanning runs every 5min during market hours. `cli.py` is the equivalent for Windows Task Scheduler. **記憶體 jobstore、重啟不記得錯過什麼**：每支 job 經 `api/helpers.run_job` 寫 `job_runs`，啟動時 `catchup_missed_jobs` 補今天錯過的（見下方「排程補跑」一節）。
 
 ### 每日財經新聞 ＋ Telegram（2026-08）
 
@@ -1100,6 +1100,61 @@ self_screen 三格都會是「尚未到期」，那是**正確**顯示不是故�
   本機 3.4 秒不具代表性（本機缺季報與足夠日線，貴的那半沒跑滿），production 的耗時要部署後才知道。
 - **已知副作用**：國定假日的平日，`update_day(今天)` 會把當天覆蓋表標成 `failed`。
   `stock_flow.backfill` 的「兩輪確認才標假日」會把它收斂成 `holiday`，不會卡住，只是多幾次重試。
+
+### 排程補跑 ＋ 執行紀錄表 ＋ logging（2026-09）
+
+`scheduler.py` 用 APScheduler 的**記憶體 jobstore**。push 到 `main` 會觸發 Zeabur 重新部署＝程序重啟，
+重啟橫跨某個排程時間，那一場就整場消失，而且沒有告警——告警本身就寫在那支 job 裡。
+
+**只設 `misfire_grace_time` 救不了這件事。** 寬限時間只對「排程器活著但來不及跑」有用；程序重啟後
+記憶體 jobstore 根本不知道自己錯過了什麼。真正需要的是**每次執行留紀錄、啟動時查今天該跑的有沒有
+成功紀錄，沒有就補**。三塊：
+
+- **`job_runs` 表**（`db.py`，lazy migration）：`job_id`／`run_key`／`trigger`（scheduled／catchup）／
+  `started_at`／`finished_at`／`status`／`error`／`note`。status：`running`→`ok`／`partial`（跑完但有步驟
+  失敗，`error` 列出步驟）／`failed`（job 丟例外）；`interrupted`＝啟動時把上一個程序留下的 `running`
+  列標掉（單 worker，本程序才剛起來，停在 running 的必然是被重啟時打斷的）。`JOB_RUN_DONE=("ok","partial")`
+  是「這一場跑過了」的定義，補跑與去重都看它。每日排程順手清 60 天前的列。
+- **`run_job(job_id, run_key, fn, trigger)`**（`api/helpers.py`）是每支 job 的外層：開始寫 running、
+  結束更新狀態、進出各一行 log。**同一 (job_id, run_key) 已 ok／partial／running → 略過**——Telegram
+  推播本身沒有去重（`news:v8:{date}:{slot}` 只快取內容，重送就是兩則），排程與補跑撞在同一分鐘也靠這裡。
+  **真正的去重是 DB 唯一鍵 `uq_job_runs_running`**（partial UNIQUE index：`(job_id, run_key) WHERE status='running'`），
+  「先查再寫」只是省一次注定失敗的 INSERT；`start_job_run` 撞鍵丟 `IntegrityError`、`run_job` 接住當 skipped。
+  **撞鍵後一定要 `rollback()`**：Python sqlite3 在 INSERT 前已隱式 BEGIN，失敗的 INSERT 讓輸的那條連線握著
+  寫入鎖不放，真的在跑的那條寫 `finish_job_run` 就會等滿 30 秒 busy_timeout——並發測試第一版就是這樣卡住的。
+  `intraday_watch`（`catchup=False`）的 run_key 用當下分鐘，每 5 分一個 key，不會被同一天去重；
+  `self_screen_early` 17:30 回 `data_not_ready` 記成 `ok`＋note，18:30 是另一個 key（`日期:18:30`）照跑。
+  **紀錄本身失敗不吞**：`finish_job_run` 丟出來就往上，呼叫端 log 出來——替清理／記錄動作加寬鬆 except
+  正是 `conn()` 那節記過的坑。`main.py` 各 job 因此**不再自己 `except: pass`**：`scheduled_job` 的逐步
+  try/except 保留（一步失敗不拖垮其他步驟）但失敗收進 `failed_steps` 回傳→`partial`；其他 job 直接讓
+  例外到 `run_job`。job 回傳的 dict 會存進 `note`（`self_screen` 的 skipped 原因、news 的 `sent`…）。
+- **排程規格只有一份 `job_schedule(cfg, schedule_time)`**：`main.py` 註冊 APScheduler 與啟動補跑都吃它，
+  不會註冊一套、補跑另一套。每筆帶 `family`（補跑分組）與 `catchup`（`intraday_watch` 為 False：盤中警示
+  過了時間就沒意義）。`run_key`：一天一場＝日期，一天多場（`self_screen_early` 三次）＝`日期:HH:MM`。
+- **啟動補跑 `catchup_missed_jobs`**：`create_app(enable_scheduler=True)` 起一條 daemon 執行緒
+  `spr-catchup`（**不可阻塞啟動**，Zeabur 會把啟動太久當失敗），先標 interrupted，再依 `catchup_plan`
+  逐一走 `run_job(trigger="catchup")`。**走的是同一支 job 函式**，所以週末不推 LINE 告警、資料日≠今天
+  不推每日卡片、週報「快照 >7 天不推」這些既有守衛全部自動生效，**不另寫推播路徑**。
+  補跑範圍（使用者拍板）：**只補今天、同一 family 只補最近錯過的一場**——整天停機晚上恢復不會一次收到
+  07:00／12:00／17:00／21:10 四場新聞，只補 21:10；`self_screen_early` 三場只補 19:30（本來就冪等）；
+  最近一場已 ok 就整個家族不補（更早錯過的內容已過時）。依時段排序，21:00 daily_update 先於 21:10 news。
+- **`/api/health` 多 `jobs`**：每個 job 最近一列，「昨晚到底有沒有跑」看這裡。
+- **logging 取代 print**：`main.py` 頂層 `logging.basicConfig`（root 已有 handler 時 no-op，不與 uvicorn／
+  pytest 打架），logger 名 `spr`／`spr.jobs`／`spr.gemini`。`cli.py` 的 print 是 CLI 輸出，保留。
+  `tests/test_gemini.py` 三條原本用 `capsys` 讀 stdout 的測試改讀 `caplog`（替身跟著真實介面走）。
+
+**測試（`tests/test_job_runs.py`；`tests/test_health.py` 只改一處——`test_alert_deduplication_logic` 改呼叫 `app.state.jobs["daily_update"]`，因為排程器拿到的已是 run_job 包過的版本、同一天第二次呼叫會被去重略過；平行分支正在改同一條測試，合併時注意）**：「現在」一律走
+`helpers._now`（`main.py` 也改成 `_helpers._now()` 在呼叫時取，否則 `from … import _now` 綁住的名字
+monkeypatch 不到）。`tests/conftest.py` 加 autouse 樁把 `catchup_missed_jobs` 換成 no-op——tmp DB 永遠
+「今天沒紀錄」，不擋的話每條起排程器的測試都會真的跑 daily_update 去連外；要測補跑本身標
+`@pytest.mark.real_catchup`（同 `real_calendar` 的出口）。七個守衛各做過反證（家族規則／已 ok 不補／
+run_job 去重／唯一鍵（拿掉 index → 3 條並發測試紅）／interrupted 標記／週末告警守衛／main 真的起執行緒），
+拿掉那行對應測試都會紅。並發測試把「先查」弄瞎（`job_run_status` 恆回 None）、甚至把程序鎖換成不互斥的物件，
+兩條執行緒仍只跑一次——證明擋住的是唯一鍵。`test_alert_deduplication_logic` 把 CSV 匯入／AI 摘要／LINE 卡片／備份／
+前瞻記帳／自算選股六步樁掉，並加**網路絆線**（`socket.getaddrinfo`／`socket.connect` 記錄並拋例外，最後斷言零次）：
+反證是把備份的樁換成真的 `httpx.get` → 紅（抓到往代理的連線）。誠實標註：在**空的測試 DB** 上，那六步逐一拿掉樁
+都不會連外（各自在 no_market_date／無 token 提早結束），所以樁與絆線是防「DB 有資料時」的路徑，本機量不到 143 秒。
+**踩到一個**：`pytest -k not_again` 會把 `not` 當運算子，反證看起來像「沒紅」，改用完整測試名稱才對。
 
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):

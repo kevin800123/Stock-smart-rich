@@ -212,6 +212,18 @@ def init_db(conn: sqlite3.Connection) -> None:
                  "signal_date TEXT, code TEXT, name TEXT, source TEXT, "
                  "entry_ref_price REAL, ret5 REAL, ret10 REAL, ret20 REAL, "
                  "PRIMARY KEY(signal_date, code, source))")
+    # 排程執行紀錄：每支 job 每次執行一列（開始時寫入、結束時更新）。啟動時的「錯過補跑」
+    # 靠它判斷「今天這一場成功過沒有」——APScheduler 用記憶體 jobstore，程序重啟後不知道
+    # 自己錯過什麼，misfire_grace_time 幫不上忙（見 api/helpers.catchup_missed_jobs）。
+    # status：running／ok／partial（有步驟失敗但跑完）／failed／interrupted（重啟時仍在跑）
+    conn.execute("CREATE TABLE IF NOT EXISTS job_runs ("
+                 "id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL, run_key TEXT NOT NULL, "
+                 "trigger TEXT, started_at TEXT, finished_at TEXT, status TEXT, error TEXT, note TEXT)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_job_runs_key ON job_runs (job_id, run_key, id)")
+    # 同一 (job_id, run_key) 同時只能有一列 running：排程與啟動補跑撞在同一分鐘時，
+    # 去重靠這條唯一鍵擋，不是靠「先查再寫」（那段只是省一次 INSERT 失敗）。
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_job_runs_running "
+                 "ON job_runs (job_id, run_key) WHERE status='running'")
     # 既有資料庫補上後來新增的欄位
     mkt_existing = {r[1] for r in conn.execute("PRAGMA table_info(market_daily)").fetchall()}
     for col in MARKET_COLS:
@@ -914,3 +926,71 @@ def set_ai_cache(conn: sqlite3.Connection, key: str, payload: dict) -> None:
         (key, json.dumps(payload, ensure_ascii=False), datetime.now().isoformat()),
     )
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# 排程執行紀錄（job_runs）
+# ---------------------------------------------------------------------------
+JOB_RUN_DONE = ("ok", "partial")   # 這兩種代表「這一場跑過了」，補跑不再重跑
+
+
+def start_job_run(conn: sqlite3.Connection, job_id: str, run_key: str, trigger: str,
+                  started_at: str) -> int:
+    """寫一列 running。同 key 已有一列 running 時 sqlite 丟 IntegrityError（uq_job_runs_running），
+    呼叫端把它當「別人已經在跑」——不在這裡吞掉。**失敗時要 rollback**：Python sqlite3 在
+    INSERT 前已隱式 BEGIN，失敗的 INSERT 會讓這條連線留著一個開著的寫入交易、握住鎖，
+    另一條路徑（真的在跑的那個）寫 finish_job_run 時就會等滿 busy_timeout。"""
+    try:
+        cur = conn.execute(
+            "INSERT INTO job_runs (job_id, run_key, trigger, started_at, status) VALUES (?,?,?,?,'running')",
+            (job_id, run_key, trigger, started_at))
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        raise
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def finish_job_run(conn: sqlite3.Connection, run_id: int, status: str, finished_at: str,
+                   error: str | None = None, note: str | None = None) -> None:
+    conn.execute(
+        "UPDATE job_runs SET status=?, finished_at=?, error=?, note=? WHERE id=?",
+        (status, finished_at, error, note, run_id))
+    conn.commit()
+
+
+def job_run_status(conn: sqlite3.Connection, job_id: str, run_key: str) -> str | None:
+    """最近一次 (job_id, run_key) 的狀態；沒跑過回 None。"""
+    row = conn.execute(
+        "SELECT status FROM job_runs WHERE job_id=? AND run_key=? ORDER BY id DESC LIMIT 1",
+        (job_id, run_key)).fetchone()
+    return row[0] if row else None
+
+
+def mark_interrupted_job_runs(conn: sqlite3.Connection, finished_at: str) -> int:
+    """啟動時呼叫：還停在 running 的列必然是上一個程序留下的（單 worker，且本程序才剛起來），
+    標成 interrupted 讓補跑把它當「沒跑完」。回傳標了幾列。"""
+    cur = conn.execute(
+        "UPDATE job_runs SET status='interrupted', finished_at=?, error='程序重啟時仍在執行' "
+        "WHERE status='running'", (finished_at,))
+    conn.commit()
+    return cur.rowcount
+
+
+def latest_job_runs(conn: sqlite3.Connection) -> dict:
+    """每個 job_id 最近一列，給 /api/health 用。"""
+    rows = conn.execute(
+        "SELECT r.* FROM job_runs r JOIN (SELECT job_id, MAX(id) AS mid FROM job_runs GROUP BY job_id) m "
+        "ON r.id = m.mid ORDER BY r.job_id").fetchall()
+    out = {}
+    for r in rows:
+        d = dict(r)
+        d.pop("id", None)
+        out[d.pop("job_id")] = d
+    return out
+
+
+def prune_job_runs(conn: sqlite3.Connection, before: str) -> int:
+    cur = conn.execute("DELETE FROM job_runs WHERE started_at < ?", (before,))
+    conn.commit()
+    return cur.rowcount

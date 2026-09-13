@@ -1,6 +1,7 @@
 import os
 import base64
 import binascii
+import logging
 import secrets
 import threading
 import tempfile
@@ -22,11 +23,19 @@ from ..db import (
     get_snapshot,
     list_trades,
     get_tx_history,
+    JOB_RUN_DONE,
+    start_job_run,
+    finish_job_run,
+    job_run_status,
+    mark_interrupted_job_runs,
 )
 from .. import line_push
 from ..sources import twse, tpex, mis
 from .. import analysis, patterns, backtest
 from .deps import conn
+from ..scheduler import parse_schedule_time
+
+log = logging.getLogger("spr.jobs")
 
 WEB_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "web"))
 REPO_DIR = os.path.dirname(WEB_DIR)
@@ -755,7 +764,7 @@ def early_self_screen(c) -> dict:
     try:
         stock_flow.update_day(c, now.date())
     except Exception as e:  # noqa: BLE001 — 抓取失敗時覆蓋表不會是 complete，下面的門檻自然擋下
-        print(f"[self_screen_early] update_day 失敗：{type(e).__name__}: {e}")
+        log.warning("[self_screen_early] update_day 失敗：%s: %s", type(e).__name__, e)
     return refresh_self_screen_cache(c, day=day)
 
 
@@ -956,3 +965,208 @@ def _check_update_result_and_alert(c, result: dict) -> None:
         if last_alert != alert_key:
             line_push.broadcast_text(cfg.line_token, msg)
             set_setting(c, "last_alert_key", alert_key)
+
+
+# ---------------------------------------------------------------------------
+# 排程規格 ＋ 執行紀錄 ＋ 啟動補跑
+#
+# 為什麼 misfire_grace_time 不夠：APScheduler 用的是記憶體 jobstore，程序重啟後它不知道
+# 自己錯過了什麼——寬限時間只對「排程器活著但來不及跑」有用。push 到 main 會觸發 Zeabur
+# 重新部署＝程序重啟，橫跨排程時間那一場就整場消失，而告警本身就寫在那支 job 裡。
+# 所以要的是：每次執行留紀錄（job_runs），啟動時查「今天該跑的有沒有成功紀錄」，沒有就補。
+# ---------------------------------------------------------------------------
+_DOW = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+_job_lock = threading.Lock()
+
+
+def job_schedule(cfg, schedule_time: str) -> list[dict]:
+    """所有排程 job 的唯一權威清單。main.py 註冊 APScheduler 與啟動補跑都吃這一份，
+    才不會註冊一套、補跑另一套。
+
+    每筆：id（APScheduler job id）、family（補跑時同一家族只補**最近錯過的一場**，使用者
+    拍板：整天停機晚上恢復不該一次收到四場新聞）、hour／minute／dow（cron 欄位字串，
+    與 add_job 同寫法）、catchup（False＝不補跑：盤中警示過了時間就沒意義）。
+    """
+    h, m = parse_schedule_time(schedule_time)
+    specs = [
+        {"id": "daily_update", "family": "daily_update", "hour": str(h), "minute": str(m), "dow": None},
+        # 海期監控：一天固定兩次，與 LINE 是否設定無關（Yahoo 被 Zeabur IP 429 之後改成排程）
+        {"id": "osfut_morning", "family": "osfut", "hour": "7", "minute": "30", "dow": None},
+        {"id": "osfut_evening", "family": "osfut", "hour": "21", "minute": "30", "dow": None},
+        # 自算選股：平日 17:30／18:30／19:30 各試一次，資料到齊就算、算好就略過，最後一次在
+        # 20:00 之前（使用者要求）。實測 2026-08-26 19:27 行情與法人已到齊、只差融資。
+        {"id": "self_screen_early", "family": "self_screen_early",
+         "hour": "17,18,19", "minute": "30", "dow": "mon-fri"},
+    ]
+    # Telegram 新聞：token 與 chat id 缺一不可（只檢查 token 會註冊永遠送不出去的工作）。
+    # 平日四場、週末只留 12:00／21:10（盤前／收盤快訊在沒開盤的日子是在報舊事）。
+    # 21:10 不是 21:00：預設 daily_update 也是 21:00，排同一分鐘是巧合式的資源競爭。
+    if cfg.telegram_token and cfg.telegram_chat_id:
+        specs += [
+            {"id": "news_morning", "family": "news", "hour": "7", "minute": "0", "dow": "mon-fri"},
+            {"id": "news_midday", "family": "news", "hour": "12", "minute": "0", "dow": None},
+            {"id": "news_afternoon", "family": "news", "hour": "17", "minute": "0", "dow": "mon-fri"},
+            {"id": "news_evening", "family": "news", "hour": "21", "minute": "10", "dow": None},
+        ]
+    # LINE：盤中突破（平日 09:00–13:55 每 5 分，不補跑）與週六選股週報（時間可調、日固定）
+    if cfg.line_token:
+        wh, wm = parse_schedule_time(cfg.weekly_push_time)
+        specs += [
+            {"id": "intraday_watch", "family": "intraday_watch", "hour": "9-13", "minute": "*/5",
+             "dow": "mon-fri", "catchup": False},
+            {"id": "weekly_line", "family": "weekly_line", "hour": str(wh), "minute": str(wm), "dow": "sat"},
+        ]
+    return specs
+
+
+def _dow_matches(dow: str | None, weekday: int) -> bool:
+    if not dow:
+        return True
+    for part in dow.split(","):
+        if "-" in part:
+            a, b = part.split("-", 1)
+            if _DOW[a] <= weekday <= _DOW[b]:
+                return True
+        elif _DOW[part] == weekday:
+            return True
+    return False
+
+
+def _cron_hours(hour: str) -> list[int]:
+    out: list[int] = []
+    for part in str(hour).split(","):
+        if "-" in part:
+            a, b = part.split("-", 1)
+            out.extend(range(int(a), int(b) + 1))
+        else:
+            out.append(int(part))
+    return sorted(out)
+
+
+def slot_times(spec: dict, day: date) -> list[datetime]:
+    """這個 spec 在指定日曆日的所有觸發時刻（依 dow 過濾，早到晚）。只給可補跑的 spec 用。"""
+    if not spec.get("catchup", True) or not _dow_matches(spec.get("dow"), day.weekday()):
+        return []
+    minute = int(spec["minute"])
+    return [datetime(day.year, day.month, day.day, h, minute) for h in _cron_hours(spec["hour"])]
+
+
+def run_key_for(spec: dict, slot: datetime) -> str:
+    """一天只有一場 → 日期；一天多場（self_screen_early 三次）→ 日期:HH:MM，各場分開記。"""
+    multi = len(_cron_hours(spec["hour"])) > 1
+    return slot.strftime("%Y-%m-%d:%H:%M") if multi else slot.strftime("%Y-%m-%d")
+
+
+def scheduled_run_key(spec: dict, now: datetime) -> str:
+    """排程觸發時算 run_key：取「今天 ≤ now 的最後一個時段」（cron 只會晚不會早）。
+    不補跑的 job（盤中每 5 分）直接用當下分鐘。"""
+    if not spec.get("catchup", True):
+        return now.strftime("%Y-%m-%d:%H:%M")
+    slots = [t for t in slot_times(spec, now.date()) if t <= now]
+    if not slots:   # dow 不符或提早觸發（理論上不會）：退回第一個時段，仍可去重
+        slots = slot_times(spec, now.date()) or [now.replace(second=0, microsecond=0)]
+        return run_key_for(spec, slots[0])
+    return run_key_for(spec, slots[-1])
+
+
+def _short(v, n: int = 300) -> str | None:
+    if v is None:
+        return None
+    s = str(v)
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def run_job(job_id: str, run_key: str, fn, trigger: str = "scheduled") -> dict:
+    """每支排程 job 的外層：開始寫一列 running、結束更新狀態，並各記一行 log。
+
+    - 同一 (job_id, run_key) 已 ok／partial／running → 直接略過（補跑與排程撞在同一分鐘
+      也不會跑兩次；Telegram 推播本身沒有去重，靠這裡）。
+    - job 丟例外 → failed（例外進 log，不再是 except: pass 的無聲失敗）。
+    - job 回 dict 且帶非空 failed_steps → partial（跑完了但有步驟失敗），note 存回傳摘要。
+    - **紀錄本身失敗不吞**：finish_job_run 丟出來就讓它往上，呼叫端（APScheduler／補跑迴圈）
+      會 log 出來——寬鬆的 except 把記錄失敗吃掉，正是本專案記過的坑。
+    """
+    import sqlite3
+    c = conn()
+    with _job_lock:
+        st = job_run_status(c, job_id, run_key)
+        if st in JOB_RUN_DONE or st == "running":
+            log.info("[%s] skip run_key=%s（已 %s）", job_id, run_key, st)
+            return {"job_id": job_id, "run_key": run_key, "status": "skipped", "reason": st}
+        try:
+            run_id = start_job_run(c, job_id, run_key, trigger, _now().isoformat(timespec="seconds"))
+        except sqlite3.IntegrityError:
+            # 唯一鍵 uq_job_runs_running 擋下：同 key 已有一列 running（另一條路徑搶先了）。
+            # 上面的「先查」只是省一次失敗的 INSERT，真正的去重是這條唯一鍵。
+            log.info("[%s] skip run_key=%s（唯一鍵：已在執行）", job_id, run_key)
+            return {"job_id": job_id, "run_key": run_key, "status": "skipped", "reason": "running"}
+    log.info("[%s] start run_key=%s trigger=%s", job_id, run_key, trigger)
+    t0 = time.monotonic()
+    try:
+        result = fn()
+    except Exception as e:  # noqa: BLE001 — 記下來、log 出來，不往排程器丟
+        err = _short(f"{type(e).__name__}: {e}")
+        log.exception("[%s] failed run_key=%s %.1fs %s", job_id, run_key, time.monotonic() - t0, err)
+        finish_job_run(c, run_id, "failed", _now().isoformat(timespec="seconds"), error=err)
+        return {"job_id": job_id, "run_key": run_key, "status": "failed", "error": err}
+    status, err = "ok", None
+    if isinstance(result, dict) and result.get("failed_steps"):
+        status = "partial"
+        err = _short("; ".join(str(x) for x in result["failed_steps"]))
+    note = _short(result) if result is not None else None
+    finish_job_run(c, run_id, status, _now().isoformat(timespec="seconds"), error=err, note=note)
+    log.info("[%s] done status=%s run_key=%s %.1fs %s", job_id, status, run_key,
+             time.monotonic() - t0, note or "")
+    return {"job_id": job_id, "run_key": run_key, "status": status, "error": err, "note": note}
+
+
+def catchup_plan(c, specs: list[dict], now: datetime) -> list[dict]:
+    """今天已經該觸發、卻沒有成功紀錄的場次。只看**今天**（使用者決定不補前幾天），
+    同一 family 只取最近的一場：那一場 ok 就整個家族不補（更早錯過的內容已過時）。
+    依時段排序，所以 21:00 daily_update 會排在 21:10 news_evening 前面。"""
+    latest: dict[str, tuple] = {}
+    for spec in specs:
+        for slot in slot_times(spec, now.date()):
+            if slot > now:
+                continue
+            fam = spec["family"]
+            if fam not in latest or slot > latest[fam][0]:
+                latest[fam] = (slot, spec)
+    plan = []
+    for slot, spec in sorted(latest.values(), key=lambda t: t[0]):
+        key = run_key_for(spec, slot)
+        st = job_run_status(c, spec["id"], key)
+        if st in JOB_RUN_DONE:
+            continue
+        plan.append({"job_id": spec["id"], "run_key": key,
+                     "slot": slot.strftime("%H:%M"), "last_status": st})
+    return plan
+
+
+def catchup_missed_jobs(c, specs: list[dict], jobs: dict, now: datetime | None = None) -> dict:
+    """啟動補跑（在背景執行緒呼叫，不可阻塞啟動）。
+
+    1. 先把還停在 running 的列標成 interrupted——單 worker、本程序才剛起來，那些必然是上一個
+       程序被重啟時留下的，補跑要把它們當「沒跑完」。
+    2. 依 catchup_plan 逐一走 run_job（trigger=catchup），走的是同一支 job 函式，所以
+       週末不推 LINE、資料日≠今天不推卡片那些既有守衛全部自動生效，不另寫推播路徑。
+    """
+    now = now or _now()
+    n_int = mark_interrupted_job_runs(c, now.isoformat(timespec="seconds"))
+    if n_int:
+        log.warning("啟動補跑：%d 列 running 標成 interrupted（上一個程序被重啟）", n_int)
+    plan = catchup_plan(c, specs, now)
+    log.info("啟動補跑：%s", [f"{p['job_id']}@{p['slot']}" for p in plan] or "無")
+    ran = []
+    for item in plan:
+        fn = jobs.get(item["job_id"])
+        if fn is None:
+            log.warning("啟動補跑：%s 沒有對應的 job 函式，略過", item["job_id"])
+            continue
+        try:
+            r = run_job(item["job_id"], item["run_key"], fn, trigger="catchup")
+        except Exception:  # noqa: BLE001 — 紀錄本身失敗：log 出來、繼續下一個，不無聲
+            log.exception("啟動補跑：%s 執行紀錄寫入失敗", item["job_id"])
+            r = {"status": "record_failed"}
+        ran.append({**item, "result": r.get("status")})
+    return {"interrupted": n_int, "plan": plan, "ran": ran}
