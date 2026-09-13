@@ -935,7 +935,7 @@ def test_intraday_quota_paused_skips_broadcast_but_still_scans(tmp_path, monkeyp
     bulk_upsert_ohlc(c, "2026-07-04", {"2330": {"open": 1, "high": 2, "low": 1, "close": 1.5}})
     set_ai_cache(c, "cupsig:2026-07-04", [{"code": "8069", "name": "元太", "resistance": 212.0, "atr": 2.0}])
     monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {"8069": "元太"})
-    monkeypatch.setattr(mis, "fetch_mis_quotes", lambda tokens: {"8069": 213.5})
+    monkeypatch.setattr(mis, "fetch_mis_rank", lambda tokens: {"8069": {"price": 213.5}})
     from datetime import datetime as _dt
     set_setting(c, "line_quota_month", _dt.now().strftime("%Y-%m"))
     calls = []
@@ -2095,8 +2095,8 @@ def test_intraday_breakout_requires_two_round_confirmation_above_atr_threshold(t
         {"code": "2812", "name": "台中銀", "resistance": 19.8, "atr": 1.0},  # 門檻 20.1（只碰壓力不算）
     ])
     monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {"8069": "元太"})
-    monkeypatch.setattr(mis, "fetch_mis_quotes",
-                        lambda tokens: {"8069": 213.5, "2812": 19.85})
+    monkeypatch.setattr(mis, "fetch_mis_rank",
+                        lambda tokens: {"8069": {"price": 213.5}, "2812": {"price": 19.85}})
     sent = []
     monkeypatch.setattr(line_push, "broadcast_messages",
                         lambda tok, msgs: sent.append(str(msgs)) or {"ok": True})
@@ -2130,9 +2130,9 @@ def test_intraday_breakout_false_cross_resets_candidate(tmp_path, monkeypatch):
 
     def fake_quotes(tokens):
         v = seq[state["n"]]; state["n"] += 1
-        return {"8069": v}
+        return {"8069": {"price": v}}
 
-    monkeypatch.setattr(mis, "fetch_mis_quotes", fake_quotes)
+    monkeypatch.setattr(mis, "fetch_mis_rank", fake_quotes)
     sent = []
     monkeypatch.setattr(line_push, "broadcast_messages",
                         lambda tok, msgs: sent.append(str(msgs)) or {"ok": True})
@@ -2165,7 +2165,8 @@ def test_intraday_picks_only_toggle_filters_watchlist(tmp_path, monkeypatch):
     insert_chip_snapshot(c, "2026-07-04", [{"code": "2812.TW", "name": "台中銀", "w55": 1,
                          "big_holder_ratio": 0.5, "rev_yoy": 10, "est_profit": 1, "lan_value": 80}])
     monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {"8069": "元太"})
-    monkeypatch.setattr(mis, "fetch_mis_quotes", lambda tokens: {"8069": 213.5, "2812": 19.85})
+    monkeypatch.setattr(mis, "fetch_mis_rank",
+                        lambda tokens: {"8069": {"price": 213.5}, "2812": {"price": 19.85}})
     sent = []
     monkeypatch.setattr(line_push, "broadcast_messages",
                         lambda tok, msgs: sent.append(str(msgs)) or {"ok": True})
@@ -3156,3 +3157,58 @@ def test_snapshots_behind_days_is_none_when_either_side_is_missing(tmp_path, mon
     client = TestClient(create_app())
     d = client.get("/api/snapshots").json()
     assert d["dates"] == [] and d["market_date"] is None and d["behind_days"] is None
+
+
+def test_intraday_breakout_volume_gate_holds_thin_volume_and_fires_when_it_builds(tmp_path, monkeypatch):
+    """突破量能確認（≥1.5× 近 20 日均量）：量不夠就先擋著，量堆上來的下一輪照發。
+
+    三件事一起鎖住：
+    A. 量不足＝**擋下但保留候選資格**（不寫進 cupalerted），所以不必重新穿越門檻一次；
+    B. 達標的訊息要寫出倍數；
+    C. **算不出量能的照常發**並標「量能未確認」——舊哨兵快照沒有 avg_vol，若把 None
+       當成未達標，那些股票會安靜地再也不發警示，而畫面上完全看不出來。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("LINE_CHANNEL_ACCESS_TOKEN", "tok-x")
+    from stocks_power_rich import line_push
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_ohlc, set_ai_cache
+    from stocks_power_rich.sources import mis, tpex
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    bulk_upsert_ohlc(c, "2026-07-04", {"2330": {"open": 1, "high": 2, "low": 1, "close": 1.5}})
+    set_ai_cache(c, "cupsig:2026-07-04", [
+        {"code": "8069", "name": "元太", "resistance": 212.0, "atr": 2.0, "avg_vol": 1000},
+        {"code": "2812", "name": "台中銀", "resistance": 19.8, "atr": 0.1, "avg_vol": 500},
+        {"code": "1101", "name": "台泥", "resistance": 30.0, "atr": 0.1},   # 舊快照：無 avg_vol
+    ])
+    monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {"8069": "元太"})
+    # 三輪：台中銀的量在第三輪才堆上來（100→100→900，均量 500 → 1.8 倍）
+    vols = [100, 100, 900]
+    state = {"n": 0}
+
+    def fake_rank(tokens):
+        v = vols[min(state["n"], len(vols) - 1)]; state["n"] += 1
+        return {"8069": {"price": 213.5, "vol": 2000},      # 2.0 倍，達標
+                "2812": {"price": 19.85, "vol": v},
+                "1101": {"price": 31.0, "vol": 50}}         # 無基準 → 算不出
+    monkeypatch.setattr(mis, "fetch_mis_rank", fake_rank)
+    sent = []
+    monkeypatch.setattr(line_push, "broadcast_text",
+                        lambda tok, txt: sent.append(txt) or {"ok": True})
+
+    client = TestClient(create_app())
+    r1 = client.post("/api/intraday/test?push=1").json()
+    assert r1["hits"] == [] and sent == []                   # 第一輪只記候選
+
+    r2 = client.post("/api/intraday/test?push=1").json()
+    assert sorted(h["code"] for h in r2["hits"]) == ["1101", "8069"]
+    assert r2["held_by_volume"] == 1                          # 台中銀被量能擋下
+    assert "元太 213.50(壓212.00) 量2.0倍" in sent[0]          # B：達標寫倍數
+    assert "台泥 31.00(壓30.00) 量能未確認" in sent[0]          # C：算不出照發並標明
+    assert "台中銀" not in sent[0]
+
+    # A：量堆上來的下一輪就發，不必重新穿越門檻；元太已警示過不重複
+    r3 = client.post("/api/intraday/test?push=1").json()
+    assert [h["code"] for h in r3["hits"]] == ["2812"] and r3["held_by_volume"] == 0
+    assert "台中銀 19.85(壓19.80) 量1.8倍" in sent[1] and "元太" not in sent[1]

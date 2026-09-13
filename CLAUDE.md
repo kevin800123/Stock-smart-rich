@@ -936,6 +936,48 @@ sqlite 的執行緒安全檢查；(b) 改 89 個呼叫點用 `Depends(yield)` �
 **時間表**：Ret5 約 09-16、Ret10 約 09-24、Ret20 約 10-08 才有數字。在那之前
 self_screen 三格都會是「尚未到期」，那是**正確**顯示不是故障。
 
+### 杯柄突破量能確認（2026-09）
+
+盤中哨兵原本只看價格（壓力線 + 0.3×ATR ＋ 兩輪確認），沒有任何量能條件——薄量探頭
+與真突破在訊息裡長得一模一樣。加上「當日累積量 ≥ 近 20 日均量 × `BREAKOUT_VOL_MULT`(1.5)」。
+
+**料本來就都在，不必新增任何來源**：分母 `avg_volume_lots` 是 `screen_cup_handle`
+在流動性濾網那批就附在每個 match 上的；分子是 MIS 的 `v`（當日累積量，原生單位就是
+**張**，與 `stock_ohlc.volume_lots` 同單位）。差別只在盤中哨兵走的是 `fetch_mis_quotes`
+（只回價格），改成同一支端點的 `fetch_mis_rank`（`parse_mis_rank` 早就在解 `v`）——
+**請求次數完全沒變**。
+
+- **`patterns.volume_confirmed` 是三態，不是布林**：True 達標／False 未達／**None 算不出**。
+  「沒有基準」與「量真的不夠」是兩件事，壓成布林會讓缺基準的股票安靜地再也不發警示，
+  而那種迴歸在畫面上完全看不出來（同 `filter_liquid` 選 fail-open 的理由）。
+  掃描端**只擋 False**；None 照常送出並在訊息裡寫「量能未確認」。
+- **`intraday_lots == 0` 判 False 不判 None**。零成交是有效觀測（同 tpex 融資零餘額那條），
+  而且 MIS 無成交時現價會**退回最佳買價**——「零成交卻站上壓力」正是假突破的典型長相。
+- **被量能擋下的仍留在 `cuppending`、不寫進 `cupalerted`**：價格還站在門檻上，量堆上來的
+  下一輪就會發，不必重新穿越一次，也不會被當成「已警示」而永久略過。
+- **量能閘放在 `hits` 而不是 `crossing`**：放 crossing 會讓「價格先到、量後到」多賠一輪
+  （要重新累積候選資格）。crossing 保持純價格＝兩輪確認機制不受影響。
+- **`held_by_volume` 要回傳**，否則「今天怎麼都沒警示」分不出是沒股票突破還是量都不夠。
+- **舊哨兵快照沒有 `avg_vol`** → None → fail-open，隔天重建快照就有。這也是為什麼四條
+  既有的盤中測試（它們的 cupsig 都沒有 avg_vol）改完介面後**斷言一字不用動**就通過。
+
+**反證做過兩次**：(1) 拿掉量能閘 → 新測試紅；(2) 把 None 改成 fail-closed → **5 條紅**，
+其中 4 條是既有測試——正好示範了「把 None 當未達標」會造成什麼樣的無聲迴歸。
+
+**測試替身跟著真實介面走**：四處 `monkeypatch.setattr(mis, "fetch_mis_quotes", ...)` 改成
+`fetch_mis_rank` 並回 `{code: {"price": ...}}`。不給 `vol` 是刻意的——那幾條測的是價格那層。
+
+**覆蓋率實測**：近 20 個交易日出現過的 1,979 檔個股**全部**至少有一天有 `volume_lots`
+（整張表 41,243/52,309＝78.8% 有量，缺的都是量能欄加上去之前的舊列，落在 20 日窗外）。
+所以這個閘不會整批 fail-open 變成裝飾。**本機驗不到端到端**：dev DB 只有 28 天、
+不足 `patterns.LOOKBACK`，杯柄命中恆 0（同自算選股那條「本機驗證的陷阱」）。
+
+**已知代價（使用者拍板接受）**：`v` 是當日累積量，早盤自然只有全日的一小部分，所以
+警示普遍會變晚、多半落在下午。**刻意不去猜盤中量能的分布形狀**——假設一條 U 型曲線
+換算「這個時間點該有多少量」就是本專案一路在避免的那種可計算規則，猜錯了沒人發現
+（同「非農＝第一個週五」那條的教訓）。真要做時間校正，得先逐 5 分鐘累積真實的盤中
+量能剖面，用量到的、不是假設的。
+
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.

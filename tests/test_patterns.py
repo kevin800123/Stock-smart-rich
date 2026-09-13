@@ -258,3 +258,30 @@ def test_filter_liquid_fails_open_when_no_volume_data_at_all():
     kept, n_illiquid, n_no_data = p.filter_liquid(partial, 3e7)
     assert [m["code"] for m in kept] == ["B"]
     assert (n_illiquid, n_no_data) == (0, 1)
+
+
+def test_volume_confirmed_is_three_state_not_boolean():
+    """突破量能確認必須是三態：達標／未達／**算不出**。
+
+    「沒有基準」與「量真的不夠」是兩件事。壓成布林會讓缺量能基準的股票安靜地再也
+    不發警示——那正是 filter_liquid 當初選擇 fail-open 的同一個理由。
+    """
+    from stocks_power_rich import patterns as p
+
+    assert p.volume_confirmed(150, 100) is True        # 1.5 倍剛好達標（門檻含等號）
+    assert p.volume_confirmed(149, 100) is False       # 差一點就是未達，不是算不出
+    assert p.volume_confirmed(300, 100) is True
+
+    # 算不出：沒有基準（新股／量能欄還沒回補）。**不可與「未達」混為一談**
+    assert p.volume_confirmed(300, None) is None
+    assert p.volume_confirmed(300, 0) is None
+    # 算不出：MIS 這一塊沒回量
+    assert p.volume_confirmed(None, 100) is None
+
+    # 零成交是**有效觀測**不是缺值（同 tpex 融資零餘額那條）：MIS 無成交時現價會退回
+    # 最佳買價，「零成交卻站上壓力」正是假突破的典型長相，必須判 False 而非 None。
+    assert p.volume_confirmed(0, 100) is False
+
+    # 倍數只有一份權威版本，預設值就是它
+    assert p.volume_confirmed(100 * p.BREAKOUT_VOL_MULT, 100) is True
+    assert p.volume_confirmed(120, 100, mult=1.2) is True

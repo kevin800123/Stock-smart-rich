@@ -182,6 +182,31 @@ def avg_recent(values, days: int = LIQ_WINDOW):
     return sum(tail) / len(tail) if tail else None
 
 
+BREAKOUT_VOL_MULT = 1.5            # 突破量能確認：當日累積量須達近 20 日均量的幾倍
+
+
+def volume_confirmed(intraday_lots, avg_volume_lots, mult: float = BREAKOUT_VOL_MULT):
+    """突破日量能確認。回 True（達標）／False（未達）／**None（算不出）**。
+
+    **三態不可壓成布林。** 「沒有基準」與「量真的不夠」是兩件事：前者該讓警示照常送出
+    並標明未確認，後者該擋下來。壓成 False 會讓缺量能基準的股票安靜地再也不發警示，
+    而那種迴歸在畫面上完全看不出來（同 filter_liquid 選擇 fail-open 的理由）。
+
+    **`intraday_lots == 0` 是有效觀測、不是缺值**（同 tpex 融資零餘額那條）：MIS 的現價
+    在無成交時會退回最佳買價，所以「零成交卻站上壓力」正是假突破的典型長相——照算式
+    自然判 False，刻意不特例成 None。
+
+    兩邊都是**張**：`avg_volume_lots` 來自 screen_cup_handle 附的 `avg_volume_lots`
+    （stock_ohlc.volume_lots 的近 20 日均），`intraday_lots` 來自 MIS 的 `v`（原生單位
+    就是張）。單位若哪天改了，這裡會安靜地差 1000 倍，改任一端都要回來看這條。
+    """
+    if not avg_volume_lots or avg_volume_lots <= 0:
+        return None
+    if intraday_lots is None:
+        return None
+    return intraday_lots >= avg_volume_lots * mult
+
+
 def filter_liquid(matches: list[dict], min_avg_turnover) -> tuple[list[dict], int, int]:
     """依日均成交額過濾，回 (保留的, 因量太少剔除數, 因查無量能資料剔除數)。
 

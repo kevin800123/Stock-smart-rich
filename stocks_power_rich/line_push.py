@@ -696,15 +696,26 @@ def reply_messages(token: str, reply_token: str, messages: list) -> dict:
 
 
 def compose_breakout_alert(hits: list[dict], hhmm: str) -> str:
-    """盤中突破警示訊息。hits＝[{code,name,price,resistance,pick}]，同輪多檔合併成一則。
+    """盤中突破警示訊息。hits＝[{code,name,price,resistance,pick,vol_ok,vol_ratio}]，
+    同輪多檔合併成一則。
 
     pick=True（同時符合籌碼/基本選股）標 ⭐，並排在前面。
+
+    **量能只有兩種寫法**：達標寫倍數、算不出寫「量能未確認」。未達標的根本不會走到這裡
+    （掃描端已擋下），所以這裡沒有第三種。**未確認一定要寫出來**——不寫的話讀者會以為
+    每一則都通過了量能確認，那比沒有這個功能更糟。
     """
     ordered = sorted(hits, key=lambda h: not h.get("pick"))
     lines = [f"🚀 盤中突破壓力 {hhmm}"]
     for h in ordered[:10]:
         star = "⭐" if h.get("pick") else ""
-        lines.append(f"{star}{h.get('name') or h.get('code')} {_fmt(h.get('price'))}(壓{_fmt(h.get('resistance'))})")
+        if h.get("vol_ok") is True:
+            r = h.get("vol_ratio")
+            vol_txt = f" 量{_fmt(r, 1)}倍" if r else " 量達標"
+        else:
+            vol_txt = " 量能未確認"
+        lines.append(f"{star}{h.get('name') or h.get('code')} {_fmt(h.get('price'))}"
+                     f"(壓{_fmt(h.get('resistance'))}){vol_txt}")
     if any(h.get("pick") for h in hits):
         lines.append("⭐=同時符合籌碼/基本選股")
     lines.append("（盤中價有延遲，確認量價後再行動）")

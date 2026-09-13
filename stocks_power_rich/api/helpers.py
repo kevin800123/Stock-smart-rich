@@ -428,8 +428,12 @@ def cup_handle_screen_logic(c, min_r: float = patterns.MIN_R_DEFAULT):
                 rows = list(reversed(o))
                 a = patterns.atr([r["high"] for r in rows], [r["low"] for r in rows],
                                  [r["close"] for r in rows])
+                # avg_vol＝突破量能確認的分母（近 20 日均量，張）。screen_cup_handle 早就
+                # 附在 match 上了，這裡只是帶進哨兵快照，盤中不必每 5 分鐘重算一次。
+                # 舊快照沒有這個鍵 → volume_confirmed 回 None → fail-open，隔天重建就有。
                 sig_snapshot.append({"code": m["code"], "name": m["name"],
-                                     "resistance": m["resistance"], "atr": a})
+                                     "resistance": m["resistance"], "atr": a,
+                                     "avg_vol": m.get("avg_volume_lots")})
             set_ai_cache(c, f"cupsig:{latest}", sig_snapshot)
     picks = _picks_code_set(c)
     for m in result["stocks"]:
@@ -779,8 +783,10 @@ def _intraday_scan(c, push: bool = True) -> dict:
         return {"checked": 0, "hits": [], "note": "無待監控訊號（或今日皆已警示）"}
     otc = _otc_names(c)
     tokens = [f"{'otc' if s['code'] in otc else 'tse'}_{s['code']}.tw" for s in pending]
-    prices = mis.fetch_mis_quotes(tokens)
-    if not prices:
+    # 改用 fetch_mis_rank（同一支 MIS 端點、同樣一次請求），差別只在它把 v=當日累積量
+    # 一併解出來；fetch_mis_quotes 只回價格，量能閘就沒有分子可用。
+    quotes = mis.fetch_mis_rank(tokens)
+    if not quotes:
         if _mis_state["date"] != today:
             _mis_state.update({"date": today, "fails": 0, "warned": False})
         _mis_state["fails"] += 1
@@ -792,10 +798,25 @@ def _intraday_scan(c, push: bool = True) -> dict:
         return {"checked": len(pending), "hits": [], "note": "查查無報價"}
     _mis_state.update({"date": today, "fails": 0})
     threshold = lambda s: s["resistance"] + 0.3 * s["atr"] if s.get("atr") else s["resistance"]
-    crossing = {s["code"]: {**s, "price": prices[s["code"]], "pick": s["code"] in picks}
-                for s in pending if s["code"] in prices and prices[s["code"]] > threshold(s)}
+    crossing = {}
+    for s in pending:
+        q = quotes.get(s["code"])
+        if not q or q.get("price") is None or q["price"] <= threshold(s):
+            continue
+        vol, avg_vol = q.get("vol"), s.get("avg_vol")
+        crossing[s["code"]] = {
+            **s, "price": q["price"], "pick": s["code"] in picks,
+            "vol": vol, "avg_vol": avg_vol,
+            "vol_ratio": round(vol / avg_vol, 1) if (vol is not None and avg_vol) else None,
+            "vol_ok": patterns.volume_confirmed(vol, avg_vol)}
     candidates = set(get_ai_cache(c, f"cuppending:{today}") or [])
-    hits = [v for code, v in crossing.items() if code in candidates]
+    confirmed = [v for code, v in crossing.items() if code in candidates]
+    # 量能閘：**只擋 False，不擋 None**。None＝算不出（舊快照沒有 avg_vol、或 MIS 這塊
+    # 沒回量），照常送出並在訊息裡標「量能未確認」——缺料不該讓警示安靜消失。
+    hits = [v for v in confirmed if v["vol_ok"] is not False]
+    held = len(confirmed) - len(hits)
+    # 被量能擋下的**仍留在 cuppending**：價格還站在門檻上，量堆上來的下一輪就會發，
+    # 不必重新穿越一次。也不寫進 cupalerted，所以不會被當成「已警示」而永久略過。
     set_ai_cache(c, f"cuppending:{today}", sorted(crossing.keys()))
     if hits and push:
         txt = line_push.compose_breakout_alert(hits, datetime.now().strftime("%H:%M"))
@@ -803,7 +824,8 @@ def _intraday_scan(c, push: bool = True) -> dict:
         if not r.get("ok") and _is_quota_exceeded(r):
             _note_line_quota_exceeded(c)
         set_ai_cache(c, f"cupalerted:{today}", sorted(alerted | {h["code"] for h in hits}))
-    return {"checked": len(pending), "hits": hits}
+    # held_by_volume 攤開來，否則「今天怎麼都沒警示」分不出是沒股票突破還是量都不夠
+    return {"checked": len(pending), "hits": hits, "held_by_volume": held}
 
 
 def _check_update_result_and_alert(c, result: dict) -> None:

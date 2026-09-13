@@ -170,6 +170,7 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 
 - 拆成 `compute_self_screen`（貴：全市場 ~2,000 檔逐檔自算＋版圖）與 `build_self_screen(precomputed=)`（便宜：套門檻排序）。門檻/勾選不影響貴的那半 → 一份快取服務所有組合（勾選有 2^7 種）。**等價測試**＋**JSON round-trip 測試**（要進 ai_cache TEXT）鎖住。
 - **只存最新一天、一列**（`selfscreen:v1`）：實測一份 729 KB，每天存一列＝一年 180MB。日期對不上一律當沒有，端點回 `precomputed: bool`。
+- **杯柄突破量能確認**：盤中哨兵加「當日累積量 ≥ 近 20 日均量 ×`patterns.BREAKOUT_VOL_MULT`(1.5)」。分母是 `screen_cup_handle` 已附的 `avg_volume_lots`、分子是 MIS 的 `v`（同為**張**），掃描改用 `fetch_mis_rank`（同端點同請求數，只是多解出 `v`）。**`volume_confirmed` 是三態**：True/False/**None（算不出）**，掃描端**只擋 False**，None 照發並標「量能未確認」——壓成布林會讓缺基準的股票安靜地不再發警示。`intraday_lots==0` 判 False（MIS 無成交時退回買價，零成交站上壓力正是假突破）。被擋下的仍留在 `cuppending`、不寫 `cupalerted`，量堆上來下一輪就發。閘放在 `hits` 不放 `crossing`（否則多賠一輪）。回傳 `held_by_volume`。**代價**：警示普遍變晚（累積量早盤本來就少），**刻意不猜盤中量能分布形狀**。
 - **`signals_performance` 的來源清單（`api/trades.py::LEDGER_SOURCES`）漏過 `self_screen`**：記錄端與報酬回填端都不分來源，唯一會漏新來源的就是這個讀出口，而症狀完全無聲（資料照常累積、只是讀不出來）。**新增訊號來源時這裡一定要跟著加。** 每個來源另回 `signals`/`since`/`latest`，因為「有訊號但未到期」與「根本沒在記」要分得出來；`PERF_MIN_SAMPLE`(20) 放後端送前端，不在 app.js 複製。設定頁 `#set-signal-perf` 顯示三來源 × 5/10/20 日，**不用紅綠也不用琥珀**（統計讀數，暖色會被讀成「可以買」，同法人研究實驗室的取捨）。
 - **`record_self_screen_signals` 改用市場最新交易日**（原本 `MAX(snap_date)`，CSV 一停前瞻追蹤就停——漏列的第五個凍結點）。排程算一次、ledger 吃同一份。
 - **排程邏輯放 `api/helpers.refresh_self_screen_cache`**，不是 main.py 閉包——寫在閉包裡就測不到、也沒辦法單獨跑一次驗證，而它被 `except: pass` 包著、壞掉沒聲音。回傳可觀察的 dict（含 `skipped` 原因）。
