@@ -46,7 +46,8 @@ def record_daily_signals(conn: sqlite3.Connection) -> None:
 
 def record_self_screen_signals(conn: sqlite3.Connection, universe: dict,
                                mu_value_min, mu_score_min,
-                               precomputed: dict | None = None) -> None:
+                               precomputed: dict | None = None,
+                               signal_date: str | None = None) -> None:
     """自算選股 picks → signal_ledger（source='self_screen'），做前瞻績效追蹤。
 
     **為什麼要有這支**：訊號追蹤頁雖然移除了，記錄仍刻意持續（見 CLAUDE.md）——前瞻報酬
@@ -67,10 +68,15 @@ def record_self_screen_signals(conn: sqlite3.Connection, universe: dict,
     只在每日排程呼叫，不掛在 CSV 上傳等請求路徑上：build_self_screen 是全市場計算，放進請求
     會拖慢回應（同「請求裡不要放無界時間的同步計算」那條教訓）。
     """
-    row = conn.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
-    if not (row and row[0]):
-        return
-    date_str = row[0]
+    # signal_date：提早計算（20:00 前）時 market_daily 還沒有今天那一列，照舊取最新列會把
+    # 今天的名單記在昨天、進場價用昨天收盤——拿未來資訊回填過去。呼叫端知道算的是哪天就要明講。
+    if signal_date:
+        date_str = signal_date
+    else:
+        row = conn.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT 1").fetchone()
+        if not (row and row[0]):
+            return
+        date_str = row[0]
     exists = conn.execute(
         "SELECT 1 FROM signal_ledger WHERE signal_date=? AND source='self_screen' LIMIT 1",
         (date_str,)

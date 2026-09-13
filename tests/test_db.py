@@ -357,6 +357,24 @@ def test_margin_3d_map_uses_balance_difference_not_sum(tmp_path):
     assert m2["2330"] == -30.0     # 970 − 1000
 
 
+def test_margin_3d_map_exact_refuses_a_window_that_ends_before_as_of(tmp_path):
+    """`exact=True`：窗口的最新一天必須正好是 as_of，否則回空。
+
+    自算選股改成 20:00 前就算，而融資約 21:00 才公布。不帶 exact 時它會取「截至 as_of、
+    有融資資料的最近 4 天」——也就是安靜地拿昨天結尾的窗口，放在今天那一列顯示。
+    寧可今天那格空著，21:00 那次重算再補上。"""
+    from stocks_power_rich.db import bulk_upsert_stock_flow, margin_3d_map
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    for ds, lots in (("2026-08-03", 1000), ("2026-08-04", 980), ("2026-08-05", 970), ("2026-08-06", 940)):
+        bulk_upsert_stock_flow(conn, ds, "TWSE", {"2330": {"margin_balance_lots": lots}})
+
+    assert margin_3d_map(conn, as_of="2026-08-07", exact=True) == {}      # 08-07 還沒有融資
+    assert margin_3d_map(conn, as_of="2026-08-07")["2330"] == -60.0       # 反證：不帶 exact 會拿 08-06 結尾
+    assert margin_3d_map(conn, as_of="2026-08-06", exact=True)["2330"] == -60.0
+
+
 def test_get_financials_bulk_shapes_for_lan_score(tmp_path):
     """全市場一次取 {代號:{指標:[值,新到舊]}}，正是 lan_score 期望的 [0]=最新 形狀。"""
     from stocks_power_rich.db import bulk_upsert_financials, get_financials_bulk

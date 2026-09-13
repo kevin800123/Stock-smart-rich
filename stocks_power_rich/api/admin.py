@@ -370,8 +370,12 @@ def picks_self_screen(date: str | None = None, conds: str | None = None,
         c, "screen_mu_value_min", analysis.SCREEN_MU_VALUE_MIN)
     smin = mu_score_min if mu_score_min is not None else _screen_threshold(
         c, "screen_mu_score_min", analysis.SCREEN_MU_SCORE_MIN)
-    snap_dates = get_snapshot_dates(c)                   # 籌碼選股用的 CSV 快照日，供選單與預設
-    chosen = date or (snap_dates[-1] if snap_dates else _latest_date(c))
+    snap_dates = get_snapshot_dates(c)                   # 籌碼選股用的 CSV 快照日，只供選單
+    # 預設日期＝排程算好的那一天；還沒有快取才退回市場最新交易日。**不再跟著 CSV 走**
+    # （使用者決定）：自算零 CSV 依賴，CSV 落後時頁面卻會打開舊的那天並改成現算。也不直接用
+    # market_daily 最新日——它當天早上就有列，白天打開會變成「今天、資料沒到齊、現算」。
+    latest = selfcheck.load_latest_precomputed(c)
+    chosen = date or (latest or {}).get("date") or _latest_date(c)
     # conds＝要套用的條件（逗號分隔）。**不帶＝None＝全部 7 條**，也就是原本的行為；
     # 帶了才是交叉檢視。只收 SCREEN_CONDITIONS 裡的 key，擋掉亂傳的字串。
     picked_conds = None
@@ -380,11 +384,13 @@ def picks_self_screen(date: str | None = None, conds: str | None = None,
         picked_conds = [k for k in conds.split(",") if k in known]
     # 每日排程會把「貴的那一半」（全市場逐檔自算）預算好存進 ai_cache；日期對得上就直接用。
     # 對不上（使用者從選單挑了較舊的日期）才現算——那是偶爾的操作，不值得為它長期佔空間。
-    pre = selfcheck.load_precomputed(c, chosen)
+    pre = latest if latest and latest.get("date") == chosen else None
     result = selfcheck.build_self_screen(c, chosen, universe, vmin, smin, picked_conds,
                                          precomputed=pre)
     result["snap_dates"] = snap_dates
     result["precomputed"] = pre is not None      # 讓「今天是現算還是吃快取」看得見
+    result["ready_at"] = (pre or {}).get("ready_at")         # 這天的名單最早幾點算好
+    result["computed_at"] = (pre or {}).get("computed_at")
     return result
 
 @router.get("/ohlc/backfill")

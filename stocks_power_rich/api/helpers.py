@@ -720,7 +720,46 @@ def _os_futures(refresh: bool = False) -> dict:
 
 
 
-def refresh_self_screen_cache(c) -> dict:
+# 自算選股當天一定要到齊的資料。融資不在內：約 21:00 才公布，而且只是參考欄、不進篩選。
+SELF_SCREEN_REQUIRED = (("TWSE", "quotes"), ("TWSE", "institutional"),
+                        ("TPEx", "quotes"), ("TPEx", "institutional"))
+
+
+def self_screen_missing_inputs(c, day: str) -> list[str]:
+    """回傳 day 這天還沒到齊的「市場/來源」。依據是 stock_flow.update_day 寫的覆蓋表。
+
+    **這道門檻是提早計算的前提**：`institutional_3d_map` 取「截至當天、有資料的最近 3 天」，
+    法人還沒公布時會安靜地拿昨天的窗口冒充今天，而投信／外資三日是木質的加分——名單會算錯，
+    還會被記進前瞻訊號、補不回來。
+    """
+    status = {(m, s): st for m, s, st in c.execute(
+        "SELECT market, source, status FROM stock_source_coverage WHERE date=?", (day,))}
+    return [f"{m}/{s}" for m, s in SELF_SCREEN_REQUIRED if status.get((m, s)) != "complete"]
+
+
+def early_self_screen(c) -> dict:
+    """平日傍晚提早算今天的自算選股（使用者要求最晚 20:00 更新好）。排程 17:30／18:30／19:30。
+
+    這時 21:00 的每日更新還沒跑，market_daily 沒有今天那一列，所以**日期取真實日曆**，並明確
+    傳給 refresh_self_screen_cache（它再傳給前瞻訊號）。當天行情與法人由 update_day 自己抓
+    ——一天 6 個請求，比整支 run_update 輕得多。已算好就直接略過，後面兩次不重抓。
+    資料沒到齊就回 data_not_ready，下一次再試；三次都沒到齊，21:00 那次仍會照常算。
+    """
+    from .. import selfcheck, stock_flow
+    now = _now()
+    if now.weekday() >= 5:
+        return {"cached": False, "skipped": "weekend"}
+    day = now.date().isoformat()
+    if selfcheck.load_precomputed(c, day):
+        return {"cached": False, "date": day, "skipped": "already_ready"}
+    try:
+        stock_flow.update_day(c, now.date())
+    except Exception as e:  # noqa: BLE001 — 抓取失敗時覆蓋表不會是 complete，下面的門檻自然擋下
+        print(f"[self_screen_early] update_day 失敗：{type(e).__name__}: {e}")
+    return refresh_self_screen_cache(c, day=day)
+
+
+def refresh_self_screen_cache(c, day: str | None = None) -> dict:
     """每日排程的自算選股：**算一次、存一次**，前瞻追蹤吃同一份。回一份可觀察的結果。
 
     放在 helpers 而不是 main.py 的閉包裡，是本專案的既定分工（「排程 Job 需要的邏輯先
@@ -737,12 +776,25 @@ def refresh_self_screen_cache(c) -> dict:
     from ..ledger import record_self_screen_signals
     from .. import analysis, selfcheck
 
-    universe = {**_otc_industry(c), **_industry_map(c)}
-    day = _latest_date(c)
-    if not day or not universe:
+    day = day or _latest_date(c)
+    if not day:
+        return {"cached": False, "date": None, "skipped": "no_market_date"}
+    missing = self_screen_missing_inputs(c, day)
+    if missing:
+        # 當天行情或法人還沒到齊：不算、不存、不記前瞻訊號（理由見 self_screen_missing_inputs）
+        return {"cached": False, "date": day, "skipped": "data_not_ready", "missing": missing}
+    otc, listed = _otc_industry(c), _industry_map(c)
+    universe = {**otc, **listed}
+    if not universe:
         # 缺哪一邊要講出來——「今天沒做」與「今天做了但沒選到股」是兩件事
+        return {"cached": False, "date": day, "universe": 0, "skipped": "empty_universe"}
+    if not otc or not listed:
+        # **只抓到一個市場就整天跳過**。原本只擋「兩邊都空」，於是櫃買斷線那天會拿「只有
+        # 上市」照常算、存快取、記前瞻訊號。最後一項補不回來：record_self_screen_signals
+        # 每個訊號日只寫一次，偏差的樣本會永遠留在前瞻勝率裡。一天空缺只是少一天樣本，
+        # 一天偏差會讓結論失真。上櫃名單是月快取，換月後第一次才去櫃買抓，正是風險點。
         return {"cached": False, "date": day, "universe": len(universe),
-                "skipped": "no_market_date" if not day else "empty_universe"}
+                "listed": len(listed), "otc": len(otc), "skipped": "partial_universe"}
 
     def _th(key, dflt):
         raw = get_setting(c, key)
@@ -754,12 +806,19 @@ def refresh_self_screen_cache(c) -> dict:
     vmin = _th("screen_mu_value_min", analysis.SCREEN_MU_VALUE_MIN)
     smin = _th("screen_mu_score_min", analysis.SCREEN_MU_SCORE_MIN)
     pre = selfcheck.compute_self_screen(c, day, universe)
+    # ready_at＝這一天的名單「最早」算好的時間，computed_at＝這份快取最後寫入的時間。
+    # 21:00 那次會為了補上融資再算一遍，只記最後寫入的話畫面永遠是 21:0x，看不出 20:00 前算好沒。
+    stamp = _now().isoformat(timespec="seconds")
+    prev = selfcheck.load_precomputed(c, day)
+    pre["computed_at"] = stamp
+    pre["ready_at"] = (prev or {}).get("ready_at") or stamp
     selfcheck.save_precomputed(c, pre)
-    # 前瞻追蹤吃同一份，不重算（見 record_self_screen_signals 的說明）
-    record_self_screen_signals(c, universe, vmin, smin, precomputed=pre)
+    # 前瞻追蹤吃同一份，不重算；訊號日明講是哪一天（提早計算時 market_daily 還沒有今天）
+    record_self_screen_signals(c, universe, vmin, smin, precomputed=pre, signal_date=day)
     picked = len(selfcheck.build_self_screen(
         c, day, universe, vmin, smin, precomputed=pre)["rows"])
     return {"cached": True, "date": day, "universe": len(universe),
+            "listed": len(listed), "otc": len(otc),
             "rows": len(pre["rows"]), "sectors": len(pre["heatmap"]), "picked": picked}
 
 

@@ -737,8 +737,10 @@ async function loadSelfScreen(date, conds) {
       `入選 <b>${cov.picked || 0}</b>`,
       // 「今晚排程有沒有把這份預算好」要看得見。全市場逐檔自算不能放進請求路徑，
       // 排程失敗時它被 except 吞掉、不會有任何聲音——畫面上標出來才發現得了。
+      // 平日 17:30／18:30／19:30 資料到齊就先算好（要求 20:00 前），21:00 再算一次補上融資。
+      // 顯示的是這天名單「最早」算好的時間，才看得出有沒有趕在 20:00 前。
       (d.precomputed
-        ? `<span title="每日 21:00 排程預先算好、存在快取">來源 <b>排程預算</b></span>`
+        ? `<span title="平日傍晚資料到齊即預先算好，21:00 再補上融資${d.computed_at ? `（最後更新 ${esc(d.computed_at.slice(5, 16).replace("T", " "))}）` : ""}">來源 <b>排程預算</b>${d.ready_at ? `・<b>${esc(d.ready_at.slice(5, 16).replace("T", " "))}</b> 算好` : ""}</span>`
         : `<span title="快取沒有這一天，本次為即時計算">來源 <b>現算</b></span>`),
       `門檻 木率&gt;<b>${th.mu_value_min}</b>・木質&gt;<b>${th.mu_score_min}</b>`,
       // 非預設條件時明講，否則「入選變多」看起來會像資料出錯

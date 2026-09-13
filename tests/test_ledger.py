@@ -167,3 +167,26 @@ def test_signals_performance_reports_every_ledger_source(tmp_path, monkeypatch):
     # 樣本不足的門檻由後端給，前端不得自己寫死一份（同 bands/Elliott 的規矩）
     assert body["min_sample"] > 0
     assert body["sources"] == ["filtered_picks", "self_screen", "cup_handle"]
+
+
+def test_record_self_screen_signals_uses_the_given_signal_date(tmp_path, monkeypatch):
+    """提早計算時 market_daily 可能還沒有今天那一列（它是 21:00 的每日更新才建的）。
+
+    這時若照舊用 market_daily 最新日期當訊號日，**今天的名單會被記在昨天、進場價用昨天收盤**
+    ——那是拿未來資訊回填過去，前瞻報酬會被灌水，而且補不回來。所以呼叫端要能明確指定。"""
+    from stocks_power_rich import ledger, selfcheck
+    from stocks_power_rich.db import upsert_market_daily
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    upsert_market_daily(conn, {"date": "2026-09-30", "taiex": 20000.0})     # 今天那列還沒建
+    for ds, px in (("2026-09-30", 900.0), ("2026-10-01", 1000.0)):
+        conn.execute("INSERT INTO stock_ohlc (date, code, open, high, low, close) VALUES (?,?,?,?,?,?)",
+                     (ds, "2330", 1.0, 1.0, 1.0, px))
+    conn.commit()
+    monkeypatch.setattr(selfcheck, "build_self_screen",
+                        lambda *a, **k: {"rows": [{"code": "2330", "name": "台積電", "vals": {}}]})
+
+    ledger.record_self_screen_signals(conn, {"2330": {}}, 50, 9, signal_date="2026-10-01")
+    rows = conn.execute("SELECT signal_date, entry_ref_price FROM signal_ledger").fetchall()
+    assert [tuple(r) for r in rows] == [("2026-10-01", 1000.0)]

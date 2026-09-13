@@ -667,7 +667,7 @@ def institutional_3d_map(conn: sqlite3.Connection, as_of: str | None = None) -> 
     return {code: {"trust_3d": t, "foreign_3d": f} for code, t, f in rows}
 
 
-def margin_3d_map(conn: sqlite3.Connection, as_of: str | None = None) -> dict:
+def margin_3d_map(conn: sqlite3.Connection, as_of: str | None = None, exact: bool = False) -> dict:
     """全市場 {代號: 融資3日增減(張)}＝融資餘額(最新) − 融資餘額(3 個交易日前)。
 
     **與 institutional_3d_map 是不同語意**：trust_lots/foreign_lots 是「當日淨買賣」流量，
@@ -680,6 +680,9 @@ def margin_3d_map(conn: sqlite3.Connection, as_of: str | None = None) -> dict:
 
     目前只作為自算選股的**參考欄**，刻意不進木質/木率計分（使用者決定：先不改分數刻度，
     避免既有門檻木質>9 與品質閘 10 的鬆緊度被動搖）。
+
+    `exact=True`：窗口最新一天必須正好是 as_of，否則回空。自算選股在 20:00 前就算，而融資
+    約 21:00 才公布——不帶 exact 會安靜地拿昨天結尾的窗口，顯示在今天那一列。
     """
     cutoff = as_of or "9999-99-99"
     dates = [r[0] for r in conn.execute(
@@ -687,6 +690,8 @@ def margin_3d_map(conn: sqlite3.Connection, as_of: str | None = None) -> dict:
         "WHERE date<=? AND margin_balance_lots IS NOT NULL "
         "ORDER BY date DESC LIMIT 4", (cutoff,)).fetchall()]
     if len(dates) < 2:
+        return {}
+    if exact and as_of and dates[0] != as_of:
         return {}
     newest, oldest = dates[0], dates[-1]
     rows = conn.execute(

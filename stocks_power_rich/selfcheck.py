@@ -108,7 +108,8 @@ def build_selfcheck(conn, date: str | None) -> dict:
     fin = db.get_financials_bulk(conn, list(analysis._LAN_USED) + ["opex", "income_tax"]) if date else {}
     mrev = db.monthly_revenue_bulk(conn, as_of=date) if date else {}   # {代號: [月營收億元,新到舊]}
     ohlc = db.get_all_ohlc(conn, min_bars=55)
-    margin = db.margin_3d_map(conn, as_of=date) if date else {}        # 融資3日：參考欄、不計分
+    # exact：今天的融資還沒公布（約 21:00）時寧可空著，不拿昨天結尾的窗口冒充今天
+    margin = db.margin_3d_map(conn, as_of=date, exact=True) if date else {}        # 融資3日：參考欄、不計分
 
     out_rows = []
     for code, name, csv_yoy, csv_w55, csv_bhr, csv_hdr, csv_t3, csv_f3, csv_lan, csv_est, csv_cap in rows_csv:
@@ -275,6 +276,11 @@ SELF_SCREEN_CACHE_KEY = "selfscreen:v1"
 
 def save_precomputed(conn, payload: dict) -> None:
     db.set_ai_cache(conn, SELF_SCREEN_CACHE_KEY, payload)
+
+
+def load_latest_precomputed(conn) -> dict | None:
+    """不論日期，取快取裡現有的那一份（只存最新一天）。頁面預設日期用它決定。"""
+    return db.get_ai_cache(conn, SELF_SCREEN_CACHE_KEY) or None
 
 
 def load_precomputed(conn, date) -> dict | None:

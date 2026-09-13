@@ -156,6 +156,14 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         except Exception:  # noqa: BLE001
             pass
 
+    def self_screen_early_job():
+        """自算選股提早算（使用者要求最晚 20:00 更新好）。邏輯在 api/helpers.early_self_screen。"""
+        try:
+            from .api.helpers import early_self_screen
+            print(f"[self_screen_early] {early_self_screen(conn())}")
+        except Exception as e:  # noqa: BLE001 — 失敗不影響其他排程；21:00 那次仍會照常算
+            print(f"[self_screen_early] 失敗：{type(e).__name__}: {e}")
+
     def osfut_job():
         """海期監控排程：一天固定兩次（07:30／21:30），取代舊的「每 2 分鐘輪詢」。
 
@@ -218,6 +226,12 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             osfut_job, "cron", hour=7, minute=30, id="osfut_morning", replace_existing=True)
         app.state.scheduler.add_job(
             osfut_job, "cron", hour=21, minute=30, id="osfut_evening", replace_existing=True)
+        # 自算選股：平日 17:30／18:30／19:30 各試一次，資料到齊就算、算好就略過。最後一次在
+        # 20:00 之前（使用者要求）。與 LINE 是否設定無關。實測 2026-08-26 19:27 行情與法人已到齊、
+        # 只差融資；T86 約 16:00 後公布。
+        app.state.scheduler.add_job(
+            self_screen_early_job, "cron", day_of_week="mon-fri", hour="17,18,19", minute=30,
+            id="self_screen_early", replace_existing=True)
         # token 與目標 chat 缺一不可。只檢查 token 會註冊三個永遠送不出去、又被
         # job 內例外吞掉的工作，設定頁也會誤以為已啟用。
         if cfg.telegram_token and cfg.telegram_chat_id:

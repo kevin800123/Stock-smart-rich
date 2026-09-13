@@ -104,9 +104,13 @@ def test_self_screen_endpoint_full_market_universe_and_thresholds(tmp_path, monk
     assert over["thresholds"] == {"mu_value_min": 10, "mu_score_min": 1}
 
 
-def test_self_screen_date_selector_defaults_to_latest_csv_and_accepts_date(tmp_path, monkeypatch):
-    """自算選股日期選單：不帶 date → 預設最新 CSV 快照日（與籌碼選股對齊）；帶 date → 用該日；
-    回應帶 snap_dates 供前端選單。目的：讓自算選股能和籌碼選股站在同一天比較。"""
+def test_self_screen_date_selector_defaults_to_the_computed_day_and_accepts_date(tmp_path, monkeypatch):
+    """自算選股頁不帶 date 時，預設＝**排程算好的那一天**；還沒有快取才退回市場最新交易日。
+
+    **刻意改掉原本「預設最新 CSV 快照日」**（使用者決定）：自算這條線零 CSV 依賴，預設日期卻
+    跟著 CSV 走，CSV 一落後頁面就打開舊的那天、而且因為對不上快取而改成現算。
+    也不直接用 market_daily 最新日：它當天早上就有列，白天打開會變成「今天、資料還沒到齊、現算」。
+    snap_dates 仍保留供選單挑 CSV 那幾天來和籌碼選股比對。"""
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     monkeypatch.chdir(tmp_path)
     from stocks_power_rich.api import admin as admin_mod
@@ -114,18 +118,25 @@ def test_self_screen_date_selector_defaults_to_latest_csv_and_accepts_date(tmp_p
                         lambda c: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1e9}})
     monkeypatch.setattr(admin_mod, "_otc_industry", lambda c: {})
     client = TestClient(create_app())
+    from stocks_power_rich import selfcheck
     from stocks_power_rich.db import (get_connection, init_db, upsert_market_daily,
                                       insert_chip_snapshot)
     c = get_connection(str(tmp_path / "t.sqlite"))
     init_db(c)
-    upsert_market_daily(c, {"date": "2026-09-04", "taiex": 20000.0})   # market_daily 較新（09-04）
+    upsert_market_daily(c, {"date": "2026-09-04", "taiex": 20000.0})   # 市場最新＝09-04
     insert_chip_snapshot(c, "2026-08-21", [{"code": "2330"}])
-    insert_chip_snapshot(c, "2026-08-28", [{"code": "2330"}])          # 最新 CSV 快照＝08-28
+    insert_chip_snapshot(c, "2026-08-28", [{"code": "2330"}])          # 最新 CSV＝08-28（落後）
     c.commit()
 
     d = client.get("/api/picks/self-screen").json()
-    assert d["date"] == "2026-08-28"                       # 預設＝最新 CSV 日，非 market 的 09-04
-    assert d["snap_dates"] == ["2026-08-21", "2026-08-28"]  # 前端日期選單來源
+    assert d["date"] == "2026-09-04"                       # 沒快取 → 市場最新交易日，不是 CSV 的 08-28
+    assert d["snap_dates"] == ["2026-08-21", "2026-08-28"]  # 選單仍列得出 CSV 那幾天
+
+    selfcheck.save_precomputed(c, {"date": "2026-09-03", "rows": [], "heatmap": [], "coverage": {},
+                                   "ready_at": "2026-09-03T18:31:00"})
+    d = client.get("/api/picks/self-screen").json()
+    assert d["date"] == "2026-09-03" and d["precomputed"] is True   # 有快取 → 算好的那一天
+    assert d["ready_at"] == "2026-09-03T18:31:00"
 
     older = client.get("/api/picks/self-screen?date=2026-08-21").json()
     assert older["date"] == "2026-08-21"                   # 帶 date → 用該日
@@ -1518,10 +1529,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260817-ui49"' in html.text
-    assert 'href="/styles.css?v=20260817-ui49"' in html.text
-    assert 'src="app.js?v=20260817-ui49"' not in html.text
-    assert 'href="styles.css?v=20260817-ui49"' not in html.text
+    assert 'src="/app.js?v=20260817-ui50"' in html.text
+    assert 'href="/styles.css?v=20260817-ui50"' in html.text
+    assert 'src="app.js?v=20260817-ui50"' not in html.text
+    assert 'href="styles.css?v=20260817-ui50"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",
@@ -3069,24 +3080,188 @@ def test_self_screen_endpoint_uses_the_daily_precomputed_cache(tmp_path, monkeyp
     assert [r["code"] for r in older["rows"]] == []
 
 
+def _mark_inputs_ready(conn, day, skip=()):
+    """把自算選股需要的當天資料標成已到齊（上市／上櫃 × 行情／三大法人），skip 內的標失敗。"""
+    from stocks_power_rich.db import set_stock_source_coverage
+    for market in ("TWSE", "TPEx"):
+        for source in ("quotes", "institutional"):
+            ok = f"{market}/{source}" not in skip
+            set_stock_source_coverage(conn, day, market, source, "complete" if ok else "failed",
+                                      1 if ok else 0, None if ok else "官方資料未回傳")
+
+
+def test_refresh_self_screen_cache_waits_until_the_days_data_is_in(tmp_path, monkeypatch):
+    """**當天上市與上櫃的行情、三大法人都到齊才算。**
+
+    改成 20:00 前就算之後，這道門檻變成必要：`institutional_3d_map` 取的是「截至當天、
+    **有資料的**最近 3 天」，法人還沒公布時會安靜地拿昨天的窗口冒充今天，投信／外資三日
+    又是木質的籌碼加分——名單會算錯，而且會被記進前瞻訊號、補不回來。
+    融資不在門檻內：約 21:00 才公布，而且只是參考欄、不進篩選。"""
+    from stocks_power_rich import ledger
+    from stocks_power_rich.api import helpers as H
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily, get_ai_cache
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    upsert_market_daily(conn, {"date": "2026-10-01", "taiex": 20000.0})
+    conn.commit()
+    recorded = []
+    monkeypatch.setattr(ledger, "record_self_screen_signals", lambda *a, **k: recorded.append(1))
+    monkeypatch.setattr(H, "_industry_map", lambda c: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1e9}})
+    monkeypatch.setattr(H, "_otc_industry", lambda c: {"8069": {"sector": "光電業", "name": "元太", "shares": 1e9}})
+
+    res = H.refresh_self_screen_cache(conn, day="2026-10-01")          # 什麼都還沒到
+    assert res["skipped"] == "data_not_ready" and len(res["missing"]) == 4
+
+    _mark_inputs_ready(conn, "2026-10-01", skip={"TPEx/institutional"})   # 只差上櫃法人
+    res = H.refresh_self_screen_cache(conn, day="2026-10-01")
+    assert res["skipped"] == "data_not_ready" and res["missing"] == ["TPEx/institutional"]
+    assert get_ai_cache(conn, "selfscreen:v1") is None and recorded == []
+
+    _mark_inputs_ready(conn, "2026-10-01")                             # 反證：到齊就照常做
+    assert H.refresh_self_screen_cache(conn, day="2026-10-01")["cached"] is True
+    assert recorded == [1]
+
+
+def test_refresh_self_screen_cache_remembers_when_the_list_was_first_ready(tmp_path, monkeypatch):
+    """`ready_at`＝這一天的名單**最早**算好的時間；`computed_at`＝這份快取最後寫入的時間。
+
+    21:00 那次會為了補上融資再算一遍，若只記最後寫入時間，畫面會永遠顯示 21:0x，
+    使用者就無從確認「20:00 前有沒有算好」。換到下一天要重新起算，不可沿用。"""
+    from datetime import datetime
+    from stocks_power_rich import ledger
+    from stocks_power_rich.api import helpers as H
+    from stocks_power_rich.db import get_connection, init_db, get_ai_cache
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    monkeypatch.setattr(ledger, "record_self_screen_signals", lambda *a, **k: None)
+    monkeypatch.setattr(H, "_industry_map", lambda c: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1e9}})
+    monkeypatch.setattr(H, "_otc_industry", lambda c: {"8069": {"sector": "光電業", "name": "元太", "shares": 1e9}})
+    for day in ("2026-10-01", "2026-10-02"):
+        _mark_inputs_ready(conn, day)
+
+    monkeypatch.setattr(H, "_now", lambda: datetime(2026, 10, 1, 18, 31))
+    H.refresh_self_screen_cache(conn, day="2026-10-01")
+    monkeypatch.setattr(H, "_now", lambda: datetime(2026, 10, 1, 21, 5))
+    H.refresh_self_screen_cache(conn, day="2026-10-01")
+    cached = get_ai_cache(conn, "selfscreen:v1")
+    assert cached["ready_at"] == "2026-10-01T18:31:00"
+    assert cached["computed_at"] == "2026-10-01T21:05:00"
+
+    monkeypatch.setattr(H, "_now", lambda: datetime(2026, 10, 2, 17, 30))
+    H.refresh_self_screen_cache(conn, day="2026-10-02")
+    assert get_ai_cache(conn, "selfscreen:v1")["ready_at"] == "2026-10-02T17:30:00"
+
+
+def test_early_self_screen_computes_today_before_the_nightly_update(tmp_path, monkeypatch):
+    """平日傍晚提早算今天的自算選股（使用者要求最晚 20:00 更新好）。
+
+    這時 21:00 的每日更新還沒跑，market_daily **沒有今天那一列**，所以日期必須取自真實日曆、
+    並明確傳給前瞻訊號——否則今天的名單會被記在昨天（見 test_ledger 那條）。
+    當天的行情與法人由 stock_flow.update_day 自己去抓；算好之後同一天再叫就直接略過。"""
+    from datetime import datetime
+    from stocks_power_rich import ledger, selfcheck, stock_flow
+    from stocks_power_rich.api import helpers as H
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    upsert_market_daily(conn, {"date": "2026-09-30", "taiex": 20000.0})   # 只有昨天
+    conn.commit()
+    monkeypatch.setattr(H, "_now", lambda: datetime(2026, 10, 1, 17, 30))  # 週四
+    fetched = []
+
+    def fake_update_day(c, D):
+        fetched.append(D.isoformat())
+        _mark_inputs_ready(c, D.isoformat())
+    monkeypatch.setattr(stock_flow, "update_day", fake_update_day)
+    seen = {}
+    monkeypatch.setattr(ledger, "record_self_screen_signals",
+                        lambda *a, **k: seen.update(signal_date=k.get("signal_date")))
+    monkeypatch.setattr(H, "_industry_map", lambda c: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1e9}})
+    monkeypatch.setattr(H, "_otc_industry", lambda c: {"8069": {"sector": "光電業", "name": "元太", "shares": 1e9}})
+
+    res = H.early_self_screen(conn)
+    assert res["cached"] is True and res["date"] == "2026-10-01"
+    assert fetched == ["2026-10-01"]
+    assert seen["signal_date"] == "2026-10-01"                 # 不是 market_daily 的 09-30
+    assert selfcheck.load_precomputed(conn, "2026-10-01") is not None
+
+    again = H.early_self_screen(conn)                           # 18:30 那次：已算好就不再抓
+    assert again["skipped"] == "already_ready" and fetched == ["2026-10-01"]
+
+
+def test_early_self_screen_skips_weekends_and_days_whose_data_is_not_in(tmp_path, monkeypatch):
+    from datetime import datetime
+    from stocks_power_rich import stock_flow
+    from stocks_power_rich.api import helpers as H
+    from stocks_power_rich.db import get_connection, init_db, get_ai_cache
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    fetched = []
+
+    def fake_update_day(c, D):
+        fetched.append(1)
+        _mark_inputs_ready(c, D.isoformat(), skip={"TWSE/institutional"})
+    monkeypatch.setattr(stock_flow, "update_day", fake_update_day)
+
+    monkeypatch.setattr(H, "_now", lambda: datetime(2026, 10, 3, 17, 30))   # 週六
+    assert H.early_self_screen(conn)["skipped"] == "weekend" and fetched == []
+
+    monkeypatch.setattr(H, "_now", lambda: datetime(2026, 10, 2, 17, 30))   # 週五，但上市法人還沒到
+    res = H.early_self_screen(conn)
+    assert res["skipped"] == "data_not_ready" and res["missing"] == ["TWSE/institutional"]
+    assert get_ai_cache(conn, "selfscreen:v1") is None
+
+
+def test_early_self_screen_job_is_scheduled_on_weekdays_and_finishes_before_20(tmp_path, monkeypatch):
+    """使用者要求自算選股最晚 20:00 更新好：平日 17:30／18:30／19:30 各試一次，
+    最後一次在 20:00 之前。**不綁 LINE 設定**——自算選股與推播無關。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+    import stocks_power_rich.scheduler as sched_mod
+    captured = {}
+
+    class _Sched:
+        def add_job(self, func, trigger=None, **kw):
+            captured[kw.get("id")] = kw
+
+        def shutdown(self, wait=False):
+            pass
+    monkeypatch.setattr(sched_mod, "start_scheduler", lambda job, t: _Sched())
+    create_app(enable_scheduler=True)
+
+    kw = captured["self_screen_early"]
+    assert kw["day_of_week"] == "mon-fri"
+    hours = [int(h) for h in str(kw["hour"]).split(",")]
+    assert hours == [17, 18, 19] and int(kw["minute"]) == 30   # 最後一次 19:30，留 30 分鐘給計算
+
+
 def test_refresh_self_screen_cache_writes_the_cache_and_reports_what_it_did(tmp_path, monkeypatch):
     """排程那段被 `except: pass` 包著，壞掉不會有任何聲音——所以它必須是**可測、可單獨
     跑一次**的具名函式，而不是寫在 main.py 閉包裡（本專案既定分工：排程 Job 的邏輯先放
-    api/helpers）。回傳值就是「這次到底做了什麼」，呼叫端不必去猜。"""
+    api/helpers）。回傳值就是「這次到底做了什麼」，呼叫端不必去猜。
+
+    **上櫃這邊原本給空 dict、還斷言照常寫快取——那正是後來被抓出來的漏洞**（見
+    test_refresh_self_screen_cache_refuses_half_a_market），所以刻意改成兩個市場都有資料。"""
     from stocks_power_rich.api import helpers as H
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily, get_ai_cache
 
     monkeypatch.setattr(H, "_industry_map",
                         lambda c: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1e9}})
-    monkeypatch.setattr(H, "_otc_industry", lambda c: {})
+    monkeypatch.setattr(H, "_otc_industry",
+                        lambda c: {"8069": {"sector": "光電業", "name": "元太", "shares": 1e9}})
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
     upsert_market_daily(conn, {"date": "2026-09-07", "taiex": 20000.0})
     conn.commit()
+    _mark_inputs_ready(conn, "2026-09-07")
 
     res = H.refresh_self_screen_cache(conn)
     assert res["cached"] is True and res["date"] == "2026-09-07"
-    assert res["universe"] == 1 and res["rows"] == 1
+    assert res["universe"] == 2 and res["rows"] == 2
     cached = get_ai_cache(conn, "selfscreen:v1")
     assert cached and cached["date"] == "2026-09-07"
 
@@ -3105,7 +3280,50 @@ def test_refresh_self_screen_cache_says_why_it_skipped(tmp_path, monkeypatch):
     assert H.refresh_self_screen_cache(conn)["skipped"] == "no_market_date"
     upsert_market_daily(conn, {"date": "2026-09-07", "taiex": 20000.0})
     conn.commit()
+    _mark_inputs_ready(conn, "2026-09-07")
     assert H.refresh_self_screen_cache(conn)["skipped"] == "empty_universe"
+
+
+def test_refresh_self_screen_cache_refuses_half_a_market(tmp_path, monkeypatch):
+    """**只抓到一個市場時整天跳過，不算、不存快取、不記前瞻訊號。**
+
+    原本只擋「兩個市場都空」。上櫃公司名單是月快取，換月後第一次呼叫才去櫃買抓——
+    而櫃買 2026-09-12／13 兩晚 21:00 正好傳到一半被切斷。那天會變成「只有上市」照常計算，
+    快取安靜地少掉整個上櫃，**前瞻追蹤那天的訊號也少掉整個上櫃**。
+
+    後者補不回來：`record_self_screen_signals` 每個訊號日只寫一次，寫過就不再寫，
+    偏差的樣本會永遠留在使用者正在等的勝率裡。**一天空缺只是少一天樣本，
+    一天偏差會讓結論失真**——所以寧可跳過。
+    """
+    from stocks_power_rich import ledger
+    from stocks_power_rich.api import helpers as H
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily, get_ai_cache
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    upsert_market_daily(conn, {"date": "2026-10-01", "taiex": 20000.0})
+    conn.commit()
+    _mark_inputs_ready(conn, "2026-10-01")
+    recorded = []
+    monkeypatch.setattr(ledger, "record_self_screen_signals", lambda *a, **k: recorded.append(1))
+
+    tse = {"2330": {"sector": "半導體", "name": "台積電", "shares": 1e9}}
+    otc = {"8069": {"sector": "光電業", "name": "元太", "shares": 1e9}}
+    for listed, otc_side, missing in ((tse, {}, "otc"), ({}, otc, "listed")):
+        monkeypatch.setattr(H, "_industry_map", lambda c, v=listed: v)
+        monkeypatch.setattr(H, "_otc_industry", lambda c, v=otc_side: v)
+        res = H.refresh_self_screen_cache(conn)
+        assert res["cached"] is False and res["skipped"] == "partial_universe"
+        assert res[missing] == 0, "要講出是缺哪一邊"
+        assert get_ai_cache(conn, "selfscreen:v1") is None
+        assert recorded == []
+
+    # 反證：兩邊都有資料就照常做（證明上面不是恆真地什麼都不做）
+    monkeypatch.setattr(H, "_industry_map", lambda c: tse)
+    monkeypatch.setattr(H, "_otc_industry", lambda c: otc)
+    res = H.refresh_self_screen_cache(conn)
+    assert res["cached"] is True and res["listed"] == 1 and res["otc"] == 1
+    assert recorded == [1]
 
 
 def test_snapshots_endpoint_reports_how_far_behind_the_csv_is(tmp_path, monkeypatch):

@@ -1045,6 +1045,62 @@ self_screen 三格都會是「尚未到期」，那是**正確**顯示不是故�
 - 順帶量到：`test_alert_deduplication_logic` 單條就要 **~143 秒**（改動前量的，既有問題），
   因為它跑整支 `scheduled_job`、裡面會真的連外。
 
+### 自算選股只抓到一個市場時整天跳過（2026-09）
+
+`refresh_self_screen_cache` 原本只擋「上市、上櫃**兩邊都空**」。只要一邊抓失敗，它就拿半個
+市場照常算、存快取、**記前瞻訊號**，而且沒有任何告警——同 `dist:`（`has_otc`）與
+`turnover:` 分市場快取那兩次的「部分結果被當成成功」。
+
+**會發生的時機很具體**：上櫃公司名單 `_otc_industry` 是月快取，換月後第一次呼叫才去櫃買抓，
+而櫃買 2026-09-12／13 兩晚 21:00 正好傳到一半被切斷（見上一節）。下一次換月 10-01 落在
+使用者正在等的前瞻驗證期間中間。
+
+**最嚴重的是補不回來**：`record_self_screen_signals` 每個訊號日只寫一次、寫過就不再寫，
+「只有上市」的那天會永遠留在前瞻勝率裡。**一天空缺只是少一天樣本，一天偏差會讓結論失真**，
+所以缺一邊就整天跳過，回 `skipped: "partial_universe"` 並帶 `listed`／`otc` 檔數講出是缺哪邊。
+
+- 既有測試 `test_refresh_self_screen_cache_writes_the_cache_and_reports_what_it_did` 原本
+  **讓上櫃給空 dict 還斷言照常寫快取**——鎖的正是這個漏洞，已刻意改成兩邊都有資料。
+- 反證：拿掉這道判斷 → 新測試紅。
+- **只修了排程這條**。`/api/picks/self-screen` 在快取沒中時現算，同樣可能只拿到半個市場，
+  但那是請求路徑、不寫快取也不記帳，覆蓋率列的候選池檔數看得到，這次不動。
+
+### 自算選股提早到 20:00 前算好，頁面預設日期改成「算好的那一天」（ui50，2026-09）
+
+使用者兩個要求：**自算選股最晚 20:00 更新好**；**頁面預設日期用市場最新交易日（算好的那天），
+不跟 CSV 走**。原本自算選股是 21:00 每日排程的最後一步，實際要 21:0x 之後才有。
+
+**資料最早幾點到齊，有實測依據**：本機覆蓋表 2026-08-26 **19:27** 那筆，上市與上櫃的行情、
+三大法人都已 `complete`，只有融資 `failed`（約 21:00 才公布）。T86 約 16:00 後公布（見上方
+法人排行那條）。**櫃買三大法人的確切公布時間沒有量到**，所以不寫死時間、改成「到齊才算」。
+
+- **`early_self_screen`**（`api/helpers.py`）＋ 排程 `self_screen_early`：平日 **17:30／18:30／
+  19:30** 各試一次，最後一次在 20:00 之前。**不綁 LINE 設定**。流程：週末略過 → 今天已算好就略過
+  → `stock_flow.update_day(今天)` 自己抓行情／法人／融資（6 個請求，比整支 `run_update` 輕）
+  → `refresh_self_screen_cache(day=今天)`。三次都沒到齊，21:00 那次仍照常算。
+- **資料到齊門檻 `self_screen_missing_inputs`**：當天上市／上櫃 × 行情／三大法人四項都要
+  `stock_source_coverage` 為 `complete`，否則回 `skipped: "data_not_ready"` 並列出缺哪項。
+  **提早算的前提就是這道門檻**：`institutional_3d_map` 取「截至當天、**有資料的**最近 3 天」，
+  法人還沒公布時會安靜地拿昨天的窗口冒充今天，而投信／外資三日是木質加分——名單算錯還會被
+  記進前瞻訊號、補不回來。**21:00 那條也吃這道門檻**（順帶補掉「櫃買法人抓失敗時照算」的舊洞）。
+  融資不在門檻內：只是參考欄、不進篩選。反證：拿掉門檻 → 2 條測試紅。
+- **訊號日必須明講**（`record_self_screen_signals(signal_date=)`）：17:30 時 21:00 的每日更新
+  還沒跑，**`market_daily` 沒有今天那一列**。照舊取最新列會把今天的名單記在昨天、進場價用昨天
+  收盤——拿未來資訊回填過去，前瞻報酬被灌水且補不回來。反證：不傳 signal_date → 測試紅。
+- **`margin_3d_map(exact=True)`**：窗口最新一天必須正好是當天，否則回空。不加的話 19:30 算的那份
+  會把昨天結尾的融資3日顯示在今天那一列；21:00 重算時才補上真正的值。
+- **`ready_at` 與 `computed_at` 分開記**：`ready_at`＝這天名單**最早**算好的時間（同一天重算時沿用，
+  換日重起），`computed_at`＝快取最後寫入時間。21:00 會為了補融資再算一遍，只記最後寫入的話畫面
+  永遠顯示 21:0x，使用者無從確認有沒有趕在 20:00 前。頁面覆蓋率列顯示「排程預算・MM-DD HH:MM 算好」。
+- **頁面預設日期＝快取裡算好的那一天**，沒有快取才退回 `_latest_date`。**不直接用 market_daily
+  最新日**：它當天早上就有列，白天打開會變成「今天、資料沒到齊、現算」。`snap_dates` 仍保留給選單，
+  拿 CSV 那幾天和籌碼選股比對。既有測試（預設跟 CSV 走）已刻意改寫。
+- **真實端點端到端驗過**（複製一份本機 DB 跑，假裝是 09-11 18:30）：`update_day` 寫進覆蓋表的
+  六項都是 `complete`、門檻放行、快取 `ready_at=2026-09-11T18:30:00`、第二次呼叫 `already_ready`。
+  本機 3.4 秒不具代表性（本機缺季報與足夠日線，貴的那半沒跑滿），production 的耗時要部署後才知道。
+- **已知副作用**：國定假日的平日，`update_day(今天)` 會把當天覆蓋表標成 `failed`。
+  `stock_flow.backfill` 的「兩輪確認才標假日」會把它收斂成 `holiday`，不會卡住，只是多幾次重試。
+
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.
