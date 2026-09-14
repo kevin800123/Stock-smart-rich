@@ -1101,6 +1101,122 @@ self_screen 三格都會是「尚未到期」，那是**正確**顯示不是故�
 - **已知副作用**：國定假日的平日，`update_day(今天)` 會把當天覆蓋表標成 `failed`。
   `stock_flow.backfill` 的「兩輪確認才標假日」會把它收斂成 `holiday`，不會卡住，只是多幾次重試。
 
+### 個股 K 線改 Lightweight Charts（2026-09）
+
+使用者要個股頁的 K 線圖有 TradingView 的手感（十字線、滾輪縮放、拖曳平移），改用
+TradingView Lightweight Charts（Apache 2.0）。**只換這一張圖**：杯柄圖、大盤×籌碼對照
+圖、熱力圖、儀表板、分布圖……全部維持 ECharts 不動，兩套函式庫並存於同一個檔案。
+
+- **自架 `web/vendor/lightweight-charts.standalone.production.js`**（npm 抓
+  `lightweight-charts@5.2.1`，standalone production 版，UMD/IIFE）。CSP 是
+  `script-src 'self'`，CDN 一律載不進來，同 `echarts.min.js` 既有做法。檔頭有註解記版本號
+  與來源網址。選 v5 是因為量能窗格要用它的 **panes API**（`chart.addSeries(Type, opts,
+  paneIndex)`＋`chart.panes()[i].setStretchFactor()`）。
+- **資料格式轉換只在三支純函式做**（`lwCandleData`／`lwVolumeData`／`toLwLineData`）：
+  ECharts 的 `candles` 是 `[open, close, low, high]`，LWC 要 `{time, open, high, low,
+  close}`；`time` 直接用 `dates[i]` 的 `"YYYY-MM-DD"` 字串（LWC 的 BusinessDay 字串格式，
+  日/週/月三種週期都適用，不必額外轉換）。均線資料要濾掉 warm-up 期的 `null`——LWC 的線圖
+  系列不吃 `{value:null}`，缺點直接不放進陣列即可（每個 series 的資料本來就各自獨立，不要求
+  對齊每個時間點），效果同 ECharts 遇 null 斷線。
+- **紅漲綠跌讀既有 `C.up`/`C.down`（來自 `--up`/`--down` CSS token），不寫死色碼**：
+  `CandlestickSeries` 的 `upColor`/`downColor`/`borderUpColor`/`borderDownColor`/
+  `wickUpColor`/`wickDownColor` 六個欄位都要設，LWC 預設是綠漲紅跌（西方慣例），漏設任一個
+  欄位那個部位就會是預設色。**驗證用 `series.options()` 讀回實際套用的顏色比對 CSS 變數**，
+  不是眼睛看——反證：暫時把兩色互換，畫面上漲跌顏色確實整批反過來，證明檢查不是恆真。
+- **字型**：`layout.fontFamily` 讀既有 `HM_FONT` 常數，與 body 字型堆疊同步（理由同熱力圖
+  那條 HM_FONT 規矩）。
+- **授權要求的 attribution 標誌不可關**（`layout.attributionLogo: true`）。實測這個標誌只是
+  DOM 裡一個指向 `tradingview.com` 的 `<a>` 連結（`href` 屬性），**不會發出任何背景網路請求**
+  ——`grep` 整包 bundle 只找到一處 `tradingview.com` 字串，接在 `.jv.title=` 賦值前，是純
+  DOM 屬性寫入；瀏覽器實測 `read_network_requests` 過濾 `tradingview` 也是零筆。
+- **滾輪縮放／拖曳平移／十字線／右側價格軸／底部時間軸全部是 LWC 內建行為**，不必像
+  ECharts 那樣自己接 `dataZoom`——這正是換函式庫的目的。三者都用真的滑鼠事件
+  （`computer` 工具的 scroll／left_click_drag）驗證過會改變 `timeScale().getVisibleRange()`
+  的回傳值，不是只看 API 文件就假設能動。
+- **MA 圖例是手動疊加，不是 LWC 內建元件**：LWC 沒有圖例元件，週期與顏色是固定的
+  （`MA_DEFS`），JS 建立圖表時只畫一次靜態 `.lw-legend`。K線本身不列圖例（逐根紅/綠沒有單一
+  色，看圖本身就分得出）。
+- **十字線 tooltip 沿用既有 `.ec-tip-*` 樣式**（那組 class 本來就是給圖表用的通用命名、非
+  ECharts 專屬，換函式庫不必新增 CSS）。用 `chart.subscribeCrosshairMove` 拿
+  `param.seriesData.get(series)`（v5 API：candlestick 系列給 `{open,high,low,close}`、
+  histogram 給 `{value}`、line 給 `{value}`）組字串。**`param.time` 在字串輸入下會被轉成
+  `{year,month,day}` 物件**，顯示前要用 `lwTimeLabel()` 轉回可讀字串，不能直接塞進畫面。
+  驗證方式：用 `timeScale().timeToCoordinate()`／`series.priceToCoordinate()` 反推某根真實
+  K 棒的螢幕座標、觸發十字線，把 tooltip 顯示的每一個數字（OHLC／量／四條MA）與
+  `lastStockData` 原始資料逐一比對，**九個欄位全部精確吻合**——這比單純看畫面「有沒有東西」
+  嚴謹得多。
+- **最後一根收盤價的價格標籤**：LWC 的系列預設就有 `priceLineVisible`（最後值的水平虛線＋
+  價格軸標籤），不必自己畫。只需在資料灌入後依最後一根方向覆寫 `priceLineColor`
+  （`applyOptions({priceLineColor: 漲用C.up/跌用C.down})`），同既有規矩。
+- **艾略特波浪改用 `createSeriesMarkers`（v5 的 markers primitive）＋ `position:"aboveBar"`**，
+  不是 ECharts `markPoint` 那種「任意座標＋置中文字圓圈」。`aboveBar` 會自動貼在該根 K 棒最高
+  點之上，視覺意圖等價（都是「標在這根棒子上方」），但**不是像素級同款**——LWC 的圓圈＋文字
+  版面由函式庫自己排版，不會做到「數字置中在填色圓圈裡」那種 ECharts 特有的效果，這是換函式
+  庫必然的視覺差異，不是 bug。配色規則不變：標籤含 ABC 字母→藍（`C.info`）、純數字→橘
+  （`C.accent`）。波浪開關與轉折%滑桿改呼叫更輕量的 `renderStockWaves()`，不必重灌整條 K 線
+  與均線（原 ECharts 版本每次都整包 `setOption`，效能上這算順手的改善）。
+- **初始可視範圍用 `setVisibleRange`（實際日期字串），不用 `setVisibleLogicalRange`
+  （柱狀邏輯索引）**：兩者實測行為差很多——**邏輯索引版本會被 LWC 自己的最小柱寬限制悄悄
+  改動起訖值**，同一份 243 根的資料，程式要求顯示索引 `[146,242]`，實際卻拿到
+  `[128.3,246]`，而且容器每次 resize 還會再漂移一次（同一份程式碼、同樣的操作，兩次測到的
+  數字都不一樣）。改用日期字串後穩定得多（只有極少數的最小柱寬微調，不會整段偏移），語意也
+  更直白——「顯示最近這一段日期」而非「顯示這幾根的索引」。資料筆數 >120 才只顯示最近
+  ~40%，同 ECharts 版 `dataZoom` 的 `startPct=60` 用意；否則 `fitContent()` 顯示全部。
+- **查無資料時整個丟掉圖表，不畫空圖**：LWC 沒有 ECharts `.clear()` 那種「清空但保留實例」
+  的動作，改成 `disposeStockChart()` 直接 `chart.remove()` 並把系列參照全部歸零，下次查詢
+  再重建。**`chart.remove()` 只清 LWC 自己建立的 canvas，不會動我們手動塞進容器的圖例／
+  tooltip 覆蓋層**——這是實測踩到的真 bug：反覆「查無資料的代號 → 有資料的代號」幾輪後，
+  容器裡疊出好幾份重複的 `.lw-legend`/`.lw-tooltip`（DOM 節點洩漏＋視覺上圖例重疊變粗）。
+  修法是 `disposeStockChart()` 額外清掉這兩個 class 的殘留節點；修完反覆三輪驗證，
+  容器裡永遠只有一份圖例、一份 tooltip。
+- **`autoSize:true` 沒有想像中可靠：切走再切回個股頁是真的競態，不是虛驚一場。**
+  這正是 CLAUDE.md 開頭反覆出現的「換函式庫仍要親自驗一次，不要假設沒事」——這次真的
+  踩到了。`.view` 切換是靠祖先元素 `display:none`／可見的 class 切換，ResizeObserver
+  理論上該接住「祖先從隱藏變回可見」這個轉場，但**同一份程式碼、同樣的操作，實測結果不
+  穩定**：反覆切走再切回，有時 200ms 內就補正尺寸，有時卡了 1 秒以上才自己修好，用逐格
+  200ms 取樣量過一次「6 個 canvas 卡在 0 尺寸，持續超過 400ms」。使用者切頁那一瞬間可能就
+  看到一張尺寸不對、全空的圖。**視窗縮放與側欄收合這兩種連續變化的情境，ResizeObserver
+  實測穩定**，問題只出在「完全隱藏 → 突然出現」這種 0→N 的跳變。修法是在 `showView`
+  切回個股頁時補一次確定性的手動 resize，不賭 ResizeObserver 的時機：
+  `classList.toggle` 是同步的，緊接著讀 `clientWidth`/`clientHeight` 會強制瀏覽器同步
+  reflow，讀到的必然是切換後的最終尺寸（同 ECharts 版本「解除 hidden 後立刻 init」能用的
+  原理）。`autoSize:true` 開著時手動呼叫 `resize()` 會被忽略，所以短暫關閉
+  （`applyOptions({autoSize:false})`）、呼叫 `resize(el.clientWidth, el.clientHeight)`、
+  再打開，讓後續的視窗縮放／側欄收合繼續交給 ResizeObserver。修完用 6 輪「切走→切回→
+  立即檢查」重測，每一輪、每一個 canvas 都在切回的當下就是正確尺寸，不再需要等待。
+- **複查時又抓到三個（2026-09-15），第一個最嚴重、而且第一輪驗證沒抓到**：
+  - **圖表高度無限長大**。`.chart-big` 是 `.view`（flex column、`min-height:100%`）裡的
+    `flex:1` 項目；個股頁的基本面／三大法人／集保區塊把內容撐過一個螢幕之後，`.view` 改由
+    內容決定高度，而 `autoSize` 把畫布設成容器高度 → 畫布撐高 `.view` → `flex:1` 分到更多
+    → ResizeObserver 再放大畫布。實測每 400ms 長 ~35px、停不下來（4,295→4,469px）。
+    第一輪量到 382px 是因為當時頁面內容還沒超過一個螢幕，迴圈根本沒啟動——**又一個「驗證
+    時的資料狀態剛好沒走到那條路徑」**。ECharts 版本沒事只是因為 `echarts.init` 不監聽尺寸。
+    修法 `#stock-chart { contain: size; }`：容器尺寸不再看自己的內容，實測穩定 378px（桌機、
+    375px 手機皆同）；拿掉立刻恢復長大（反證）。只加在 `#stock-chart`，杯柄圖不受影響。
+  - **波浪標記圖層一路累積**。`createSeriesMarkers` 每呼叫一次就在 series 掛一個新的
+    primitive，**丟掉舊參照不會卸下它**（實測：關掉波浪後對舊參照 `setMarkers`，標記仍畫在
+    圖上）。原本每次開關、每拖一格轉折%滑桿都新建一個。改成只建一次、之後 `setMarkers`
+    換內容（空陣列＝關掉），實測開關＋拖滑桿五次後仍是同一個 API 物件。
+  - **tooltip 溢出圖表下緣**。tooltip 約 250px、圖約 380px，只寫 `top = y - 10` 時游標在
+    下半部就會蓋到下面的三大法人圖（最多超出 ~230px）。改成夾在容器內。順帶讓十字線停在
+    同一根 K 棒時不重組 innerHTML（快取鍵連 `lastStockData` 物件本身一起比，否則日K 與
+    週K 同日期標籤會顯示舊數字）。
+- **已知、刻意不修的既有缺陷（非本次引入）**：切到「月」週期時，`stock-note` 的缺口偵測
+  文字（`gap > 14 天`才警示）會對月線資料整批誤報——相鄰兩根月K本來就自然相差 28~31 天，
+  遠超過 14 天的門檻，所以**每一次查月線都會顯示一個假警示**（實測 2330 月線顯示
+  「⚠ 資料有缺口 2021-10-01 → 2021-11-01（31 天）」，那其實是正常的月與月之間）。這段
+  note 邏輯是原封不動照抄過來的（任務明確要求「個股 note 的邏輯不變」），問題在 ECharts
+  版本裡就存在、與這次換函式庫無關，**這裡刻意不修**，留給使用者決定要不要另開任務處理
+  （月線的缺口判定門檻需要依週期調整，日/週/月不能共用同一個 14 天常數）。
+- **驗證清單**（瀏覽器實測，非只讀程式碼）：2330 日/週/月三種週期切換皆正確；波浪開關＋
+  拖滑桿到 12% 後 marker 數量隨轉折度變化（5% 時 0 個、12% 時 5 個，畫面上可見橘色圓圈
+  貼在對應 K 棒上方）；查無資料代號顯示正確文字且不留殘影；容器 375px 寬頁面級零水平溢出；
+  console 全程無錯誤／CSP 警告；`read_network_requests` 過濾 `tradingview` 為零筆。
+  **沒有驗到的**：真正的觸控（pinch-zoom／觸控拖曳）——瀏覽器自動化工具的滑鼠事件無法
+  模擬多點觸控，只驗了滑鼠版的滾輪縮放與拖曳平移；LWC 內建觸控支援是成熟功能，但這裡沒有
+  獨立驗證。雲端 `stock_ohlc` 後備路徑（本機 yfinance 直接可用，任務本身也指明「資料形狀
+  相同、不必在意」，故未特別測）。
+
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.

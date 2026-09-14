@@ -951,7 +951,24 @@ body[data-public] .status-bar { display: none; }
 .se-chip span { color: var(--muted); }
 .wave-pct input[type=range] { width: 90px; accent-color: var(--accent); }
 .chart { width: 100%; height: 340px; background: linear-gradient(180deg, rgba(24, 38, 58, 0.55), rgba(11, 18, 29, 0.35)); border: 1px solid rgba(58, 82, 112, 0.62); border-radius: var(--r); }
-.chart-big { width: 100%; flex: 1; min-height: 380px; background: linear-gradient(180deg, rgba(24, 38, 58, 0.55), rgba(11, 18, 29, 0.35)); border: 1px solid rgba(58, 82, 112, 0.62); border-radius: var(--r); }
+/* position:relative 讓 #stock-chart 裡的 .lw-legend/.lw-tooltip（Lightweight Charts
+   個股 K 線的疊加層，JS 動態插入）能絕對定位在圖表畫布之上；#cup-chart 仍是 ECharts，
+   這個屬性對它無影響（ECharts 本來就自己管內部圖層定位）。 */
+.chart-big { width: 100%; flex: 1; min-height: 380px; position: relative; background: linear-gradient(180deg, rgba(24, 38, 58, 0.55), rgba(11, 18, 29, 0.35)); border: 1px solid rgba(58, 82, 112, 0.62); border-radius: var(--r); }
+/* **#stock-chart 必須 contain:size，否則高度會無限長大。** .chart-big 是 .view（flex column、
+   min-height:100%）裡的 flex:1 項目；個股頁內容超過一個螢幕時 .view 改由內容撐高，而 LWC
+   的 autoSize 會把畫布設成容器高度 → 畫布又撐高 .view → flex:1 分到更多 → ResizeObserver
+   再放大畫布，實測每 400ms 長 ~35px、停不下來（4,295→4,469px）。ECharts 版本沒有這個迴圈
+   只是因為 echarts.init 不監聽尺寸變化。contain:size 讓容器的尺寸不看自己的內容，實測穩定在
+   378px；拿掉立刻恢復長大（反證）。只加在 #stock-chart，#cup-chart 仍是 ECharts 不受影響。 */
+#stock-chart { contain: size; }
+/* 個股 K 線（Lightweight Charts）的 MA 圖例：函式庫沒有內建圖例元件，週期與顏色是
+   固定的（MA_DEFS），JS 只畫一次靜態列。pointer-events:none 讓它不擋十字線游標。 */
+.lw-legend { position: absolute; top: 6px; left: 12px; z-index: 2; display: flex; gap: 10px; font-size: var(--fs-xs); font-weight: 700; pointer-events: none; }
+/* 十字線 tooltip：沿用既有 .ec-tip-* 樣式（本來就是給圖表用的通用 class，非 ECharts
+   專屬命名），只需定位容器本身。 */
+/* .hidden 用全站既有的 display:none!important 工具類切換顯示，這裡不必再定義一次。 */
+.lw-tooltip { position: absolute; z-index: 3; pointer-events: none; background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; padding: 10px 12px; box-shadow: 0 12px 28px rgba(0,0,0,.38); }
 /* ECharts 的 tooltip 由 JS 注入 body；用 grid 對齊「欄位／數字／單位」，比一整串
    全形空白更穩定，縮放字體時也不會跑欄。 */
 .ec-tip-date { color: var(--label); font-weight: 700; padding-bottom: 5px; margin-bottom: 6px; border-bottom: 1px solid var(--border); }

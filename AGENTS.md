@@ -203,6 +203,40 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - **告警要印 `source`**：月營收逐市場判定，只印 name 永遠看到「revenue」分不出上市/上櫃——`source` 一直都記著只是沒印。
 - 兩條鎖舊契約的測試（回空 dict）**刻意刪改**；成功路徑的假 response 補 `raise_for_status`（替身跟著真實介面走）。
 
+### 個股 K 線改 Lightweight Charts（2026-09）
+
+**只換個股頁這一張圖**，其餘全部維持 ECharts。自架
+`web/vendor/lightweight-charts.standalone.production.js`（npm `lightweight-charts@5.2.1`
+standalone production 版，理由同 echarts.min.js 的 CSP 自架規矩）。資料格式轉換只在三支
+純函式做（`lwCandleData`/`lwVolumeData`/`toLwLineData`），`time` 直接用 `"YYYY-MM-DD"`
+字串。紅漲綠跌讀 `C.up`/`C.down`（LWC 預設綠漲紅跌，六個色欄位都要設，缺一個那部位就是
+預設色），字型讀既有 `HM_FONT`。**授權要求的 attribution 標誌不可關**（純 DOM `<a>`
+連結，實測不發網路請求）。滾輪縮放／拖曳平移／十字線都是 LWC 內建，不必自己接
+`dataZoom`。艾略特波浪改 `createSeriesMarkers`＋`position:"aboveBar"`（視覺等價、非
+像素級同款）。初始可視範圍用 `setVisibleRange`（日期字串）而非
+`setVisibleLogicalRange`（邏輯索引）——後者實測會被 LWC 自己的最小柱寬限制悄悄改動起訖
+值，且每次 resize 還會再漂移。查無資料時 `chart.remove()` 整個丟掉，不畫空圖。
+
+**兩個實測才抓到的 bug**：(1) `chart.remove()` 不會清掉我們手動塞進容器的圖例／tooltip
+覆蓋層，反覆「查無資料 → 有資料」會疊出重複 DOM——`disposeStockChart()` 補清這兩個
+class。(2) `autoSize:true` 對「切走再切回個股頁」這種祖先 display:none→可見的轉場**是
+真的競態**（同一份程式碼、同樣操作，實測有時 200ms 內修好、有時卡 1 秒以上），視窗縮放
+與側欄收合這兩種連續變化倒是穩定——修法是 `showView` 切回時補一次確定性手動 resize
+（短暫關 autoSize、用當下 `clientWidth/Height` 呼叫 `resize()`、再開回 autoSize），
+6 輪反覆測試後每輪切回當下就是正確尺寸。**這正是「換函式庫仍要親自驗一次，不要假設
+沒事」這次真的踩到的例子**，兩者都不是虛驚一場。
+
+**複查再抓到三個**：(3) **圖表高度無限長大**——`.chart-big` 是 `.view`（flex column、
+min-height:100%）裡的 `flex:1`，頁面內容超過一個螢幕後，autoSize 的畫布撐高 `.view`、
+flex 再分給容器更多高度，形成迴圈（實測每 400ms 長 ~35px）。第一輪驗證時內容沒超過螢幕、
+迴圈沒啟動所以沒抓到。修法 `#stock-chart { contain: size; }`，實測穩定 378px，拿掉即復發。
+(4) `createSeriesMarkers` 每呼叫一次就多掛一個 primitive，丟掉參照不會卸下——改成只建一次、
+之後 `setMarkers`。(5) tooltip 垂直方向要夾在容器內，否則游標在下半部時蓋到下方圖表。
+
+**已知不修**：切到「月」週期時 `stock-note` 的缺口偵測（>14 天警示）對月線會整批誤報
+——相鄰月K本來就自然差 28~31 天。這是照抄既有邏輯（任務明講「note 邏輯不變」）帶過來的
+既有缺陷，與這次換函式庫無關，刻意不動。
+
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.

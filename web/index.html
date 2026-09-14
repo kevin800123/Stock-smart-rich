@@ -4,8 +4,11 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260817-ui50" />
+  <link rel="stylesheet" href="styles.css?v=20260817-ui51" />
   <script src="/vendor/echarts.min.js"></script>
+  <!-- 只有個股 K 線圖（#stock-chart）用這套，其餘圖表都還是上面的 echarts.min.js。
+       見 CLAUDE.md「個股 K 線改 Lightweight Charts」那節。 -->
+  <script src="/vendor/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
   <div class="app">
@@ -695,6 +698,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260817-ui50"></script>
+  <script src="app.js?v=20260817-ui51"></script>
 </body>
 </html>
