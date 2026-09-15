@@ -3443,6 +3443,16 @@ $("stock-empty").addEventListener("click", (e) => {
   if (b) { $("stock-input").value = b.dataset.code; loadStock(b.dataset.code, b.dataset.name); }
 });
 
+// 個股 note 的「資料有缺口」門檻（日曆天），**依 K 棒週期分開**。原本寫死 14 天是照日K 訂的，
+// 月K 相鄰兩根本來就差 28~31 天、週K 7 天起跳，於是每查一次月線都亮一個假警示——永遠亮著的
+// 警示會被習慣性忽略，真缺口出現時也沒人看。門檻＝「正常最大間隔」再多容一點：
+//   日K：週末 3 天、農曆年連假可到 ~10 天 → 14
+//   週K：正常 7 天，農曆年整週休市會跳一週 → 14 天仍正常 → 21（少一整週以上才叫）
+//   月K：正常 28~31 天 → 45（少掉一整個月會是 59~62 天，抓得到）
+// 時K 沒有官方來源、盤中與隔日間隔都遠小於 14 天，沿用日K 門檻。
+const KLINE_GAP_DAYS = { "1d": 14, "1wk": 21, "1mo": 45 };
+function klineGapDays(interval) { return KLINE_GAP_DAYS[interval] || 14; }
+
 async function loadStock(code, name) {
   code = (code || "").trim().toUpperCase();
   if (!code) return;
@@ -3481,8 +3491,7 @@ async function loadStock(code, name) {
           const g = (new Date(ds[i]) - new Date(ds[i - 1])) / 86400000;
           if (g > gap) { gap = g; at = [ds[i - 1], ds[i]]; }
         }
-        // >14 天才算缺口：週末是 3 天、農曆年連假可到 ~10 天，都屬正常。
-        if (gap > 14) t += `　⚠ 資料有缺口 ${at[0]} → ${at[1]}（${Math.round(gap)} 天），請跑 /api/ohlc/backfill 補齊`;
+        if (gap > klineGapDays(stockInterval)) t += `　⚠ 資料有缺口 ${at[0]} → ${at[1]}（${Math.round(gap)} 天），請在本機跑 scripts/sync_ohlc.bat 補齊`;
       }
       $("stock-note").textContent = t;
     }

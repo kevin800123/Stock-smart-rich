@@ -53,7 +53,7 @@ View-switching SPA + ECharts (local `web/vendor/echarts.min.js`, no CDN — CSP 
 
 **兩張 K 線圖走同一套系統（2026-09）**：個股圖與杯柄圖都是「價格 59%／量能 13%」兩窗格，**日期標籤只出現在最底部那個窗格**（價格窗格的日期會與量能 y 軸刻度撞在一起，實測「2,800」與日期同一行）。量能單位一律**張**。杯柄圖的預設視窗由 `left_date` 的 index 推算（往前留 12% 前導、夾在 0~55%），不可寫死百分比——左緣落在畫面外就等於這張圖的唯一任務失效。左右緣是小圓錨點不是圖釘；**右緣點與壓力線起點同座標，兩個標籤必須往相反方向推開**（窄畫面下壓力線變短、中點標籤會貼上來，桌機看不出來）。`drawCupChart` 的 `setOption` 後**必須 `resize()`**（進頁才畫，正好踩 echarts 凍尺寸）。
 
-**個股 note 要說出「資料到哪一天、有沒有洞」**：category 軸按索引排列不按日期，缺口兩端會被畫成連續的，同時產生「日期沒更新」與「價格斷崖」兩個假象；>14 天才算缺口（週末與農曆年連假屬正常）。
+**個股 note 要說出「資料到哪一天、有沒有洞」**：category 軸按索引排列不按日期，缺口兩端會被畫成連續的，同時產生「日期沒更新」與「價格斷崖」兩個假象；門檻依週期分開（`KLINE_GAP_DAYS`：日 14／週 21／月 45 天）。
 
 **Layout quirk**: `.view` is `display: flex; flex-direction: column;` so content-heavy pages (e.g., trading journal with 未平倉+已平倉 tables) can be compressed by flex-shrink. **Solution**: `.table-wrap` has `flex-shrink: 0` by default; `.table-wrap.fill` overrides to `flex-shrink: 1; flex: 1 1 0; min-height: 0` for tables that should occupy remaining space. Add `flex-shrink: 0` to any new table that must maintain readable height regardless of page overflow.
 
@@ -244,9 +244,9 @@ flex 再分給容器更多高度，形成迴圈（實測每 400ms 長 ~35px）�
 (4) `createSeriesMarkers` 每呼叫一次就多掛一個 primitive，丟掉參照不會卸下——改成只建一次、
 之後 `setMarkers`。(5) tooltip 垂直方向要夾在容器內，否則游標在下半部時蓋到下方圖表。
 
-**已知不修**：切到「月」週期時 `stock-note` 的缺口偵測（>14 天警示）對月線會整批誤報
-——相鄰月K本來就自然差 28~31 天。這是照抄既有邏輯（任務明講「note 邏輯不變」）帶過來的
-既有缺陷，與這次換函式庫無關，刻意不動。
+**月線假缺口警示已修（ui52）**：`stock-note` 缺口門檻原本寫死 14 天，月K 相鄰就差 28~31 天、
+每查必誤報。改成依週期查表 `KLINE_GAP_DAYS`（日 14／週 21／月 45），實測正常資料不警示、
+挖掉一段仍會亮（反證三種週期都做過）。提示改指向 `scripts/sync_ohlc.bat`。
 
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
