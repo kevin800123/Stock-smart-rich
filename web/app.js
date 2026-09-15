@@ -983,18 +983,24 @@ function ssSortVal(r, k) {
   if (k === "__code") { const n = parseFloat(r.code); return isNaN(n) ? (r.code || "") : n; }
   return r.vals[k];
 }
-// 新進榜標籤。判定在後端（signal_ledger 記下的正式名單），這裡只畫。同時符合只掛 Week NEW：
-//   Week NEW（燙金）＝上一個集保週期的名單都沒有 → 大戶籌碼換週後才進來，一週只出現一次
-//   new（冷藍）   ＝前一份名單沒有 → 今天才進來
-// 兩者刻意不同分量：一週一次的換週訊號是重點，逐日進出只是註記。說明放 title，文字本身就能被讀出。
+// 新進榜標籤。判定在後端（signal_ledger 記下的正式名單），這裡只畫：
+//   Week NEW   ＝上一個集保週期的名單都沒有 → 大戶籌碼換週後才進來
+//   Week NEW ✦＝同上，而且是今天才進來（前一份名單也沒有）
+//   NEW        ＝前一份名單沒有、但上一個集保週期出現過 → 掉出去又回來
+// 原本「同時符合只掛 Week NEW」讓今天的新進榜在集保週期裡幾乎全被蓋掉（使用者回報「每日的都
+// 沒有 NEW」），改成 Week NEW 後面加星號標出今天才進的。說明放 title，另給螢幕閱讀器一段隱藏文字。
 function ssNewBadge(r) {
   const md = (s) => (s || "").slice(5);
+  const dayNew = r.is_new && ssNewVs.day;
+  const dayText = dayNew ? `今天才進榜（前一份名單 ${md(ssNewVs.day)} 沒有）` : "";
   if (r.is_week_new && ssNewVs.week) {
-    const t = `Week NEW：上一個集保週期（${md(ssNewVs.week.from)}～${md(ssNewVs.week.to)}）的自算名單都沒有這檔`;
-    return `<span class="ss-badge ss-badge-week" title="${esc(t)}">Week NEW</span>`;
+    const t = `Week NEW：上一個集保週期（${md(ssNewVs.week.from)}～${md(ssNewVs.week.to)}）的自算名單都沒有這檔`
+      + (dayNew ? `；✦ ${dayText}` : "");
+    return `<span class="ss-badge ss-badge-week" title="${esc(t)}">Week NEW`
+      + (dayNew ? `<i class="ss-star" aria-hidden="true"></i><span class="ss-sr">，今天才進榜</span>` : "") + "</span>";
   }
-  if (r.is_new && ssNewVs.day) {
-    return `<span class="ss-badge ss-badge-day" title="${esc(`new：前一份自算名單（${md(ssNewVs.day)}）沒有這檔`)}">new</span>`;
+  if (dayNew) {
+    return `<span class="ss-badge ss-badge-day" title="${esc(`NEW：${dayText}`)}">NEW</span>`;
   }
   return "";
 }
@@ -1004,11 +1010,12 @@ function renderSelfScreenTable() {
   let rows = ssRows.slice();
   if (ssSectorFilter) rows = rows.filter((r) => r.sector === ssSectorFilter);
   const note = $("ss-picked-note");
-  // 新進榜數量跟著畫面上的標籤走：同時符合時只掛 Week NEW，所以 new 只數「不是 Week NEW 的」
+  // 新進榜數量：「今日新進」含 Week NEW ✦ 與 NEW（兩者都是今天才進），「本週新進」＝Week NEW。
+  // 兩個數字會重疊，所以用文字講清楚是哪一種，不寫成兩個可相加的標籤名。
   const nWeek = rows.filter((r) => r.is_week_new).length;
-  const nDay = rows.filter((r) => r.is_new && !r.is_week_new).length;
-  const newNote = (nWeek ? `　<span class="ss-new-count">Week NEW ${nWeek}</span>` : "")
-    + (nDay ? `　<span class="ss-new-count">new ${nDay}</span>` : "");
+  const nDay = rows.filter((r) => r.is_new).length;
+  const newNote = (nDay ? `　<span class="ss-new-count">今日新進 ${nDay}</span>` : "")
+    + (nWeek ? `　<span class="ss-new-count">本週新進 ${nWeek}</span>` : "");
   if (note) note.innerHTML = ssSectorFilter
     ? `${esc(ssSectorFilter)}：${rows.length} 檔${newNote}　<a href="#" id="ss-clear-sector" class="help-link">全部</a>`
     : `${ssRows.length} 檔${newNote}`;

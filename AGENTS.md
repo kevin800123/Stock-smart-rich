@@ -214,13 +214,14 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - `/api/health` 多 `jobs`（各 job 最近一列）。logging 取代 print（`spr`／`spr.jobs`／`spr.gemini`），cli.py 的 print 保留。
 - **測試**：`tests/test_job_runs.py`；`test_health.py` 只改一處（`test_alert_deduplication_logic` 改呼叫 `app.state.jobs["daily_update"]`，排程器拿到的已是 run_job 包過、同日第二次呼叫會被去重）；`test_gemini.py` 三條 `capsys` 改 `caplog`。時間走 `helpers._now`；`main.py` 改成 `_helpers._now()` 呼叫時取（`from … import _now` 綁死的名字 patch 不到）。conftest autouse 樁掉 `catchup_missed_jobs`（否則每條起排程器的測試都會真的連外），要測補跑標 `@pytest.mark.real_catchup`。七個守衛都做過反證（含拿掉唯一鍵 → 3 條並發測試紅；並發測試把先查弄瞎、鎖換成不互斥仍只跑一次）。`test_alert_deduplication_logic` 樁掉六步＋網路絆線（socket 層記錄並拋，斷言零次；反證：樁換成真 `httpx.get` → 紅）。`pytest -k not_again` 會把 `not` 當運算子，反證要用完整名稱。
 
-### 自算選股新進榜標籤（ui53，2026-09）
+### 自算選股新進榜標籤（ui54，2026-09）
 
 `is_new`＝前一份有記錄的自算名單（`signal_ledger`）沒有這檔；`is_week_new`＝**上一個集保週期**
 （以 `custody_compare_weeks` 的週五為界、從週五隔天起算，因為週五名單用的是舊集保）所有名單都
-沒有。沒有比對基準就一檔都不標；同時符合只掛 Week NEW。new＝藍色描邊小標，Week NEW＝燙金箔片
-（使用者指定；實心箔面與琥珀外框不同軸），掃光只在資料載入時播一次。手機標籤換到股名下一行，
-凍結欄 179→110px。
+沒有。沒有比對基準就一檔都不標。顯示：兩者皆是＝`WEEK NEW ✦`、只有週＝`WEEK NEW`、只有日＝`NEW`
+（第一版「同時符合只掛 Week NEW」讓今天的新進榜全被蓋掉，使用者回報後改）。視覺是半透明 HUD
+晶片（第一版燙金被退回）：NEW 冰藍細框，WEEK NEW 青→紫漸層細框＋四角刻線，✦ 用 clip-path 畫。
+掃描線只在資料載入時播一次。手機標籤換到股名下一行（凍結欄 179→110px）。
 
 ### 個股 K 線改 Lightweight Charts（2026-09）
 
