@@ -21,7 +21,13 @@ async function getJSON(url) {
 }
 
 // ========== 圖表共用 ==========
-let stockChart;
+// 個股 K 線圖（僅這一張）改用 TradingView Lightweight Charts，換掉 ECharts——理由與細節
+// 見 CLAUDE.md「個股 K 線改 Lightweight Charts」那節。stockChart 維持既有語意：
+// null＝尚未建立、truthy＝圖表已存在（既有的 `stockChart && ...` 判斷不用動）。
+// 系列參照另外存，因為 LightweightCharts 沒有 ECharts 那種「整包 option 一次 setOption」
+// 的 API，改資料要對個別 series 呼叫 setData()。
+let stockChart = null;
+let lwCandleSeries = null, lwVolumeSeries = null, lwMaSeries = [], lwMarkersApi = null;
 let stockCode = "", stockInterval = "1d", stockWaves = false;
 let wavePct = 0.05;
 let lastStockData = null;
@@ -159,83 +165,184 @@ function ma(values, n) {
   return out;
 }
 
-function candlestickOption(data, startPct, showW, pct) {
-  const closes = data.candles.map((c) => c[1]);
-  const maSeries = MA_DEFS.map((m) => ({ name: "MA" + m.n, type: "line", data: ma(closes, m.n), smooth: true, showSymbol: false, lineStyle: { width: 1.5, color: m.color }, itemStyle: { color: m.color } }));
-  const candle = { name: "K線", type: "candlestick", data: data.candles, itemStyle: { color: C.up, color0: C.down, borderColor: C.up, borderColor0: C.down } };
-  // 現價線：最後收盤的水平虛線（顏色跟最後一根方向），掃一眼就知道現價相對歷史的位置
-  const last = data.candles[data.candles.length - 1];
-  if (last) {
-    const lastCol = last[1] >= last[0] ? C.up : C.down;   // candles = [open, close, low, high]
-    candle.markLine = {
-      symbol: "none", silent: true, animation: false,
-      lineStyle: { type: "dashed", color: lastCol, width: 1, opacity: 0.75 },
-      label: { show: true, position: "insideEndTop", color: lastCol, fontSize: 11, fontWeight: 700, formatter: () => fmt(last[1], 2) },
-      data: [{ yAxis: last[1] }],
-    };
-  }
-  // 量能柱依當根 K 棒方向著紅/綠（半透明，不搶主圖）；tooltip 讀 value 不受影響
-  const volumes = data.candles.map((c, i) => ({
-    value: data.volumes[i], itemStyle: { color: c[1] >= c[0] ? C.up : C.down },
+// ========== 個股 K 線（Lightweight Charts，唯一用這套函式庫的圖）==========
+// 資料格式轉換只寫這三處：ECharts 的 candles 是 [open, close, low, high]，
+// Lightweight Charts 要 {time, open, high, low, close}；time 直接用 dates[i]
+// 的 "YYYY-MM-DD" 字串（LWC 的 BusinessDay 字串格式，日/週/月三種週期都適用）。
+function lwCandleData(dates, candles) {
+  return candles.map((c, i) => ({ time: dates[i], open: c[0], high: c[3], low: c[2], close: c[1] }));
+}
+// 量能柱依當根 K 棒方向著紅/綠（半透明，不搶主圖），同 ECharts 版本的 opacity:0.55。
+function lwVolumeData(dates, candles, volumes) {
+  return candles.map((c, i) => ({
+    time: dates[i], value: (volumes && volumes[i]) || 0,
+    color: c[1] >= c[0] ? withAlpha(C.up, 0.55) : withAlpha(C.down, 0.55),
   }));
-  if (showW) {
-    const pctKey = Math.round(pct * 100).toString();
-    const waves = (data.waves && data.waves[pctKey]) || [];
-    if (waves.length) candle.markPoint = {
-      symbol: "circle", symbolSize: 20,
-      label: { color: "#1a1a1a", fontWeight: 700, fontSize: 12, formatter: (p) => p.data.value },
-      data: waves.map((w) => ({ value: w.label, coord: [data.dates[w.index], data.candles[w.index][3]], itemStyle: { color: /[ABC]/.test(w.label) ? C.info : C.accent } })),
-    };
-  }
-  const unit = ["taiex", "tx"].includes(data.symbol) ? "點" : "元";
-  const tipCell = (label, value) => `<span class="ec-tip-cell"><i>${label}</i><b>${fmt(value, 2)}<em>${unit}</em></b></span>`;
-  return {
-    tooltip: financeTooltip({
-      axisPointer: {
-        type: "cross", lineStyle: { color: withAlpha(C.muted, 0.58), type: "dashed" },
-        label: { backgroundColor: C.panel, borderColor: C.borderDefault, borderWidth: 1, color: C.text },
-      },
-      formatter: (ps) => {
-        if (!ps || !ps.length) return "";
-        let html = `<div class="ec-tip-date">${esc(ps[0].axisValue)}</div><div class="ec-tip-grid">`;
-        ps.forEach((p) => {
-          const m = p.marker || "";
-          if (p.seriesType === "candlestick") {
-            const d = p.data, n = d.length;
-            const o = d[n - 4], c = d[n - 3], l = d[n - 2], h = d[n - 1];  // [(idx,)open,close,low,high]
-            html += `<span class="ec-tip-series">${m}K線</span><span class="ec-tip-ohlc">${tipCell("開", o)}${tipCell("高", h)}${tipCell("低", l)}${tipCell("收", c)}</span>`;
-          } else if (p.seriesName === "量") {
-            if (p.value != null) html += `<span class="ec-tip-series">${m}成交量</span><b class="ec-tip-v">${fmt(p.value, 0)}</b>`;
-          } else if (p.value != null) {
-            html += `<span class="ec-tip-series">${m}${esc(p.seriesName)}</span><b class="ec-tip-v">${fmt(p.value, 2)}<i>${unit}</i></b>`;
-          }
-        });
-        return html + "</div>";
-      },
-    }),
-    backgroundColor: "transparent",
-    textStyle: { fontFamily: HM_FONT },
-    legend: { top: 0, data: ["K線", ...MA_DEFS.map((m) => "MA" + m.n)], textStyle: { color: C.label } },
-    grid: [{ left: 60, right: 20, top: 28, height: "59%" }, { left: 60, right: 20, top: "71%", height: "13%" }],
-    xAxis: [
-      // **日期標籤放在最下面那個窗格**（量能窗格），不是夾在兩個窗格中間：
-      // 價格窗格的日期標籤原本畫在它自己的底部，正好撞上量能窗格頂端的 y 軸刻度
-      // （加上量能刻度後才浮現，實測「2,800」與日期疊在同一行）。堆疊式 K 線圖的
-      // 慣例本來就是「日期只出現在最底部」，改過來同時解決碰撞與版面慣例。
-      { type: "category", data: data.dates, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false }, axisLabel: { show: false } },
-      { type: "category", data: data.dates, gridIndex: 1, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 11 } },
-    ],
-    yAxis: [
-      { scale: true, axisLine: { lineStyle: { color: C.borderSubtle } }, axisTick: { show: false }, axisLabel: { color: C.muted, fontSize: 11, formatter: (v) => fmt(v, 0) }, splitLine: { lineStyle: { color: C.gridline, type: "dashed", opacity: 0.72 } } },
-      // 量能窗格原本連刻度都關掉，等於只看得出「相對高低」、讀不出實際張數。
-      // 窗格只有 13% 高，所以 splitNumber:2（再多會擠成一團）、萬張以上縮寫。
-      { gridIndex: 1, splitNumber: 2, splitLine: { show: false },
-        axisLabel: { color: C.muted, fontSize: 10,
-                     formatter: (v) => v >= 10000 ? fmt(v / 10000, 1) + "萬" : fmt(v, 0) } },
-    ],
-    dataZoom: klineDataZoom([0, 1], startPct),
-    series: [candle, ...maSeries, { name: "成交量(張)", type: "bar", xAxisIndex: 1, yAxisIndex: 1, barWidth: 7, barCategoryGap: "32%", itemStyle: { opacity: 0.55 }, data: volumes }],
+}
+// 均線資料要濾掉 warm-up 期的 null——LWC 的線圖系列不吃 {value:null}，缺點直接不放進
+// 陣列即可（每個 series 的資料本來就各自獨立、不要求對齊每個時間點），效果同 ECharts
+// 遇 null 斷線。
+function toLwLineData(dates, values) {
+  const out = [];
+  for (let i = 0; i < values.length; i++) if (values[i] != null) out.push({ time: dates[i], value: values[i] });
+  return out;
+}
+// crosshair 回傳的 time 在字串輸入下會被轉成 {year,month,day} 物件，顯示前轉回可讀字串。
+function lwTimeLabel(t) {
+  if (typeof t === "string") return t;
+  if (t && typeof t === "object" && "year" in t) return `${t.year}-${String(t.month).padStart(2, "0")}-${String(t.day).padStart(2, "0")}`;
+  return String(t);
+}
+
+// 建立個股 K 線圖，只呼叫一次（loadStock 用 `if (!stockChart)` 判斷）。授權要求保留
+// TradingView 標誌（layout.attributionLogo），不可關閉；紅漲綠跌讀既有 C.up/C.down，
+// 不寫死色碼；字型與 body 堆疊同步用既有 HM_FONT。滾輪縮放／拖曳平移／十字線／右側
+// 價格軸／底部時間軸都是 LWC 內建行為，不必像 ECharts 那樣自己接 dataZoom。
+function initStockChart(el) {
+  const chart = LightweightCharts.createChart(el, {
+    autoSize: true,   // 容器尺寸變化（視窗縮放／側欄收合／從 hidden 解除）靠 ResizeObserver 自動處理，
+                       // 不必像 echarts.init 那樣手動 .resize()——但 CLAUDE.md 記過「換函式庫仍要親自驗一次」，
+                       // 這裡已在瀏覽器實測過 hidden→解除、視窗縮放、側欄收合三種情境（見交付報告）。
+    layout: {
+      background: { type: "solid", color: "transparent" },
+      textColor: C.muted,
+      fontFamily: HM_FONT,
+      panes: { separatorColor: C.borderSubtle, separatorHoverColor: withAlpha(C.info, 0.16) },
+      attributionLogo: true,
+    },
+    grid: {
+      vertLines: { color: withAlpha(C.gridline, 0.72), style: LightweightCharts.LineStyle.Dashed },
+      horzLines: { color: withAlpha(C.gridline, 0.72), style: LightweightCharts.LineStyle.Dashed },
+    },
+    rightPriceScale: { borderColor: C.borderSubtle },
+    timeScale: { borderColor: C.borderSubtle, rightOffset: 4 },
+    crosshair: {
+      vertLine: { color: withAlpha(C.muted, 0.58), style: LightweightCharts.LineStyle.Dashed, labelBackgroundColor: C.panel },
+      horzLine: { color: withAlpha(C.muted, 0.58), style: LightweightCharts.LineStyle.Dashed, labelBackgroundColor: C.panel },
+    },
+  });
+  const candle = chart.addSeries(LightweightCharts.CandlestickSeries, {
+    upColor: C.up, downColor: C.down, borderUpColor: C.up, borderDownColor: C.down,
+    wickUpColor: C.up, wickDownColor: C.down,
+    priceLineStyle: LightweightCharts.LineStyle.Dashed, priceLineWidth: 1,
+  });
+  // 量能窗格（v5 panes API）：主圖:量能 約 78:22。ECharts 版本要留 dataZoom 滑桿的版面
+  // （59%/13%），LWC 縮放平移是直接在圖上操作、不佔額外版面，量能窗格因此能分到更多。
+  const volume = chart.addSeries(LightweightCharts.HistogramSeries, {
+    priceFormat: { type: "volume" }, priceLineVisible: false, lastValueVisible: false,
+  }, 1);
+  const panes = chart.panes();
+  if (panes[1]) panes[1].setStretchFactor(0.28);
+  const maSeriesArr = MA_DEFS.map((m) => chart.addSeries(LightweightCharts.LineSeries, {
+    color: m.color, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+  }));
+
+  // MA 圖例：LWC 沒有內建圖例元件，週期與顏色是固定的（MA_DEFS），只需畫一次靜態列。
+  // K線本身沒有單一圖例色（逐根紅/綠），故不列——看圖本身就分得出。
+  const legend = document.createElement("div");
+  legend.className = "lw-legend";
+  legend.innerHTML = MA_DEFS.map((m) => `<span style="color:${m.color}">— MA${m.n}</span>`).join("");
+  el.appendChild(legend);
+
+  // 十字線 tooltip：沿用既有 .ec-tip-* 樣式（原本是給 ECharts 用的通用 class，非
+  // ECharts 專屬命名，換函式庫不必新增 CSS）。
+  const tip = document.createElement("div");
+  tip.className = "lw-tooltip hidden";
+  el.appendChild(tip);
+  // 十字線在同一根 K 棒上移動時（滑鼠每動 1px 都會觸發）內容完全一樣，只需重新定位，
+  // 不必每次重組 innerHTML。快取鍵要連資料物件本身一起比：換股票、換週期（日K 與週K 可能
+  // 同一個日期標籤）、重新查詢都會換成新的 lastStockData，只比日期會顯示舊數字。
+  let tipKey = "", tipData = null;
+  chart.subscribeCrosshairMove((param) => {
+    if (!param || !param.time || !param.point) { tip.classList.add("hidden"); return; }
+    const c = param.seriesData.get(candle);
+    if (!c) { tip.classList.add("hidden"); return; }
+    const key = lwTimeLabel(param.time);
+    if (key !== tipKey || tipData !== lastStockData) {
+      tip.innerHTML = stockTipHtml(param, c); tipKey = key; tipData = lastStockData;
+    }
+    tip.classList.remove("hidden");
+    const boxW = tip.offsetWidth || 210, boxH = tip.offsetHeight || 250;
+    let x = param.point.x + 16;
+    if (x + boxW > el.clientWidth) x = param.point.x - boxW - 16;   // 靠右緣時翻到游標左側，避免溢出容器
+    tip.style.left = Math.max(4, x) + "px";
+    // 垂直方向也要夾住：tooltip 約 250px、圖只有 ~380px，只寫 y-10 的話游標在下半部時
+    // 會溢出容器、蓋到下面的三大法人圖（實測下緣最多超出 ~230px）。
+    tip.style.top = Math.max(4, Math.min(param.point.y - 10, el.clientHeight - boxH - 4)) + "px";
+  });
+  const stockTipHtml = (param, c) => {
+    const v = param.seriesData.get(volume);
+    const unit = ["taiex", "tx"].includes(lastStockData?.symbol) ? "點" : "元";
+    const cell = (label, value) => `<span class="ec-tip-cell"><i>${label}</i><b>${fmt(value, 2)}<em>${unit}</em></b></span>`;
+    let html = `<div class="ec-tip-date">${esc(lwTimeLabel(param.time))}</div><div class="ec-tip-grid">`;
+    html += `<span class="ec-tip-series">K線</span><span class="ec-tip-ohlc">${cell("開", c.open)}${cell("高", c.high)}${cell("低", c.low)}${cell("收", c.close)}</span>`;
+    if (v && v.value != null) html += `<span class="ec-tip-series">成交量</span><b class="ec-tip-v">${fmt(v.value, 0)}</b>`;
+    MA_DEFS.forEach((m, i) => {
+      const mv = param.seriesData.get(maSeriesArr[i]);
+      if (mv && mv.value != null) html += `<span class="ec-tip-series" style="color:${m.color}">MA${m.n}</span><b class="ec-tip-v">${fmt(mv.value, 2)}<i>${unit}</i></b>`;
+    });
+    return html + "</div>";
   };
+
+  lwCandleSeries = candle; lwVolumeSeries = volume; lwMaSeries = maSeriesArr;
+  return chart;
+}
+
+function disposeStockChart() {
+  if (stockChart) { try { stockChart.remove(); } catch (e) { /* ignore */ } }
+  stockChart = null; lwCandleSeries = null; lwVolumeSeries = null; lwMaSeries = []; lwMarkersApi = null;
+  // chart.remove() 只清掉 LWC 自己建立的 canvas，不會動我們手動塞進容器的圖例／tooltip
+  // 覆蓋層——實測踩到：反覆「查無資料的代號 → 有資料的代號」幾次後，容器裡會疊出
+  // 好幾份重複的 .lw-legend/.lw-tooltip（DOM 節點洩漏，且視覺上圖例會重疊變粗）。
+  const el = $("stock-chart");
+  if (el) el.querySelectorAll(".lw-legend, .lw-tooltip").forEach((n) => n.remove());
+}
+
+// 艾略特波浪：aboveBar 標記（LWC 沒有 ECharts markPoint 那種「任意座標＋置中文字圓圈」
+// primitive，aboveBar 會自動貼在該根 K 棒最高點之上，視覺意圖等價——都是「標在這根棒子
+// 上方」，不是逐點指定 y 座標）。配色規則不變：ABC（藍 C.info）／數字 1–5（橘 C.accent）。
+// **標記圖層只建一次、之後一律 setMarkers 換內容。** createSeriesMarkers 每呼叫一次就在
+// series 上掛一個新的 primitive；把舊參照丟掉並不會卸下它（實測：關掉波浪後對舊參照
+// setMarkers，標記仍畫在圖上）。原本每次開關／每拖一格滑桿都新建一個，primitive 會一路累積。
+function renderStockWaves(data, showW, pct) {
+  if (!lwCandleSeries) return;
+  const pctKey = Math.round(pct * 100).toString();
+  const waves = (showW && data.waves && data.waves[pctKey]) || [];
+  const markers = waves.map((w) => ({
+    time: data.dates[w.index], position: "aboveBar", shape: "circle",
+    color: /[ABC]/.test(w.label) ? C.info : C.accent, text: w.label,
+  }));
+  if (lwMarkersApi) lwMarkersApi.setMarkers(markers);
+  else if (markers.length) lwMarkersApi = LightweightCharts.createSeriesMarkers(lwCandleSeries, markers);
+}
+
+// 把資料灌進已存在的圖表（interval 切換／重新查詢都走這支；波浪開關與轉折%滑桿走
+// 更輕量的 renderStockWaves，不必重灌 K 線與均線）。
+function renderStockChart(data, showW, pct) {
+  const dates = data.dates, candles = data.candles;
+  const closes = candles.map((c) => c[1]);
+  lwCandleSeries.setData(lwCandleData(dates, candles));
+  lwVolumeSeries.setData(lwVolumeData(dates, candles, data.volumes));
+  MA_DEFS.forEach((m, i) => lwMaSeries[i].setData(toLwLineData(dates, ma(closes, m.n))));
+  // 最後一根收盤價的價格標籤：LWC 系列內建的 priceLine（lastValueVisible 預設開），
+  // 這裡只需依最後一根方向覆寫顏色，同既有規矩。
+  const last = candles[candles.length - 1];
+  if (last) lwCandleSeries.applyOptions({ priceLineColor: last[1] >= last[0] ? C.up : C.down });
+  renderStockWaves(data, showW, pct);
+  // 初始可視範圍：資料多時只看最近 ~40%（同 ECharts dataZoom 的 startPct=60 用意），
+  // 否則顯示全部——LWC 沒有「一次設定完就不用管」的 dataZoom 物件，改用 timeScale API。
+  // **用日期字串（setVisibleRange）不用邏輯索引（setVisibleLogicalRange）**：實測後者
+  // 會被 LWC 自己的最小柱寬限制悄悄改動起訖值（同一份 243 根的資料，要求 [146,242]
+  // 實際卻拿到 [128.3,246]，且容器每 resize 一次還會再漂移一次）；改用實際日期字串，
+  // 結果穩定得多（只有極少數的最小柱寬微調，不會整段偏移），語意也更直白：「顯示最近
+  // 這一段日期」而非「顯示這幾根的索引」。
+  const n = candles.length;
+  if (n > 120) {
+    const visible = Math.round(n * 0.4);
+    stockChart.timeScale().setVisibleRange({ from: dates[n - visible], to: dates[n - 1] });
+  } else {
+    stockChart.timeScale().fitContent();
+  }
 }
 
 // ========== 視圖切換 ==========
@@ -250,7 +357,24 @@ function showView(name) {
   if (name === "overview") { chipChart && chipChart.resize(); sectorChart && sectorChart.resize(); distChart && distChart.resize(); }
   if (name === "stock") {
     renderStockEmpty();          // 還沒查過的話，把自選股／最近查詢填上（已查過就是 hidden，直接 return）
-    stockChart && stockChart.resize(); stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize();
+    // autoSize 的 ResizeObserver 理論上該接住「祖先從 display:none 變回可見」這個轉場，
+    // 但**實測是競態**：反覆切走再切回，有時 200ms 內就補正尺寸，有時卡了 1 秒以上
+    // 才自己修好（同一份程式碼、同樣的操作，結果不穩定）——使用者切頁那一瞬間可能就看到
+    // 一張尺寸不對／全空的圖。這正是 CLAUDE.md 那條「換函式庫仍要親自驗一次，不要假設
+    // 沒事」在講的情境，而這次是真的踩到了，不是虛驚一場。
+    // 修法：切回個股頁時補一次確定性的手動 resize，不賭 ResizeObserver 的時機——
+    // classList.toggle 是同步的，緊接著讀 clientWidth/Height 會強制瀏覽器同步 reflow，
+    // 讀到的必然是切換後的最終尺寸（同 ECharts 版本能用「解除 hidden 後立刻 init」
+    // 的原理）。autoSize 開著時手動呼叫 resize() 會被忽略並印警告，所以短暫關閉、
+    // 修正之後再打開，讓後續「視窗縮放／側欄收合」繼續交給 ResizeObserver 反應式處理
+    // （那兩種是連續變化，不是這種 0→N 的跳變，ResizeObserver 在那兩種情境下實測穩定）。
+    if (stockChart) {
+      const el = $("stock-chart");
+      stockChart.applyOptions({ autoSize: false });
+      stockChart.resize(el.clientWidth, el.clientHeight);
+      stockChart.applyOptions({ autoSize: true });
+    }
+    stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize();
   }
   if (name === "rotation") { loadRotation(); loadCross(); }
   // 高價股監控輪詢：進入才啟動、切走即停——控制請求量。海期監控 2026-07 起改排程
@@ -3324,21 +3448,25 @@ async function loadStock(code, name) {
   if (!code) return;
   if (!/\./.test(code)) code += ".TW";
   stockCode = code;
-  // 讓位給圖表。**必須在 initChart 之前**：容器還是 display:none 時 echarts 會把尺寸
-  // 記成 0，之後不會自己重量（本檔多處記載過的坑）。
+  // 讓位給圖表容器。LightweightCharts 建立時會立刻讀容器當下尺寸，容器仍是
+  // display:none 一樣會量到 0——所以這行還是要排在 initStockChart 之前，同 ECharts
+  // 那條既有規矩，換函式庫沒有改變這個順序要求。
   $("stock-empty").classList.add("hidden");
   $("stock-chart").classList.remove("hidden");
   pushRecent(code, name);
-  if (!stockChart) stockChart = initChart($("stock-chart"));
   $("stock-note").textContent = "載入中…";
   try { renderProfile(await getJSON(`/api/stock/${encodeURIComponent(code)}/profile`)); } catch (e) { $("stock-profile").innerHTML = ""; }
   loadStockChips(code);
   loadStockCustody(code);
-  stockChart.showLoading();
   try {
     const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/kline?interval=${stockInterval}`);
-    stockChart.hideLoading();
-    if (!d.candles || !d.candles.length) { stockChart.clear(); lastStockData = null; $("stock-note").textContent = `${code} 無 K 線資料`; return; }
+    if (!d.candles || !d.candles.length) {
+      // 查無資料：整個丟掉圖表而不是畫一張空的（LWC 沒有 ECharts .clear() 那種
+      // 「清空但保留實例」的動作，直接 remove()，下次查詢再重建）。
+      disposeStockChart(); lastStockData = null;
+      $("stock-note").textContent = `${code} 無 K 線資料`;
+      return;
+    }
     lastStockData = d;
     // 資料到哪一天、中間有沒有缺口，都要講出來。stock_ohlc 的覆蓋度取決於
     // /api/ohlc/backfill 跑到哪，缺一大段時 category 軸會把缺口兩端直接畫在一起，
@@ -3358,9 +3486,9 @@ async function loadStock(code, name) {
       }
       $("stock-note").textContent = t;
     }
-    stockChart.resize();
-    stockChart.setOption(candlestickOption(d, d.candles.length > 120 ? 60 : 0, stockWaves, wavePct), true);
-  } catch (e) { stockChart.hideLoading(); $("stock-note").textContent = "載入失敗：" + e.message; }
+    if (!stockChart) stockChart = initStockChart($("stock-chart"));
+    renderStockChart(d, stockWaves, wavePct);
+  } catch (e) { $("stock-note").textContent = "載入失敗：" + e.message; }
 }
 
 // ========== 上傳 / 匯入 ==========
@@ -3708,10 +3836,8 @@ $("wave-pct").addEventListener("input", (e) => {
   wavePct = Number(e.target.value) / 100; $("wave-pct-val").textContent = `轉折 ${e.target.value}%`;
   // 滑桿原本只重畫總覽那張圖；隨 K 線列搬到個股頁後必須改重畫個股圖，否則拖動滑桿
   // 只有數字會變、線不會動（實測過：標籤跳到「轉折 12%」但圖完全沒變），
-  // 使用者只會覺得這個控制項壞了。
-  if (stockWaves && stockChart && lastStockData) {
-    stockChart.setOption(candlestickOption(lastStockData, lastStockData.candles.length > 120 ? 60 : 0, stockWaves, wavePct), true);
-  }
+  // 使用者只會覺得這個控制項壞了。只重畫波浪標記，不必重灌整條 K 線與均線。
+  if (stockWaves && stockChart && lastStockData) renderStockWaves(lastStockData, stockWaves, wavePct);
 });
 
 // 個股圖控制
@@ -3746,7 +3872,7 @@ document.querySelectorAll(".ktf").forEach((btn) => btn.addEventListener("click",
   document.querySelectorAll(".ktf").forEach((b) => b.classList.remove("active"));
   btn.classList.add("active"); stockInterval = btn.dataset.iv; if (stockCode) loadStock(stockCode);
 }));
-$("stock-wave-chk").addEventListener("change", (e) => { stockWaves = e.target.checked; if (stockChart && lastStockData) stockChart.setOption(candlestickOption(lastStockData, lastStockData.candles.length > 120 ? 60 : 0, stockWaves, wavePct), true); });
+$("stock-wave-chk").addEventListener("change", (e) => { stockWaves = e.target.checked; if (stockChart && lastStockData) renderStockWaves(lastStockData, stockWaves, wavePct); });
 // 集保「補歷史」：從 TDCC 智能網逐週回補該股歷史（opendata 只給當週）；單次回補整段、可能較久
 $("custody-backfill").addEventListener("click", async (e) => {
   e.preventDefault();
@@ -3783,11 +3909,15 @@ document.querySelectorAll(".rku").forEach((b) => b.addEventListener("click", () 
   document.querySelectorAll(".rku").forEach((x) => x.classList.toggle("active", x === b));
   rankUnit = b.dataset.unit; loadInstRanking();
 }));
-// **這裡要列出「每一張」圖**，漏掉的那張在視窗變動後就永遠停在舊尺寸（echarts.init 凍住
-// 容器尺寸，見上面各載入函式的註解）。手機上這條路徑不是罕見情境——轉個方向就會走到，
-// 而 375↔812 的寬度差足以讓漏網的圖整張畫錯位。pulseChart／stockCustodyChart 原本就漏了。
+// **這裡要列出「每一張」ECharts 圖**，漏掉的那張在視窗變動後就永遠停在舊尺寸
+// （echarts.init 凍住容器尺寸，見上面各載入函式的註解）。手機上這條路徑不是罕見情境
+// ——轉個方向就會走到，而 375↔812 的寬度差足以讓漏網的圖整張畫錯位。
+// pulseChart／stockCustodyChart 原本就漏了。
+// **stockChart 刻意不在這份清單裡**：它是 Lightweight Charts（autoSize:true），靠
+// ResizeObserver 自己處理容器尺寸變化，手動呼叫 .resize() 反而不是它的 API 形狀
+// （LWC 的 resize() 要傳明確寬高，autoSize 開著時再呼叫只會被忽略並印警告）。
 window.addEventListener("resize", () => {
-  [stockChart, chipChart, stockChipsChart, stockCustodyChart, pulseChart, cupChart, distChart,
+  [chipChart, stockChipsChart, stockCustodyChart, pulseChart, cupChart, distChart,
     instBreadthChart, instAlphaChart]
     .forEach((c) => c && c.resize());
   if (sectorChart) { sectorChart.resize(); if (lastHeatmapData) fitHeatmapFonts(lastHeatmapData); }

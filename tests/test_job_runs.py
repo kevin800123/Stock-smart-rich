@@ -66,6 +66,16 @@ def test_mark_interrupted_only_touches_running_rows(c):
     assert db.latest_job_runs(c) == {}
 
 
+def test_mark_interrupted_with_started_before_leaves_runs_of_this_process_alone(c):
+    """只標「本程序啟動前開始的」running：新程序自己剛開始跑的那列必須原封不動。"""
+    db.start_job_run(c, "daily_update", "2026-09-11", "scheduled", "2026-09-11T21:00:00")
+    db.start_job_run(c, "osfut_evening", "2026-09-11", "scheduled", "2026-09-11T22:00:01")
+    n = db.mark_interrupted_job_runs(c, "2026-09-11T22:00:02", started_before="2026-09-11T22:00:00")
+    assert n == 1
+    assert db.job_run_status(c, "daily_update", "2026-09-11") == "interrupted"
+    assert db.job_run_status(c, "osfut_evening", "2026-09-11") == "running"
+
+
 # ---------------------------------------------------------------- 排程規格
 def test_job_schedule_depends_on_configured_channels():
     ids = {s["id"] for s in helpers.job_schedule(_cfg(), "21:00")}
@@ -229,6 +239,58 @@ def test_catchup_treats_stale_running_as_missed(c, monkeypatch):
 
 
 @pytest.mark.real_catchup
+def test_catchup_does_not_interrupt_or_rerun_a_job_the_new_process_already_started(c, monkeypatch):
+    """啟動競態：排程器先起來、某支 job 在補跑執行緒之前就開始跑（寫了一列 running）。
+    補跑不能把這列當成上一個程序留下的——否則標成 interrupted 後會再跑一次（Telegram 重送）。
+    上一個程序真正留下的那列（啟動前開始的）仍要標 interrupted 並補跑。"""
+    boot = datetime(2026, 9, 11, 22, 0, 0)
+    now = boot + timedelta(seconds=2)
+    _clock(monkeypatch, now)
+    specs = [s for s in helpers.job_schedule(_cfg(telegram_token="", line_token=""), "21:00")
+             if s["id"] in ("daily_update", "osfut_evening")]
+    db.start_job_run(c, "daily_update", "2026-09-11", "scheduled", "2026-09-11T21:00:00")      # 上一個程序
+    db.start_job_run(c, "osfut_evening", "2026-09-11", "scheduled", "2026-09-11T22:00:01")    # 本程序剛開始
+    calls, jobs = _stub_jobs("daily_update", "osfut_evening")
+    r = helpers.catchup_missed_jobs(c, specs, jobs, now=now, booted_at=boot.isoformat(timespec="seconds"))
+    assert r["interrupted"] == 1
+    assert calls["daily_update"] == 1
+    assert calls["osfut_evening"] == 0
+    assert db.job_run_status(c, "osfut_evening", "2026-09-11") == "running"
+
+
+def test_create_app_marks_stale_runs_interrupted_before_the_scheduler_starts(c, monkeypatch):
+    """上一個程序留下的 running 必須在排程器啟動**之前**就標掉：排程器一起來就可能觸發
+    同一支 job，那時若還看到舊的 running，run_job 會把它當「已在執行」而略過（這一場就沒了）。
+    所以不能交給背景補跑執行緒去標（它比排程器晚）。"""
+    _clock(monkeypatch, FRI_22)
+    db.start_job_run(c, "daily_update", "2026-09-11", "scheduled", "2026-09-11T21:00:00")
+    from stocks_power_rich import scheduler as _sched
+    seen = {}
+    real_start = _sched.start_scheduler
+
+    def spy(*a, **kw):
+        seen["status_at_start"] = db.job_run_status(c, "daily_update", "2026-09-11")
+        return real_start(*a, **kw)
+    monkeypatch.setattr(_sched, "start_scheduler", spy)
+    import threading
+    got, done = {}, threading.Event()
+
+    def fake(conn, specs, jobs, now=None, booted_at=None):
+        got["booted_at"] = booted_at
+        done.set()
+        return {}
+    monkeypatch.setattr(helpers, "catchup_missed_jobs", fake)
+    from stocks_power_rich.main import create_app
+    app = create_app(enable_scheduler=True)
+    try:
+        assert done.wait(5)
+    finally:
+        app.state.scheduler.shutdown(wait=False)
+    assert seen["status_at_start"] == "interrupted"
+    assert got["booted_at"] == "2026-09-11T22:00:00"
+
+
+@pytest.mark.real_catchup
 def test_catchup_does_not_resend_news_evening_already_sent(c, monkeypatch):
     """驗收：同一天 news_evening 已成功 → 重啟不重送。"""
     _clock(monkeypatch, FRI_22)
@@ -293,7 +355,8 @@ def test_startup_catchup_is_called_in_background_with_specs_and_jobs(c, monkeypa
     seen = {}
     done = threading.Event()
 
-    def fake(conn, specs, jobs, now=None):
+    def fake(conn, specs, jobs, now=None, booted_at=None):
+        seen["booted_at"] = booted_at
         seen["ids"] = {s["id"] for s in specs}
         seen["jobs"] = set(jobs)
         seen["thread"] = threading.current_thread().name
@@ -308,6 +371,7 @@ def test_startup_catchup_is_called_in_background_with_specs_and_jobs(c, monkeypa
         app.state.scheduler.shutdown(wait=False)
     assert seen["thread"] == "spr-catchup"
     assert seen["ids"] <= seen["jobs"]
+    assert seen["booted_at"]   # 補跑必須知道本程序何時啟動，才分得出新舊 running
 
 
 def test_daily_update_on_saturday_pushes_nothing_to_line(c, monkeypatch):

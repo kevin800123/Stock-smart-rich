@@ -967,12 +967,21 @@ def job_run_status(conn: sqlite3.Connection, job_id: str, run_key: str) -> str |
     return row[0] if row else None
 
 
-def mark_interrupted_job_runs(conn: sqlite3.Connection, finished_at: str) -> int:
-    """啟動時呼叫：還停在 running 的列必然是上一個程序留下的（單 worker，且本程序才剛起來），
-    標成 interrupted 讓補跑把它當「沒跑完」。回傳標了幾列。"""
-    cur = conn.execute(
-        "UPDATE job_runs SET status='interrupted', finished_at=?, error='程序重啟時仍在執行' "
-        "WHERE status='running'", (finished_at,))
+def mark_interrupted_job_runs(conn: sqlite3.Connection, finished_at: str,
+                              started_before: str | None = None) -> int:
+    """啟動時呼叫：把上一個程序留下、還停在 running 的列標成 interrupted，讓補跑把它當「沒跑完」。
+    回傳標了幾列。
+
+    **`started_before` 要傳本程序的啟動時間**：排程器一起來就可能觸發 job、寫進一列 running，
+    不加時間界線會連本程序自己正在跑的那列一起標掉，補跑於是把它再跑一次（Telegram 重送）。
+    started_at 是 ISO 字串、字典序即時間序；同一秒開始的算本程序的（嚴格小於）。"""
+    sql = ("UPDATE job_runs SET status='interrupted', finished_at=?, error='程序重啟時仍在執行' "
+           "WHERE status='running'")
+    params: tuple = (finished_at,)
+    if started_before is not None:
+        sql += " AND started_at < ?"
+        params += (started_before,)
+    cur = conn.execute(sql, params)
     conn.commit()
     return cur.rowcount
 

@@ -1143,16 +1143,21 @@ def catchup_plan(c, specs: list[dict], now: datetime) -> list[dict]:
     return plan
 
 
-def catchup_missed_jobs(c, specs: list[dict], jobs: dict, now: datetime | None = None) -> dict:
+def catchup_missed_jobs(c, specs: list[dict], jobs: dict, now: datetime | None = None,
+                        booted_at: str | None = None) -> dict:
     """啟動補跑（在背景執行緒呼叫，不可阻塞啟動）。
 
-    1. 先把還停在 running 的列標成 interrupted——單 worker、本程序才剛起來，那些必然是上一個
-       程序被重啟時留下的，補跑要把它們當「沒跑完」。
+    1. 把**本程序啟動前**就停在 running 的列標成 interrupted（上一個程序被重啟時留下的）。
+       main.py 已在排程器啟動前同步標過一次；這裡再標是給單獨呼叫的路徑用。**一定要用
+       booted_at 當界線**：這支在背景執行緒跑、比排程器晚，排程器可能已經開始跑某支 job，
+       不設界線會把那列也標掉，下面的 plan 就會把它再跑一次。
     2. 依 catchup_plan 逐一走 run_job（trigger=catchup），走的是同一支 job 函式，所以
        週末不推 LINE、資料日≠今天不推卡片那些既有守衛全部自動生效，不另寫推播路徑。
+       本程序正在跑的那列仍是 running → 進 plan 後 run_job 會以「已在執行」略過。
     """
     now = now or _now()
-    n_int = mark_interrupted_job_runs(c, now.isoformat(timespec="seconds"))
+    stamp = now.isoformat(timespec="seconds")
+    n_int = mark_interrupted_job_runs(c, stamp, started_before=booted_at or stamp)
     if n_int:
         log.warning("啟動補跑：%d 列 running 標成 interrupted（上一個程序被重啟）", n_int)
     plan = catchup_plan(c, specs, now)

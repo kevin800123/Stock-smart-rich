@@ -246,6 +246,16 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         specs = job_schedule(cfg, effective_schedule(conn()))
         by_id = {sp["id"]: sp for sp in specs}
 
+        # 上一個程序留下的 running **必須在排程器啟動前同步標掉**，不能只交給背景補跑執行緒：
+        # 排程器一起來就可能觸發同一支 job，那時若還看到舊的 running，run_job 會當成「已在
+        # 執行」而略過（這一場就沒了）；反過來補跑執行緒若不設時間界線，又會把本程序剛開始
+        # 跑的那列標掉、再跑一次。booted_at 就是那條界線，一併傳給補跑。
+        from .db import mark_interrupted_job_runs
+        booted_at = _helpers._now().isoformat(timespec="seconds")
+        n_stale = mark_interrupted_job_runs(conn(), booted_at, started_before=booted_at)
+        if n_stale:
+            log.warning("啟動：%d 列 running 標成 interrupted（上一個程序被重啟）", n_stale)
+
         def wrapped(job_id: str):
             spec, fn = by_id[job_id], raw_jobs[job_id]
 
@@ -268,7 +278,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         # Zeabur 會把啟動太久當成失敗）。透過模組屬性呼叫，測試才樁得掉。
         def _catchup():
             try:
-                r = _helpers.catchup_missed_jobs(conn(), specs, raw_jobs)
+                r = _helpers.catchup_missed_jobs(conn(), specs, raw_jobs, booted_at=booted_at)
                 log.info("啟動補跑完成：%s", r.get("ran") or "無")
             except Exception:  # noqa: BLE001
                 log.exception("啟動補跑失敗")

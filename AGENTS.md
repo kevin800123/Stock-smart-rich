@@ -209,9 +209,44 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - **`job_runs` 表**（`db.py`）：job_id／run_key／trigger／started_at／finished_at／status（running→ok／partial／failed；`interrupted`＝啟動時標掉上一個程序留下的 running）／error／note。`JOB_RUN_DONE=("ok","partial")`＝跑過了。每日排程清 60 天前。
 - **`run_job`**（`api/helpers.py`）包每支 job：寫紀錄、進出各一行 log，**同 (job_id, run_key) 已 ok／partial／running 就略過**（Telegram 沒去重，靠這裡）。**真正的去重是 DB 唯一鍵 `uq_job_runs_running`**（partial UNIQUE `(job_id, run_key) WHERE status='running'`），先查只是省一次失敗的 INSERT；撞鍵 `IntegrityError` → skipped，**撞鍵後必 `rollback()`**（否則輸的連線握著寫入鎖、贏的那條 finish 時等滿 busy_timeout）。紀錄失敗不吞、往上丟。intraday_watch 的 run_key 是當下分鐘（每 5 分一個 key）；self_screen_early 三場各自 `日期:HH:MM`，17:30 data_not_ready 記 ok＋note，18:30 照跑。`main.py` 的 job **不再 `except: pass`**：`scheduled_job` 逐步失敗收進 `failed_steps` → partial；其他 job 例外直達 run_job。
 - **排程規格唯一版本 `job_schedule(cfg, schedule_time)`**：註冊與補跑共用。`family`＝補跑分組、`catchup=False`＝不補（intraday_watch）。run_key：一天一場＝日期、多場＝`日期:HH:MM`。
-- **啟動補跑 `catchup_missed_jobs`**：daemon 執行緒 `spr-catchup`（不阻塞啟動），先標 interrupted，再依 `catchup_plan` 走 `run_job(trigger="catchup")`。**走同一支 job 函式**→ 週末不推 LINE、資料日≠今天不推卡片等守衛自動生效。**範圍（使用者拍板）：只補今天、同 family 只補最近錯過的一場**（整天停機晚上恢復只補 21:10 一場新聞；最近一場 ok 就整族不補）。
+- **標 interrupted 的啟動競態**：上一個程序留下的 running 要在 `start_scheduler` **之前同步**標掉（否則排程器先觸發時 run_job 會當「已在執行」略過、這場就沒了），而且 `mark_interrupted_job_runs(…, started_before=booted_at)` **只標本程序啟動前開始的列**（否則補跑執行緒會把本程序剛開始跑的那列標掉、再跑一次）。補跑也吃同一個 `booted_at`。兩條測試各自反證過。
+- **啟動補跑 `catchup_missed_jobs`**：daemon 執行緒 `spr-catchup`（不阻塞啟動），依 `catchup_plan` 走 `run_job(trigger="catchup")`。**走同一支 job 函式**→ 週末不推 LINE、資料日≠今天不推卡片等守衛自動生效。**範圍（使用者拍板）：只補今天、同 family 只補最近錯過的一場**（整天停機晚上恢復只補 21:10 一場新聞；最近一場 ok 就整族不補）。
 - `/api/health` 多 `jobs`（各 job 最近一列）。logging 取代 print（`spr`／`spr.jobs`／`spr.gemini`），cli.py 的 print 保留。
 - **測試**：`tests/test_job_runs.py`；`test_health.py` 只改一處（`test_alert_deduplication_logic` 改呼叫 `app.state.jobs["daily_update"]`，排程器拿到的已是 run_job 包過、同日第二次呼叫會被去重）；`test_gemini.py` 三條 `capsys` 改 `caplog`。時間走 `helpers._now`；`main.py` 改成 `_helpers._now()` 呼叫時取（`from … import _now` 綁死的名字 patch 不到）。conftest autouse 樁掉 `catchup_missed_jobs`（否則每條起排程器的測試都會真的連外），要測補跑標 `@pytest.mark.real_catchup`。七個守衛都做過反證（含拿掉唯一鍵 → 3 條並發測試紅；並發測試把先查弄瞎、鎖換成不互斥仍只跑一次）。`test_alert_deduplication_logic` 樁掉六步＋網路絆線（socket 層記錄並拋，斷言零次；反證：樁換成真 `httpx.get` → 紅）。`pytest -k not_again` 會把 `not` 當運算子，反證要用完整名稱。
+
+### 個股 K 線改 Lightweight Charts（2026-09）
+
+**只換個股頁這一張圖**，其餘全部維持 ECharts。自架
+`web/vendor/lightweight-charts.standalone.production.js`（npm `lightweight-charts@5.2.1`
+standalone production 版，理由同 echarts.min.js 的 CSP 自架規矩）。資料格式轉換只在三支
+純函式做（`lwCandleData`/`lwVolumeData`/`toLwLineData`），`time` 直接用 `"YYYY-MM-DD"`
+字串。紅漲綠跌讀 `C.up`/`C.down`（LWC 預設綠漲紅跌，六個色欄位都要設，缺一個那部位就是
+預設色），字型讀既有 `HM_FONT`。**授權要求的 attribution 標誌不可關**（純 DOM `<a>`
+連結，實測不發網路請求）。滾輪縮放／拖曳平移／十字線都是 LWC 內建，不必自己接
+`dataZoom`。艾略特波浪改 `createSeriesMarkers`＋`position:"aboveBar"`（視覺等價、非
+像素級同款）。初始可視範圍用 `setVisibleRange`（日期字串）而非
+`setVisibleLogicalRange`（邏輯索引）——後者實測會被 LWC 自己的最小柱寬限制悄悄改動起訖
+值，且每次 resize 還會再漂移。查無資料時 `chart.remove()` 整個丟掉，不畫空圖。
+
+**兩個實測才抓到的 bug**：(1) `chart.remove()` 不會清掉我們手動塞進容器的圖例／tooltip
+覆蓋層，反覆「查無資料 → 有資料」會疊出重複 DOM——`disposeStockChart()` 補清這兩個
+class。(2) `autoSize:true` 對「切走再切回個股頁」這種祖先 display:none→可見的轉場**是
+真的競態**（同一份程式碼、同樣操作，實測有時 200ms 內修好、有時卡 1 秒以上），視窗縮放
+與側欄收合這兩種連續變化倒是穩定——修法是 `showView` 切回時補一次確定性手動 resize
+（短暫關 autoSize、用當下 `clientWidth/Height` 呼叫 `resize()`、再開回 autoSize），
+6 輪反覆測試後每輪切回當下就是正確尺寸。**這正是「換函式庫仍要親自驗一次，不要假設
+沒事」這次真的踩到的例子**，兩者都不是虛驚一場。
+
+**複查再抓到三個**：(3) **圖表高度無限長大**——`.chart-big` 是 `.view`（flex column、
+min-height:100%）裡的 `flex:1`，頁面內容超過一個螢幕後，autoSize 的畫布撐高 `.view`、
+flex 再分給容器更多高度，形成迴圈（實測每 400ms 長 ~35px）。第一輪驗證時內容沒超過螢幕、
+迴圈沒啟動所以沒抓到。修法 `#stock-chart { contain: size; }`，實測穩定 378px，拿掉即復發。
+(4) `createSeriesMarkers` 每呼叫一次就多掛一個 primitive，丟掉參照不會卸下——改成只建一次、
+之後 `setMarkers`。(5) tooltip 垂直方向要夾在容器內，否則游標在下半部時蓋到下方圖表。
+
+**已知不修**：切到「月」週期時 `stock-note` 的缺口偵測（>14 天警示）對月線會整批誤報
+——相鄰月K本來就自然差 28~31 天。這是照抄既有邏輯（任務明講「note 邏輯不變」）帶過來的
+既有缺陷，與這次換函式庫無關，刻意不動。
 
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
