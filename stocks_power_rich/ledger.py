@@ -102,6 +102,51 @@ def record_self_screen_signals(conn: sqlite3.Connection, universe: dict,
     conn.commit()
 
 
+def previous_self_screen_codes(conn: sqlite3.Connection, before: str) -> tuple[str | None, set]:
+    """自算選股「新進榜」的比對基準：`before` 之前最近一個有記錄的訊號日，及那天入選的代號。
+
+    來源是 signal_ledger（每日排程記下的正式名單），不是現算——前一天的全市場自算很貴，
+    而且記下來的那份才是當天真正送出去的名單。取「有記錄的最近一天」而不是日曆上的前一天：
+    週末、假日、排程漏跑的那天本來就沒有名單，跳過它們才是「上一份名單」。
+    沒有更早的記錄回 (None, set())，呼叫端據此一檔都不標（分不出新舊時標滿 new 等於沒標）。"""
+    row = conn.execute(
+        "SELECT MAX(signal_date) FROM signal_ledger WHERE source='self_screen' AND signal_date < ?",
+        (before,)).fetchone()
+    prev = row[0] if row else None
+    if not prev:
+        return None, set()
+    codes = {r[0] for r in conn.execute(
+        "SELECT code FROM signal_ledger WHERE source='self_screen' AND signal_date=?", (prev,))}
+    return prev, codes
+
+
+def previous_custody_week_codes(conn: sqlite3.Connection, before: str) -> tuple[dict | None, set]:
+    """自算選股「Week NEW」的比對基準：**上一個集保週期**內記下的所有自算名單的代號聯集。
+
+    大戶增比／人數降比一週才變一次，所以「集保換週後才進榜」要對照的是上一整個集保週期，
+    不是前一天。週期以 custody_dist 的週日期（週五）為界，**從該週五隔天起算**：週五那份名單
+    是 17:30~19:30 提早算的，那時新一週的集保通常還沒進來，用的仍是舊資料，歸在前一個週期
+    才對。週日期沿用 custody_compare_weeks（會略過逐檔回補造成的殘缺週），並且只看 `before`
+    前一天以前的週——`before` 當天若剛好是週五，那一週的資料還不算數。
+
+    回傳 ({"from": 期間內最早的名單日, "to": 最晚的名單日}, 代號集合)。沒有兩個可用的集保週、
+    或前一週期內一份名單都沒有時回 (None, set())，呼叫端據此一檔都不標。"""
+    from datetime import date as _date, timedelta
+    from .db import custody_compare_weeks
+    as_of = (_date.fromisoformat(before) - timedelta(days=1)).isoformat()
+    weeks = custody_compare_weeks(conn, as_of)
+    if len(weeks) < 2:
+        return None, set()
+    this_week, last_week = weeks
+    rows = conn.execute(
+        "SELECT signal_date, code FROM signal_ledger WHERE source='self_screen' "
+        "AND signal_date > ? AND signal_date <= ?", (last_week, this_week)).fetchall()
+    if not rows:
+        return None, set()
+    dates = sorted({r[0] for r in rows})
+    return {"from": dates[0], "to": dates[-1]}, {r[1] for r in rows}
+
+
 def update_ledger_returns(conn: sqlite3.Connection) -> None:
     cursor = conn.execute(
         "SELECT signal_date, code, source, entry_ref_price, ret5, ret10, ret20 "

@@ -1529,10 +1529,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260817-ui52"' in html.text
-    assert 'href="/styles.css?v=20260817-ui52"' in html.text
-    assert 'src="app.js?v=20260817-ui52"' not in html.text
-    assert 'href="styles.css?v=20260817-ui52"' not in html.text
+    assert 'src="/app.js?v=20260817-ui53"' in html.text
+    assert 'href="/styles.css?v=20260817-ui53"' in html.text
+    assert 'src="app.js?v=20260817-ui53"' not in html.text
+    assert 'href="styles.css?v=20260817-ui53"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",
@@ -3078,6 +3078,92 @@ def test_self_screen_endpoint_uses_the_daily_precomputed_cache(tmp_path, monkeyp
     older = client.get("/api/picks/self-screen?date=2026-08-18").json()
     assert older["precomputed"] is False
     assert [r["code"] for r in older["rows"]] == []
+
+
+def test_self_screen_marks_new_entries_against_the_previous_recorded_list(tmp_path, monkeypatch):
+    """「新進榜」＝今天入選、上一個有記錄的交易日自算名單沒有這檔。比對來源是 signal_ledger
+    （每日排程記下的名單），同一天與其他來源（filtered_picks）的列都不能算進去；沒有更早的
+    名單時一檔都不標——分不出新舊時標滿 new 等於沒標。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    from stocks_power_rich.api import admin as admin_mod
+    monkeypatch.setattr(admin_mod, "_industry_map", lambda c: {})
+    monkeypatch.setattr(admin_mod, "_otc_industry", lambda c: {})
+    client = TestClient(create_app())
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich import selfcheck
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-08-19", "taiex": 20000.0})
+    vals = {"rev_yoy": 10.0, "w55": 1, "big_holder_ratio": 1.0, "holder_drop_ratio": -1.0,
+            "trust_3d": 0, "foreign_3d": 0, "lan_score": 12, "est_profit": 2.0, "mu_score": 15,
+            "mu_value": 99.0, "margin_3d": 0}
+    selfcheck.save_precomputed(c, {
+        "date": "2026-08-19",
+        "rows": [{"code": "9999", "name": "新來的", "sector": "測試", "vals": vals},
+                 {"code": "9998", "name": "老面孔", "sector": "測試", "vals": vals}],
+        "heatmap": [], "coverage": {"universe": 2}})
+
+    d = client.get("/api/picks/self-screen").json()
+    assert d["new_vs"] is None
+    assert all(r["is_new"] is False for r in d["rows"])    # 沒有前一份名單：不標
+
+    ins = "INSERT INTO signal_ledger (signal_date, code, name, source, entry_ref_price) VALUES (?,?,?,?,1)"
+    c.execute(ins, ("2026-08-14", "9999", "x", "self_screen"))    # 更早以前入選過，不影響
+    c.execute(ins, ("2026-08-18", "9998", "x", "self_screen"))    # 前一個交易日的名單
+    c.execute(ins, ("2026-08-18", "9999", "x", "filtered_picks")) # 別的來源，不算
+    c.execute(ins, ("2026-08-19", "9999", "x", "self_screen"))    # 當天自己，不算
+    c.commit()
+    d = client.get("/api/picks/self-screen").json()
+    assert d["new_vs"] == "2026-08-18"
+    assert {r["code"]: r["is_new"] for r in d["rows"]} == {"9999": True, "9998": False}
+    assert d["new_count"] == 1
+
+
+def test_self_screen_marks_week_new_against_the_previous_custody_week(tmp_path, monkeypatch):
+    """「Week NEW」＝上一個集保週期間記下的名單都沒有這檔。集保週以 custody_dist 的週日期
+    （週五）為界，**週期從該週五隔天算起**：週五那份名單是 17:30~19:30 提早算的、用的還是舊
+    集保，歸在前一個週期。沒有集保週或前一週期沒有名單時一檔都不標。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.chdir(tmp_path)
+    from stocks_power_rich.api import admin as admin_mod
+    monkeypatch.setattr(admin_mod, "_industry_map", lambda c: {})
+    monkeypatch.setattr(admin_mod, "_otc_industry", lambda c: {})
+    client = TestClient(create_app())
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily, bulk_upsert_custody
+    from stocks_power_rich import selfcheck
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-08-19", "taiex": 20000.0})
+    vals = {"rev_yoy": 10.0, "w55": 1, "big_holder_ratio": 1.0, "holder_drop_ratio": -1.0,
+            "trust_3d": 0, "foreign_3d": 0, "lan_score": 12, "est_profit": 2.0, "mu_score": 15,
+            "mu_value": 99.0, "margin_3d": 0}
+    codes = ["9999", "9998", "9997", "9996"]
+    selfcheck.save_precomputed(c, {
+        "date": "2026-08-19", "heatmap": [], "coverage": {"universe": 4},
+        "rows": [{"code": k, "name": k, "sector": "測試", "vals": vals} for k in codes]})
+    ins = "INSERT INTO signal_ledger (signal_date, code, name, source, entry_ref_price) VALUES (?,?,?,?,1)"
+    for d, k in [("2026-08-07", "9999"),   # 集保週 08-07 當天 → 屬更早的週期，不算
+                 ("2026-08-11", "9997"),   # 前一個集保週期 (08-07, 08-14]
+                 ("2026-08-14", "9998"),   # 週五仍屬前一個週期（當天用的是舊集保）
+                 ("2026-08-17", "9996"),   # 本週期內較早，不影響 Week NEW
+                 ("2026-08-18", "9998")]:  # 前一個交易日的名單（給日 new 用）
+        c.execute(ins, (d, k, k, "self_screen"))
+    c.commit()
+
+    d = client.get("/api/picks/self-screen").json()
+    assert d["week_new_vs"] is None                        # 還沒有集保週：不標
+    assert all(r["is_week_new"] is False for r in d["rows"])
+
+    for wk in ("2026-08-07", "2026-08-14"):
+        bulk_upsert_custody(c, wk, {"9999": {"big400_pct": 1.0, "total_holders": 100}})
+    d = client.get("/api/picks/self-screen").json()
+    assert d["week_new_vs"] == {"from": "2026-08-11", "to": "2026-08-14"}
+    assert {r["code"]: r["is_week_new"] for r in d["rows"]} == {
+        "9999": True, "9998": False, "9997": False, "9996": True}
+    assert {r["code"]: r["is_new"] for r in d["rows"]} == {
+        "9999": True, "9998": False, "9997": True, "9996": True}
+    assert d["week_new_count"] == 2
 
 
 def _mark_inputs_ready(conn, day, skip=()):

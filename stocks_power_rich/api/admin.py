@@ -387,6 +387,19 @@ def picks_self_screen(date: str | None = None, conds: str | None = None,
     pre = latest if latest and latest.get("date") == chosen else None
     result = selfcheck.build_self_screen(c, chosen, universe, vmin, smin, picked_conds,
                                          precomputed=pre)
+    # 新進榜：上一份有記錄的自算名單（signal_ledger）沒有這檔。沒有上一份就一檔都不標。
+    # 交叉檢視（關掉某些條件）時仍對照正式名單——那才是「昨天真的送出去的」。
+    # Week NEW：上一個集保週期內記下的名單都沒有這檔（見 ledger.previous_custody_week_codes）。
+    from ..ledger import previous_self_screen_codes, previous_custody_week_codes
+    new_vs, prev_codes = previous_self_screen_codes(c, chosen)
+    week_vs, week_codes = previous_custody_week_codes(c, chosen)
+    for r in result.get("rows", []):
+        r["is_new"] = bool(new_vs) and r["code"] not in prev_codes
+        r["is_week_new"] = bool(week_vs) and r["code"] not in week_codes
+    result["new_vs"] = new_vs
+    result["new_count"] = sum(1 for r in result.get("rows", []) if r["is_new"])
+    result["week_new_vs"] = week_vs
+    result["week_new_count"] = sum(1 for r in result.get("rows", []) if r["is_week_new"])
     result["snap_dates"] = snap_dates
     result["precomputed"] = pre is not None      # 讓「今天是現算還是吃快取」看得見
     result["ready_at"] = (pre or {}).get("ready_at")         # 這天的名單最早幾點算好

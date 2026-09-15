@@ -57,6 +57,8 @@ let cupChart = null, cupMatches = [], cupLoaded = false;
 // 自算籌碼/基本選股（全市場自算池）：進頁才載入（比照 cupLoaded）。
 let selfScreenLoaded = false;
 let ssRows = [], ssCaps = {}, ssData = null, ssSectorFilter = null;
+let ssNewVs = { day: null, week: null };   // 新進榜的比對基準（後端判定，前端只負責畫）
+let ssBadgeFresh = false;
 // 自算選股「勾選交叉檢視」目前生效的條件。**null＝全部套用＝原本的篩選方式**，且刻意
 // 不寫進 localStorage（使用者決定）：每次進頁面都回到原本 7 條件，不會發生「隔天打開發現
 // 名單怪怪的、卻忘了自己關過某一關」。
@@ -872,6 +874,8 @@ async function loadSelfScreen(date, conds) {
         ? [`條件 <b>${ssConds.length}/${(d.conditions || []).length}</b>（交叉檢視中）`] : []),
     ].map((s) => `<span>${s}</span>`).join("");
     ssRows = d.rows || [];
+    ssNewVs = { day: d.new_vs || null, week: d.week_new_vs || null };
+    ssBadgeFresh = true;   // 下一次畫表格時讓燙金掃一次光；排序／篩選重畫不再掃
     ssCaps = {};
     [...SC_SIGNED, ...SC_SCORE].forEach((k) => { ssCaps[k] = ssColCap(ssRows, k); });
     ssSectorFilter = null;
@@ -979,14 +983,35 @@ function ssSortVal(r, k) {
   if (k === "__code") { const n = parseFloat(r.code); return isNaN(n) ? (r.code || "") : n; }
   return r.vals[k];
 }
+// 新進榜標籤。判定在後端（signal_ledger 記下的正式名單），這裡只畫。同時符合只掛 Week NEW：
+//   Week NEW（燙金）＝上一個集保週期的名單都沒有 → 大戶籌碼換週後才進來，一週只出現一次
+//   new（冷藍）   ＝前一份名單沒有 → 今天才進來
+// 兩者刻意不同分量：一週一次的換週訊號是重點，逐日進出只是註記。說明放 title，文字本身就能被讀出。
+function ssNewBadge(r) {
+  const md = (s) => (s || "").slice(5);
+  if (r.is_week_new && ssNewVs.week) {
+    const t = `Week NEW：上一個集保週期（${md(ssNewVs.week.from)}～${md(ssNewVs.week.to)}）的自算名單都沒有這檔`;
+    return `<span class="ss-badge ss-badge-week" title="${esc(t)}">Week NEW</span>`;
+  }
+  if (r.is_new && ssNewVs.day) {
+    return `<span class="ss-badge ss-badge-day" title="${esc(`new：前一份自算名單（${md(ssNewVs.day)}）沒有這檔`)}">new</span>`;
+  }
+  return "";
+}
+
 function renderSelfScreenTable() {
   const el = $("self-screen-table"); if (!el) return;
   let rows = ssRows.slice();
   if (ssSectorFilter) rows = rows.filter((r) => r.sector === ssSectorFilter);
   const note = $("ss-picked-note");
+  // 新進榜數量跟著畫面上的標籤走：同時符合時只掛 Week NEW，所以 new 只數「不是 Week NEW 的」
+  const nWeek = rows.filter((r) => r.is_week_new).length;
+  const nDay = rows.filter((r) => r.is_new && !r.is_week_new).length;
+  const newNote = (nWeek ? `　<span class="ss-new-count">Week NEW ${nWeek}</span>` : "")
+    + (nDay ? `　<span class="ss-new-count">new ${nDay}</span>` : "");
   if (note) note.innerHTML = ssSectorFilter
-    ? `${esc(ssSectorFilter)}：${rows.length} 檔　<a href="#" id="ss-clear-sector" class="help-link">全部</a>`
-    : `${ssRows.length} 檔`;
+    ? `${esc(ssSectorFilter)}：${rows.length} 檔${newNote}　<a href="#" id="ss-clear-sector" class="help-link">全部</a>`
+    : `${ssRows.length} 檔${newNote}`;
   if (!rows.length) {
     el.innerHTML = '<div class="table-empty"><strong>' + (ssSectorFilter ? "該類股無入選個股" : "無符合條件的個股")
       + '</strong><span>可到「設定」放寬木率/木質門檻，或等財報/集保回補齊全。</span></div>';
@@ -1008,7 +1033,7 @@ function renderSelfScreenTable() {
   };
   const head = "<tr>" + hcell("__code", "股票", "", "")
     + SS_FIELDS.map(([k, label, unit]) => hcell(k, label, unit, "num ")).join("") + "</tr>";
-  const body = rows.map((r) => "<tr><td>" + stockLink(r.code, r.name) + "</td>"
+  const body = rows.map((r) => "<tr><td>" + stockLink(r.code, r.name) + ssNewBadge(r) + "</td>"
     + SS_FIELDS.map(([k]) => {
       const v = r.vals[k];
       const vs = scValStyle(k, v, ssCaps[k]);
@@ -1016,7 +1041,8 @@ function renderSelfScreenTable() {
       const txt = v == null ? "—" : (k === "w55" ? (v > 0 ? "✓" : "—") : fmt(v, 2));
       return `<td class="num"><span${vs ? ` style="${vs}"` : ""}>${txt}</span></td>`;
     }).join("") + "</tr>").join("");
-  el.innerHTML = `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
+  el.innerHTML = `<table${ssBadgeFresh ? ' class="ss-badge-fresh"' : ""}><thead>${head}</thead><tbody>${body}</tbody></table>`;
+  ssBadgeFresh = false;
 }
 
 // ========== 操盤手（多操盤手，通用區塊渲染） ==========

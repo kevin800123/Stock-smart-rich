@@ -1114,6 +1114,52 @@ button.file-label { font: inherit; }
 /* 排序表頭樣式：selfcheck 與 self-screen 兩張表共用同一份 markup／sort handler，
    樣式必須同時涵蓋兩者，否則其一有游標/hover/雙層單位、另一沒有（實測 self-screen 漏掉過）。 */
 #selfcheck-table th, #selfcheck-table td, #self-screen-table th, #self-screen-table td { padding: 8px 10px; }
+/* ── 自算選股「新進榜」標籤（判定在後端 signal_ledger，見 app.js::ssNewBadge）──
+   兩個標籤刻意不同分量：
+   · new（逐日進榜）只是註記 → 冷藍描邊小標，同全站「狀態＝藍」的語彙，不搶股名。
+   · Week NEW（集保換週才進榜，一週一次）是使用者指定的「燙金」→ 金屬箔片質感的實心標：
+     多段金色漸層模擬箔面反光、深墨色字＋一道上緣亮光做出壓印、帶偏移的軟陰影讓它浮在表格上。
+   為什麼不違反「琥珀只給注意這格」：那個語彙是**外框**（.card.alert），燙金是實心箔面＋質感，
+   軸不同、形狀不同，不會被讀成「這格有問題」；也不是紅綠，不會被讀成漲跌。 */
+.ss-badge {
+  display: inline-block; vertical-align: 1px; margin-left: 6px;
+  font-family: "Num", system-ui, sans-serif; font-size: 10px; font-weight: 800; line-height: 1;
+  letter-spacing: .04em; white-space: nowrap; border-radius: 4px; cursor: help;
+}
+.ss-badge-day {
+  padding: 3px 5px 2px; color: var(--info);
+  background: rgba(112, 184, 255, .10); box-shadow: inset 0 0 0 1px rgba(112, 184, 255, .38);
+}
+.ss-badge-week {
+  position: relative; overflow: hidden; isolation: isolate;
+  padding: 3px 7px 3px; color: #2a1803;
+  text-shadow: 0 1px 0 rgba(255, 244, 205, .55);          /* 壓印：字的下緣帶一道箔面亮光 */
+  background:
+    linear-gradient(180deg, rgba(255, 250, 225, .55) 0%, rgba(255, 250, 225, 0) 46%),   /* 上半部反光 */
+    linear-gradient(100deg, #9a6b17 0%, #e2b24a 22%, #fff0b3 42%, #d8a23a 58%, #a8761d 78%, #e9c262 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 248, 214, .85),                /* 箔片上緣的切光 */
+    inset 0 -1px 0 rgba(90, 58, 8, .55),                   /* 下緣壓痕 */
+    0 1px 2px rgba(0, 0, 0, .45), 0 3px 8px rgba(190, 140, 40, .22);
+}
+/* 光掃過箔面一次：資料剛載入時播，排序／篩選重畫不再播（見 .ss-badge-fresh） */
+.ss-badge-week::after {
+  content: ""; position: absolute; inset: -2px auto -2px 0; width: 45%; z-index: -1;
+  background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, .85) 50%, transparent 100%);
+  transform: translateX(-160%) skewX(-18deg); pointer-events: none;
+}
+.ss-badge-fresh .ss-badge-week::after { animation: ss-foil-sweep 1.3s var(--ease-out) .35s 1 both; }
+@keyframes ss-foil-sweep {
+  from { transform: translateX(-160%) skewX(-18deg); }
+  to   { transform: translateX(330%) skewX(-18deg); }
+}
+/* 表頭右側的新進榜計數：純文字、不再掛一次箔片，避免同一畫面金色氾濫 */
+.ss-new-count { color: var(--label); font-weight: 700; white-space: nowrap; }
+/* 手機：第一欄是凍結欄，標籤跟股名同一行會把它撐到 179px（表格可視寬 350px 的一半），
+   右邊的數據欄幾乎沒空間。改成換到股名下方一行，凍結欄寬回到只看股名。 */
+@media (max-width: 600px) {
+  #self-screen-table .ss-badge { display: table; margin: 3px 0 0; }
+}
 #selfcheck-table th.sc-sort, #self-screen-table th.sc-sort { cursor: pointer; user-select: none; white-space: nowrap; vertical-align: bottom; }
 #selfcheck-table th.sc-sort:hover .sc-h-label, #self-screen-table th.sc-sort:hover .sc-h-label { color: var(--text-primary); }
 #selfcheck-table th .sc-h-label, #self-screen-table th .sc-h-label { display: block; }
