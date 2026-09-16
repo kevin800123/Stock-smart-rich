@@ -1167,8 +1167,22 @@ button.file-label { font: inherit; }
 .ss-badge-fresh .ss-badge-week::after { animation: ss-scan 1.1s var(--ease-out) .3s 1 both; }
 @keyframes ss-scan { from { transform: translateX(-120%); } to { transform: translateX(280%); } }
 .ss-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-/* 表頭右側的新進榜計數：純文字，不再掛一次標籤 */
-.ss-new-count { color: var(--label); font-weight: 700; white-space: nowrap; }
+/* 表頭右側的新進榜計數＝篩選鈕（再按一次取消）。沿用標籤的 HUD 語彙：平時只是一行可點的字，
+   按下時換成同一套冰藍細框半透明晶片——看起來就是「表格正被這個條件篩著」。
+   min-height 24px 是觸控目標下限（WCAG 2.2 SC 2.5.8，同全站其他小控制項）。 */
+.ss-new-count {
+  display: inline-flex; align-items: center; min-height: 24px; padding: 0 8px; margin: 0;
+  font: inherit; font-weight: 700; color: var(--label); white-space: nowrap; cursor: pointer;
+  background: transparent; border: 0; border-radius: 3px;
+  box-shadow: inset 0 0 0 1px rgba(87, 199, 255, .18);
+  transition: color var(--dur-fast, .15s) ease, box-shadow var(--dur-fast, .15s) ease, background var(--dur-fast, .15s) ease;
+}
+.ss-new-count:hover { color: var(--text-primary); box-shadow: inset 0 0 0 1px rgba(87, 199, 255, .45); }
+.ss-new-count:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ss-new-count.on {
+  color: #7fd3ff; background: rgba(87, 199, 255, .10);
+  box-shadow: inset 0 0 0 1px rgba(87, 199, 255, .6);
+}
 /* 手機：第一欄是凍結欄，標籤跟股名同一行會把它撐到 179px（表格可視寬 350px 的一半），
    右邊的數據欄幾乎沒空間。改成換到股名下方一行，凍結欄寬回到只看股名。 */
 @media (max-width: 600px) {

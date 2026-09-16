@@ -59,6 +59,9 @@ let selfScreenLoaded = false;
 let ssRows = [], ssCaps = {}, ssData = null, ssSectorFilter = null;
 let ssNewVs = { day: null, week: null };   // 新進榜的比對基準（後端判定，前端只負責畫）
 let ssBadgeFresh = false;
+// 新進榜篩選（null／"day"／"week"）。同 7 條件勾選：不持久化，換日期或重新載入就回到全部，
+// 免得隔天打開只看到幾檔、卻忘了自己開過篩選。
+let ssNewFilter = null;
 // 自算選股「勾選交叉檢視」目前生效的條件。**null＝全部套用＝原本的篩選方式**，且刻意
 // 不寫進 localStorage（使用者決定）：每次進頁面都回到原本 7 條件，不會發生「隔天打開發現
 // 名單怪怪的、卻忘了自己關過某一關」。
@@ -879,6 +882,7 @@ async function loadSelfScreen(date, conds) {
     ssCaps = {};
     [...SC_SIGNED, ...SC_SCORE].forEach((k) => { ssCaps[k] = ssColCap(ssRows, k); });
     ssSectorFilter = null;
+    ssNewFilter = null;
     ssSort = { key: "mu_value", dir: -1 };
     renderSelfScreenBubbles(d.heatmap || []);
     renderSelfScreenTable();
@@ -1012,16 +1016,28 @@ function renderSelfScreenTable() {
   const note = $("ss-picked-note");
   // 新進榜數量：「今日新進」含 Week NEW ✦ 與 NEW（兩者都是今天才進），「本週新進」＝Week NEW。
   // 兩個數字會重疊，所以用文字講清楚是哪一種，不寫成兩個可相加的標籤名。
+  // 計數本身就是篩選鈕（再按一次取消）：計數在「新進篩選之前」算，按下後兩顆鈕仍看得到原本的數字，
+  // 才知道現在是從多少檔裡篩出來的。與類股篩選是 AND。
   const nWeek = rows.filter((r) => r.is_week_new).length;
   const nDay = rows.filter((r) => r.is_new).length;
-  const newNote = (nDay ? `　<span class="ss-new-count">今日新進 ${nDay}</span>` : "")
-    + (nWeek ? `　<span class="ss-new-count">本週新進 ${nWeek}</span>` : "");
+  const newBtn = (f, label, n) => n || ssNewFilter === f
+    ? `　<button type="button" class="ss-new-count${ssNewFilter === f ? " on" : ""}" data-new-filter="${f}"`
+      + ` aria-pressed="${ssNewFilter === f}" title="${ssNewFilter === f ? "再按一次顯示全部" : `只看${label}的個股`}">${label} ${n}</button>`
+    : "";
+  const newNote = newBtn("day", "今日新進", nDay) + newBtn("week", "本週新進", nWeek);
+  const base = rows.length;
+  if (ssNewFilter === "day") rows = rows.filter((r) => r.is_new);
+  if (ssNewFilter === "week") rows = rows.filter((r) => r.is_week_new);
+  const shown = ssNewFilter ? `${rows.length} / ${base} 檔` : `${base} 檔`;
   if (note) note.innerHTML = ssSectorFilter
-    ? `${esc(ssSectorFilter)}：${rows.length} 檔${newNote}　<a href="#" id="ss-clear-sector" class="help-link">全部</a>`
-    : `${ssRows.length} 檔${newNote}`;
+    ? `${esc(ssSectorFilter)}：${shown}${newNote}　<a href="#" id="ss-clear-sector" class="help-link">全部</a>`
+    : `${shown}${newNote}`;
   if (!rows.length) {
-    el.innerHTML = '<div class="table-empty"><strong>' + (ssSectorFilter ? "該類股無入選個股" : "無符合條件的個股")
-      + '</strong><span>可到「設定」放寬木率/木質門檻，或等財報/集保回補齊全。</span></div>';
+    const why = ssNewFilter ? (ssNewFilter === "day" ? "今天沒有新進榜的個股" : "本週沒有新進榜的個股")
+      : (ssSectorFilter ? "該類股無入選個股" : "無符合條件的個股");
+    const hint = ssNewFilter ? "再按一次上方的篩選鈕即可顯示全部入選個股。"
+      : "可到「設定」放寬木率/木質門檻，或等財報/集保回補齊全。";
+    el.innerHTML = `<div class="table-empty"><strong>${why}</strong><span>${hint}</span></div>`;
     return;
   }
   const k0 = ssSort.key, dir = ssSort.dir;
@@ -3605,7 +3621,16 @@ $("self-screen-table").addEventListener("click", (e) => {   // 自算選股表�
   else ssSort = { key: k, dir: k === "__code" ? 1 : -1 };
   renderSelfScreenTable();
 });
-$("ss-picked-note").addEventListener("click", (e) => {      // 「全部」：清除類股 drill-down
+$("ss-picked-note").addEventListener("click", (e) => {      // 「全部」：清除類股 drill-down；新進榜計數＝篩選鈕
+  const nf = e.target.closest("[data-new-filter]");
+  if (nf) {
+    const f = nf.dataset.newFilter;
+    ssNewFilter = ssNewFilter === f ? null : f;
+    renderSelfScreenTable();
+    const again = $("ss-picked-note").querySelector(`[data-new-filter="${f}"]`);
+    if (again) again.focus();                                   // 重畫後焦點留在同一顆鈕，鍵盤可連按
+    return;
+  }
   if (e.target.closest("#ss-clear-sector")) {
     e.preventDefault(); ssSectorFilter = null;
     renderSelfScreenBubbles(ssData ? ssData.heatmap : []); renderSelfScreenTable();
