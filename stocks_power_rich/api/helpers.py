@@ -768,6 +768,107 @@ def early_self_screen(c) -> dict:
     return refresh_self_screen_cache(c, day=day)
 
 
+def self_screen_thresholds(c) -> tuple:
+    """木率／木質門檻：設定值，缺或壞掉就退 analysis 預設。排程快取與新進榜推播共用，名單才會一致。"""
+    from .. import analysis
+
+    def _th(key, dflt):
+        raw = get_setting(c, key)
+        try:
+            return float(raw) if raw is not None else dflt
+        except (TypeError, ValueError):
+            return dflt
+
+    return (_th("screen_mu_value_min", analysis.SCREEN_MU_VALUE_MIN),
+            _th("screen_mu_score_min", analysis.SCREEN_MU_SCORE_MIN))
+
+
+def new_picks_push_payload(c, kind: str, force: bool = False) -> dict:
+    """自算選股新進榜 Telegram 推播的內容。kind＝"daily"（平日 21:40）／"weekly"（週六 18:00）。
+
+    **只讀排程已算好的名單快取**（`selfcheck.load_latest_precomputed`），不在推播時現算全市場
+    （同「請求裡不要放無界時間的同步計算」；排程 20:00 前就算好了）。新進榜判定與網頁共用
+    `ledger.annotate_new_entries`，兩邊不會分岔。
+
+    日期守衛——**絕不拿別天的名單冒充今天**（同 pick_close_for 的規矩）：
+    - daily：名單日期必須是今天，否則 `skipped="list_not_today"`（國定假日、當天沒算出來）。
+    - weekly：名單日期必須落在本週（週一之後），否則 `skipped="no_list_this_week"`。
+    `force=True` 只給預覽端點用，略過守衛。
+
+    漲跌% 用交易日曆（market_daily 有加權指數的日子）找基準日，再查該檔**那一天**的收盤；
+    基準日缺價就顯示「—」，不拿更早的價格頂替（stock_ohlc 稀疏是常態，拿更早的會量成多日累計）。
+    """
+    import bisect
+    from datetime import date as _date, timedelta
+    from .. import pick_push, selfcheck
+    from ..ledger import annotate_new_entries
+
+    pre = selfcheck.load_latest_precomputed(c)
+    if not pre or not pre.get("date"):
+        return {"kind": kind, "skipped": "no_list"}
+    day = pre["date"]
+    today = _now().date()
+    if kind == "daily" and not force and day != today.isoformat():
+        return {"kind": kind, "date": day, "skipped": "list_not_today"}
+    list_day = _date.fromisoformat(day)
+    week_start = list_day - timedelta(days=list_day.weekday())
+    if kind == "weekly" and not force and day < (today - timedelta(days=today.weekday())).isoformat():
+        return {"kind": kind, "date": day, "skipped": "no_list_this_week"}
+
+    vmin, smin = self_screen_thresholds(c)
+    result = selfcheck.build_self_screen(c, day, {}, vmin, smin, precomputed=pre)
+    annotate_new_entries(c, result, day)
+    rows = result["rows"]
+    cal = [r[0] for r in c.execute("SELECT date FROM market_daily WHERE taiex IS NOT NULL ORDER BY date")]
+
+    def _prev_trading_day(before: str):
+        i = bisect.bisect_left(cal, before)
+        return cal[i - 1] if i > 0 else None
+
+    def _close(code, ds):
+        if not ds:
+            return None
+        row = c.execute("SELECT close FROM stock_ohlc WHERE code=? AND date=? AND close IS NOT NULL",
+                        (str(code).split(".")[0], ds)).fetchone()
+        return row[0] if row else None
+
+    base_day = _prev_trading_day(day if kind == "daily" else week_start.isoformat())
+
+    def _item(r):
+        close, base = _close(r["code"], day), _close(r["code"], base_day)
+        chg = (close - base) / base * 100 if close is not None and base else None
+        return {"code": r["code"], "name": r.get("name"), "close": close, "chg_pct": chg,
+                "mu_value": r["vals"].get("mu_value"), "mu_score": r["vals"].get("mu_score")}
+
+    counts = {"total": len(rows), "day": result["new_count"], "week": result["week_new_count"]}
+    if kind == "daily":
+        text = pick_push.compose_daily_new_picks(
+            day=day, total=counts["total"], n_day=counts["day"], n_week=counts["week"],
+            prev_date=result["new_vs"],
+            star_items=[_item(r) for r in rows if r["is_new"] and r["is_week_new"]],
+            renew_items=[_item(r) for r in rows if r["is_new"] and not r["is_week_new"]],
+            ready_at=pre.get("ready_at"))
+    else:
+        tops = sorted((g for g in pre.get("heatmap") or [] if (g.get("buy_value") or 0) > 0),
+                      key=lambda g: g["buy_value"], reverse=True)[:3]
+        text = pick_push.compose_weekly_new_picks(
+            day=day, week_start=week_start.isoformat(), total=counts["total"], n_week=counts["week"],
+            items=[_item(r) for r in rows if r["is_week_new"]], basis=result["week_new_vs"],
+            top_sectors=[(g["sector"], g["buy_value"]) for g in tops], ready_at=pre.get("ready_at"))
+    return {"kind": kind, "date": day, "counts": counts, "text": text}
+
+
+def telegram_new_picks_job(c, cfg, kind: str) -> dict:
+    """排程 job 本體（main.py 只呼叫）。回傳值存進 job_runs.note：略過原因或送出結果都看得見。"""
+    from .. import telegram_push
+    payload = new_picks_push_payload(c, kind)
+    if payload.get("skipped"):
+        return {"kind": kind, "date": payload.get("date"), "skipped": payload["skipped"]}
+    r = telegram_push.send_message(cfg.telegram_token, cfg.telegram_chat_id, payload["text"])
+    return {"kind": kind, "date": payload["date"], "counts": payload["counts"],
+            "sent": bool(r.get("ok")), "parse_mode": r.get("parse_mode_used")}
+
+
 def refresh_self_screen_cache(c, day: str | None = None) -> dict:
     """每日排程的自算選股：**算一次、存一次**，前瞻追蹤吃同一份。回一份可觀察的結果。
 
@@ -805,15 +906,7 @@ def refresh_self_screen_cache(c, day: str | None = None) -> dict:
         return {"cached": False, "date": day, "universe": len(universe),
                 "listed": len(listed), "otc": len(otc), "skipped": "partial_universe"}
 
-    def _th(key, dflt):
-        raw = get_setting(c, key)
-        try:
-            return float(raw) if raw is not None else dflt
-        except (TypeError, ValueError):
-            return dflt
-
-    vmin = _th("screen_mu_value_min", analysis.SCREEN_MU_VALUE_MIN)
-    smin = _th("screen_mu_score_min", analysis.SCREEN_MU_SCORE_MIN)
+    vmin, smin = self_screen_thresholds(c)
     pre = selfcheck.compute_self_screen(c, day, universe)
     # ready_at＝這一天的名單「最早」算好的時間，computed_at＝這份快取最後寫入的時間。
     # 21:00 那次會為了補上融資再算一遍，只記最後寫入的話畫面永遠是 21:0x，看不出 20:00 前算好沒。
@@ -1007,6 +1100,12 @@ def job_schedule(cfg, schedule_time: str) -> list[dict]:
             {"id": "news_midday", "family": "news", "hour": "12", "minute": "0", "dow": None},
             {"id": "news_afternoon", "family": "news", "hour": "17", "minute": "0", "dow": "mon-fri"},
             {"id": "news_evening", "family": "news", "hour": "21", "minute": "10", "dow": None},
+            # 自算選股新進榜（使用者規格）：平日 21:40 今日新進、週六 18:00 本週新進＋大戶買進前三。
+            # 21:40 在 21:00 每日更新與 21:10 新聞之後；名單 20:00 前就算好，21:00 只是補融資。
+            {"id": "picks_new_daily", "family": "picks_new_daily", "hour": "21", "minute": "40",
+             "dow": "mon-fri"},
+            {"id": "picks_new_weekly", "family": "picks_new_weekly", "hour": "18", "minute": "0",
+             "dow": "sat"},
         ]
     # LINE：盤中突破（平日 09:00–13:55 每 5 分，不補跑）與週六選股週報（時間可調、日固定）
     if cfg.line_token:

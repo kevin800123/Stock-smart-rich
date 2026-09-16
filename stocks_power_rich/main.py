@@ -226,6 +226,12 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             return {"sent": bool(r.get("ok")), "parse_mode": r.get("parse_mode_used")}
         return _run
 
+    def picks_new_job(kind: str):
+        """自算選股新進榜推播（平日 21:40 daily／週六 18:00 weekly）。邏輯在 api/helpers。"""
+        def _run():
+            return _helpers.telegram_new_picks_job(conn(), cfg, kind)
+        return _run
+
     # job id → 原始函式。補跑走這份（自己算 run_key），排程走包了 run_job 的版本。
     raw_jobs = {
         "daily_update": scheduled_job,
@@ -235,6 +241,8 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         "intraday_watch": intraday_watch_job,
         "weekly_line": weekly_line_job,
         **{f"news_{slot}": news_job(slot) for slot in ("morning", "midday", "afternoon", "evening")},
+        "picks_new_daily": picks_new_job("daily"),
+        "picks_new_weekly": picks_new_job("weekly"),
     }
     app.state.jobs = raw_jobs
 

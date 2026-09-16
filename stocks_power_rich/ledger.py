@@ -147,6 +147,23 @@ def previous_custody_week_codes(conn: sqlite3.Connection, before: str) -> tuple[
     return {"from": dates[0], "to": dates[-1]}, {r[1] for r in rows}
 
 
+def annotate_new_entries(conn: sqlite3.Connection, result: dict, day: str) -> dict:
+    """在 build_self_screen 的結果上標 `is_new`／`is_week_new`，並補 `new_vs`／`week_new_vs`／計數。
+
+    網頁端點與 Telegram 新進榜推播**共用這一支**——兩邊對「新進榜」的定義必須是同一份，
+    否則網頁標 NEW 的股推播裡卻沒有（或反過來），而且沒有人會發現。沒有比對基準就一檔都不標。"""
+    new_vs, prev_codes = previous_self_screen_codes(conn, day)
+    week_vs, week_codes = previous_custody_week_codes(conn, day)
+    for r in result.get("rows", []):
+        r["is_new"] = bool(new_vs) and r["code"] not in prev_codes
+        r["is_week_new"] = bool(week_vs) and r["code"] not in week_codes
+    result["new_vs"] = new_vs
+    result["new_count"] = sum(1 for r in result.get("rows", []) if r["is_new"])
+    result["week_new_vs"] = week_vs
+    result["week_new_count"] = sum(1 for r in result.get("rows", []) if r["is_week_new"])
+    return result
+
+
 def update_ledger_returns(conn: sqlite3.Connection) -> None:
     """回填 5／10／20 日報酬＝訊號日之後第 N 個**交易日**的收盤相對進場價。
 

@@ -112,3 +112,28 @@ def test_create_app_with_line_token_registers_all_jobs(tmp_path, monkeypatch):
     finally:
         app.state.scheduler.shutdown(wait=False)
 
+
+
+def test_new_picks_telegram_jobs_register_with_real_trigger_fields(tmp_path, monkeypatch):
+    """自算選股新進榜推播：平日 21:40（今日新進）、週六 18:00（本週新進）。用真的 APScheduler 驗
+    觸發條件——只比對 job id 證明不了 day_of_week／時間真的被接受。Telegram 缺一就不註冊。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "dummy")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "dummy")
+    monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+    from stocks_power_rich.main import create_app
+
+    app = create_app(enable_scheduler=True)
+    try:
+        d = {f.name: str(f) for f in app.state.scheduler.get_job("picks_new_daily").trigger.fields}
+        assert (d["day_of_week"], d["hour"], d["minute"]) == ("mon-fri", "21", "40")
+        w = {f.name: str(f) for f in app.state.scheduler.get_job("picks_new_weekly").trigger.fields}
+        assert (w["day_of_week"], w["hour"], w["minute"]) == ("sat", "18", "0")
+    finally:
+        app.state.scheduler.shutdown(wait=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID")
+    app = create_app(enable_scheduler=True)
+    try:
+        assert app.state.scheduler.get_job("picks_new_daily") is None
+    finally:
+        app.state.scheduler.shutdown(wait=False)

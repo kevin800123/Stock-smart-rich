@@ -981,6 +981,21 @@ function renderSelfScreenBubbles(heatmap) {
       + `<span class="ss-cell-value">${esc(amt)}<small>億</small></span>`
       + `<span class="ss-cell-meta">占 ${fmt(share, 1)}% · 大戶買 ${count} 檔</span></button>`;
   }).join("");
+  fitMarketCells(el);
+}
+
+// 版塊內容放不下時逐級收合，直到放得下為止。上面 compact／micro 是依寬高猜的門檻，但「放不放得下」
+// 取決於名稱長短、換不換行、字型與視窗寬度，猜不準——實測 110px 高的「光學鏡片／頭」沒被判成
+// compact，內容卻要 ~140px，於是撞上排名數字。所以畫完逐格量（scrollHeight > clientHeight），
+// 一次只多收一樣：副標 → 排名 → 縮字 → 金額 → 名稱改一行加省略號。完整資訊都在 title／aria-label。
+const MARKET_FIT_STEPS = ["no-meta", "no-rank", "is-compact", "is-micro", "is-tiny"];
+function fitMarketCells(root) {
+  root.querySelectorAll(".ss-market-cell").forEach((cell) => {
+    for (const step of MARKET_FIT_STEPS) {
+      if (cell.scrollHeight <= cell.clientHeight + 1 && cell.scrollWidth <= cell.clientWidth + 1) break;
+      cell.classList.add(step);
+    }
+  });
 }
 
 function ssSortVal(r, k) {
@@ -1340,7 +1355,10 @@ async function loadSettings() {
       : "未設定";
     ln.className = "set-badge " + (s.line_configured && !s.line_quota_paused ? "ok" : "no");
     const tg = $("set-telegram");
-    tg.textContent = s.telegram_configured ? "已設定 ✓（每日 07:00／12:00／17:00／21:10）" : "未設定";
+    // 時間與 api/helpers.job_schedule 一致：新聞平日四場、週末只留兩場；選股新進榜平日 21:40、週六 18:00
+    tg.textContent = s.telegram_configured
+      ? "已設定 ✓（新聞 平日 07:00／12:00／17:00／21:10・週末 12:00／21:10；選股新進榜 平日 21:40・週六 18:00）"
+      : "未設定";
     tg.className = "set-badge " + (s.telegram_configured ? "ok" : "no");
     $("set-picks-only").checked = !!s.intraday_picks_only;
     $("set-loss-tol").value = s.loss_tolerance || "";
@@ -3996,7 +4014,11 @@ window.addEventListener("resize", () => {
 // 粉圓/M PLUS 是 async 載入。若熱力圖在字型載入前已排版，measureText 量到的是系統字寬度，
 // 字型 swap 後實際寬度改變 → 可能截字。字型就緒後重跑一次字級擬合（重用既有 refit 路徑）。
 if (document.fonts && document.fonts.ready) {
-  document.fonts.ready.then(() => { if (sectorChart && lastHeatmapData) fitHeatmapFonts(lastHeatmapData); });
+  document.fonts.ready.then(() => {
+    if (sectorChart && lastHeatmapData) fitHeatmapFonts(lastHeatmapData);
+    // 大戶買進版圖的「放不放得下」也是用當下字型量的，字型換好後重排一次
+    if (ssData && $("view-self-screen").classList.contains("active")) renderSelfScreenBubbles(ssData.heatmap || []);
+  });
 }
 
 // ========== 初始載入 ==========
