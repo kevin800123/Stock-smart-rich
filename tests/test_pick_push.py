@@ -1,39 +1,43 @@
-"""自算選股新進榜 Telegram 推播：訊息組裝（純函式）。
+"""自算選股新進榜 Telegram 推播：訊息組裝（純函式）與資料準備。
 
 平日 21:40 列「今天才進」（✦ 與 NEW 分兩段）、週六 18:00 列「本週新進」＋大戶買進前三子產業。
-名稱放最後一欄：Telegram 等寬字型裡中文寬度不穩，數字欄在前才對得齊。
+版面第二版：每列一行單行等寬（不用 ``` 區塊，手機上會多一顆「複製程式碼」按鈕）、表頭改成列表外的
+說明行（含中文的表頭在等寬字型裡對不齊）、加「集中：」一行、不提網頁。
 """
 import re
 
 from stocks_power_rich import pick_push as pp
 
+BT = chr(96)          # 反引號
 
-def _item(code, name, close=100.0, chg=1.5, mv=200.0, ms=12):
-    return {"code": code, "name": name, "close": close, "chg_pct": chg, "mu_value": mv, "mu_score": ms}
+
+def _item(code, name, close=100.0, chg=1.5, mv=200.0, ms=12, sector="DRAM"):
+    return {"code": code, "name": name, "close": close, "chg_pct": chg, "mu_value": mv, "mu_score": ms,
+            "sector": sector}
 
 
 def _unescaped_reserved(text):
-    """MarkdownV2 保留字元沒有被反斜線保護的位置（``` 區塊內只需跳脫 ` 與 \\，另外判斷）。"""
-    out, in_pre, i = [], False, 0
+    """MarkdownV2 保留字元沒有被反斜線保護的位置。inline code（反引號之間）只需跳脫反引號與反斜線，
+    粗體用的 * 是刻意的語法，不算。"""
+    out, in_code, i = [], False, 0
     while i < len(text):
-        if text.startswith("```", i):
-            in_pre = not in_pre
-            i += 3
-            continue
         ch = text[i]
         if ch == "\\":
             i += 2
             continue
-        if not in_pre and ch in "_*[]()~`>#+-=|{}.!" and ch != "*":
+        if ch == BT:
+            in_code = not in_code
+            i += 1
+            continue
+        if not in_code and ch in "_[]()~>#+-=|{}.!":
             out.append((i, ch))
         i += 1
     return out
 
 
-def test_display_width_counts_cjk_as_two():
-    assert pp.display_width("2330") == 4
-    assert pp.display_width("台積電") == 6
-    assert pp.display_width("漲跌%") == 5
+def _rows(msg):
+    """訊息裡的資料列：以反引號開頭的行。"""
+    return [ln for ln in msg.splitlines() if ln.startswith(BT)]
 
 
 def test_price_and_pct_formatting():
@@ -46,30 +50,37 @@ def test_price_and_pct_formatting():
     assert pp.fmt_pct(None) == "--"
 
 
-def test_table_numbers_line_up_and_name_is_last():
-    table = pp.render_pick_table([_item("3260", "威剛", 158.5, 3.2, 558.4, 12),
-                                  _item("2344", "華邦電", 26.35, -1.1, 252.0, 17)])
-    lines = table.splitlines()
-    assert lines[0].startswith("代號")
-    rows = lines[1:]
-    # 名稱之前的部分（全是 ASCII）長度一致＝數字欄對齊
-    prefix = [r.rsplit("  ", 1)[0] for r in rows]
-    assert len({len(p) for p in prefix}) == 1
-    assert rows[0].endswith("威剛") and rows[1].endswith("華邦電")
-    assert "558" in rows[0] and "+3.20%" in rows[0] and "-1.10%" in rows[1]
+def test_row_numbers_have_fixed_width_so_columns_line_up():
+    a = pp.format_pick_row(_item("3260", "威剛", 399.5, 2.83, 558.4, 12))
+    b = pp.format_pick_row(_item("9945", "潤泰新", 28.05, None, 70.0, 10))
+    assert len(a) == len(b) == 34
+    assert a.isascii() and b.isascii()                      # 等寬區只放 ASCII，對齊才可靠
+    assert "+2.83%" in a and "--" in b
 
 
-def test_daily_message_has_two_sections_and_escapes_markdown():
+def test_concentration_line_only_counts_groups_with_two_or_more():
+    items = [_item("1", "a", sector="DRAM"), _item("2", "b", sector="DRAM"), _item("3", "c", sector="DRAM"),
+             _item("4", "d", sector="IC封裝"), _item("5", "e", sector="IC封裝"),
+             _item("6", "f", sector="銀行"), _item("7", "g", sector="未分類"), _item("8", "h", sector="未分類")]
+    assert pp.concentration_line(items) == "集中：DRAM 3 檔、IC封裝 2 檔"
+    assert pp.concentration_line([_item("1", "a", sector="DRAM"), _item("2", "b", sector="銀行")]) is None
+
+
+def test_daily_message_layout():
     msg = pp.compose_daily_new_picks(
         day="2026-09-16", total=55, n_day=3, n_week=30, prev_date="2026-09-15",
         star_items=[_item("3260", "威剛"), _item("2344", "華邦電")],
-        renew_items=[_item("6651", "全宇昕")], ready_at="2026-09-16T17:31:00")
-    assert "今日新進榜" in msg and "09\\-16（三）" in msg
+        renew_items=[_item("6651", "全宇昕", sector="MLCC")], ready_at="2026-09-16T17:31:00")
+    assert "今日新進榜" in msg and "09\-16（三）" in msg
     assert "入選 55｜今日新進 3｜本週新進 30" in msg
-    assert msg.index("✦") < msg.index("NEW：")                     # ✦ 段在前
-    assert msg.count("```") == 4                                     # 兩個表格區塊
-    assert "威剛" in msg and "全宇昕" in msg
+    assert "集中：DRAM 2 檔" in msg
+    assert "代號｜收盤｜漲跌%｜木率｜木質｜名稱" in msg
+    assert msg.index("集中") < msg.index("代號｜") < msg.index("✦") < msg.index("NEW：")
+    assert "```" not in msg                                     # 不用程式碼區塊（手機會多一顆複製鈕）
+    rows = _rows(msg)
+    assert len(rows) == 3 and rows[0].endswith("威剛") and rows[2].endswith("全宇昕")
     assert "17:31 算好" in msg and "非投資建議" in msg
+    assert "網頁" not in msg                                     # 使用者決定不提網頁
     assert _unescaped_reserved(msg) == []
 
 
@@ -77,14 +88,15 @@ def test_daily_message_omits_an_empty_section():
     msg = pp.compose_daily_new_picks(
         day="2026-09-16", total=55, n_day=1, n_week=30, prev_date="2026-09-15",
         star_items=[], renew_items=[_item("6651", "全宇昕")], ready_at=None)
-    assert "✦" not in msg and "NEW：" in msg and msg.count("```") == 2
+    assert "✦" not in msg and "NEW：" in msg and len(_rows(msg)) == 1
+    assert "集中" not in msg                                     # 只有 1 檔，不印集中度
 
 
 def test_daily_message_says_no_new_entries_when_both_sections_are_empty():
     msg = pp.compose_daily_new_picks(
         day="2026-09-16", total=55, n_day=0, n_week=30, prev_date="2026-09-15",
         star_items=[], renew_items=[], ready_at=None)
-    assert "今日無新進榜" in msg and "```" not in msg
+    assert "今日無新進榜" in msg and _rows(msg) == [] and "代號｜" not in msg
     assert _unescaped_reserved(msg) == []
 
 
@@ -94,10 +106,11 @@ def test_daily_message_caps_rows_at_the_limit_star_first():
     msg = pp.compose_daily_new_picks(
         day="2026-09-16", total=80, n_day=25, n_week=40, prev_date="2026-09-15",
         star_items=stars, renew_items=renews, ready_at=None, limit=20)
-    listed = re.findall(r"^\d{4} ", msg, flags=re.M)
-    assert len(listed) == 20
-    assert "1014 " in msg and "2004 " in msg and "2005 " not in msg   # ✦ 15 檔全列，NEW 只剩 5 格
-    assert "另 5 檔見網頁" in msg
+    rows = _rows(msg)
+    assert len(rows) == 20
+    assert any("1014 " in r for r in rows) and any("2004 " in r for r in rows)
+    assert not any("2005 " in r for r in rows)                 # ✦ 15 檔全列，NEW 只剩 5 格
+    assert "另 5 檔未列出" in msg and "網頁" not in msg
 
 
 def test_weekly_message_lists_week_change_and_top_sectors():
@@ -107,10 +120,11 @@ def test_weekly_message_lists_week_change_and_top_sectors():
         basis={"from": "2026-09-07", "to": "2026-09-11"},
         top_sectors=[("晶圓代工", 753.7e8), ("DRAM", 175e8), ("手機晶片相關", 167.1e8)],
         ready_at="2026-09-18T17:31:00")
-    assert "本週新進榜" in msg and "09\\-14～09\\-18" in msg
-    assert "本週%" in msg and "+8.30%" in msg
-    assert "晶圓代工 753\\.7 億" in msg and "DRAM 175\\.0 億" in msg
-    assert "09\\-07～09\\-11" in msg
+    assert "本週新進榜" in msg and "09\-14～09\-18" in msg
+    assert "代號｜收盤｜本週%｜木率｜木質｜名稱" in msg and "+8.30%" in msg
+    assert "集中：DRAM 2 檔" in msg
+    assert "晶圓代工 753\.7 億" in msg and "DRAM 175\.0 億" in msg
+    assert "09\-07～09\-11" in msg and "```" not in msg and "網頁" not in msg
     assert _unescaped_reserved(msg) == []
 
 
@@ -119,7 +133,7 @@ def test_weekly_message_says_no_new_entries_but_keeps_sectors():
         day="2026-09-18", week_start="2026-09-14", total=55, n_week=0, items=[],
         basis={"from": "2026-09-07", "to": "2026-09-11"},
         top_sectors=[("晶圓代工", 753.7e8)], ready_at=None)
-    assert "本週無新進榜" in msg and "晶圓代工" in msg and "```" not in msg
+    assert "本週無新進榜" in msg and "晶圓代工" in msg and _rows(msg) == []
 
 
 # ---------------------------------------------------------------- 資料準備（api/helpers）
@@ -177,7 +191,8 @@ def test_daily_payload_splits_star_and_renew_and_prices_against_previous_trading
     star, renew = text.split("NEW：")
     assert "9999" in star and "+10.00%" in star and "9998" not in star
     assert "9998" in renew and "9997" not in text
-    assert "--" in renew.split("9998")[1].splitlines()[0]     # 前一交易日缺價：不拿更早的 09-10 頂替
+    row_9998 = next(ln for ln in renew.splitlines() if "9998" in ln)
+    assert "--" in row_9998                                   # 前一交易日缺價：不拿更早的 09-10 頂替
 
 
 def test_daily_payload_skips_when_the_list_is_not_today(conn, monkeypatch):

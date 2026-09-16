@@ -837,7 +837,8 @@ def new_picks_push_payload(c, kind: str, force: bool = False) -> dict:
     def _item(r):
         close, base = _close(r["code"], day), _close(r["code"], base_day)
         chg = (close - base) / base * 100 if close is not None and base else None
-        return {"code": r["code"], "name": r.get("name"), "close": close, "chg_pct": chg,
+        return {"code": r["code"], "name": r.get("name"), "sector": r.get("sector"),
+                "close": close, "chg_pct": chg,
                 "mu_value": r["vals"].get("mu_value"), "mu_score": r["vals"].get("mu_score")}
 
     counts = {"total": len(rows), "day": result["new_count"], "week": result["week_new_count"]}
