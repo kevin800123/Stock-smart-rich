@@ -148,34 +148,45 @@ def previous_custody_week_codes(conn: sqlite3.Connection, before: str) -> tuple[
 
 
 def update_ledger_returns(conn: sqlite3.Connection) -> None:
-    cursor = conn.execute(
+    """回填 5／10／20 日報酬＝訊號日之後第 N 個**交易日**的收盤相對進場價。
+
+    兩個 2026-09 實際踩到的錯（設定頁上 filtered_picks 7,576 筆、自 07-13 起，5/10/20 日
+    全顯示「尚未到期」，同期的杯柄卻有數字）：
+    1. **代號後綴**：CSV 匯入的 filtered_picks 存 `2330.TW`／`6488.TWO`，官方日線 stock_ohlc
+       存 `2330`。舊寫法 `code=?` 一筆都對不到，報酬永遠是空的。查價一律用去掉後綴的代號。
+    2. **交易日要數日曆，不是數該檔的日線筆數**：舊寫法取「該檔 stock_ohlc 第 N 筆」，
+       日線缺一天就安靜地量成第 N+1 天。交易日曆改取 market_daily（有加權指數的日子；
+       當天早上指數還沒寫入的列不算），找出第 N 個交易日，再查該檔**那一天**的收盤；
+       那天缺價就先留空、之後補到再算，不拿別天頂替。
+
+    補算已記下的訊號**不是**事後回補偏誤：名單當天就記了，這裡只是補上後來的價格結果。
+    """
+    import bisect
+    cal = [r[0] for r in conn.execute(
+        "SELECT date FROM market_daily WHERE taiex IS NOT NULL ORDER BY date")]
+    if not cal:
+        return
+    pending = conn.execute(
         "SELECT signal_date, code, source, entry_ref_price, ret5, ret10, ret20 "
         "FROM signal_ledger "
         "WHERE ret5 IS NULL OR ret10 IS NULL OR ret20 IS NULL"
-    )
-    pending = cursor.fetchall()
+    ).fetchall()
     for row in pending:
         sig_date, code, source, ref_price, r5, r10, r20 = row
         if not ref_price or ref_price <= 0:
             continue
-
-        ohlc = conn.execute(
-            "SELECT date, close FROM stock_ohlc "
-            "WHERE code=? AND date >= ? "
-            "ORDER BY date ASC",
-            (code, sig_date)
-        ).fetchall()
-
-        if not ohlc:
-            continue
-
+        bare = str(code).split(".")[0]
+        start = bisect.bisect_right(cal, sig_date)     # 訊號日之後的第一個交易日
         updates = {}
-        if r5 is None and len(ohlc) > 5:
-            updates["ret5"] = (ohlc[5]["close"] - ref_price) / ref_price * 100
-        if r10 is None and len(ohlc) > 10:
-            updates["ret10"] = (ohlc[10]["close"] - ref_price) / ref_price * 100
-        if r20 is None and len(ohlc) > 20:
-            updates["ret20"] = (ohlc[20]["close"] - ref_price) / ref_price * 100
+        for col, n, cur in (("ret5", 5, r5), ("ret10", 10, r10), ("ret20", 20, r20)):
+            j = start + n - 1
+            if cur is not None or j >= len(cal):
+                continue
+            px = conn.execute(
+                "SELECT close FROM stock_ohlc WHERE code=? AND date=? AND close IS NOT NULL",
+                (bare, cal[j])).fetchone()
+            if px and px[0]:
+                updates[col] = (px[0] - ref_price) / ref_price * 100
 
         if updates:
             cols = ", ".join(f"{k}=?" for k in updates)

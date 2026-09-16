@@ -214,6 +214,14 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - `/api/health` 多 `jobs`（各 job 最近一列）。logging 取代 print（`spr`／`spr.jobs`／`spr.gemini`），cli.py 的 print 保留。
 - **測試**：`tests/test_job_runs.py`；`test_health.py` 只改一處（`test_alert_deduplication_logic` 改呼叫 `app.state.jobs["daily_update"]`，排程器拿到的已是 run_job 包過、同日第二次呼叫會被去重）；`test_gemini.py` 三條 `capsys` 改 `caplog`。時間走 `helpers._now`；`main.py` 改成 `_helpers._now()` 呼叫時取（`from … import _now` 綁死的名字 patch 不到）。conftest autouse 樁掉 `catchup_missed_jobs`（否則每條起排程器的測試都會真的連外），要測補跑標 `@pytest.mark.real_catchup`。七個守衛都做過反證（含拿掉唯一鍵 → 3 條並發測試紅；並發測試把先查弄瞎、鎖換成不互斥仍只跑一次）。`test_alert_deduplication_logic` 樁掉六步＋網路絆線（socket 層記錄並拋，斷言零次；反證：樁換成真 `httpx.get` → 紅）。`pytest -k not_again` 會把 `not` 當運算子，反證要用完整名稱。
 
+### 前瞻報酬回填修正（2026-09-16）
+
+`update_ledger_returns` 兩個錯：(1) CSV 的 filtered_picks 代號帶 `.TW`／`.TWO`、`stock_ohlc` 不帶，
+`code=?` 永遠對不到——production 7,576 筆 5/10/20 日全空（既有測試把日線代號寫成 `2330.TW` 蓋住了
+bug，已改）；(2) 「第 N 日」原本數該檔日線筆數，缺一天就錯位，改用 `market_daily`（`taiex` 非空）
+當交易日曆找第 N 個交易日、查那天收盤，缺價留空再補。補算已記下的訊號不算事後回補偏誤。自算選股
+（代號正確）也還沒有報酬，原因未查明，部署後觀察下一次 21:00。
+
 ### 自算選股新進榜標籤（ui54，2026-09）
 
 `is_new`＝前一份有記錄的自算名單（`signal_ledger`）沒有這檔；`is_week_new`＝**上一個集保週期**

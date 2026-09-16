@@ -99,12 +99,16 @@ def test_ledger_flow_and_api(tmp_path, monkeypatch):
     assert rows[0]["entry_ref_price"] == 1000.0
     assert rows[0]["ret5"] is None
 
+    # 貼近真實資料：stock_ohlc 的代號**不帶後綴**（官方日線就是 "2330"），交易日曆來自
+    # market_daily。這條測試原本把日線寫成 "2330.TW" 才通過，正好把「CSV 訊號帶後綴、日線
+    # 不帶」這個真 bug 蓋住——production 上 7,576 筆 filtered_picks 因此一筆報酬都沒回填。
     for i in range(7):
         ds = (date.today() + timedelta(days=i)).isoformat()
         close_price = 1000.0 if i < 5 else (1050.0 if i == 5 else 1060.0)
+        upsert_market_daily(conn, {"date": ds, "taiex": 20000.0})
         conn.execute(
             "INSERT INTO stock_ohlc (date, code, open, high, low, close) VALUES (?, ?, ?, ?, ?, ?)",
-            (ds, "2330.TW", 1000.0, 1000.0, 1000.0, close_price)
+            (ds, "2330", 1000.0, 1000.0, 1000.0, close_price)
         )
     conn.commit()
 
@@ -190,3 +194,68 @@ def test_record_self_screen_signals_uses_the_given_signal_date(tmp_path, monkeyp
     ledger.record_self_screen_signals(conn, {"2330": {}}, 50, 9, signal_date="2026-10-01")
     rows = conn.execute("SELECT signal_date, entry_ref_price FROM signal_ledger").fetchall()
     assert [tuple(r) for r in rows] == [("2026-10-01", 1000.0)]
+
+
+def _ledger_db(tmp_path, monkeypatch):
+    db_file = str(tmp_path / "t.sqlite")
+    monkeypatch.setenv("SPR_DB_PATH", db_file)
+    conn = get_connection(db_file)
+    init_db(conn)
+    return conn
+
+
+def _put_close(conn, ds, code, close):
+    conn.execute("INSERT INTO stock_ohlc (date, code, open, high, low, close) VALUES (?,?,?,?,?,?)",
+                 (ds, code, close, close, close, close))
+
+
+def test_update_ledger_returns_matches_suffixed_codes_to_bare_ohlc_codes(tmp_path, monkeypatch):
+    """CSV 匯入的 filtered_picks 代號帶 .TW／.TWO，stock_ohlc 的官方日線代號不帶後綴。
+    舊寫法直接 code=? 比對，一筆都對不到，production 上 7,576 筆訊號的報酬因此永遠是空的。"""
+    conn = _ledger_db(tmp_path, monkeypatch)
+    days = ["2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07", "2026-08-10"]
+    for ds in days:
+        upsert_market_daily(conn, {"date": ds, "taiex": 20000.0})
+    ins = "INSERT INTO signal_ledger (signal_date, code, name, source, entry_ref_price) VALUES (?,?,?,?,?)"
+    conn.execute(ins, ("2026-08-03", "2330.TW", "台積電", "filtered_picks", 100.0))
+    conn.execute(ins, ("2026-08-03", "6488.TWO", "環球晶", "filtered_picks", 200.0))
+    for ds in days:
+        _put_close(conn, ds, "2330", 110.0)
+        _put_close(conn, ds, "6488", 180.0)
+    conn.commit()
+
+    update_ledger_returns(conn)
+    got = {r["code"]: r["ret5"] for r in conn.execute("SELECT code, ret5 FROM signal_ledger")}
+    assert got == {"2330.TW": 10.0, "6488.TWO": -10.0}
+
+
+def test_update_ledger_returns_counts_trading_days_from_the_market_calendar(tmp_path, monkeypatch):
+    """「5 日報酬」＝訊號日之後第 5 個**交易日**的收盤，交易日曆取 market_daily（有加權指數的日子）。
+    舊寫法數的是「該檔在 stock_ohlc 裡的第 5 筆」——日線缺一天就安靜地量成第 6、7 天。
+    那一天剛好缺收盤就先留空，之後補到資料再算，不拿別天的價格頂替。"""
+    conn = _ledger_db(tmp_path, monkeypatch)
+    cal = ["2026-08-03", "2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07",
+           "2026-08-10", "2026-08-11"]
+    for ds in cal:
+        upsert_market_daily(conn, {"date": ds, "taiex": 20000.0})
+    upsert_market_daily(conn, {"date": "2026-08-12"})          # 當天早上的列：還沒有指數，不算交易日
+    ins = "INSERT INTO signal_ledger (signal_date, code, name, source, entry_ref_price) VALUES (?,?,?,?,?)"
+    conn.execute(ins, ("2026-08-03", "2330", "x", "cup_handle", 100.0))   # 第 5 個交易日＝08-10
+    conn.execute(ins, ("2026-08-04", "2317", "y", "self_screen", 100.0))  # 第 5 個交易日＝08-11，那天缺價
+    closes = {"2026-08-03": 100, "2026-08-04": 101, "2026-08-06": 103,    # 2330 缺 08-05
+              "2026-08-07": 104, "2026-08-10": 120, "2026-08-11": 130}
+    for ds, px in closes.items():
+        _put_close(conn, ds, "2330", float(px))
+    for ds in ["2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07", "2026-08-10"]:
+        _put_close(conn, ds, "2317", 150.0)                    # 2317 缺 08-11
+    conn.commit()
+
+    update_ledger_returns(conn)
+    got = {r["code"]: r["ret5"] for r in conn.execute("SELECT code, ret5 FROM signal_ledger")}
+    assert got["2330"] == 20.0      # 08-10 的 120，不是缺一天後錯位的 08-11（130）
+    assert got["2317"] is None      # 第 5 個交易日缺收盤：留空，不拿 08-10 頂替
+
+    _put_close(conn, "2026-08-11", "2317", 110.0)             # 之後補到資料
+    conn.commit()
+    update_ledger_returns(conn)
+    assert conn.execute("SELECT ret5 FROM signal_ledger WHERE code='2317'").fetchone()[0] == 10.0
