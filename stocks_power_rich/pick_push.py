@@ -45,10 +45,17 @@ def _fmt_int(v) -> str:
     return MISSING if v is None else f"{v:.0f}"
 
 
+# 欄寬＝該欄最長可能值＋1 格間隔（代號 4 碼／收盤最長 "999.95"／漲跌最長 "-10.00%"／木率最長 4 位／木質 0–19）。
+# **總寬度要壓在手機一行內**：第一版 34 字元，實際推播在手機上（實測一行約 39 個等寬字元寬、中文約 1.7 格）
+# 只剩 2 個中文字的空間，「有成精密」「愛派司」都被折到下一行。改成 27 字元後名稱約有 6 個中文字的空間。
+ROW_WIDTHS = (4, 7, 8, 5, 3)
+
+
 def format_pick_row(it: dict) -> str:
-    """一列的數字部分（純 ASCII、未跳脫）：代號 6／收盤 8／漲跌 9／木率 6／木質 5。"""
-    return (f"{str(it['code']):<6}{fmt_price(it.get('close')):>8}{fmt_pct(it.get('chg_pct')):>9}"
-            f"{_fmt_int(it.get('mu_value')):>6}{_fmt_int(it.get('mu_score')):>5}")
+    """一列的數字部分（純 ASCII、未跳脫）：代號／收盤／漲跌／木率／木質，欄寬見 ROW_WIDTHS。"""
+    wc, wp, wg, wv, ws = ROW_WIDTHS
+    return (f"{str(it['code']):<{wc}}{fmt_price(it.get('close')):>{wp}}{fmt_pct(it.get('chg_pct')):>{wg}}"
+            f"{_fmt_int(it.get('mu_value')):>{wv}}{_fmt_int(it.get('mu_score')):>{ws}}")
 
 
 def _row_line(it: dict) -> str:

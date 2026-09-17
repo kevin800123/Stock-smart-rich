@@ -53,9 +53,19 @@ def test_price_and_pct_formatting():
 def test_row_numbers_have_fixed_width_so_columns_line_up():
     a = pp.format_pick_row(_item("3260", "威剛", 399.5, 2.83, 558.4, 12))
     b = pp.format_pick_row(_item("9945", "潤泰新", 28.05, None, 70.0, 10))
-    assert len(a) == len(b) == 34
+    assert len(a) == len(b) == sum(pp.ROW_WIDTHS)
     assert a.isascii() and b.isascii()                      # 等寬區只放 ASCII，對齊才可靠
     assert "+2.83%" in a and "--" in b
+
+
+def test_row_fits_a_phone_line_and_extreme_values_stay_separated():
+    """手機一行實測約 39 個等寬字元寬：第一版 34 字元讓名稱只剩 2 個中文字、被折到下一行。
+    壓到 27 以內；但縮欄寬不能讓最長的值黏在一起（黏起來就讀錯欄）。"""
+    assert sum(pp.ROW_WIDTHS) <= 27
+    worst = pp.format_pick_row(_item("9999", "x", 999.95, -10.0, 1900.0, 19))
+    assert worst.split() == ["9999", "999.95", "-10.00%", "1900", "19"]
+    big = pp.format_pick_row(_item("2330", "x", 12345.0, 10.0, 999.0, 9))
+    assert big.split() == ["2330", "12345", "+10.00%", "999", "9"]
 
 
 def test_concentration_line_only_counts_groups_with_two_or_more():
