@@ -224,6 +224,25 @@ def test_stock_source_coverage_is_independent_by_market(tmp_path):
     assert [tuple(row) for row in rows] == [("TPEx", "failed", 1), ("TWSE", "complete", 1)]
 
 
+def test_stock_source_coverage_a_later_failure_does_not_undo_complete(tmp_path):
+    """已經抓成功的來源，之後重抓失敗不可改寫成 failed：資料早就寫進表了，失敗的重抓並沒有刪掉它。
+    實際發生（2026-09-16／17）：17:30 抓到當天櫃買行情，21:00 重抓時櫃買斷線，覆蓋表被改成 failed，
+    21:00 的自算選股重算因此判「資料沒到齊」連兩晚被擋掉。失敗原因與次數照樣留下來。"""
+    from stocks_power_rich.db import set_stock_source_coverage
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    set_stock_source_coverage(conn, "2026-09-17", "TPEx", "quotes", "complete", 865)
+    set_stock_source_coverage(conn, "2026-09-17", "TPEx", "quotes", "failed", 0, "官方行情資料未回傳")
+    row = conn.execute("SELECT status, row_count, attempts, last_error FROM stock_source_coverage").fetchone()
+    assert tuple(row) == ("complete", 865, 2, "官方行情資料未回傳")
+
+    set_stock_source_coverage(conn, "2026-09-18", "TPEx", "quotes", "failed", 0, "not ready")
+    set_stock_source_coverage(conn, "2026-09-18", "TPEx", "quotes", "complete", 870)   # 失敗之後補到照常升級
+    row = conn.execute("SELECT status, row_count FROM stock_source_coverage WHERE date='2026-09-18'").fetchone()
+    assert tuple(row) == ("complete", 870)
+
+
 def test_stock_source_coverage_accepts_holiday_status_rejects_garbage(tmp_path):
     from stocks_power_rich.db import set_stock_source_coverage
 

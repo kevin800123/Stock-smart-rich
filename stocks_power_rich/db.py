@@ -724,6 +724,14 @@ def set_stock_source_coverage(conn: sqlite3.Connection, date: str, market: str,
     returned no quotes on this date across two separate backfill rounds, so it is
     treated as a confirmed non-trading day (see stock_flow.backfill) rather than a
     fetch error to retry.
+
+    **"complete" is sticky**: a later refetch that fails does not undo it. The rows were
+    already written (the upserts only run on non-empty payloads), so a failed refetch
+    deletes nothing. Before this, the 21:00 daily update refetching the day that the
+    17:30 early run had already completed, while TPEx was cutting connections, flipped
+    it to "failed" and blocked the 21:00 self-screen recompute two nights running
+    (2026-09-16/17). attempts and last_error still record the failed refetch, so the
+    failure is not silent.
     """
     if status not in ("complete", "failed", "holiday"):
         raise ValueError("coverage status must be complete, failed, or holiday")
@@ -732,7 +740,11 @@ def set_stock_source_coverage(conn: sqlite3.Connection, date: str, market: str,
         "INSERT INTO stock_source_coverage "
         "(date, market, source, status, row_count, attempts, last_error, updated_at) "
         "VALUES (?,?,?,?,?,1,?,?) ON CONFLICT(date, market, source) DO UPDATE SET "
-        "status=excluded.status, row_count=excluded.row_count, "
+        "status=CASE WHEN stock_source_coverage.status='complete' THEN 'complete' "
+        "ELSE excluded.status END, "
+        "row_count=CASE WHEN stock_source_coverage.status='complete' "
+        "AND excluded.status<>'complete' THEN stock_source_coverage.row_count "
+        "ELSE excluded.row_count END, "
         "attempts=stock_source_coverage.attempts+1, last_error=excluded.last_error, "
         "updated_at=excluded.updated_at",
         (date, market, source, status, row_count, error, stamp),

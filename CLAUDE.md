@@ -1104,6 +1104,21 @@ self_screen 三格都會是「尚未到期」，那是**正確**顯示不是故�
   本機 3.4 秒不具代表性（本機缺季報與足夠日線，貴的那半沒跑滿），production 的耗時要部署後才知道。
 - **已知副作用**：國定假日的平日，`update_day(今天)` 會把當天覆蓋表標成 `failed`。
   `stock_flow.backfill` 的「兩輪確認才標假日」會把它收斂成 `holiday`，不會卡住，只是多幾次重試。
+- **覆蓋表的 `complete` 不會被之後的失敗改回去（2026-09-17）**。上線後連兩晚（09-16、09-17）21:00 的
+  自算選股重算都回 `data_not_ready`，名單卻在 17:31 就算好了。原因：21:00 的 `run_update` 會對同一天再跑一次
+  `update_day`，而櫃買行情那次抓失敗，`set_stock_source_coverage` 無條件覆寫，把 17:30 的 `complete` 改成
+  `failed`——資料其實都在（實測界霖／環球晶／元太日線都到 09-17，upsert 只在有資料時才寫，失敗的重抓刪不掉東西），
+  但門檻看的是覆蓋表，於是 21:00 那次重算天天被擋，「融資3日」欄天天空白，`/api/stock-flow/coverage` 也報櫃買行情
+  缺 5 天的假缺口。修法在寫入邊界：`complete` 是黏的，之後的 `failed`／`holiday` 不改狀態與 `row_count`，但
+  `attempts` 與 `last_error` 照記（失敗仍看得見）。反證：兩條新測試在修之前都紅（狀態被改成 failed、門檻列出
+  `TPEx/quotes`／`TPEx/institutional`）。**已經被標錯的舊日期不會自己變回來**——`stock_flow.backfill`（法人研究頁
+  「補下一批」）會優先重抓 failed 的日期，白天重抓成功就改回 complete；不處理也不影響名單與推播。
+- **21:00 櫃買為什麼失敗（查到一半）**：同一晚櫃買的法人、融資都抓成功，**只有行情失敗**；行情是三支裡最大的
+  （`dailyQuotes` 約 1.7MB），與 09-12／13 那兩晚「21:00 前後櫃買把大檔傳到一半切斷」同一型。22:39 本機連打 4 次
+  全正常（200、867 檔），故障時段已過，重現不了。**這支是動態端點，沒有 `Accept-Ranges`／`ETag`**，
+  `tpex.get_resumable` 的續傳解法用不上。連帶影響：21:00 的 `_compute_otc_margin_maintenance` 拿到空行情算不出
+  上櫃融資維持率，要靠之後的 `_heal_margin_maintenance` 補。尚未處理；可行的方向是行情重抓失敗時改用
+  `stock_ohlc` 裡 17:30 已存好的當天收盤。
 
 ### 排程補跑 ＋ 執行紀錄表 ＋ logging（2026-09）
 

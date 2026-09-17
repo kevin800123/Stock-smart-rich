@@ -309,6 +309,32 @@ def test_daily_update_keeps_other_market_when_one_source_raises(tmp_path, monkey
     assert states[("TPEx", "quotes")] == "complete"
 
 
+def test_evening_refetch_failure_keeps_the_self_screen_gate_open(tmp_path, monkeypatch):
+    """17:30 提早計算時四項都抓到，21:00 每日更新重抓時櫃買斷線：資料還在，門檻不可因此關上。"""
+    from stocks_power_rich.api.helpers import self_screen_missing_inputs
+
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    quote = {"6488": {"open": 1, "high": 2, "low": 1, "close": 2, "volume_lots": 10, "amount_twd": 100}}
+    inst = {"6488": {"name": "環球晶", "foreign": 1, "trust": 0, "dealer": 0, "total": 1}}
+    for name in ("fetch_stock_daily", "fetch_t86"):
+        monkeypatch.setattr(stock_flow.twse, name, lambda day=None, p=(quote if "daily" in name else inst): p)
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily", lambda day=None: quote)
+    monkeypatch.setattr(stock_flow.tpex, "fetch_tpex_insti", lambda day=None: inst)
+    monkeypatch.setattr(stock_flow.twse, "fetch_margin_detail", lambda day=None: {})
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_margin", lambda day=None: {})
+    stock_flow.update_day(conn, date(2026, 9, 17))
+    assert self_screen_missing_inputs(conn, "2026-09-17") == []
+
+    def cut(day=None):
+        raise RuntimeError("ReadError: Connection reset by peer")
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily", cut)
+    monkeypatch.setattr(stock_flow.tpex, "fetch_tpex_insti", cut)
+    stock_flow.update_day(conn, date(2026, 9, 17))
+    assert self_screen_missing_inputs(conn, "2026-09-17") == []
+    assert conn.execute("SELECT close FROM stock_ohlc WHERE date='2026-09-17' AND code='6488'").fetchone()[0] == 2
+
+
 def test_mature_dates_do_not_depend_on_having_a_hit(tmp_path):
     from stocks_power_rich.db import bulk_upsert_ohlc, bulk_upsert_stock_flow
 
