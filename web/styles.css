@@ -1242,6 +1242,11 @@ button.file-label { font: inherit; }
   font: inherit; cursor: pointer; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .08);
   transition: filter var(--dur-fast) var(--ease-out), opacity var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
 }
+/* **子元素一律不准被 flex 壓縮**：flex 項目預設 flex-shrink:1，而名稱有 overflow:hidden（最小高度因此
+   變成 0），放不下時瀏覽器會先把名稱壓扁——內容沒有溢出、scrollHeight 量不到，fitMarketCells 以為放得下，
+   畫面上卻是被切掉半行的名稱（實測 1600px「半導體」名稱被壓成 0px、「光學鏡片／頭」18px<行高 21px）。
+   不准壓縮之後，放不下就是真的溢出，才量得到、才會逐級收合。 */
+.ss-market-cell > * { flex-shrink: 0; }
 .ss-market-cell.tone-1 { background: linear-gradient(145deg, #397fba, #1d527f); }
 .ss-market-cell.tone-2 { background: linear-gradient(145deg, #2d6da4, #194467); }
 .ss-market-cell.tone-3 { background: linear-gradient(145deg, #285d89, #173751); }
