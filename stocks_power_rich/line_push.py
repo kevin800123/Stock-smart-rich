@@ -208,9 +208,10 @@ def compose_daily_brief(row: dict, sectors: list, watch: list,
             g.append(item)
         blocks.append(g)
     # 杯柄型態（有「新符合」或「突破壓力」才顯示，避免天天重複整串清單）
-    # picks=True＝清單已過「籌碼/基本選股」交集，標題明示；無 CSV 榜當日退回全杯柄
+    # picks=True＝清單已過選股名單交集，標題寫出是哪一份（picks_label：自算籌碼/基本 或
+    # 籌碼/基本，見 api/helpers.active_picks）；兩份名單都沒有的日子退回全杯柄
     if cup and (cup.get("new") or cup.get("breakout")):
-        label = "杯柄型態&籌碼/基本" if cup.get("picks") else "杯柄型態"
+        label = f"杯柄型態&{cup.get('picks_label') or '籌碼/基本'}" if cup.get("picks") else "杯柄型態"
         g = [f"【{label}】符合 {cup.get('count', 0)} 檔"]
         for b in (cup.get("breakout") or [])[:6]:
             g.append(f"🚀 突破 {b.get('name') or b.get('code')} {_fmt(b.get('close'))}(壓{_fmt(b.get('resistance'))})")
@@ -695,11 +696,12 @@ def reply_messages(token: str, reply_token: str, messages: list) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-def compose_breakout_alert(hits: list[dict], hhmm: str) -> str:
+def compose_breakout_alert(hits: list[dict], hhmm: str, picks_label: str = "籌碼/基本") -> str:
     """盤中突破警示訊息。hits＝[{code,name,price,resistance,pick,vol_ok,vol_ratio}]，
     同輪多檔合併成一則。
 
-    pick=True（同時符合籌碼/基本選股）標 ⭐，並排在前面。
+    pick=True（同時符合選股名單）標 ⭐，並排在前面。picks_label＝用的是哪一份名單
+    （自算籌碼/基本 或 籌碼/基本，見 api/helpers.active_picks），圖例照實寫出。
 
     **量能只有兩種寫法**：達標寫倍數、算不出寫「量能未確認」。未達標的根本不會走到這裡
     （掃描端已擋下），所以這裡沒有第三種。**未確認一定要寫出來**——不寫的話讀者會以為
@@ -717,7 +719,7 @@ def compose_breakout_alert(hits: list[dict], hhmm: str) -> str:
         lines.append(f"{star}{h.get('name') or h.get('code')} {_fmt(h.get('price'))}"
                      f"(壓{_fmt(h.get('resistance'))}){vol_txt}")
     if any(h.get("pick") for h in hits):
-        lines.append("⭐=同時符合籌碼/基本選股")
+        lines.append(f"⭐=同時符合{picks_label}選股")
     lines.append("（盤中價有延遲，確認量價後再行動）")
     return "\n".join(lines)[:MAX_LEN]
 

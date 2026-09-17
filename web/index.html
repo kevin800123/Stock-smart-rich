@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260817-ui57" />
+  <link rel="stylesheet" href="styles.css?v=20260817-ui58" />
   <script src="/vendor/echarts.min.js"></script>
   <!-- 只有個股 K 線圖（#stock-chart）用這套，其餘圖表都還是上面的 echarts.min.js。
        見 CLAUDE.md「個股 K 線改 Lightweight Charts」那節。 -->
@@ -321,7 +321,7 @@
         </div>
         <div id="rotation" class="table-wrap fill-half"></div>
         <div class="pane-heading">
-          <div><h3>交叉選股</h3><p>你的籌碼／基本選股 × 當日族群，同族群聚合、依當日漲跌排序，點股號開 K 線；需先在「籌碼／基本選股」載入當日 CSV。</p></div>
+          <div><h3>交叉選股</h3><p>選股名單 × 當日族群，依當日漲跌排序，點股號開 K 線。名單優先用「自算籌碼／基本選股」，CSV 比較新時才用「籌碼／基本選股」。</p></div>
           <span id="cross-note" class="pane-count">—</span>
         </div>
         <div id="cross"></div>
@@ -357,7 +357,7 @@
           <span class="hm-tabs">
             <button class="tf cup-r-tab" data-r="50">寬鬆50</button><button class="tf cup-r-tab" data-r="60">標準60</button><button class="tf cup-r-tab active" data-r="70">嚴格70</button><button class="tf cup-r-tab" data-r="80">極嚴80</button>
           </span>
-          <button id="btn-cup-picks" class="ctf">同時符合籌碼/基本</button>
+          <button id="btn-cup-picks" class="ctf">同時符合選股名單</button>
           <button id="btn-cup-bt" class="ctf">📊 回測報告</button>
           <span id="cup-note" class="muted small"></span>
         </div>
@@ -378,7 +378,7 @@
           　・<b>極嚴80</b>：收盤在區間 8 成以上，幾乎貼著壓力線，命中最少但最接近突破臨界。<br/>
           ⑤ <b>品質濾網（固定）</b>：杯深 12%~50%（太淺是橫盤假杯、太深是跌爛的股）∧ 柄低點不破杯身中點（賣壓收斂）∧ 收盤距壓力線 10% 以內（貼近突破口才有交易價值）。<br/>
           <span class="dot orange">●</span><b>趨勢線</b>＝左緣→右緣（杯口斜率）；<span class="dot blue">●</span><b>壓力線</b>＝右緣水平延伸，<b>突破壓力線＝進場訊號</b>。<br/>
-          清單依 %R（收盤強度）排序；綠框●＝同時符合「籌碼/基本選股」（W55翻多∧大戶增比&gt;0∧營收年增&gt;0∧推估EPS&gt;0）。<br/>
+          清單依 %R（收盤強度）排序；綠框●＝同時符合選股名單。名單優先用「自算籌碼/基本選股」排程算好的那份（7 條件＋木率／木質門檻），CSV 比較新時才用「籌碼/基本選股」（W55翻多∧大戶增比&gt;0∧營收年增&gt;0∧推估EPS&gt;0）；上方說明列寫著用的是哪一份、哪一天。<br/>
           盤中 09:00–13:35 哨兵每 5 分鐘盯這份清單，現價「有效突破」才 LINE 警示（⭐＝交集股）：
           突破門檻＝壓力線 + 0.3×ATR（碰到壓力線不算，要有力道才算，波動大的股門檻自動較寬鬆）；
           且需連續兩輪（約 5 分鐘）都站穩門檻之上才推播，單輪穿越又跌回不算，避免開盤瞬間插針、
@@ -673,7 +673,7 @@
           <div class="set-row"><label>Gemini 金鑰</label><span id="set-gemini" class="set-badge"></span><span class="muted small">（金鑰只能透過 .env 設定，此處不顯示也不輸入）</span></div>
           <div class="set-row"><label>LINE 推播</label><span id="set-line" class="set-badge"></span><button id="btn-line-test" class="file-label">📱 測試推播</button><span id="set-line-status" class="muted small"></span></div>
           <div class="set-row"><label>Telegram 財經新聞</label><span id="set-telegram" class="set-badge"></span><button id="btn-telegram-test" class="file-label">📱 測試推播</button><span id="set-telegram-status" class="muted small"></span></div>
-          <div class="set-row"><label>盤中突破哨兵</label><label class="wave-toggle" style="margin:0"><input type="checkbox" id="set-picks-only" /> 只警示「同時符合籌碼/基本選股」的突破</label><span class="muted small">（未勾＝全部杯柄股都盯，交集股標 ⭐）</span></div>
+          <div class="set-row"><label>盤中突破哨兵</label><label class="wave-toggle" style="margin:0"><input type="checkbox" id="set-picks-only" /> 只警示「同時符合選股名單」的突破</label><span class="muted small">（未勾＝全部杯柄股都盯，交集股標 ⭐；名單優先用自算籌碼/基本選股，CSV 比較新時才用 CSV）</span></div>
           <div class="set-row"><label>單筆可容忍虧損（元）</label><input type="number" id="set-loss-tol" class="stock-input" min="0" step="1000" placeholder="例如 20000" /><span class="muted small">（杯柄頁自動算建議部位＝此金額 ÷ 每股風險；建議填總資金的 1–2%，清空＝不啟用）</span></div>
           <div class="set-row"><label>杯柄流動性門檻</label>日均成交額 ≥ <input type="number" id="set-cup-liq" class="mini-input" min="0" step="0.1" /> 億元<span class="muted small">（濾掉買不到/賣不掉的冷門股；它們的價格序列也是均線出現方塊平台的原因。填 0＝關閉濾網，清空＝回預設）</span></div>
           <div class="set-row"><label>自算選股門檻</label>木率 &gt; <input type="number" id="set-screen-mv" class="mini-input" min="0" step="1" /> ・ 木質 &gt; <input type="number" id="set-screen-ms" class="mini-input" min="0" step="1" /><span class="muted small">（「自算籌碼/基本選股」的入選門檻；預設 木率50、木質9）</span></div>
@@ -698,6 +698,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260817-ui57"></script>
+  <script src="app.js?v=20260817-ui58"></script>
 </body>
 </html>

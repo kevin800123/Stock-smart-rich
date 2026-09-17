@@ -20,6 +20,8 @@ from .helpers import (
     note_ai_failure,
     bump_ai_calls,
     checklist_inputs,
+    active_picks,
+    csv_picks,
 )
 from ..sources import twse, taifex, mis, tpex
 from .. import analysis, gemini, ss_trader, traders
@@ -372,15 +374,36 @@ def sectors(date: str | None = None):
 
 @router.get("/sectors/picks")
 def sectors_picks(date: str | None = None):
+    """交叉選股：選股名單 × 當日族群。名單由 `active_picks` 決定（優先自算、CSV 較新才用 CSV）；
+    `date` 是某個 CSV 快照日時，一律改看那天的 CSV 名單（沿用舊行為，前端目前不帶）——**包括那天剛好
+    也是自算快取日的情況**：明講要看某天的 CSV，就不該因為同一天有自算而被換掉。
+
+    **自算名單要另外查官方類股**：自算列的 `sector` 是細分類優先（記憶體、被動元件），對不上
+    證交所類股指數的名稱；它也沒有 CSV 的「上市半導體」產業欄，直接丟給 picks_by_sector 會
+    安靜地回空。官方類股取公司基本資料（`_industry_map`／`_otc_industry`，與類股指數同一套命名），
+    再過 `industry_to_sector` 把上櫃獨有的文化創意／農業科技併進「其他」（與 CSV 那條一致）。
+    查不到類股的檔數攤在 `unclassified`，不靜默丟掉。"""
     c = conn()
-    from ..db import get_snapshot_dates, get_snapshot
-    dates = get_snapshot_dates(c)
-    snap = date if date in dates else (dates[-1] if dates else None)
-    if not snap:
-        return {"date": None, "groups": []}
-    picks = analysis.filtered_picks(get_snapshot(c, snap))
+    from ..db import get_snapshot_dates
+    picks = active_picks(c)
+    already_that_csv = picks["source"] == "csv" and picks["date"] == date
+    if date and not already_that_csv and date in get_snapshot_dates(c):
+        picks = csv_picks(c, date)
+    if not picks["source"]:
+        return {"date": None, "groups": [], "source": None, "label": None, "total": 0, "unclassified": 0}
+    snap = picks["date"]
+    if picks["source"] == "self_screen":
+        universe = {**_otc_industry(c), **_industry_map(c)}
+        rows = [{"code": r["code"], "name": r.get("name") or r["code"],
+                 "industry": (universe.get(r["code"]) or {}).get("sector"),
+                 "mu_value": (r.get("vals") or {}).get("mu_value")} for r in picks["rows"]]
+    else:
+        rows = picks["rows"]
+    unclassified = sum(1 for r in rows if not analysis.industry_to_sector(r.get("industry")))
     sector_chg = {s["name"]: s["chg_pct"] for s in _sectors_for(c, snap)}
-    return {"date": snap, "groups": analysis.picks_by_sector(picks, sector_chg)}
+    return {"date": snap, "source": picks["source"], "label": picks["label"],
+            "total": len(rows), "unclassified": unclassified,
+            "groups": analysis.picks_by_sector(rows, sector_chg)}
 
 @router.get("/sectors/{sector}/stocks")
 def sector_stocks(sector: str, date: str | None = None):

@@ -2268,11 +2268,20 @@ function renderCupChips() {
     if (d.filtered_illiquid) liqBits.push(`量太少剔除 ${d.filtered_illiquid}`);
     if (d.filtered_no_volume) liqBits.push(`無量能資料剔除 ${d.filtered_no_volume}`);
   }
+  // 名單優先用自算、CSV 較新才用 CSV（後端 active_picks 判定）；兩份條件不同，用哪份、哪天都要寫出來
+  // has_picks＝有名單可交集（名單本身可能 0 檔，picks_total 才是名單檔數）
+  const picksName = `${d.picks_label || "籌碼/基本"}選股（名單 ${(d.picks_date || "").slice(5)}）`;
   if (note) note.textContent = `（${d.date}　%R≥${d.min_r ?? cupMinR}　符合 ${d.count} 檔`
-    + (d.has_picks ? `／同時符合籌碼基本 ${d.picks_count} 檔` : "") + `／掃描 ${d.bars} 根`
+    + (d.has_picks ? `／同時符合${picksName} ${d.picks_count} 檔` : "／無選股名單") + `／掃描 ${d.bars} 根`
     + (liqBits.length ? `／${liqBits.join("・")}` : "") + `）`;
-  if (cupPicksOnly && !d.has_picks) { list.innerHTML = '<span class="muted small">尚未載入當日 CSV，無「籌碼/基本選股」可交集（請先到該分頁上傳）</span>'; if (cupChart) cupChart.clear(); renderCupRisk(null); return; }
-  if (!cupMatches.length) { list.innerHTML = `<span class="muted small">${cupPicksOnly ? "無同時符合兩者的個股" : "今日無符合杯柄型態的個股"}</span>`; if (cupChart) cupChart.clear(); renderCupRisk(null); return; }
+  if (cupPicksOnly && !d.has_picks) {
+    list.innerHTML = '<span class="muted small">尚無選股名單可交集（自算籌碼/基本選股還沒算出，也沒有匯入 CSV）</span>'; if (cupChart) cupChart.clear(); renderCupRisk(null); return;
+  }
+  if (!cupMatches.length) {
+    const msg = !cupPicksOnly ? "今日無符合杯柄型態的個股"
+      : d.picks_total === 0 ? `${picksName}今天沒有入選股，無從交集` : "無同時符合兩者的個股";
+    list.innerHTML = `<span class="muted small">${esc(msg)}</span>`; if (cupChart) cupChart.clear(); renderCupRisk(null); return;
+  }
   list.innerHTML = cupMatches.map((m, i) => {
     const tip = `杯深 ${fmt(m.cup_depth_pct, 1)}%・距壓力 ${fmt(m.dist_pct, 1)}%`;
     return `<a href="#" class="cup-chip${i === 0 ? " active" : ""}${m.in_picks ? " pick" : ""}" data-i="${i}" title="${tip}">${esc(m.code)} ${esc(m.name || "")}<span class="cup-r">%R ${fmt(m.percent_r, 0)}</span></a>`;
@@ -2892,8 +2901,16 @@ async function loadCross() {
   const note = $("cross-note");
   try {
     const d = await getJSON("/api/sectors/picks");
-    if (!d.groups || !d.groups.length) { el.innerHTML = '<div class="muted small">尚無選股或族群資料（請先到「籌碼/基本選股」載入當日 CSV）。</div>'; if (note) note.textContent = ""; return; }
-    if (note) note.textContent = `（選股日 ${d.date || ""}，共 ${d.groups.length} 族群）`;
+    // 名單優先用自算、CSV 較新才用 CSV（後端 active_picks）；用哪份、查不到類股幾檔都要寫出來
+    const src = `${d.label || "籌碼/基本"}選股 ${d.date || ""}`;
+    if (!d.groups || !d.groups.length) {
+      const msg = !d.source ? "尚無選股名單（自算籌碼/基本選股還沒算出，也沒有匯入 CSV）。"
+        : d.total ? `${src} 的 ${d.total} 檔入選股都查不到官方類股，暫時無法分組。`
+        : `${src} 沒有入選股。`;
+      el.innerHTML = `<div class="muted small">${esc(msg)}</div>`; if (note) note.textContent = ""; return;
+    }
+    if (note) note.textContent = `（${src}，共 ${d.groups.length} 族群`
+      + (d.unclassified ? `；${d.unclassified} 檔查不到類股未列` : "") + `）`;
     el.innerHTML = d.groups.map((g) => {
       const cls = chgClass(g.chg_pct);
       const arrow = g.chg_pct > 0 ? "▲" : g.chg_pct < 0 ? "▼" : "";

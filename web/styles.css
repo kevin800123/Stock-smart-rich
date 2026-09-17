@@ -792,7 +792,7 @@ body[data-public] .status-bar { display: none; }
 .cup-chip.active { background: var(--accent); color: #1a1a1a; font-weight: 700; border-color: var(--accent); }
 .cup-chip .cup-r { font-size: var(--fs-xs); opacity: .8; }
 .cup-chip.active .cup-r { opacity: 1; }
-.cup-chip.pick { border-color: var(--down); }               /* 同時符合籌碼/基本：綠框標記 */
+.cup-chip.pick { border-color: var(--down); }               /* 同時符合選股名單：綠框標記 */
 .cup-chip.pick::before { content: "●"; color: var(--down); font-size: 9px; margin-right: -2px; }
 .cup-chip.active.pick::before { color: #1a5c2f; }
 
@@ -1648,6 +1648,11 @@ a.stock:hover { text-decoration: underline; }
   .picks-filter { flex-wrap: nowrap; overflow-x: auto; width: 100%; padding-bottom: 2px; }
   .picks-filter-item { white-space: nowrap; }
   .pane-heading { min-height: 34px; }
+  /* 交叉選股右上角要寫「用哪份名單、哪天、幾檔查不到類股」，一行放不下。.pane-count 是 nowrap、
+     標題列不換行，於是說明文字被擠成 33px 寬的直條（標題列 76→471px）。手機上讓它換到下一行。 */
+  #view-rotation .pane-heading { flex-wrap: wrap; align-items: flex-start; }
+  #view-rotation .pane-heading > div { flex: 1 1 100%; min-width: 0; }
+  #view-rotation .pane-count { white-space: normal; }
   .table-wrap.fill-half { max-height: 60vh; }
   .ss-market-map { height: 620px; min-height: 620px; border-radius: var(--r); }
   .ss-map-heading { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 5px; }

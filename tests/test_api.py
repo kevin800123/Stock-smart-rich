@@ -1529,10 +1529,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260817-ui57"' in html.text
-    assert 'href="/styles.css?v=20260817-ui57"' in html.text
-    assert 'src="app.js?v=20260817-ui57"' not in html.text
-    assert 'href="styles.css?v=20260817-ui57"' not in html.text
+    assert 'src="/app.js?v=20260817-ui58"' in html.text
+    assert 'href="/styles.css?v=20260817-ui58"' in html.text
+    assert 'src="app.js?v=20260817-ui58"' not in html.text
+    assert 'href="styles.css?v=20260817-ui58"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",
@@ -1998,6 +1998,8 @@ def test_cup_handle_screen_endpoint(tmp_path, monkeypatch):
     insert_chip_snapshot(c, "2025-03-01", [{"code": "2330.TW", "name": "台積電", "w55": 1,
                          "big_holder_ratio": 0.5, "rev_yoy": 10, "est_profit": 1, "lan_value": 80}])
     monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1}})
+    from stocks_power_rich.sources import tpex
+    monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {})   # 沒樁會真的去櫃買抓名稱
     app = create_app()
     client = TestClient(app)
     r = client.get("/api/patterns/cup-handle").json()

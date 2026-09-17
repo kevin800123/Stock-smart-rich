@@ -263,11 +263,52 @@ def _ohlc_names(c) -> dict:
     return names
 
 
-def _picks_code_set(c) -> set:
+# 畫面與推播上怎麼稱呼這份名單——與側欄兩個選股頁的名稱一致，讀者才找得到是哪一頁
+PICKS_SOURCE_LABEL = {"self_screen": "自算籌碼/基本", "csv": "籌碼/基本"}
+
+
+def _picks_result(source: str | None, date: str | None, rows: list) -> dict:
+    return {"source": source, "label": PICKS_SOURCE_LABEL.get(source), "date": date,
+            "rows": rows, "codes": {str(r["code"]).split(".")[0] for r in rows}}
+
+
+def csv_picks(c, snap_date: str) -> dict:
+    return _picks_result("csv", snap_date, analysis.filtered_picks(get_snapshot(c, snap_date)))
+
+
+def active_picks(c) -> dict:
+    """「現在該用哪一份選股名單」的唯一判定：族群交叉選股、杯柄 ⭐、盤中哨兵、LINE 杯柄段共用。
+
+    **優先用自算選股**（排程算好的快取），**CSV 最新快照日比快取新**才退回 CSV。使用者仍會
+    上傳 CSV，而快取可能好幾天沒更新（data_not_ready／partial_universe 會連續跳過）——拿較舊的
+    自算名單蓋掉較新的 CSV 是安靜的錯。同一天兩份都有時用自算（脫離 XQ 的方向）。
+
+    回傳 {source, label, date, rows, codes}：source＝"self_screen"／"csv"／None（兩份都沒有），
+    codes 一律去掉 .TW 後綴。**名單是空的不代表沒有名單**——呼叫端判斷「有沒有名單可交集」要看
+    source，不要看 codes 是不是空的：用 codes 判斷的話，自算今天 0 檔入選時「只警示入選股」會被
+    安靜跳過、改成全部杯柄股都發警示（審查實跑抓到的）。
+
+    快取壞掉（缺鍵、列沒有 vals）記 warning 並當作沒有快取，退回 CSV：盤中哨兵每 5 分鐘跑一次，
+    一份壞快取不能讓整天的突破警示停擺。
+    """
+    from .. import selfcheck
     dates = get_snapshot_dates(c)
-    if not dates:
-        return set()
-    return {p["code"].split(".")[0] for p in analysis.filtered_picks(get_snapshot(c, dates[-1]))}
+    csv_date = dates[-1] if dates else None
+    pre = selfcheck.load_latest_precomputed(c)
+    if isinstance(pre, dict) and pre.get("date") and (csv_date is None or pre["date"] >= csv_date):
+        try:
+            vmin, smin = self_screen_thresholds(c)
+            rows = selfcheck.build_self_screen(c, pre["date"], {}, vmin, smin, precomputed=pre)["rows"]
+            return _picks_result("self_screen", pre["date"], rows)
+        except Exception as e:  # noqa: BLE001 — 壞快取要看得見（log），但不可拖垮呼叫端
+            log.warning("[active_picks] 自算選股快取無法使用，改用 CSV：%s: %s", type(e).__name__, e)
+    if csv_date:
+        return csv_picks(c, csv_date)
+    return _picks_result(None, None, [])
+
+
+def _picks_code_set(c) -> set:
+    return active_picks(c)["codes"]
 
 
 def _picks_index(c, ds: str) -> dict:
@@ -399,7 +440,8 @@ def cup_min_turnover_setting(c) -> float:
         return float(patterns.CUP_MIN_TURNOVER_DEFAULT)
 
 
-def cup_handle_screen_logic(c, min_r: float = patterns.MIN_R_DEFAULT):
+def cup_handle_screen_logic(c, min_r: float = patterns.MIN_R_DEFAULT, picks: dict | None = None):
+    """`picks`＝`active_picks(c)` 的結果；呼叫端已經取過就傳進來，免得同一次推播載入名單兩次。"""
     from ..db import ohlc_dates, get_all_ohlc
     ods = ohlc_dates(c)
     if not ods:
@@ -444,11 +486,18 @@ def cup_handle_screen_logic(c, min_r: float = patterns.MIN_R_DEFAULT):
                                      "resistance": m["resistance"], "atr": a,
                                      "avg_vol": m.get("avg_volume_lots")})
             set_ai_cache(c, f"cupsig:{latest}", sig_snapshot)
-    picks = _picks_code_set(c)
+    # 交集標記在快取之後才加（每次重算、不進 cuphandle 快取），名單換日不會留下舊標記
+    picks = picks if picks is not None else active_picks(c)
+    codes = picks["codes"]
     for m in result["stocks"]:
-        m["in_picks"] = m["code"] in picks
-    result["has_picks"] = bool(picks)
+        m["in_picks"] = m["code"] in codes
+    result["has_picks"] = picks["source"] is not None   # 有名單可交集（可能 0 檔），不是「名單非空」
+    result["picks_total"] = len(codes)
     result["picks_count"] = sum(1 for m in result["stocks"] if m["in_picks"])
+    # 用哪一份名單、哪一天要講出來：自算與 CSV 條件不同，交集結果也不同
+    result["picks_source"] = picks["source"]
+    result["picks_label"] = picks["label"]
+    result["picks_date"] = picks["date"]
     for m in result["stocks"]:
         o = c.execute("SELECT high, low, close FROM stock_ohlc WHERE code=? "
                       "ORDER BY date DESC LIMIT 15", (m["code"],)).fetchall()
@@ -466,13 +515,15 @@ def _cup_push_info(c) -> dict | None:
     ods = ohlc_dates(c)
     if not ods:
         return None
-    scr = cup_handle_screen_logic(c)
+    picks_info = active_picks(c)
+    scr = cup_handle_screen_logic(c, picks=picks_info)
     if scr.get("note") or not scr.get("date"):
         return None
     today = scr["date"]
     stocks = scr.get("stocks") or []
-    picks = _picks_code_set(c)
-    if picks:
+    picks = picks_info["codes"]
+    has_list = picks_info["source"] is not None   # 名單 0 檔也照樣交集（結果就是 0 檔），不退回全杯柄
+    if has_list:
         stocks = [s for s in stocks if s["code"] in picks]
     prev_ds = ods[-2] if len(ods) >= 2 else None
     prev = get_ai_cache(c, f"cupsig:{prev_ds}") if prev_ds else None
@@ -481,7 +532,7 @@ def _cup_push_info(c) -> dict | None:
         prev_codes = {p["code"] for p in prev}
         new = [{"code": s["code"], "name": s["name"]} for s in stocks
                if s["code"] not in prev_codes]
-    if prev and picks:
+    if prev and has_list:
         prev = [p for p in prev if p["code"] in picks]
     breakout = []
     if prev:
@@ -495,7 +546,7 @@ def _cup_push_info(c) -> dict | None:
             if cl is not None and p.get("resistance") is not None and cl > p["resistance"]:
                 breakout.append({**p, "close": cl})
     return {"count": len(stocks), "new": new[:6], "breakout": breakout[:6],
-            "picks": bool(picks)}
+            "picks": has_list, "picks_label": picks_info["label"]}
 
 
 def _daily_messages(c, full: bool, force: bool = False) -> tuple[list, dict | None]:
@@ -938,11 +989,17 @@ def _intraday_scan(c, push: bool = True) -> dict:
     today = datetime.now().strftime("%Y-%m-%d")
     alerted = set(get_ai_cache(c, f"cupalerted:{today}") or [])
     pending = [s for s in sig if s["code"] not in alerted and s.get("resistance")]
-    picks = _picks_code_set(c)
-    if picks and get_setting(c, "intraday_picks_only") == "1":
-        pending = [s for s in pending if s["code"] in picks]
-    if not pending:
+    if not pending:   # 沒有待監控股就不必載入選股名單（每 5 分鐘一次，自算快取有數百 KB）
         return {"checked": 0, "hits": [], "note": "無待監控訊號（或今日皆已警示）"}
+    picks_info = active_picks(c)
+    picks = picks_info["codes"]
+    # 看「有沒有名單」不看「名單空不空」：自算今天 0 檔入選時，使用者開了只警示入選股，就該一檔都不發
+    # （並在 note 寫出是哪份名單擋掉的），不可安靜地改成全部杯柄股都警示
+    if picks_info["source"] and get_setting(c, "intraday_picks_only") == "1":
+        pending = [s for s in pending if s["code"] in picks]
+        if not pending:   # 被「只警示入選股」濾光要講出來，否則分不出是沒訊號還是被名單擋掉
+            return {"checked": 0, "hits": [], "picks_source": picks_info["source"],
+                    "note": f"杯柄訊號股都不在{picks_info['label']}選股名單（{picks_info['date']}）"}
     otc = _otc_names(c)
     tokens = [f"{'otc' if s['code'] in otc else 'tse'}_{s['code']}.tw" for s in pending]
     # 改用 fetch_mis_rank（同一支 MIS 端點、同樣一次請求），差別只在它把 v=當日累積量
@@ -981,13 +1038,15 @@ def _intraday_scan(c, push: bool = True) -> dict:
     # 不必重新穿越一次。也不寫進 cupalerted，所以不會被當成「已警示」而永久略過。
     set_ai_cache(c, f"cuppending:{today}", sorted(crossing.keys()))
     if hits and push:
-        txt = line_push.compose_breakout_alert(hits, datetime.now().strftime("%H:%M"))
+        txt = line_push.compose_breakout_alert(hits, datetime.now().strftime("%H:%M"),
+                                               picks_label=picks_info["label"] or "籌碼/基本")
         r = line_push.broadcast_text(cfg.line_token, txt)
         if not r.get("ok") and _is_quota_exceeded(r):
             _note_line_quota_exceeded(c)
         set_ai_cache(c, f"cupalerted:{today}", sorted(alerted | {h["code"] for h in hits}))
     # held_by_volume 攤開來，否則「今天怎麼都沒警示」分不出是沒股票突破還是量都不夠
-    return {"checked": len(pending), "hits": hits, "held_by_volume": held}
+    return {"checked": len(pending), "hits": hits, "held_by_volume": held,
+            "picks_source": picks_info["source"]}
 
 
 def _now() -> datetime:

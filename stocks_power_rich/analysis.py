@@ -307,9 +307,11 @@ def subindustry_counts(rows: list[dict]) -> list[dict]:
     return out
 
 
-# CSV 產業欄 → 官方類股名 的別名（少數命名差異；其餘去前綴後即相同）
+# CSV 產業欄 → 官方類股名 的別名（少數命名差異；其餘去前綴後即相同）。
+# 「農業科技」（無「業」）是官方公司基本資料的寫法（tpex._OTC_INDUSTRY_CODE），自算選股
+# 走官方類股時會用到；上櫃獨有的文化創意／農業科技沒有證交所類股指數，跟 CSV 一樣併進「其他」。
 _SECTOR_ALIAS = {"化工": "化學", "航運業": "航運", "金融": "金融保險",
-                 "文化創意": "其他", "農業科技業": "其他"}
+                 "文化創意": "其他", "農業科技業": "其他", "農業科技": "其他"}
 
 
 def industry_to_sector(industry: str | None) -> str | None:

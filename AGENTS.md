@@ -164,7 +164,7 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - **沿用既有 `.freshness.stale`**，不另開樣式——第一版自寫 `.csv-stale` 還用了不存在的 token `--accent-warn`（靠 fallback 僥倖正確）。全站琥珀是 `var(--accent)`。
 - 實跑四種狀態驗過，只有「落後 ≥2 天」會顯示。
 
-- **⚠️ 停止上傳 CSV 仍會凍住四個地方**（尚未處理）：`api/csv.py`（選股頁）、`api/helpers.py`（**LINE／Telegram 推播的今日精選與週報**）、`api/market.py`（族群 picks）、`api/public.py`（公開總覽）——都是 `filtered_picks(get_snapshot(...))`，會永遠送出最後一份名單且無跡象。第五個（`record_self_screen_signals` 的前瞻追蹤）已於「每日排程預算＋快取」那批修掉。
+- **⚠️ 停止上傳 CSV 會凍住哪些地方（2026-09-17 查證更正）**：舊記載的「公開總覽」「Telegram 今日精選」是錯的（公開總覽不讀名單；Telegram 新進榜讀自算快取）。族群交叉選股與杯柄 ⭐ 已改優先讀自算（見「選股名單來源」）。**刻意維持 CSV**：籌碼選股頁與上傳、自選股入選紀錄 `_picks_index`、LINE 週報與 `週報` webhook、21:00 `public_summary`、`ledger.record_daily_signals`、`traders/ss.py`（要 CSV 的月增／累增欄）。
 
 ### 自算選股改「每日排程預算＋快取」（2026-09）
 
@@ -242,6 +242,15 @@ bug，已改）；(2) 「第 N 日」原本數該檔日線筆數，缺一天就�
 表頭「今日新進／本週新進」計數即篩選鈕（ui55，再按取消、與子產業篩選 AND、不持久化；計數在篩選前算，檔數顯示「3 / 5 檔」）。
 版圖排名壓到名稱已修（ui56）：排名改回文字流、內容往下溢出，畫完 `fitMarketCells` 逐格量放不下就依序收 副標→排名→縮字→金額→名稱一行（寬高門檻猜不準，1600px 下舊版 5 格重疊、新版 0）。
 版圖名稱被壓扁已修（ui57）：flex 子項預設會縮、名稱 overflow:hidden 最小高度 0，放不下時被壓扁而不是溢出，fit 量不到 → `.ss-market-cell > * { flex-shrink: 0 }`（1600px 舊 6 格、新 0）。
+
+### 選股名單來源：優先自算、CSV 較新才用 CSV（ui58，2026-09）
+
+- 唯一判定 `api/helpers.active_picks(c)` → `{source, label, date, rows, codes}`，族群交叉選股／杯柄頁／LINE 杯柄段／盤中哨兵共用。**快取日期 ≥ CSV 最新日用自算，CSV 較新才用 CSV**（快取可能連續幾天沒更新，不可蓋掉新 CSV）。**0 檔仍是自算那份**，不偷換 CSV。壞快取 log warning 退回 CSV。
+- **呼叫端判斷「有沒有名單」看 `source`，不看 `codes` 空不空**：看 codes 的話自算 0 檔入選時「只警示入選股」會被安靜跳過、全部杯柄股都發 LINE（審查實跑抓到）。`has_picks`＝有名單，名單檔數另給 `picks_total`。`?date=CSV 日` 一律回那天 CSV（含剛好等於快取日）。手機交叉選股標題列在 `#view-rotation` 換行。杯柄測試要樁 `tpex.fetch_otc_names`，否則真的連外。
+- 族群交叉選股：自算列的 `sector` 是細分類，對不上類股指數、也沒有 `industry` 欄（直接給 `picks_by_sector` 會安靜回空）→ 改查 `_industry_map`／`_otc_industry`，`_SECTOR_ALIAS` 補官方寫法 `農業科技`→其他；查不到類股回 `unclassified`。
+- LINE 杯柄段只載一次名單（`cup_handle_screen_logic(picks=)`）；盤中哨兵有待監控股才載名單、被「只警示入選股」濾光時 note 寫出名單與日期。
+- 所有文案寫出用哪份、哪天（`picks_label`：`自算籌碼/基本`／`籌碼/基本`）。
+- **舊測試只種 CSV、正式站走快取**——`tests/test_picks_source.py` 種「只在快取」的股；10 個反證各自轉紅。
 
 ### 個股 K 線改 Lightweight Charts（2026-09）
 

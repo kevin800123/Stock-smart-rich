@@ -284,7 +284,7 @@ Same flex container bites line-clamping: **`-webkit-line-clamp` does not work on
 - **`lan_score(financials)`**：忠實還原那 15 項（嚴格 `>`／`<`、命中加分）。**Stage 1 先鎖邏輯、尚未 wire**（需季報源）；接上後可回算比對 CSV 的蘭質驗證整條管線，並取代木質的財報分。`financials`＝`{指標key: 最新在前的季度數列}`，`[4]`＝去年同季。充足性守衛**只查每個指標實際用到的 index**（`_LAN_USED`；revenue{0,1,4}、net_income{0..3}、capex{0..7}…），任一用到的位置越界/為 None → 回 None，未用到的缺值不影響。`cash_content` 遇 `Σ4(淨利)=0` 判 0 分而非擲例外；其餘照 XScript 原式（含「負/負可能 >1」的口徑怪癖，忠實對齊、非 bug）。15 項的權威清單是 `LAN_SCORE_ITEMS`（含配分，合計必為 15，測試鎖住）。
 - **`mu_score(lan_q, chips)` ＝木質**：財報分（Stage 1 用**匯入的蘭質** `chip_snapshot.lan_score`；Stage 2 換成 `lan_score()["score"]`）＋ 籌碼四訊號各 +1（`MU_CHIP_ITEMS`：大戶增比>0、人數降比<0、投信三日>0、外資三日>0），刻度 0–19（刻意換刻度）。`lan_q is None → None`（財報是主幹）；籌碼是傾斜，缺欄位＝該訊號中性 0、不整檔回 None。加成目前 **boost-only、權重可調**——設定頁揭露就是要讓使用者看過後再決定要不要改成帶負分。
 - **`mu_value(mu_q, lpe, floor=MU_QUALITY_FLOOR)` ＝木率**：`木質 ÷ 本業PE × 100`（沿用蘭值公式、只換品質分子）+ **品質閘**。`lpe<=0` 照 XScript 對無效 PE 給 0；**木質 < `MU_QUALITY_FLOOR`(10) 時 `value` 歸 0（不給便宜分，避開價值陷阱），但 `raw` 保留**——由呈現層決定要不要標「疑似價值陷阱」，不是把便宜這件事藏掉。
-- **並存對照（暫時；穩定後才取代蘭質/蘭值）**：`analysis.attach_mu(row)` 是木質/木率進入每一列的**唯一入口**，`filtered_picks` 逐列呼叫它，所以選股表（`#daily`/`#industry`）、族群 picks、公開總覽、CSV 上傳結果一次全有。**在後端算、不在 JS 算**（同 bands）。選股表在蘭值/蘭質旁多「木率/木質」兩欄；`muValueCell` 高分用**中性藍 `--info`**（非 `lanCell` 的紅——分數不是漲跌），品質閘擋掉的顯示灰字 `raw` ＋ `⚑`、`value` 以 0 參與排序自然沉底。
+- **並存對照（暫時；穩定後才取代蘭質/蘭值）**：`analysis.attach_mu(row)` 是木質/木率進入每一列的**唯一入口**，`filtered_picks` 逐列呼叫它，所以選股表（`#daily`/`#industry`）、族群 picks（走 CSV 退路時）、CSV 上傳結果一次全有（公開總覽從來沒讀選股名單，舊記載寫錯）。**在後端算、不在 JS 算**（同 bands）。選股表在蘭值/蘭質旁多「木率/木質」兩欄；`muValueCell` 高分用**中性藍 `--info`**（非 `lanCell` 的紅——分數不是漲跌），品質閘擋掉的顯示灰字 `raw` ＋ `⚑`、`value` 以 0 參與排序自然沉底。
 - **Stage 2（延後，需先接季報源）**：接公開資訊觀測站/FinMind → 用 `lan_score()` 回算財報分取代匯入蘭質；四項實測缺陷改良當作對 `lan_score` 的**具名可測 delta**（(1) `rev_qoq`/`turn_qoq` 撞季節性 → 改「YoY 是否加速」；(2) `ocf_gt_ni3`+`cash_content` 現金品質重複計分 → 併成單一分級檢查；(3) 嚴格 `>` 的刀鋒 → 加死區；(4) `capex_expand` 方向可議 → 改自由現金流為正且成長）。新項目集與新滿分由測試鎖定，規則自動經 `/api/scoring-rules` 出現在設定頁。測試：`tests/test_analysis_scoring.py`（三函數 + 常數健檢）、`tests/test_api.py::test_scoring_rules_come_from_analysis_constants`（防前端另寫一份）。
 
 ## Data-source quirks (would trip you up)
@@ -734,14 +734,19 @@ if last is not None and abs(cl / last - 1) > _MAX_DOD_JUMP:
 
 **核心契約由測試鎖住**：`chip_snapshot` 整個清空後，`sub_industry_map` 仍回得到值。
 
-**⚠️ 停止上傳 CSV 仍會凍住四個地方，尚未處理**（第五個——前瞻追蹤 `record_self_screen_signals`
-——已在「每日排程預算＋快取」那批修掉）：`api/csv.py`（籌碼選股頁）、
-`api/helpers.py`（**LINE／Telegram 推播的今日精選與週報前五個股**）、`api/market.py`
-（族群輪動 picks）、`api/public.py`（公開總覽）。四者都是 `filtered_picks(get_snapshot(...))`，
-CSV 一停就會**永遠送出最後一份名單、而且沒有任何跡象**——推播每天照送舊資料比選股頁
-不更新嚴重得多。真正停用 CSV 之前必須先把這四處換成自算全市場選股（`build_self_screen`），
-而它是全市場計算、不能直接放進推播與公開頁的請求路徑，需要每日排程預算＋快取。
-排序基準也要從**蘭值**換成**木率**（蘭值是蘭弦付費指標，本站算不出來）。
+**⚠️ 停止上傳 CSV 會凍住哪些地方（2026-09-17 逐一查證後更正）**：原本這裡列的「四個地方」有兩條寫錯
+——`api/public.py` 的**公開總覽從來沒讀選股名單**（那個檔案裡的 `filtered_picks` 都是籌碼選股頁自己的
+`/api/analysis/*` 端點，只是剛好放在 public.py）；**Telegram 沒有任何推播讀 CSV 名單**（新進榜讀的是自算快取）。
+實際讀 CSV 名單、而不屬於籌碼選股頁的是：
+- **已改成優先讀自算**（見「選股名單來源」那節）：族群交叉選股 `/api/sectors/picks`；杯柄 ⭐（杯柄頁交集、
+  盤中哨兵「只警示入選股」、LINE 每日卡片杯柄段，共用 `_picks_code_set`）。
+- **使用者決定暫時維持 CSV**：自選股的入選紀錄 `_picks_index`（入選次數／首次入選日／入選後報酬；改自算的話
+  歷史只從 09-04 起算）、LINE 週報與 `週報` webhook（`_weekly_messages` → `public.weekly()`＋`summary_logic`，
+  webhook 那條沒有快照過期守衛）、21:00 排程的 `public_summary`（Gemini 讀 CSV 名單）、`ledger.record_daily_signals`
+  （filtered_picks 前瞻基準，本來就該留著對照）、`traders/ss.py` 操盤手的季季高選股（要 CSV 的月增／累增欄，
+  自算沒有這些欄位，不能直接換）。
+- 非名單但吃 CSV 日期的：個股頁 `/api/stock/{code}/profile`（蘭值／木率）、`/api/health` 的 `ok`（CSV 落後 >4 天判不健康）。
+CSV 上傳本身與籌碼選股頁**刻意保留**（使用者：「原本 csv 的地方還是先留著上傳」）。
 
 ### 自算選股改成「每日排程預算＋快取」（2026-09）
 
@@ -804,9 +809,8 @@ CSV 一停就會**永遠送出最後一份名單、而且沒有任何跡象**—
 - **實跑四種狀態驗過**（今天剛上傳 0 天／昨天 1 天／停了 10 天／算不出來），
   只有第三種會顯示，色值確認是 `rgb(245,181,68)` ＝ `--accent`。不是恆真的裝飾。
 
-**尚未處理的其餘三處**仍是 `filtered_picks(get_snapshot(...))`：`api/market.py`
-（族群 picks）、`api/public.py`（公開總覽）、`api/helpers.py` 的 `_picks_code_set`
-（盤中突破警示的 ⭐ 標記）。週報那條已有守衛（`weekly_line_job` 檢查快照距今 >7 天），
+**族群 picks 與杯柄 ⭐ 已改成優先讀自算快取**（見「選股名單來源」那節；原本這裡列的「公開總覽」查證後
+並沒有讀名單）。週報那條已有守衛（`weekly_line_job` 檢查快照距今 >7 天），
 每日 LINE 推播則是以 `market_daily` 是否為今日把關、不看 CSV。
 
 ### `conn()` 不關連線：查證後**刻意不修**（2026-09）
@@ -1276,6 +1280,55 @@ run_job 去重／唯一鍵（拿掉 index → 3 條並發測試紅）／interrup
   兩顆鈕 24px 高、無頁面溢出。
 - **測試**：兩條端點測試（前一天名單、當天與其他來源不算；集保週期邊界含週五、不含前一個週日期）。
   本機 DB 沒有自算名單，UI 以注入四種組合的假資料實測 578px／1280px。
+
+### 選股名單來源：優先自算、CSV 較新才用 CSV（ui58，2026-09）
+
+脫離 CSV 的下一步：族群交叉選股與杯柄 ⭐ 原本讀 CSV 名單，改成**優先讀自算選股快取**。CSV 上傳與籌碼選股頁
+都保留（使用者要求），自選股入選紀錄也維持 CSV（使用者選擇，改了歷史會從 09-04 起算）。
+
+- **判定只有一支 `api/helpers.active_picks(c)`**，四個呼叫端共用（族群交叉選股、杯柄頁、LINE 杯柄段、盤中哨兵）。
+  回 `{source, label, date, rows, codes}`；`codes` 一律去 `.TW` 後綴。`label` 用側欄頁名
+  （`自算籌碼/基本`／`籌碼/基本`，`PICKS_SOURCE_LABEL`），讀者才找得到是哪一頁。
+- **規則：快取日期 ≥ CSV 最新快照日就用自算，CSV 比較新才退回 CSV。** 不是「有快取就用」：快取會連續幾天
+  沒更新（`data_not_ready`／`partial_universe`，換月第一次抓上櫃名單最危險），而使用者仍在上傳 CSV，拿舊的
+  自算蓋掉新的 CSV 是安靜的錯。同一天兩份都有時用自算（脫離 XQ 的方向）。
+- **名單空了不等於沒有名單**：自算快取存在但今天 0 檔入選，仍是自算那份（`source="self_screen"`、`codes` 空），
+  不偷偷改用 CSV。**呼叫端判斷「有沒有名單可交集」一律看 `source`，不看 `codes` 空不空**——第一版照舊寫
+  `if picks and 只警示入選股`，審查實跑抓到：自算 0 檔入選時設定被安靜跳過，**全部杯柄股都發 LINE 警示**，
+  回傳值與訊息都看不出來。現在盤中哨兵、LINE 杯柄段、杯柄頁 `has_picks` 都改看 `source`：開了只警示入選股、
+  名單又是空的，就一檔都不發並在 `note` 寫出是哪份名單；LINE 杯柄段交集後 0 檔就不出現，不退回全杯柄。
+  `has_picks` 因此改成「有名單」（可能 0 檔），名單檔數另給 `picks_total`，前端據此分「今天沒有入選股」與
+  「無同時符合兩者」。兩份名單都沒有（`source=None`）時仍是舊的 fail-open。
+- **壞快取記 warning、退回 CSV**（`build_self_screen` 對 `rows`／`vals` 是直接取鍵，壞一列就丟例外）。盤中哨兵每
+  5 分鐘跑一次、原本 CSV 那條不會因資料形狀丟例外，一份壞快取不能讓整天的突破警示停擺。
+- **族群交叉選股要另外查官方類股**：自算列的 `sector` 是**細分類優先**（記憶體、被動元件），對不上證交所類股
+  指數；它也沒有 CSV 的「上市半導體」產業欄——直接丟給 `picks_by_sector` 會**安靜地回空**。改查
+  `_industry_map`／`_otc_industry`（與類股指數同一套命名），再過 `industry_to_sector`。上櫃獨有的「文化創意」
+  「農業科技」沒有類股指數：`_SECTOR_ALIAS` 原本只有 CSV 寫法 `農業科技業`，補上官方寫法 `農業科技`，一樣併進
+  「其他」。查不到類股的檔數回 `unclassified`，不靜默丟掉。`?date=某個 CSV 日` 一律回那天的 CSV 名單（舊行為），
+  **包括那天剛好也是自算快取日**——第一版寫成 `date != picks["date"]`，同一天時會被自算換掉（審查抓到）。
+- **手機（≤600px）交叉選股標題列要換行**：右上角那行多了名單名稱、日期與「N 檔查不到類股」，而 `.pane-count`
+  是 `nowrap`、標題列不換行，說明文字被擠成 33px 寬的直條、標題列 76→471px。只在 `#view-rotation` 讓它換行
+  （實測 375px 標題列 75px、無頁面溢出；1280px 仍是原本的單行 49px）。
+- **LINE 杯柄段只載入一次名單**（原本 `_cup_push_info` 自己算一次、`cup_handle_screen_logic` 裡又算一次；
+  `cup_handle_screen_logic` 多收 `picks=`）。**盤中哨兵先確認有待監控股才載入名單**——自算快取一份約 729 KB，
+  每 5 分鐘 JSON 解析一次。「只警示入選股」把待監控股濾光時，`note` 會寫出是哪份名單、哪天擋掉的，
+  否則分不出是沒訊號還是被名單擋。
+- **用哪份、哪一天都寫出來**：杯柄頁說明列「同時符合自算籌碼/基本選股（名單 MM-DD）N 檔」、交叉選股右上角、
+  LINE 杯柄段標題「杯柄型態&自算籌碼/基本」、盤中警示圖例「⭐=同時符合自算籌碼/基本選股」。兩份名單條件不同
+  （自算 7 條件＋木率／木質門檻 vs CSV 4 條件），交集結果本來就會變，不寫出來讀者會以為哪裡壞了。
+  `compose_breakout_alert` 的 `picks_label` 預設仍是 `籌碼/基本`，舊呼叫與測試不受影響。
+- **已知且接受**：名單成員吃「呼叫當下」的設定門檻，改門檻後 ⭐ 會跟前瞻紀錄與已送出的 Telegram 新進榜不同；
+  週末 21:00 會重算週五的快取。兩者原本的 CSV 路徑沒有對應問題，但都不影響「用哪份名單」的判定。
+- **測試覆蓋是反過來的，這點最重要**：原本四條測試全部只種 CSV，而正式站自算快取天天更新，實際走的幾乎一定是
+  快取那條——舊測試全綠證明不了正式站的路徑。`tests/test_picks_source.py` 每條都種「只在快取、不在 CSV」的股
+  （或反過來）。**10 個反證**：拿掉日期比較、0 檔改退 CSV、改用細分類分組、LINE 杯柄段算兩次、哨兵先載名單、
+  圖例寫死、哨兵看 codes 判斷名單、LINE 杯柄段遇空名單退回全杯柄、`has_picks` 看 codes、同一天的 `?date=`——
+  各自對應的測試都轉紅。**杯柄測試要樁 `tpex.fetch_otc_names`**：`cuphandle:` 快取沒中時會查股名，沒樁就真的去
+  櫃買抓（測試照過、只是慢 4 秒且看網路臉色，審查用擋 DNS 的外掛才抓到；舊的 `test_cup_handle_screen_endpoint`
+  同樣漏樁，一併補上）。本機 dev DB 沒有自算快取，瀏覽器只能驗 CSV 退路；自算那條的畫面文字（含 0 檔、全查不到
+  類股、兩份都沒有）是注入假回應驗的。交叉審查（4 個角度、每項 2 位驗證者）另有 7 項疑慮查證後不成立或是既有行為
+  （例如杯柄綠框用 `--down`、LINE 杯柄段不寫日期，都是這次之前就存在）。
 
 ### 個股 K 線改 Lightweight Charts（2026-09）
 
