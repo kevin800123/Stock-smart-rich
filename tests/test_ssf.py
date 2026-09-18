@@ -250,3 +250,55 @@ def test_fetch_rejects_a_genuinely_different_header_even_with_plenty_of_rows(mon
                        for i in range(1300)]) + "\n")
     _patch_client(monkeypatch, [_Resp(body.encode("ms950"), "text/html;charset=MS950")])
     assert ssf.fetch_ssf_daily("2026/09/17", "2026/09/17") == []
+
+
+STOCK_LISTS_HTML = """
+<table id="myTable"><tbody>
+<tr><td>CD</td><td>台灣積體電路製造股份有限公司</td><td>2330</td><td>台積電</td>
+<td><span class="sr-only">是</span>●</td><td></td><td></td>
+<td>◎</td><td></td><td></td><td></td><td>2,000</td><td>08:45~13:45</td><td>17:25~05:00</td></tr>
+<tr><td>QF</td><td>台灣積體電路製造股份有限公司</td><td>2330</td><td>台積電</td>
+<td>●</td><td></td><td></td><td>◎</td><td></td><td></td><td></td><td>100</td>
+<td>08:45~13:45</td><td>17:25~05:00</td></tr>
+<tr><td>NY</td><td>元大台灣卓越50證券投資信託基金</td><td>0050</td><td>元大台灣50</td>
+<td>●</td><td></td><td></td><td></td><td></td><td>◎</td><td></td><td>10,000</td>
+<td>08:45~13:45</td><td>17:25~05:00</td></tr>
+<tr><td>SR</td><td>元大台灣卓越50證券投資信託基金</td><td>0050</td><td>元大台灣50</td>
+<td>●</td><td></td><td></td><td></td><td></td><td>◎</td><td></td><td>1,000</td>
+<td>08:45~13:45</td><td>17:25~05:00</td></tr>
+</tbody></table>
+"""
+
+
+def test_contract_map_reads_code_name_and_multiplier():
+    m = ssf.parse_stock_lists(STOCK_LISTS_HTML)
+    assert m["CD"] == {"code": "2330", "stock_name": "台積電", "name": "台積電",
+                       "multiplier": 2000, "is_etf": False, "is_mini": False,
+                       "session_end": "13:45", "late_session": False}
+    assert m["QF"]["multiplier"] == 100
+    assert m["QF"]["is_mini"] is True
+    assert m["QF"]["name"] == "小型台積電"      # 小型是不同產品，名稱要分得出來
+
+
+def test_contract_map_flags_the_contracts_that_trade_past_the_spot_close():
+    """14 檔 ETF 期貨交易到 16:15，收盤比現貨晚 2.5 小時；價差要另標，不能混在一起讀。"""
+    html = STOCK_LISTS_HTML.replace(
+        "<td>08:45~13:45</td><td>17:25~05:00</td></tr>\n<tr><td>SR</td>",
+        "<td>08:45~16:15</td><td></td></tr>\n<tr><td>SR</td>")
+    m = ssf.parse_stock_lists(html)
+    assert m["NY"]["late_session"] is True and m["NY"]["session_end"] == "16:15"
+    assert m["CD"]["late_session"] is False
+
+
+def test_contract_map_flags_etf_underlyings():
+    """ETF 期貨的 tick 級距與保證金規則都與股票標的不同，必須分得出來。"""
+    m = ssf.parse_stock_lists(STOCK_LISTS_HTML)
+    assert m["NY"]["is_etf"] is True and m["NY"]["multiplier"] == 10000
+    assert m["SR"]["is_etf"] is True and m["SR"]["is_mini"] is True
+    assert m["CD"]["is_etf"] is False
+
+
+def test_contract_map_ignores_sr_only_text_when_reading_flags():
+    """欄位裡藏著給螢幕閱讀器的『是』，直接讀 innerText 會把它當成標記。"""
+    m = ssf.parse_stock_lists(STOCK_LISTS_HTML)
+    assert m["CD"]["is_etf"] is False     # 欄[7] 是上市普通股 ◎，不是 ETF

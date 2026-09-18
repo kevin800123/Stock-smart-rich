@@ -8,6 +8,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import re
 from decimal import Decimal
 
 import httpx
@@ -210,3 +211,57 @@ def ssf_basis_ticks(fut, spot, is_etf: bool = False) -> int | None:
         return None
     diff = _grid_index(Decimal(str(fut)), is_etf) - _grid_index(Decimal(str(spot)), is_etf)
     return int(diff.to_integral_value())
+
+
+STOCK_LISTS_URL = "https://www.taifex.com.tw/cht/2/stockLists"
+
+_TR = re.compile(r"<tr[^>]*>(.*?)</tr>", re.S | re.I)
+_TD = re.compile(r"<td[^>]*>(.*?)</td>", re.S | re.I)
+_SR_ONLY = re.compile(r"<span[^>]*class=\"sr-only\"[^>]*>.*?</span>", re.S | re.I)
+_TAG = re.compile(r"<[^>]+>")
+
+
+def _cell(html: str) -> str:
+    """去掉螢幕閱讀器專用文字再剝標籤——直接讀文字會把那個『是』當成標記。"""
+    return _TAG.sub("", _SR_ONLY.sub("", html)).replace("&nbsp;", " ").strip()
+
+
+def parse_stock_lists(html: str) -> dict:
+    """stockLists 表 → {root: {code, stock_name, name, multiplier, is_etf, is_mini}}。
+
+    一個來源就給齊代號、簡稱與契約乘數；小型與 ETF 由乘數與 ◎ 標記判定。
+    """
+    out: dict[str, dict] = {}
+    for tr in _TR.findall(html):
+        tds = [_cell(x) for x in _TD.findall(tr)]
+        if len(tds) < 12:
+            continue
+        root, code, short = tds[0], tds[2], tds[3]
+        if not re.fullmatch(r"[A-Z]{2}", root) or not code:
+            continue
+        mult = _i(tds[11])
+        if not mult:
+            continue
+        is_etf = "◎" in tds[9] or "◎" in tds[10]
+        is_mini = mult in (100, 1000)
+        # 交易時段：306 檔到 13:45，但有 14 檔（成分股在海外的 ETF）到 16:15。
+        # 那 14 檔的收盤比現貨晚 2.5 小時，期現價差的誤導程度遠大於一般的 15 分鐘落差。
+        session = tds[12].replace(" ", "")
+        out[root] = {"code": code, "stock_name": short,
+                     "name": ("小型" if is_mini else "") + short,
+                     "multiplier": mult, "is_etf": is_etf, "is_mini": is_mini,
+                     "session_end": session.split("~")[-1] if "~" in session else "",
+                     "late_session": "13:45" not in session}
+    return out
+
+
+def fetch_ssf_contract_map() -> dict:
+    """抓合約對照表。失敗回空 dict——呼叫端的月快取兩端都擋空值，不會把失敗永久化。"""
+    try:
+        with httpx.Client(timeout=30, follow_redirects=True,
+                          headers={"User-Agent": "Mozilla/5.0"}) as cli:
+            r = cli.get(STOCK_LISTS_URL)
+        return parse_stock_lists(r.content.decode("utf-8", errors="replace"))
+    except Exception as e:  # noqa: BLE001
+        log.warning("[ssf] 合約對照表抓取失敗：%s: %s", type(e).__name__, e)
+        return {}
