@@ -1131,17 +1131,28 @@ function renderSsfMargin() {
     });
   }
   const arw = (k) => ssfMarginSort.key === k ? (ssfMarginSort.dir === 1 ? " ▲" : " ▼") : "";
-  const hcell = (k, label) => {              // scope/aria-sort 同 selfcheck／自算選股表頭慣例
-    const s = ssfMarginSort.key === k ? (ssfMarginSort.dir === 1 ? "ascending" : "descending") : "none";
-    return `<th class="sc-sort" scope="col" aria-sort="${s}" data-k="${k}">`
-      + `<span class="sc-h-label">${label}${arw(k)}</span></th>`;
+  // 表頭在靜態 HTML 裡已經是完整的（final review #6）：這裡只更新既有 <th> 的
+  // aria-sort 與標籤文字（含排序箭頭）、以及「N 口合計」的口數，不再整列重繪
+  // ——原本 head.innerHTML 整段重寫，若 loadSsfMargin() 失敗或還沒回來就完全
+  // 不會被呼叫，表頭會一直是空的（同 #ssf-hm-head「整列重繪」不一樣的地方：
+  // 那張表只在資料回來後才顯示）。原始比例（final review #7）補進可排序欄位，
+  // 是抓「處置股保證金加成 1.5/2/3 倍」最直接的欄；ETF／指數列沒有比例，
+  // `ssfMarginSortVal` 既有的空值沉底邏輯本來就是通用的，這裡不必另外處理。
+  const SSF_MARGIN_HEAD_LABELS = {
+    name: "標的", multiplier: "契約乘數", initial_pct: "原始比例",
+    initial: "1 口原始保證金", maintenance: "維持保證金",
   };
   const head = $("ssf-margin-head");
   if (head) {
-    head.innerHTML = hcell("name", "標的") + hcell("multiplier", "契約乘數")
-      + '<th scope="col">原始比例</th>' + hcell("initial", "1 口原始保證金")
-      + hcell("maintenance", "維持保證金")
-      + `<th scope="col">${lots} 口合計</th>`;
+    Object.entries(SSF_MARGIN_HEAD_LABELS).forEach(([k, label]) => {
+      const th = head.querySelector(`th[data-k="${k}"]`); if (!th) return;
+      const s = ssfMarginSort.key === k ? (ssfMarginSort.dir === 1 ? "ascending" : "descending") : "none";
+      th.setAttribute("aria-sort", s);
+      const span = th.querySelector(".sc-h-label");
+      if (span) span.textContent = label + arw(k);
+    });
+    const lotsHead = $("ssf-margin-lots-head");
+    if (lotsHead) lotsHead.textContent = `${lots} 口合計`;
   }
   const note = $("ssf-margin-note");
   if (note && ssfMargin) {

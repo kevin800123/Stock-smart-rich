@@ -735,8 +735,14 @@
              inline on*= 屬性），監聽掛在 app.js 的 .ssf-margin-bar 委派上。
              口數換算在前端乘整數就完全正確——後端 initial/maintenance 已經是
              「單口四捨五入後」的金額，交易所自己的規則就是先四捨五入單口再乘 N。
-             表頭（含排序用的 th.sc-sort／aria-sort）由 renderSsfMargin() 整列
-             重繪，同 #ssf-hm-head 的既有寫法——這裡的 <tr> 在靜態 HTML 裡刻意留空。 -->
+             表頭在靜態 HTML 裡就是完整的（final review #6）：renderSsfMargin() 只
+             更新既有 <th> 的 aria-sort／箭頭與「N 口合計」的口數文字，不再整列
+             重繪——這樣即使 loadSsfMargin() 還沒回來、或整支失敗，表頭仍看得到
+             欄名，不會是一片空白（同 #ssf-hm-head「整列重繪、<tr> 留空」的舊寫法
+             不一樣：那張表只在資料回來後才顯示，沒有這個問題）。標的／契約乘數／
+             原始比例／1 口原始保證金／維持保證金五欄可排序（原始比例補於 final
+             review #7——它是抓「處置股保證金加成 1.5/2/3 倍」最直接的欄）；
+             「N 口合計」不開排序鍵，同 #ssf-hm-head 既有理由。 -->
         <div class="card-group span-full">
           <div class="group-title">原始保證金試算</div>
           <div class="ssf-margin-bar">
@@ -745,7 +751,14 @@
             <span class="pane-count" id="ssf-margin-note"></span>
           </div>
           <div class="table-wrap" id="ssf-margin-wrap">
-            <table id="ssf-margin-table"><thead><tr id="ssf-margin-head"></tr></thead><tbody></tbody></table>
+            <table id="ssf-margin-table"><thead><tr id="ssf-margin-head">
+              <th class="sc-sort" scope="col" aria-sort="none" data-k="name"><span class="sc-h-label">標的</span></th>
+              <th class="sc-sort" scope="col" aria-sort="none" data-k="multiplier"><span class="sc-h-label">契約乘數</span></th>
+              <th class="sc-sort" scope="col" aria-sort="none" data-k="initial_pct"><span class="sc-h-label">原始比例</span></th>
+              <th class="sc-sort" scope="col" aria-sort="none" data-k="initial"><span class="sc-h-label">1 口原始保證金</span></th>
+              <th class="sc-sort" scope="col" aria-sort="none" data-k="maintenance"><span class="sc-h-label">維持保證金</span></th>
+              <th scope="col" id="ssf-margin-lots-head">1 口合計</th>
+            </tr></thead><tbody></tbody></table>
           </div>
         </div>
       </section>
