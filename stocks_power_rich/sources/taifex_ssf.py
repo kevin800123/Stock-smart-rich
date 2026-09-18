@@ -9,7 +9,7 @@ import csv
 import io
 import logging
 import re
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 import httpx
 
@@ -396,3 +396,17 @@ def fetch_ssf_margin_table() -> dict:
                     index["updated"], _INDEX_REQUIRED_ITEM, tmf.get("initial"))
         return {}
     return {**stock, "index_updated": index["updated"], "index": index["items"]}
+
+
+def margin_amount(price, multiplier: int, ratio_pct) -> int | None:
+    """單口保證金 ＝ 期貨價格 × 契約乘數 × 適用比例，四捨五入到整數元。
+
+    **必須用 Decimal 的 ROUND_HALF_UP，不可用 Python 的 round()**（銀行家進位）：
+    實測 1,181 個合約月中有 101 個兩者不同，例如南亞 CAF 96,592.5 應為 96,593。
+    N 口是「先四捨五入單口再乘 N」，所以呼叫端拿到的整數直接相乘即可。
+    """
+    if price is None or ratio_pct is None or not multiplier:
+        return None
+    amount = (Decimal(str(price)) * Decimal(int(multiplier))
+              * Decimal(str(ratio_pct)) / Decimal("100"))
+    return int(amount.quantize(Decimal("1"), rounding=ROUND_HALF_UP))

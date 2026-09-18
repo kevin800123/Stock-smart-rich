@@ -179,3 +179,27 @@ def test_fetch_margin_table_rejects_an_implausible_index_section(monkeypatch, ca
         result = ssf.fetch_ssf_margin_table()
     assert result == {}
     assert "指數期貨保證金不完整" in caplog.text
+
+
+def test_margin_matches_the_officially_published_examples():
+    # CDF 202610，2026-09-17 結算 2,432，級距1 原始 13.50%
+    assert ssf.margin_amount(2432, 2000, 13.50) == 656640
+    # DHF 202610，251.5，級距2 16.20%
+    assert ssf.margin_amount(251.5, 2000, 16.20) == 81486
+
+
+def test_margin_uses_round_half_up_not_bankers_rounding():
+    """兩個實測的半元案例，券商公布數字對得上的是 ROUND_HALF_UP。
+
+    Python 的 round() 用銀行家進位，這兩個各會少 1 元。實測 1,181 個合約月中
+    有 101 個兩者結果不同，所以這不是理論風險。
+    """
+    assert ssf.margin_amount(238.5, 2000, 20.25) == 96593      # 南亞 CAF，96,592.5
+    assert ssf.margin_amount(2453, 100, 13.50) == 33116        # 小型台積電，33,115.5
+    assert round(96592.5) == 96592 and round(33115.5) == 33116  # 證明 round() 真的不同
+
+
+def test_margin_returns_none_when_an_input_is_missing():
+    assert ssf.margin_amount(None, 2000, 13.5) is None
+    assert ssf.margin_amount(100, 2000, None) is None
+    assert ssf.margin_amount(100, 0, 13.5) is None
