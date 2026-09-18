@@ -1,3 +1,5 @@
+import pytest
+
 from stocks_power_rich.sources import taifex_ssf as ssf
 
 # 真實資料切片（2026-09-17）。刻意包含：一般列、盤後列、價差列、調整後合約 CM1、
@@ -99,3 +101,33 @@ def test_summary_falls_back_to_the_nearest_month_when_nothing_traded():
     assert vq["main_month"] == "202611"
     assert vq["close"] is None           # 沒成交就沒有收盤價
     assert vq["settlement"] == 64.7      # 但結算價還在，保證金算得出來
+
+
+@pytest.mark.parametrize("price,tick", [
+    (9.99, 0.01), (10, 0.05), (49.95, 0.05), (50, 0.1), (99.9, 0.1),
+    (100, 0.5), (499.5, 0.5), (500, 1), (2499, 1), (2500, 5), (3000, 5),
+])
+def test_stock_tick_table(price, tick):
+    assert ssf.ssf_tick_size(price, is_etf=False) == tick
+
+
+@pytest.mark.parametrize("price,tick", [(49.99, 0.01), (50, 0.05), (120, 0.05)])
+def test_etf_tick_table(price, tick):
+    assert ssf.ssf_tick_size(price, is_etf=True) == tick
+
+
+def test_basis_walks_the_grid_across_a_band_boundary():
+    """實測 KBF 聯茂：現貨 495、期貨 501。走網格 11 檔；
+    除以單一 tick 會得 6（用期貨端 1 元）或 12（用現貨端 0.5 元），兩種都錯。"""
+    assert ssf.ssf_basis_ticks(501, 495, is_etf=False) == 11
+
+
+def test_basis_sign_and_simple_cases():
+    assert ssf.ssf_basis_ticks(2431, 2430, is_etf=False) == 1      # 2500 以下，1 元一檔
+    assert ssf.ssf_basis_ticks(2425, 2430, is_etf=False) == -5
+    assert ssf.ssf_basis_ticks(108.35, 108.30, is_etf=True) == 1   # ETF 0.05 一檔
+
+
+def test_basis_returns_none_when_either_side_is_missing():
+    assert ssf.ssf_basis_ticks(None, 100, is_etf=False) is None
+    assert ssf.ssf_basis_ticks(100, None, is_etf=False) is None

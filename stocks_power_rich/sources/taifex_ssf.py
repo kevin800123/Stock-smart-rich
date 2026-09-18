@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import csv
 import io
+from decimal import Decimal
 
 SSF_HEADER = ("交易日期,契約,到期月份(週別),開盤價,最高價,最低價,收盤價,漲跌價,漲跌%,"
               "成交量,結算價,未沖銷契約數,最後最佳買價,最後最佳賣價,歷史最高價,歷史最低價,"
@@ -96,3 +97,48 @@ def summarize_ssf_day(rows: list[dict]) -> list[dict]:
             "volume": vol.get(root, 0), "main_volume": main["volume"] or 0,
         })
     return out
+
+
+# (上限, 一檔) —— 上限為開區間。股期自 2026-07-06 起與現貨不同：
+# 現貨在 1000–2500 跳 5 元，股期跳 1 元。
+_TICKS_STOCK = ((Decimal("10"), Decimal("0.01")), (Decimal("50"), Decimal("0.05")),
+                (Decimal("100"), Decimal("0.1")), (Decimal("500"), Decimal("0.5")),
+                (Decimal("2500"), Decimal("1")), (None, Decimal("5")))
+_TICKS_ETF = ((Decimal("50"), Decimal("0.01")), (None, Decimal("0.05")))
+
+
+def _bands(is_etf: bool):
+    """回傳該資產類別的 tick 級距表。"""
+    return _TICKS_ETF if is_etf else _TICKS_STOCK
+
+
+def ssf_tick_size(price: float, is_etf: bool = False) -> float:
+    """給定價格，回傳 1 檔等於幾元。"""
+    p = Decimal(str(price))
+    for hi, tick in _bands(is_etf):
+        if hi is None or p < hi:
+            return float(tick)
+    return float(_bands(is_etf)[-1][1])
+
+
+def _grid_index(price: Decimal, is_etf: bool) -> Decimal:
+    """從 0 走到 price 共幾檔。跨級距時每一段各用自己的檔位累加。"""
+    left, idx = Decimal("0"), Decimal("0")
+    for hi, tick in _bands(is_etf):
+        if hi is None or price < hi:
+            return idx + (price - left) / tick
+        idx += (hi - left) / tick
+        left = hi
+    return idx
+
+
+def ssf_basis_ticks(fut, spot, is_etf: bool = False) -> int | None:
+    """期現價差換算成「幾檔」。
+
+    **必須沿網格走**：兩端落在不同級距時，除以單一 tick 一定錯——實測聯茂
+    現貨 495／期貨 501，走網格 11 檔，除以期貨端得 6、除以現貨端得 12。
+    """
+    if fut is None or spot is None:
+        return None
+    diff = _grid_index(Decimal(str(fut)), is_etf) - _grid_index(Decimal(str(spot)), is_etf)
+    return int(diff.to_integral_value())
