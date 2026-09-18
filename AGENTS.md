@@ -292,16 +292,28 @@ flex 再分給容器更多高度，形成迴圈（實測每 400ms 長 ~35px）�
 盤後版新頁（v1 無即時，MIS 已探測可達留 v2）。`sources/taifex_ssf.py`（與 `taifex.py` 分開，
 CSV 形狀/主力月規則/tick 級距都不同）：340 個合約代碼收斂成 320 個 root、~150KB/1,900 餘列。
 `GET /api/ssf/overview`（五區塊：熱門卡片/量漲跌前20 K線/期現價差/未平倉增減/近10日熱力圖）＋
-`GET /api/ssf/margin`（口數留前端乘整數）。個股頁（`#stock-ssf-margin`，同 `#today-focus`
-`:empty` 做法）與自算選股（`SS_FIELDS` 的「股期保證金」欄，同「融資3日」取捨純參考不進計分）
-都借 `by_stock` 反查索引。`ssf_daily` 表 PK `(date,root)`，COALESCE upsert，留 60 個交易日；
-合約表/保證金表沿用 `ai_cache` 快取（讀取端也守衛筆數：合約 <300、保證金缺 `stock_updated`
-視為未命中）。排程 `ssf_daily` 平日 17:15/18:15/20:15，行情與保證金獨立更新。
+`GET /api/ssf/margin`（口數留前端乘整數，`fetch=True` 可連外）。個股頁（`#stock-ssf-margin`，
+同 `#today-focus` `:empty` 做法）直接打這支端點讀 `by_stock`；**自算選股不一樣**（`SS_FIELDS`
+的「股期保證金」欄，同「融資3日」取捨純參考不進計分）——改呼叫共用函式
+`helpers.ssf_margin_index(c, fetch=False)`（cache-only，絕不連外，review I3），只認**標準
+合約**（`is_mini` 為假），查無結算價回 `None`、**絕不退而求其次改用小型合約**（曾重現：2330
+標準缺價時顯示小型的 32,832，只有標準真正金額 1/20）。`ssf_margin_index` 是 `rows`/`by_stock`
+的唯一權威計算，端點與自算選股共用、差別只在 `fetch` 旗標。`ssf_daily` 表 PK `(date,root)`
+（含 `oi_total`，見下）COALESCE upsert，留 60 個交易日；合約表/保證金表沿用 `ai_cache` 快取
+（`_ssf_contracts`/`_ssf_margin_table` 都吃 `fetch` 旗標；讀取端也守衛筆數：合約 <300、保證金
+缺 `stock_updated` 視為未命中；`fetch=True` 連續失敗進冷卻 15 分鐘，同 `_osfut_cooling_down`）。
+排程 `ssf_daily` 平日 17:15/18:15/20:15，行情/保證金/合約表三者獨立更新（合約表也要暖，否則
+cache-only 路徑永遠拿不到資料）。**「已完成」＝`ai_cache` 鍵 `ssf_ready:{D}` 存在（D 真的被
+寫入），不是「`ssf_daily` 有 D 這列」**（review I2）：D 沒發佈時仍寫回已抓到的前幾天，但回報
+`data_not_ready`+`refreshed_prior`，不謊稱處理了 D——否則三個時段都「看起來成功」，
+`/api/health` 的 `jobs.ssf_daily.note.ready_at` 判斷哪個時段先到齊的方法就失效。
 
-**三種「200 但假成功」**（既有 `taifex._post_csv` 全部會誤判為成功）：區間超過一月→UTF-8
-616B 警告頁；非交易日→MS950 197B 只有表頭；今天只有夜盤→**逐交易日**（非整個回應加總）檢查
-一般列數 ≥`MIN_GENERAL_ROWS`(1200，正常1629)，否則排程 6 天重疊視窗會讓 13 天的量蓋過今天
-的不足。連線例外刻意往上拋不吞（同月營收教訓），由 `run_job` 記失敗留原因。
+**假成功防線**（既有 `taifex._post_csv` 全部會誤判為成功）：區間超過一月→UTF-8 616B 警告頁；
+今天只有夜盤→**逐交易日**（非整個回應加總）檢查一般列數 ≥`MIN_GENERAL_ROWS`(1200，正常1629)，
+否則排程 `[D-6,D]` 約 7 天重疊視窗（正常含 5 個交易日）會讓 5 天的量蓋過今天的不足。**表頭
+真的改版時（`ValueError`）不再吞成 `[]`，原樣往上拋**（review I2）——與「非交易日只有表頭」
+（表頭沒變，解析出 0 列）不同一種情況，不衝突。連線例外刻意往上拋不吞（同月營收教訓），由
+`run_job` 記失敗留原因。
 
 **漲跌% 參考價是前一日結算價非收盤價**：實測 CCF 202610 09-04 自算 4.38% vs 官方欄位
 **4.80%**（參考價 125.0=09-03結算，非09-03收盤125.5）——直接用官方欄位。
@@ -311,8 +323,18 @@ CSV 形狀/主力月規則/tick 級距都不同）：340 個合約代碼收斂�
 與現貨收盤(13:30)本身不同步，
 實測最多差5 tick，標題須註明；14檔ETF期貨到16:15（落差2.5小時）另標`late_session`。
 
+**期現價差一列一標的、不是一列一合約**（review #2）：標準/小型去重原本保留成交量較高者，
+小型量常較大會讓 2330 那列顯示「小型台積電」——改成依「該標的全部合約成交量合計」排名，
+結算價/主力月固定取**標準合約**（`is_mini` 為假），標籤固定用 `stock_name`（非會加「小型」
+前綴的 `name`）。
+
 **調整後合約（`root+1`如CM1）只併成交量絕不併價格**（乘數非標準，實測見過2020/5965.5892等）：
 量＝全部非價差列(含盤後/調整後)依root加總(官方STFTop10口徑)，價/結算價/OI只取`root+F`列。
+
+**未平倉增減/熱門榜的 OI 用 `oi_total`（該 root 的 F 合約、一般時段、全部月份加總），不是
+主力月自己的 `oi`**（review I1）：換月（結算日附近常態）當天主力月整個換掉，用主力月 `oi`
+相減會把移倉算成假的大增/大減——實測真實總量僅 +500，主力月口徑卻算出 −8,500 並列進「減少
+最多」。`ssf_daily` 新增 `oi_total` 欄，`oi` 欄語意不變。
 
 **保證金四條紀律**（`margin_amount`）：(1) 必須`Decimal`+`ROUND_HALF_UP`不可`round()`——1,181
 個(合約,月份)中**101個**不同，CAF 96,592.5→96,593、PWF 42,808.5→42,809。(2) 用官方兩位小數
@@ -338,12 +360,18 @@ backfill 前例，驗完即刪、本次任務已移除）**：7項全過含MIS�
 可查哪個時段最先成功）。
 
 **資料源坑**：保證金CSV須`csv.reader`不可`split(",")`（"TPK Holding Co., Ltd."引號內逗號會
-使第6欄起整排位移，筆數守衛296/24看不出來）；ETF區段真實標題是「標的證券為受益憑證之股票期貨
-契約」非「…ETF之股票期貨」（fixture 要用真實標題）；每支擷取器都要`raise_for_status()`。
+使第6欄起整排位移，筆數守衛296/24看不出來；`parse_index_margining_csv` 同一份 CSV 家族也補上
+同樣的 `csv.reader`，review M5）；ETF區段真實標題是「標的證券為受益憑證之股票期貨契約」非
+「…ETF之股票期貨」（fixture 要用真實標題）；每支擷取器都要`raise_for_status()`；**合理性
+守衛除股票/ETF筆數、指數段外，也要查 `etf_updated`**（review M4，原本只查 `stock_updated`，
+ETF 更新日那行解析失敗跟筆數門檻無關，會讓殘缺結果冒充合格逃出去）。
 
 **計算/資料坑**：`count_ssf_dates`要數真實總數不可`len(dates)`（被熱力圖10日軸寬夾住永遠
 ≤10）；覆蓋率計數器(`no_stock_code`/`no_spot`)要走訪全部root不能在湊滿輸出上限時break（否則
 資料越殘缺計數越接近0）；6488(環球晶)其實有股期，1234(黑松)才是無股期範例。
+**`coverage.lag_trading_days`**（review I6）＝`market_daily` 裡「`taiex` 非 NULL 且日期晚於
+SSF 資料日」的列數——看交易日不看日曆天（同 `renderFreshness` 決定），`market_daily` 只在
+真的開盤才建列，天生排除週末/假日；空資料庫這個鍵仍回 0，同其他四個 coverage 鍵一起給。
 
 **前端坑**：設計文件的`gt-sub`/`.empty`/`card-title`/`--fs-xxs`不存在，改用既有
 `muted small`/`card-label`/`--fs-xs`；圖表一律`initChart(el)`不可直接`echarts.init`；空資料
@@ -352,9 +380,12 @@ backfill 前例，驗完即刪、本次任務已移除）**：7項全過含MIS�
 中止且不進console)。
 
 **測試坑**：新端點依賴(`_attach_ssf_margin`)讓~5條既有自算選股測試真連外卻照樣通過→conftest
-加autouse樁`_no_ssf_network`+`@pytest.mark.real_ssf_fetch`退出標記；測試替身要委派真實
-`httpx.Response.raise_for_status()`不可自編Exception；「測試通過但理由不對」三例(sr-only測
-在不讀的欄位/OI測兩天OI相同被錯誤路徑排除/熱力圖測兩天root相同)——**每道守衛都要反證**。
+加autouse樁`_no_ssf_network`+`@pytest.mark.real_ssf_fetch`退出標記（2026-09 後續：review I3
+把這個修到根，`_attach_ssf_margin` 改用 `fetch=False` 後結構上就不會呼叫這兩支 fetcher，這道
+樁降級成防禦性第二層；新測試改樁成「raise」而非「回空 dict」才證明得了路徑真的不連外）；
+測試替身要委派真實`httpx.Response.raise_for_status()`不可自編Exception；「測試通過但理由
+不對」三例(sr-only測在不讀的欄位/OI測兩天OI相同被錯誤路徑排除/熱力圖測兩天root相同)——
+**每道守衛都要反證**。
 
 **未處理留後續**：`/api/ssf/backfill`缺`max_fetch`與remaining收斂契約(現況最壞19秒可接受)；
 6個`card-group`帶`data-key`但收合初始化只綁`#view-overview`，點了沒反應。
