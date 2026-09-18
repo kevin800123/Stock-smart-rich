@@ -153,3 +153,87 @@ def test_refresh_groups_multi_date_response_by_date_before_summarizing(tmp_path,
     sample = next(iter(common))
     assert rows16[sample]["close"] == 1.5
     assert rows17[sample]["close"] == 9.9
+
+
+import os, tempfile
+
+
+def _client(monkeypatch, tmp_path):
+    os.environ["SPR_DB_PATH"] = str(tmp_path / "api.sqlite")
+    from fastapi.testclient import TestClient
+    from stocks_power_rich.main import create_app
+    return TestClient(create_app(enable_scheduler=False))
+
+
+_CONTRACTS = {
+    "CD": {"code": "2330", "stock_name": "台積電", "name": "台積電",
+           "multiplier": 2000, "is_etf": False, "is_mini": False},
+    "QF": {"code": "2330", "stock_name": "台積電", "name": "小型台積電",
+           "multiplier": 100, "is_etf": False, "is_mini": True},
+    "NY": {"code": "0050", "stock_name": "元大台灣50", "name": "元大台灣50",
+           "multiplier": 10000, "is_etf": True, "is_mini": False},
+}
+_MARGIN = {
+    "stock_updated": "2026/09/15", "etf_updated": "2026/08/12", "index_updated": "2026/08/12",
+    "stock": {"CDF": {"code": "2330", "name": "台積電期貨", "tier": "級距1",
+                      "clearing_pct": 10.0, "maintenance_pct": 10.35, "initial_pct": 13.50},
+              "QFF": {"code": "2330", "name": "小型台積電期貨", "tier": "級距1",
+                      "clearing_pct": 10.0, "maintenance_pct": 10.35, "initial_pct": 13.50}},
+    "etf": {"NYF": {"code": "0050", "name": "元大台灣50ETF期貨",
+                    "clearing": 64000, "maintenance": 67000, "initial": 87000}},
+    "index": {"微型臺指期貨": {"clearing": 25950, "maintenance": 26900, "initial": 35050},
+              "臺股期貨": {"clearing": 519000, "maintenance": 538000, "initial": 701000}},
+}
+
+
+def _seed_margin(monkeypatch, tmp_path):
+    from stocks_power_rich.api import market as M
+    monkeypatch.setattr(M, "_ssf_contracts", lambda c: _CONTRACTS)
+    monkeypatch.setattr(M, "_ssf_margin_table", lambda c: _MARGIN)
+    conn = get_connection(str(tmp_path / "api.sqlite"))
+    init_db(conn)
+    from stocks_power_rich.db import bulk_upsert_ssf_daily
+    bulk_upsert_ssf_daily(conn, [
+        {"date": "2026-09-17", "root": "CD", "main_month": "202610", "settlement": 2432.0,
+         "close": 2433.0, "chg_pct": 1.33, "volume": 8192, "oi": 25045, "main_volume": 6027,
+         "open": None, "high": None, "low": None, "chg": None},
+        {"date": "2026-09-17", "root": "QF", "main_month": "202610", "settlement": 2432.0,
+         "close": 2434.0, "chg_pct": 1.37, "volume": 36062, "oi": 53174, "main_volume": 26032,
+         "open": None, "high": None, "low": None, "chg": None},
+        {"date": "2026-09-17", "root": "NY", "main_month": "202610", "settlement": 108.3,
+         "close": 108.3, "chg_pct": 0.5, "volume": 100, "oi": 500, "main_volume": 100,
+         "open": None, "high": None, "low": None, "chg": None},
+    ])
+
+
+def test_margin_endpoint_computes_stock_futures_from_settlement(monkeypatch, tmp_path):
+    _seed_margin(monkeypatch, tmp_path)
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/margin").json()
+    assert d["price_date"] == "2026-09-17"
+    assert d["stock_updated"] == "2026/09/15"
+    by_root = {r["root"]: r for r in d["rows"]}
+    assert by_root["CD"]["initial"] == 656640      # 2432 × 2000 × 13.50%
+    assert by_root["QF"]["initial"] == 32832       # 2432 × 100 × 13.50%
+
+
+def test_margin_endpoint_uses_the_published_amount_for_etf_futures(monkeypatch, tmp_path):
+    """ETF 期貨公布固定金額，不可套價格×比例（108.3 × 10000 × 比例 會完全不同）。"""
+    _seed_margin(monkeypatch, tmp_path)
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/margin").json()
+    ny = {r["root"]: r for r in d["rows"]}["NY"]
+    assert ny["initial"] == 87000 and ny["kind"] == "etf"
+    assert ny["initial_pct"] is None
+
+
+def test_margin_endpoint_includes_tmf(monkeypatch, tmp_path):
+    _seed_margin(monkeypatch, tmp_path)
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/margin").json()
+    tmf = [x for x in d["index"] if "微型" in x["name"]]
+    assert tmf and tmf[0]["initial"] == 35050
+
+
+def test_margin_endpoint_builds_the_by_stock_index_on_the_server(monkeypatch, tmp_path):
+    """個股頁要用股票代號反查。索引在後端組，前端不得自己掃 320 列組第二份。"""
+    _seed_margin(monkeypatch, tmp_path)
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/margin").json()
+    assert {x["root"] for x in d["by_stock"]["2330"]} == {"CD", "QF"}
