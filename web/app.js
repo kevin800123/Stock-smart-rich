@@ -67,6 +67,8 @@ let ssNewFilter = null;
 // 名單怪怪的、卻忘了自己關過某一關」。
 let ssConds = null;
 let ssSort = { key: "mu_value", dir: -1 };
+// 股期概況：進頁才載入（比照 cupLoaded）。四個區塊共用同一份 /api/ssf/overview 回應。
+let ssfLoaded = false, ssfData = null;
 let instBreadthChart = null, instAlphaChart = null;
 let instCoverage = null, instReport = null, instSegment = "combined", instResearchLoading = false;
 // 進頁才載入的旗標（比照 cupLoaded）。**這兩支是開頁流量的大頭**：實測總覽開頁抓
@@ -398,6 +400,7 @@ function showView(name) {
   if (name === "traders") loadTraders();
   if (name === "selfcheck") loadSelfcheck();
   if (name === "self-screen" && !selfScreenLoaded) { selfScreenLoaded = true; loadSelfScreen(); }   // 原生 DOM treemap，進頁才載入
+  if (name === "ssf" && !ssfLoaded) { ssfLoaded = true; loadSsf(); }
   if (name === "inst-research") {
     loadInstResearchCoverage();
     instBreadthChart && instBreadthChart.resize();
@@ -832,6 +835,57 @@ async function loadSelfcheck() {
   } catch (e) {
     el.innerHTML = '<div class="table-empty"><strong>載入失敗</strong><span>' + esc(e.message) + "</span></div>";
   }
+}
+
+// ========== 股期概況（台指期/個股期貨，進頁才載入） ==========
+async function loadSsf() {
+  const note = $("ssf-note");
+  try {
+    ssfData = await getJSON("/api/ssf/overview");
+  } catch (e) {
+    if (note) note.textContent = "讀取失敗";
+    return;
+  }
+  const d = ssfData;
+  if (!d || !d.date) {
+    if (note) note.textContent = "尚無股期資料，請先執行 /api/ssf/backfill";
+    return;
+  }
+  const cov = d.coverage || {};
+  if (note) {
+    note.textContent = `資料日 ${d.date}　${cov.roots || 0} 檔　已存 ${cov.stored_days || 0} 個交易日`
+      + (cov.no_stock_code ? `　${cov.no_stock_code} 檔查不到標的代號` : "");
+  }
+  renderSsfFreshness(d.date);
+  renderSsfHot(d.hot || []);
+}
+
+// SSF_STALE_DAYS = 2：落後 1 天是常態（盤後才更新、假日不開盤），1 天就叫會變成
+// 永遠亮著的裝飾。落差用**日曆天**，沿用 `renderFreshness` 的既有決定——跨週末說
+// 「落後 3 天」是事實，硬換算成交易日會讓週一早上看起來像資料很新。
+const SSF_STALE_DAYS = 2;
+
+function renderSsfFreshness(date) {
+  const el = $("ssf-fresh"); if (!el) return;
+  el.textContent = ""; el.classList.remove("stale");
+  if (!date) return;
+  const days = Math.floor((new Date().setHours(0, 0, 0, 0)
+    - new Date(date + "T00:00:00").getTime()) / 86400000);
+  if (days >= SSF_STALE_DAYS) { el.textContent = `落後 ${days} 天`; el.classList.add("stale"); }
+}
+
+// card-label／muted small 沿用既有卡片與 group-title 慣例（見 #view-hiprice／#view-self-screen），
+// 不新造 .card-title／.empty——一個是卡片標題的既有類別，一個是「空狀態」既有寫法。
+function renderSsfHot(rows) {
+  const el = $("ssf-hot"); if (!el) return;
+  if (!rows.length) { el.innerHTML = '<div class="muted small">尚無資料</div>'; return; }
+  el.innerHTML = rows.map(r => {
+    const dir = r.chg_pct == null ? "" : (r.chg_pct >= 0 ? "up" : "down");
+    return `<div class="card"><div class="card-label">${esc(r.name)}</div>`
+      + `<div class="card-val">${fmt(r.close)}</div>`
+      + `<div class="card-chg ${dir}">${r.chg_pct == null ? "—" : (r.chg_pct >= 0 ? "+" : "") + r.chg_pct.toFixed(2) + "%"}</div>`
+      + `<div class="card-note">${esc(r.code || "")}　${fmt(r.volume, 0)} 口　OI ${fmt(r.oi, 0)}</div></div>`;
+  }).join("");
 }
 
 // ========== 自算籌碼/基本選股（全市場自算池，零 CSV） ==========

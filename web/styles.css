@@ -613,7 +613,13 @@ body[data-public] .status-bar { display: none; }
 .card-group { background: rgba(16, 26, 40, 0.72); border: 1px solid var(--border-subtle); border-radius: var(--r-lg); padding: 12px; }
 .group-title {
   display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
-  font-size: var(--fs-md); color: var(--label); font-weight: 600; margin-bottom: var(--sp-2);
+  font-size: var(--fs-md); color: var(--label); font-weight: 600;
+  /* margin 用 shorthand 而非只設 margin-bottom：既有用法全是 <div>（預設無邊距，
+     只設 bottom 就夠），但股期概況的 .pane-heading 標題改用 <h2>（維持全站「每個
+     view 一個標題層級」的慣例），h2 有瀏覽器預設的 margin-top，只蓋 bottom 蓋不掉，
+     標題列會多出一截空白。shorthand 三值（top/左右/bottom）把 top 與左右一併歸零，
+     對既有 <div> 寫法是無操作（本來就是 0），只在套到標題標籤時才有差。 */
+  margin: 0 0 var(--sp-2);
 }
 /* 收合：點標題列收合／展開，狀態存 localStorage（見 app.js initCollapsibleGroups）。
    只用 CSS 隱藏「標題以外的所有直接子項」，不管該區塊內部長什麼樣（卡片網格／

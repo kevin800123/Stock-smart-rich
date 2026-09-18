@@ -46,6 +46,7 @@
         <a class="nav" data-view="rotation" data-short="輪動"><span class="ico">🔄</span><span class="lbl">族群輪動</span></a>
         <a class="nav" data-view="osfut" data-short="海期"><span class="ico">🌏</span><span class="lbl">海期監控</span></a>
         <a class="nav" data-view="hiprice" data-short="高價股"><span class="ico">💰</span><span class="lbl">高價股監控</span></a>
+        <a class="nav" data-view="ssf" data-short="股期"><span class="ico">📐</span><span class="lbl">股期概況</span></a>
       </div>
       <div class="nav-group">
         <div class="nav-group-title">選股</div>
@@ -662,6 +663,22 @@
           <div class="rank-col"><div class="rank-h">台股新聞</div><div id="news-tw"></div></div>
           <div class="rank-col"><div class="rank-h">美股新聞</div><div id="news-us"></div></div>
           <div class="rank-col"><div class="rank-h">日股新聞</div><div id="news-jp"></div></div>
+        </div>
+      </section>
+
+      <!-- ===== 股期概況 ===== -->
+      <section id="view-ssf" class="view">
+        <div class="pane-heading">
+          <h2 class="group-title">股期概況</h2>
+          <span class="pane-count" id="ssf-note"></span>
+          <!-- 沿用全站既有的新鮮度徽章（`:empty { display:none }` 讓它平時不佔位），
+               不另開一套樣式——`.csv-stale` 那次就是複製一份然後各自漂移。 -->
+          <span class="freshness" id="ssf-fresh"></span>
+        </div>
+
+        <div class="card-group" data-key="ssf-hot">
+          <div class="group-title">熱門股期　<span class="muted small">依官方成交口數；口數含小型合約，規模不同</span></div>
+          <div class="cards" id="ssf-hot"></div>
         </div>
       </section>
 
