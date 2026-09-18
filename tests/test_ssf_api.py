@@ -212,8 +212,12 @@ def test_margin_endpoint_computes_stock_futures_from_settlement(monkeypatch, tmp
     assert d["price_date"] == "2026-09-17"
     assert d["stock_updated"] == "2026/09/15"
     by_root = {r["root"]: r for r in d["rows"]}
+    # 原始保證金
     assert by_root["CD"]["initial"] == 656640      # 2432 × 2000 × 13.50%
     assert by_root["QF"]["initial"] == 32832       # 2432 × 100 × 13.50%
+    # 維持保證金
+    assert by_root["CD"]["maintenance"] == 503424  # 2432 × 2000 × 10.35%
+    assert by_root["QF"]["maintenance"] == 25171   # 2432 × 100 × 10.35% → 25171.2 四捨五入
 
 
 def test_margin_endpoint_uses_the_published_amount_for_etf_futures(monkeypatch, tmp_path):
@@ -223,6 +227,8 @@ def test_margin_endpoint_uses_the_published_amount_for_etf_futures(monkeypatch, 
     ny = {r["root"]: r for r in d["rows"]}["NY"]
     assert ny["initial"] == 87000 and ny["kind"] == "etf"
     assert ny["initial_pct"] is None
+    # ETF 期貨的維持保證金也來自公布的固定金額
+    assert ny["maintenance"] == 67000
 
 
 def test_margin_endpoint_includes_tmf(monkeypatch, tmp_path):
@@ -230,6 +236,8 @@ def test_margin_endpoint_includes_tmf(monkeypatch, tmp_path):
     d = _client(monkeypatch, tmp_path).get("/api/ssf/margin").json()
     tmf = [x for x in d["index"] if "微型" in x["name"]]
     assert tmf and tmf[0]["initial"] == 35050
+    # 指數期貨的維持保證金來自公布的固定金額
+    assert tmf[0]["maintenance"] == 26900
 
 
 def test_margin_endpoint_builds_the_by_stock_index_on_the_server(monkeypatch, tmp_path):
