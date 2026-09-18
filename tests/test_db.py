@@ -94,6 +94,22 @@ def test_latest_ai_cache_with_prefix_picks_the_lexicographically_newest_key(tmp_
     assert latest_ai_cache_with_prefix(conn, "ssfmargin:v1:") == {"stock_updated": "new"}
 
 
+def test_latest_ai_cache_with_prefix_treats_underscore_in_the_prefix_literally(tmp_path):
+    """final review Fix 3：原本用 `LIKE prefix || '%'` 找前綴，但 SQL LIKE 把 `_` 當成
+    單一字元萬用字元——`ssf_contracts:` 這個前綴字面上就帶了一個 `_`，若直接
+    `LIKE 'ssf_contracts:%'`，任何在那個位置換成別的字元的鍵（例如
+    `ssfXcontracts:...`）都會被誤判成前綴相符。
+
+    這裡故意只塞一筆『差在 `_` 那個位置』的鍵、沒有塞任何真正符合 `ssf_contracts:`
+    前綴的鍵，驗證它不會被誤認成命中（舊的 LIKE 寫法會讓這個斷言失敗，回傳這筆
+    payload 而不是 None）。
+    """
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    set_ai_cache(conn, "ssfXcontracts:2099-01", {"stock_updated": "should-not-match"})
+    assert latest_ai_cache_with_prefix(conn, "ssf_contracts:") is None
+
+
 def test_market_daily_upsert(tmp_path):
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)

@@ -376,13 +376,37 @@ def test_ssf_contracts_fetch_false_never_touches_network_and_falls_back_to_a_sta
     """`fetch=False`（自算選股參考欄用）只讀快取：今天的鍵沒有就退回最近一次存過
     的舊快取，絕不連外。這裡故意只種一個很久以前的月份，證明『沒有今天的』時
     不會被當成完全沒有資料而白白浪費既有的合約表。
+
+    退回的舊快取本身也要通過合理性檢查（final review Fix 3），所以這裡塞的是一份
+    達到 `MIN_PLAUSIBLE_CONTRACTS` 筆數的合約表，而不是只有 3 檔的 `_CONTRACTS`
+    ——否則會被新加的守衛擋下，測不到這裡真正要驗證的『退回舊快取』行為（見下一條
+    測試：筆數不足時該被擋下）。
     """
     conn = _db(tmp_path)
     from stocks_power_rich.db import set_ai_cache
-    set_ai_cache(conn, "ssf_contracts:2020-01", _CONTRACTS)
+    stale = {f"Z{i:03d}": {"code": f"9{i:03d}", "stock_name": f"測試股{i}",
+                           "name": f"測試股{i}期貨", "multiplier": 2000,
+                           "is_etf": False, "is_mini": False}
+             for i in range(ssf.MIN_PLAUSIBLE_CONTRACTS)}
+    set_ai_cache(conn, "ssf_contracts:2020-01", stale)
     monkeypatch.setattr(ssf, "fetch_ssf_contract_map",
                         lambda: (_ for _ in ()).throw(AssertionError("fetch=False 不該連外")))
-    assert H._ssf_contracts(conn, fetch=False) == _CONTRACTS
+    assert H._ssf_contracts(conn, fetch=False) == stale
+
+
+def test_ssf_contracts_fetch_false_fallback_rejects_an_implausibly_small_stale_cache(
+        tmp_path, monkeypatch):
+    """final review Fix 3：退回的舊快取要通過跟 `fetch=True` 一樣的筆數守衛。
+    `latest_ai_cache_with_prefix` 本身不做合理性判斷，若原樣放行，一份只有 3 檔
+    （遠低於 `MIN_PLAUSIBLE_CONTRACTS`，八成是某次半套寫入的殘留）的舊快取，會被
+    當成『有股期資料』原樣交給呼叫端，讓退路繞過「讀取端也要守衛筆數」這條規矩。
+    """
+    conn = _db(tmp_path)
+    from stocks_power_rich.db import set_ai_cache
+    set_ai_cache(conn, "ssf_contracts:2020-01", _CONTRACTS)   # 只有 3 檔，不合理
+    monkeypatch.setattr(ssf, "fetch_ssf_contract_map",
+                        lambda: (_ for _ in ()).throw(AssertionError("fetch=False 不該連外")))
+    assert H._ssf_contracts(conn, fetch=False) == {}
 
 
 def test_ssf_margin_table_fetch_false_never_touches_network_and_falls_back_to_a_stale_cache(
@@ -396,10 +420,24 @@ def test_ssf_margin_table_fetch_false_never_touches_network_and_falls_back_to_a_
     assert H._ssf_margin_table(conn, fetch=False) == _MARGIN
 
 
+def test_ssf_margin_table_fetch_false_fallback_rejects_a_stale_cache_missing_stock_updated(
+        tmp_path, monkeypatch):
+    """final review Fix 3：退回的舊快取一樣要有 `stock_updated`——缺這個鍵的快取
+    在主要路徑（今天的鍵）本來就被判定未命中，退路不能繞過同一條規則原樣放行。
+    """
+    conn = _db(tmp_path)
+    from stocks_power_rich.db import set_ai_cache
+    set_ai_cache(conn, "ssfmargin:v1:2020-01-01", {"stock": _MARGIN["stock"]})   # 缺 stock_updated
+    monkeypatch.setattr(ssf, "fetch_ssf_margin_table",
+                        lambda: (_ for _ in ()).throw(AssertionError("fetch=False 不該連外")))
+    assert H._ssf_margin_table(conn, fetch=False) == {}
+
+
 def test_ssf_margin_table_fetch_true_enters_cooldown_after_a_failed_fetch(tmp_path, monkeypatch):
     """TAIFEX 持續失敗時，`fetch=True`（股期概況頁／排程）不該每次呼叫都重打一次
     可能 30 秒逾時的請求——比照既有 `_osfut_cooling_down` 的做法：失敗一次後在
-    冷卻期間內不再重試。
+    冷卻期間內不再重試。這裡完全沒有任何舊快取可退，兩次呼叫都回 `{}` 是正確
+    答案（見下一條測試：有舊快取可退時不該回 `{}`）。
     """
     conn = _db(tmp_path)
     calls = {"n": 0}
@@ -412,6 +450,30 @@ def test_ssf_margin_table_fetch_true_enters_cooldown_after_a_failed_fetch(tmp_pa
     assert calls["n"] == 1
     assert H._ssf_margin_table(conn, fetch=True) == {}   # 冷卻中，不重打
     assert calls["n"] == 1
+
+
+def test_ssf_margin_table_fetch_true_falls_back_to_a_stale_cache_instead_of_going_blank(
+        tmp_path, monkeypatch):
+    """final review Fix 2：抓取失敗（或冷卻中）不該讓 `/api/ssf/margin` 與個股頁的
+    保證金列整段空白——`fetch=True` 應該比照 `fetch=False` 退回『最近一次存過、且
+    通過合理性檢查』的表，而不是回 `{}`。這裡種一筆『昨天』成功過的快取，模擬
+    今天抓取失敗、但過去確實成功過的情況；第二次呼叫落在冷卻期間內，一樣要退回
+    同一份舊表，且不該再打一次網路。
+    """
+    conn = _db(tmp_path)
+    from stocks_power_rich.db import set_ai_cache
+    yesterday = (_dt.date.today() - _dt.timedelta(days=1)).strftime("%Y-%m-%d")
+    set_ai_cache(conn, f"ssfmargin:v1:{yesterday}", _MARGIN)
+    calls = {"n": 0}
+
+    def fail():
+        calls["n"] += 1
+        return {}
+    monkeypatch.setattr(ssf, "fetch_ssf_margin_table", fail)
+    assert H._ssf_margin_table(conn, fetch=True) == _MARGIN   # 第一次：抓取失敗，退回昨天
+    assert calls["n"] == 1
+    assert H._ssf_margin_table(conn, fetch=True) == _MARGIN   # 第二次：冷卻中，仍退回昨天
+    assert calls["n"] == 1                                    # 不重打
 
 
 def test_refresh_ssf_daily_also_warms_the_contract_map_cache(tmp_path, monkeypatch):
@@ -793,6 +855,34 @@ def test_overview_basis_coverage_counts_gaps_beyond_the_cap(monkeypatch, tmp_pat
     assert resp["coverage"]["no_spot"] == 3
 
 
+def test_overview_basis_counts_a_missing_standard_contract_instead_of_skipping_silently(
+        monkeypatch, tmp_path):
+    """final review Fix 4：一檔標的當天出現的合約全部是小型（沒有標準合約）理論上
+    不會發生——每個掛牌標的都有一個標準合約——但『不會發生』不代表『不必被看見』。
+    這裡刻意只給一檔小型合約、不給對應的標準合約，驗證它被排除在期現價差表之外的
+    同時，缺口有被算進一個看得到的 coverage 計數器，而不是悄悄 continue 掉。
+    """
+    from stocks_power_rich.api import market as M
+    from stocks_power_rich.db import bulk_upsert_ssf_daily
+    contracts = {
+        "ZM": {"code": "3333", "stock_name": "Z股", "name": "小型Z股",
+               "multiplier": 100, "is_etf": False, "is_mini": True},
+    }
+    monkeypatch.setattr(M, "_ssf_contracts", lambda c: contracts)
+    monkeypatch.setattr(M, "_quotes_for", lambda c, d: {"3333": {"close": 100.0}})
+    monkeypatch.setattr(M, "_otc_quotes_for", lambda c, d: {})
+    conn = get_connection(str(tmp_path / "api.sqlite"))
+    init_db(conn)
+    bulk_upsert_ssf_daily(conn, [
+        {"date": "2026-09-17", "root": "ZM", "main_month": "202610", "settlement": 101.0,
+         "close": 101.0, "chg_pct": 1.0, "volume": 500, "oi": 10, "oi_total": 10,
+         "main_volume": 500},
+    ])
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert d["basis"] == []                            # 沒有標準合約，這檔不列進期現價差
+    assert d["coverage"]["no_std_contract"] == 1        # 但缺口要看得見，不能悄悄消失
+
+
 def test_overview_stored_days_reports_the_true_total_not_the_heatmap_window(monkeypatch, tmp_path):
     """『已存 N 個交易日』要回報 ssf_daily 實際存了幾天，不能被熱力圖固定的 10 日
     視窗夾住——那個視窗（`dates`／`SSF_HEATMAP_DAYS`）只是熱力圖的軸寬，`len()`
@@ -847,18 +937,21 @@ def test_overview_cell_volume_is_none_not_zero_when_missing(monkeypatch, tmp_pat
 
 
 def test_overview_empty_payload_has_the_same_coverage_keys_as_the_populated_one(monkeypatch, tmp_path):
-    """沒有任何資料時，coverage 仍要帶滿五個鍵——有資料時的路徑永遠會給
-    roots/no_stock_code/no_spot/lag_trading_days，前端一律讀這幾個鍵，空資料庫
-    若少了任何一個會直接 KeyError。
+    """沒有任何資料時，coverage 仍要帶滿六個鍵——有資料時的路徑永遠會給
+    roots/no_stock_code/no_spot/no_std_contract/lag_trading_days，前端一律讀這幾個
+    鍵，空資料庫若少了任何一個會直接 KeyError。
 
     **契約變更（review I6／Fix E）**：新增 `lag_trading_days`，斷言字典跟著補上
     這個鍵（值 0——沒有 SSF 資料日可比較，沒有落後可言，同 stored_days 的 0 是
     同一種「查無資料」的預設值，不是「資料是最新的」那種 0）。
+
+    **契約變更（final review Fix 4）**：新增 `no_std_contract`（一檔標的當天全部
+    合約都缺標準合約時的計數），空資料庫時同樣回 0。
     """
     d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
     assert d["date"] is None
     assert d["coverage"] == {"stored_days": 0, "roots": 0, "no_stock_code": 0,
-                             "no_spot": 0, "lag_trading_days": 0}
+                             "no_spot": 0, "no_std_contract": 0, "lag_trading_days": 0}
 
 
 def test_overview_reports_trading_day_lag_not_calendar_days(monkeypatch, tmp_path):

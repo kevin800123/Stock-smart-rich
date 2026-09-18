@@ -1021,10 +1021,18 @@ def latest_ai_cache_with_prefix(conn: sqlite3.Connection, prefix: str):
     存過的，寧可顯示稍舊的資料，也不要為了它去打一次可能逾時的請求（同
     `pick_close_for`「找不到當下就找最近一次」的精神，只是這裡找的是快取鍵而非
     交易日）。
+
+    **不能用 `LIKE prefix || '%'`**（final review Fix 3）：SQL LIKE 把 `_` 當成單一
+    字元萬用字元，而 `ssf_contracts:` 這個前綴字面上就帶了一個 `_`——實測塞一筆
+    `ssfXcontracts:2099-01`（唯一差異只在那個位置），`LIKE 'ssf_contracts:%'` 照樣
+    判定相符並回傳它。改用字典序範圍界定（`>= prefix AND < prefix + '￿'`）：
+    `￿` 落在一般鍵名會用到的字元（英數字、冒號、連字號）之後，範圍內只會含
+    真正以 `prefix` 開頭的鍵，且不必逐一跳脫 LIKE／GLOB 的萬用字元。
     """
     row = conn.execute(
-        "SELECT payload FROM ai_cache WHERE cache_key LIKE ? ORDER BY cache_key DESC LIMIT 1",
-        (prefix + "%",),
+        "SELECT payload FROM ai_cache WHERE cache_key >= ? AND cache_key < ? "
+        "ORDER BY cache_key DESC LIMIT 1",
+        (prefix, prefix + "￿"),
     ).fetchone()
     return json.loads(row[0]) if row else None
 

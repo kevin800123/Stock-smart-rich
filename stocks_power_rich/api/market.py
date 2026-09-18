@@ -837,12 +837,12 @@ def ssf_overview(date: str | None = None):
     dates = get_ssf_dates(c, limit=SSF_HEATMAP_DAYS)
     if not dates:
         # coverage 的鍵要跟有資料時一致（stored_days/roots/no_stock_code/no_spot/
-        # lag_trading_days）：前端一律讀這五個鍵，缺資料庫時若少一個會在空站上
-        # 直接 KeyError。
+        # no_std_contract/lag_trading_days）：前端一律讀這幾個鍵，缺資料庫時若少
+        # 一個會在空站上直接 KeyError。
         return {"date": None, "dates": [], "hot": [], "ranks": {}, "basis": [],
                 "oi_change": {"up": [], "down": []}, "heatmap": {"dates": [], "rows": []},
                 "coverage": {"stored_days": 0, "roots": 0, "no_stock_code": 0,
-                            "no_spot": 0, "lag_trading_days": 0}}
+                            "no_spot": 0, "no_std_contract": 0, "lag_trading_days": 0}}
     day = date if date in dates else dates[0]
     contracts = _ssf_contracts(c)
     rows_all = get_ssf_rows(c, dates)
@@ -883,14 +883,15 @@ def ssf_overview(date: str | None = None):
     ranked = sorted(by_code.items(),
                     key=lambda kv: sum(rr.get("volume") or 0 for rr in kv[1]),
                     reverse=True)
-    basis, no_spot = [], 0
+    basis, no_spot, no_std_contract = [], 0, 0
     for code, group in ranked:
         # 價格與主力月一律取標準合約（is_mini=False）——每個掛牌標的恰有一個標準
         # 合約；成交量較高的常是小型合約，但那不代表標的本身，混進來會讓同一檔
         # 股票在不同天可能因為哪個合約比較活躍而顯示不同的結算價/主力月。
         std = next((rr for rr in group
                    if not (contracts.get(rr["root"]) or {}).get("is_mini")), None)
-        if std is None:      # 理論上不會發生：每個掛牌標的都有一個標準合約
+        if std is None:      # 理論上不會發生：每個掛牌標的都有一個標準合約——但
+            no_std_contract += 1   # 「不會發生」不等於「不必被看見」，缺口要算得出來
             continue
         info = contracts[std["root"]]
         spot = (spots.get(code) or {}).get("close")
@@ -961,6 +962,7 @@ def ssf_overview(date: str | None = None):
             # 「比 SSF 資料日晚、且有加權指數」的列數天生就排除了週末／假日。
             "coverage": {"stored_days": count_ssf_dates(c), "roots": len(today_rows),
                          "no_stock_code": no_code, "no_spot": no_spot,
+                         "no_std_contract": no_std_contract,
                          "lag_trading_days": c.execute(
                              "SELECT COUNT(*) FROM market_daily "
                              "WHERE taiex IS NOT NULL AND date > ?", (day,)).fetchone()[0]}}

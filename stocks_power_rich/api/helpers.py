@@ -168,14 +168,20 @@ def _ssf_contracts(c, fetch: bool = True) -> dict:
     `fetch=False`（自算選股參考欄／`_attach_ssf_margin` 用，review I3／Fix F）：
     只讀快取、絕不連外——這一頁不該因為 TAIFEX 抽風而卡住。今天這個月份沒有就
     退回「最近一次存過的」（`latest_ai_cache_with_prefix`），寧可顯示稍舊的合約
-    對照表，也不要為了它去打一次可能逾時的請求；兩者都沒有才回 `{}`。
+    對照表，也不要為了它去打一次可能逾時的請求；兩者都沒有才回 `{}`。**退回的
+    那一筆也要通過同一個筆數守衛**（final review Fix 3）——`latest_ai_cache_with_prefix`
+    本身不做合理性判斷，一份殘缺的舊快取一樣會被它找到並原樣交回呼叫端，等於讓
+    退路繞過「讀取端也要守衛」這條規矩。
     """
     key = f"ssf_contracts:{datetime.now().strftime('%Y-%m')}"
     if not fetch:
         m = get_ai_cache(c, key)
         if isinstance(m, dict) and m:
             return m
-        return latest_ai_cache_with_prefix(c, "ssf_contracts:") or {}
+        fallback = latest_ai_cache_with_prefix(c, "ssf_contracts:")
+        if isinstance(fallback, dict) and len(fallback) >= taifex_ssf.MIN_PLAUSIBLE_CONTRACTS:
+            return fallback
+        return {}
     m = get_ai_cache(c, key)
     if not m or len(m) < taifex_ssf.MIN_PLAUSIBLE_CONTRACTS:
         fresh = taifex_ssf.fetch_ssf_contract_map()
@@ -213,27 +219,44 @@ def _ssf_margin_table(c, fetch: bool = True) -> dict:
 
     `fetch=False`（自算選股參考欄／`_attach_ssf_margin` 用，review I3／Fix F）：
     只讀快取、絕不連外。今天的鍵沒有就退回「最近一次存過的」，兩者都沒有才回
-    `{}`——這一頁不該因為 TAIFEX 抽風而被拖成 30 秒逾時。
+    `{}`——這一頁不該因為 TAIFEX 抽風而被拖成 30 秒逾時。**退回的那一筆也要通過
+    同一個 `stock_updated` 檢查**（final review Fix 3）——`latest_ai_cache_with_prefix`
+    本身不做合理性判斷，一份缺了更新日期的殘缺舊快取一樣會被它找到並原樣放行。
+
     `fetch=True` 抓失敗時進入冷卻（`_ssf_margin_cooling_down`），避免故障期間
-    每次呼叫都重打一次。
+    每次呼叫都重打一次。**冷卻中或抓取失敗都退回「最近一次存過、且通過檢查」的
+    表，不是回 `{}`**（final review Fix 2）——原本這兩種情況直接回 `{}`，即使
+    昨天才成功抓過一次也一樣，讓 `/api/ssf/margin` 與個股頁的保證金列在整個冷卻
+    週期（15 分鐘）裡完全空白，而 `fetch=False` 那條路徑（自算選股參考欄）本來
+    就會退回舊資料、不受影響——同一次故障在兩條路徑上會出現不同的行為，讀者看
+    到的「有沒有資料」取決於他從哪個入口進來。note 已經會印出表格的生效日期，
+    讀者看得出資料是不是稍舊的。
     """
     key = f"ssfmargin:v1:{datetime.now().strftime('%Y-%m-%d')}"
     if not fetch:
         m = get_ai_cache(c, key)
         if isinstance(m, dict) and m.get("stock_updated"):
             return m
-        return latest_ai_cache_with_prefix(c, "ssfmargin:v1:") or {}
+        return _ssf_margin_recent_fallback(c)
     m = get_ai_cache(c, key)
     if isinstance(m, dict) and m.get("stock_updated"):
         return m
     if _ssf_margin_cooling_down(c):
-        return m if isinstance(m, dict) else {}
+        return _ssf_margin_recent_fallback(c)
     fresh = taifex_ssf.fetch_ssf_margin_table()
     if fresh.get("stock_updated"):
         set_ai_cache(c, key, fresh)
         return fresh
     set_ai_cache(c, "ssfmargin:fail_at", {"at": datetime.now().isoformat()})
-    return m if isinstance(m, dict) else {}
+    return _ssf_margin_recent_fallback(c)
+
+
+def _ssf_margin_recent_fallback(c) -> dict:
+    """`_ssf_margin_table` 抓取失敗／冷卻中（`fetch=True`）或今天沒有快取
+    （`fetch=False`）時共用的退路：退回最近一次存過、且通過 `stock_updated`
+    合理性檢查的表；沒有就回 `{}`（final review Fix 2／Fix 3）。"""
+    fallback = latest_ai_cache_with_prefix(c, "ssfmargin:v1:")
+    return fallback if isinstance(fallback, dict) and fallback.get("stock_updated") else {}
 
 
 def ssf_margin_index(c, fetch: bool = True) -> dict:
