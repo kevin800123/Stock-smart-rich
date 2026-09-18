@@ -164,6 +164,13 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE TABLE IF NOT EXISTS stock_ohlc (date TEXT, code TEXT, open REAL, high REAL, "
                  "low REAL, close REAL, volume_lots REAL, amount_twd REAL, PRIMARY KEY(date, code))")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ohlc_code ON stock_ohlc(code, date)")
+    # 股期概況：每個母合約每日一列摘要（約 340 列/日）。逐月份原始列不落地——
+    # v1 的四個區塊都用不到，而全市場逐月份是 5 倍的量（見設計 §0 決定 5）。
+    conn.execute("CREATE TABLE IF NOT EXISTS ssf_daily (date TEXT, root TEXT, "
+                 "main_month TEXT, open REAL, high REAL, low REAL, close REAL, "
+                 "chg REAL, chg_pct REAL, settlement REAL, oi INTEGER, "
+                 "volume INTEGER, main_volume INTEGER, PRIMARY KEY (date, root))")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ssf_root ON ssf_daily(root, date)")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS stock_flow_daily ("
         "date TEXT, code TEXT, market TEXT, name TEXT, foreign_lots REAL, trust_lots REAL, "
@@ -489,6 +496,57 @@ def bulk_upsert_ohlc(conn: sqlite3.Connection, date: str, rows: dict) -> int:
     )
     conn.commit()
     return len(data)
+
+
+_SSF_COLS = ("main_month", "open", "high", "low", "close", "chg", "chg_pct",
+             "settlement", "oi", "volume", "main_volume")
+
+
+def bulk_upsert_ssf_daily(conn: sqlite3.Connection, rows: list[dict]) -> int:
+    """股期每日摘要批次入庫。每筆自帶 date（回補一次會跨多天）。
+
+    **COALESCE，null 不洗掉既有值**（同 `bulk_upsert_ohlc` 的規矩）：排程每次會重抓
+    前 2 個交易日，官方偶爾少給某欄，不能讓「這次沒抓到」變成「把既有值清空」。
+    """
+    data = [(r["date"], r["root"], *(r.get(c) for c in _SSF_COLS)) for r in rows]
+    if not data:
+        return 0
+    assign = ", ".join(f"{c}=COALESCE(excluded.{c}, ssf_daily.{c})" for c in _SSF_COLS)
+    conn.executemany(
+        "INSERT INTO ssf_daily (date, root, " + ", ".join(_SSF_COLS) + ") VALUES ("
+        + ",".join("?" * (2 + len(_SSF_COLS))) + ") "
+        "ON CONFLICT(date, root) DO UPDATE SET " + assign, data)
+    conn.commit()
+    return len(data)
+
+
+def get_ssf_dates(conn: sqlite3.Connection, limit: int = 10) -> list[str]:
+    """取得股期日檔資料的交易日清單（新到舊）。"""
+    return [r[0] for r in conn.execute(
+        "SELECT DISTINCT date FROM ssf_daily ORDER BY date DESC LIMIT ?", (limit,))]
+
+
+def get_ssf_rows(conn: sqlite3.Connection, dates: list[str]) -> list[dict]:
+    """取得指定交易日的股期日檔所有列。"""
+    if not dates:
+        return []
+    q = ",".join("?" * len(dates))
+    cur = conn.execute("SELECT date, root, " + ", ".join(_SSF_COLS) +
+                       f" FROM ssf_daily WHERE date IN ({q}) ORDER BY date DESC, volume DESC",
+                       dates)
+    cols = ["date", "root", *_SSF_COLS]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def prune_ssf_daily(conn: sqlite3.Connection, keep_days: int = 60) -> int:
+    """只留最新 keep_days 個**交易日**（不是日曆天）。約 340 列/日。"""
+    keep = get_ssf_dates(conn, limit=keep_days)
+    if not keep:
+        return 0
+    q = ",".join("?" * len(keep))
+    cur = conn.execute(f"DELETE FROM ssf_daily WHERE date NOT IN ({q})", keep)
+    conn.commit()
+    return cur.rowcount
 
 
 def bulk_upsert_stock_flow(conn: sqlite3.Connection, date: str, market: str,
