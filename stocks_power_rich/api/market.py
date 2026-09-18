@@ -829,10 +829,14 @@ SSF_HEATMAP_ROWS = 10
 
 
 def _ssf_cell(row: dict, info: dict) -> dict:
+    # 缺量要回 None，不可回 0——0 是「零成交」這個事實，混進「查無資料」會誤導
+    # （同一個 dict 裡 oi/chg/close 缺值本來就是回 None，volume 不該是唯一的例外）。
+    # 排序鍵（today_rows／ranked 的 `r.get("volume") or 0`）吃的是資料庫原始 row，
+    # 不是這裡回傳的 dict，所以缺量的合約只會在排序上退到最後，這裡的顯示值不受影響。
     return {"root": row["root"], "name": (info or {}).get("name") or row["root"],
             "code": (info or {}).get("code"),
             "close": row.get("close"), "chg": row.get("chg"),
-            "chg_pct": row.get("chg_pct"), "volume": row.get("volume") or 0,
+            "chg_pct": row.get("chg_pct"), "volume": row.get("volume"),
             "oi": row.get("oi"), "main_month": row.get("main_month")}
 
 
@@ -862,9 +866,11 @@ def ssf_overview(date: str | None = None):
     c = conn()
     dates = get_ssf_dates(c, limit=SSF_HEATMAP_DAYS)
     if not dates:
+        # coverage 的鍵要跟有資料時一致（stored_days/roots/no_stock_code/no_spot）：
+        # 前端一律讀這四個鍵，缺資料庫時若只給 stored_days 會在空站上直接 KeyError。
         return {"date": None, "dates": [], "hot": [], "ranks": {}, "basis": [],
                 "oi_change": {"up": [], "down": []}, "heatmap": {"dates": [], "rows": []},
-                "coverage": {"stored_days": 0}}
+                "coverage": {"stored_days": 0, "roots": 0, "no_stock_code": 0, "no_spot": 0}}
     day = date if date in dates else dates[0]
     contracts = _ssf_contracts(c)
     rows_all = get_ssf_rows(c, dates)
@@ -885,6 +891,16 @@ def ssf_overview(date: str | None = None):
 
     # 期現價差：現貨收盤走既有的逐日快取（含 ETF；stock_ohlc 濾掉 ETF 且稀疏，不可用）
     spots = {**_quotes_for(c, day), **_otc_quotes_for(c, day)}
+    # no_stock_code／no_spot 的定義：當天『每一個合約(root)』查無代號對照／查無現貨
+    # 報價的次數，用來讓資料缺口看得見。這兩個計數必須掃完當天全部合約，不能被下面
+    # 「輸出列表最多 SSF_RANK_N 筆」的上限擋住——先前把計數與 append 綁在同一個
+    # `break` 之前，一旦湊滿上限就整個迴圈提早結束，排在後面（成交量較低）的合約
+    # 永遠不會被走訪，缺口計數因此固定停在很小的數字：資料越殘缺、算出來的計數反而
+    # 越接近 0，正好與這兩個計數存在的目的相反。現在改成只封頂「要塞進 basis 的
+    # 清單長度」，計數的判斷仍對每一筆 today_rows 執行。
+    # dedup（seen，同一檔標的只列一次）不算進任何一個計數：被跳過是因為這檔標的已經
+    # 由另一個合約（標準／小型共用結算價）代表過，不是這個合約本身查無代號或現貨，
+    # 兩者是不同的事，不可混為一談，也不會讓同一個合約被算進兩個計數。
     basis, seen, no_code, no_spot = [], set(), 0, 0
     for r in today_rows:
         info = contracts.get(r["root"])
@@ -899,15 +915,14 @@ def ssf_overview(date: str | None = None):
             no_spot += 1
             continue
         seen.add(info["code"])
-        basis.append({"root": r["root"], "name": info["name"], "code": info["code"],
-                      "futures": fut, "spot": spot, "diff": round(fut - spot, 4),
-                      "ticks": taifex_ssf.ssf_basis_ticks(fut, spot, info["is_etf"]),
-                      # 收盤晚於現貨 13:30 的（14 檔 ETF 期貨到 16:15）要另標，
-                      # 它們的落差是 2.5 小時而不是 15 分鐘，不能與其他列一起讀
-                      "late_session": bool(info.get("late_session")),
-                      "session_end": info.get("session_end") or ""})
-        if len(basis) >= SSF_RANK_N:
-            break
+        if len(basis) < SSF_RANK_N:     # 只封頂輸出，計數在上面已經做完、不受影響
+            basis.append({"root": r["root"], "name": info["name"], "code": info["code"],
+                          "futures": fut, "spot": spot, "diff": round(fut - spot, 4),
+                          "ticks": taifex_ssf.ssf_basis_ticks(fut, spot, info["is_etf"]),
+                          # 收盤晚於現貨 13:30 的（14 檔 ETF 期貨到 16:15）要另標，
+                          # 它們的落差是 2.5 小時而不是 15 分鐘，不能與其他列一起讀
+                          "late_session": bool(info.get("late_session")),
+                          "session_end": info.get("session_end") or ""})
 
     # 未平倉增減：前一日缺列就整檔不列（缺值當 0 會捏造一筆大增）
     idx = dates.index(day)

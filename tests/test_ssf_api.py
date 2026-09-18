@@ -308,16 +308,129 @@ def test_overview_basis_is_in_ticks_and_lists_each_underlying_once(monkeypatch, 
 def test_overview_oi_change_needs_both_days(monkeypatch, tmp_path):
     """前一日缺列就整檔不列——缺值不可當成 0（那會捏造一筆大增）。"""
     _seed_overview(monkeypatch, tmp_path)
+    # NY 只在新的一天(09-17)出現，前一天(09-16)完全沒有這一列，用來驗證
+    # 「前一日缺列」那個分支真的有被走到——QF 雖然兩天都有列，但走的是
+    # 「未平倉變化為零」那條過濾規則，測不到這裡要驗證的分支。
+    from stocks_power_rich.db import bulk_upsert_ssf_daily
+    conn = get_connection(str(tmp_path / "api.sqlite"))
+    bulk_upsert_ssf_daily(conn, [
+        {"date": "2026-09-17", "root": "NY", "main_month": "202610", "settlement": 108.3,
+         "close": 108.3, "chg_pct": 0.5, "volume": 100, "oi": 500, "main_volume": 100},
+    ])
     d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
     ups = {x["root"]: x for x in d["oi_change"]["up"]}
     assert ups["CD"]["oi_change"] == 1045
-    assert "QF" not in ups          # QF 兩天相同，不算增加
+    assert "QF" not in ups          # QF 兩天相同，不算增加（變化為零的過濾規則）
+    assert "NY" not in ups          # NY 前一天缺列，不可當成 0 算出一筆假的暴增
 
 
 def test_overview_heatmap_leaves_a_missing_day_empty(monkeypatch, tmp_path):
     """缺的交易日是空欄，絕不拿別天的資料頂替。"""
     _seed_overview(monkeypatch, tmp_path)
+    # `_seed_overview` 兩天都是同一組 CD/QF，名次不會出現任何空缺——就算實作把
+    # 資料從別天橫向搬過來頂替，兩天的名次看起來還是一樣「正確」，測不出「移位」
+    # 這種 bug。加一檔只在新的一天(09-17)出現、成交量比 CD/QF 都低的 NY，讓
+    # 09-16 在名次 2 那格真的沒有第 3 檔可排，才驗證得出那一格是真空缺、
+    # 且其他名次沒有因此被牽動（移位）。
+    from stocks_power_rich.db import bulk_upsert_ssf_daily
+    conn = get_connection(str(tmp_path / "api.sqlite"))
+    bulk_upsert_ssf_daily(conn, [
+        {"date": "2026-09-17", "root": "NY", "main_month": "202610", "settlement": 108.3,
+         "close": 108.3, "chg_pct": 0.5, "volume": 100, "oi": 500, "main_volume": 100},
+    ])
     d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
     assert d["heatmap"]["dates"] == ["2026-09-16", "2026-09-17"]
-    assert len(d["heatmap"]["rows"]) >= 1
-    assert d["heatmap"]["rows"][0][0]["root"] in ("QF", "CD")
+    rows = d["heatmap"]["rows"]
+    assert len(rows) >= 1
+    assert rows[0][0]["root"] in ("QF", "CD")
+    # 名次 0、1 兩天都還是 QF／CD，沒有因為新增 NY 而移位
+    assert rows[0][0]["root"] == rows[0][1]["root"]
+    assert rows[1][0]["root"] == rows[1][1]["root"]
+    # 名次 2：09-16 只有 2 檔、真的沒有第 3 名，必須是空缺，不可拿 09-17 的 NY 頂替
+    assert rows[2][0] is None
+    assert rows[2][1]["root"] == "NY"
+
+
+def test_overview_basis_coverage_counts_gaps_beyond_the_cap(monkeypatch, tmp_path):
+    """`no_stock_code`／`no_spot` 要看『當天全部合約』，不能被輸出上限
+    (SSF_RANK_N=20) 擋住——先前把計數與 append 綁在同一個 break 之前，一旦湊滿
+    20 筆就整個迴圈提早結束，排在後面（成交量較低）的合約完全不會被走訪，缺口
+    計數因此永遠停在接近 0，資料越殘缺、算出來的計數反而越正常，與這兩個計數
+    存在的目的相反。
+
+    這裡 seed 20 檔『成交量最高、可正常對到現貨』的合約去撐滿輸出上限，
+    再加 3 檔查無合約代號對照、3 檔有對照但查無現貨報價——這兩種都刻意排在
+    成交量最低的位置，複現「上限之後的合約從未被走訪」的原始 bug 形狀。
+    """
+    from stocks_power_rich.api import market as M
+    from stocks_power_rich.db import bulk_upsert_ssf_daily
+
+    day = "2026-09-17"
+    contracts, rows, quotes = {}, [], {}
+    for i in range(20):                              # 20 檔有效合約，成交量最高
+        root, code = f"V{i:02d}", f"9{i:03d}"
+        contracts[root] = {"code": code, "name": f"股{i}", "stock_name": f"股{i}",
+                           "multiplier": 2000, "is_etf": False, "is_mini": False}
+        quotes[code] = {"close": 100.0 + i}
+        rows.append({"date": day, "root": root, "main_month": "202610",
+                     "settlement": 100.0 + i, "close": 101.0 + i, "chg_pct": 1.0,
+                     "volume": 1000 - i, "oi": 500, "main_volume": 400})
+    for i in range(3):                                # 查無合約代號對照，成交量最低那一批
+        rows.append({"date": day, "root": f"NC{i}", "main_month": "202610",
+                     "settlement": 50.0, "close": 51.0, "chg_pct": 1.0,
+                     "volume": 30 - i, "oi": 100, "main_volume": 80})
+    for i in range(3):                                # 有代號對照、但查無現貨報價
+        root, code = f"NS{i}", f"8{i:03d}"
+        contracts[root] = {"code": code, "name": f"缺現貨{i}", "stock_name": f"缺現貨{i}",
+                           "multiplier": 2000, "is_etf": False, "is_mini": False}
+        rows.append({"date": day, "root": root, "main_month": "202610",
+                     "settlement": 60.0, "close": 61.0, "chg_pct": 1.0,
+                     "volume": 20 - i, "oi": 100, "main_volume": 80})
+
+    monkeypatch.setattr(M, "_ssf_contracts", lambda c: contracts)
+    monkeypatch.setattr(M, "_quotes_for", lambda c, d: quotes)
+    monkeypatch.setattr(M, "_otc_quotes_for", lambda c, d: {})
+    conn = get_connection(str(tmp_path / "api.sqlite"))
+    init_db(conn)
+    bulk_upsert_ssf_daily(conn, rows)
+
+    resp = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert len(resp["basis"]) == 20                   # 輸出仍受上限
+    assert resp["coverage"]["roots"] == 26
+    assert resp["coverage"]["no_stock_code"] == 3      # 真正的缺口總數，不是 0
+    assert resp["coverage"]["no_spot"] == 3
+
+
+def test_overview_cell_volume_is_none_not_zero_when_missing(monkeypatch, tmp_path):
+    """缺量能要回 None，不可誤植為 0——0 是『零成交』這個事實，跟『查無資料』是
+    兩件不同的事（同一個 dict 裡 oi/chg/close 缺值本來就是回 None，volume 不該是
+    唯一的例外）。缺量的合約在排序上退到最後（排序鍵仍用 `or 0` 頂替名次，只
+    影響順序、不影響這裡顯示的值），順便驗證 None 不會讓排序整個炸掉。
+    """
+    from stocks_power_rich.api import market as M
+    from stocks_power_rich.db import bulk_upsert_ssf_daily
+    monkeypatch.setattr(M, "_ssf_contracts", lambda c: _CONTRACTS)
+    monkeypatch.setattr(M, "_quotes_for", lambda c, d: {})
+    monkeypatch.setattr(M, "_otc_quotes_for", lambda c, d: {})
+    conn = get_connection(str(tmp_path / "api.sqlite"))
+    init_db(conn)
+    bulk_upsert_ssf_daily(conn, [
+        {"date": "2026-09-17", "root": "CD", "main_month": "202610", "settlement": 2432.0,
+         "close": 2433.0, "chg_pct": 1.33, "volume": 8192, "oi": 25045, "main_volume": 6027},
+        {"date": "2026-09-17", "root": "QF", "main_month": "202610", "settlement": 2432.0,
+         "close": 2434.0, "chg_pct": 1.37, "oi": 53174, "main_volume": 26032},   # 缺 volume
+    ])
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    by_root = {x["root"]: x for x in d["hot"]}
+    assert by_root["QF"]["volume"] is None       # 缺量回 None，不是 0
+    assert by_root["CD"]["volume"] == 8192
+    assert [x["root"] for x in d["hot"]] == ["CD", "QF"]   # 缺量退到最後，排序沒炸
+
+
+def test_overview_empty_payload_has_the_same_coverage_keys_as_the_populated_one(monkeypatch, tmp_path):
+    """沒有任何資料時，coverage 仍要帶滿四個鍵——有資料時的路徑永遠會給
+    roots/no_stock_code/no_spot，前端一律讀這幾個鍵，空資料庫若只給
+    stored_days 會直接 KeyError。"""
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert d["date"] is None
+    assert d["coverage"] == {"stored_days": 0, "roots": 0, "no_stock_code": 0, "no_spot": 0}
