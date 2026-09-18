@@ -320,9 +320,11 @@ class _ListResp:
         self.status_code = status_code
 
     def raise_for_status(self):
+        # 用真的 httpx.Response 產生例外，才會拿到 httpx 自己的例外型別與訊息文字；
+        # 自己編一個 Exception 的話，斷言裡的「500」只是在對自己寫的字串做比對。
         if self.status_code >= 400:
-            # 簡單地拋出異常，文案包含狀態碼，這樣測試的斷言能找到"500"字樣
-            raise Exception(f"HTTP {self.status_code} error")
+            req = ssf.httpx.Request("GET", ssf.STOCK_LISTS_URL)
+            ssf.httpx.Response(self.status_code, request=req).raise_for_status()
 
 
 class _ListClient:
@@ -346,15 +348,16 @@ def test_fetch_contract_map_returns_empty_on_non_2xx_without_raising(monkeypatch
     整個失敗完全無聲。加了 raise_for_status 後，非 2xx 要變成例外被既有的
     `except Exception` 接住並記錄下來，對外仍是回傳 {}、不往上炸。"""
     import logging
-    # monkeypatch ssf 模塊本身的 httpx 物件，因為 ssf.py 中是 `import httpx` 而非 `from ... import`
-    mock_httpx = type('MockHTTPX', (), {
-        'Client': lambda *a, **kw: _ListClient(_ListResp(b"<html>error</html>", 500))
-    })()
-    monkeypatch.setattr(ssf, "httpx", mock_httpx)
+    monkeypatch.setattr(ssf.httpx, "Client",
+                        lambda *a, **kw: _ListClient(_ListResp(b"<html>error</html>", 500)))
     with caplog.at_level(logging.WARNING, logger="spr"):
         result = ssf.fetch_ssf_contract_map()
     assert result == {}
-    assert any("抓取失敗" in r.message and "500" in r.message for r in caplog.records)
+    # 斷言同時包含 except 分支自己的措辭與真實的 HTTP 狀態碼——
+    # 前者證明走的是 fetch_ssf_contract_map 裡那行 log.warning，
+    # 後者證明例外訊息確實來自 httpx 對 500 的 raise_for_status，而不是隨便一個例外。
+    assert any("合約對照表抓取失敗" in r.getMessage() and "500" in r.getMessage()
+               for r in caplog.records)
 
 
 def test_fetch_contract_map_logs_a_warning_when_the_parsed_map_is_implausibly_small(
