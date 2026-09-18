@@ -245,3 +245,79 @@ def test_margin_endpoint_builds_the_by_stock_index_on_the_server(monkeypatch, tm
     _seed_margin(monkeypatch, tmp_path)
     d = _client(monkeypatch, tmp_path).get("/api/ssf/margin").json()
     assert {x["root"] for x in d["by_stock"]["2330"]} == {"CD", "QF"}
+
+
+def _seed_overview(monkeypatch, tmp_path):
+    from stocks_power_rich.api import market as M
+    monkeypatch.setattr(M, "_ssf_contracts", lambda c: _CONTRACTS)
+    monkeypatch.setattr(M, "_quotes_for", lambda c, d: {"2330": {"close": 2425.0}})
+    monkeypatch.setattr(M, "_otc_quotes_for", lambda c, d: {})
+    conn = get_connection(str(tmp_path / "api.sqlite"))
+    init_db(conn)
+    from stocks_power_rich.db import bulk_upsert_ssf_daily
+    rows = []
+    for day, oi_cd in (("2026-09-16", 24000), ("2026-09-17", 25045)):
+        rows += [
+            {"date": day, "root": "CD", "main_month": "202610", "open": 2425.0,
+             "high": 2453.0, "low": 2410.0, "close": 2433.0, "chg": 32.0, "chg_pct": 1.33,
+             "settlement": 2432.0, "oi": oi_cd, "volume": 8192, "main_volume": 6027},
+            {"date": day, "root": "QF", "main_month": "202610", "open": 2423.0,
+             "high": 2453.0, "low": 2412.0, "close": 2434.0, "chg": 33.0, "chg_pct": -2.5,
+             "settlement": 2432.0, "oi": 53174, "volume": 36062, "main_volume": 26032},
+        ]
+    bulk_upsert_ssf_daily(conn, rows)
+
+
+def test_overview_ranks_hot_by_official_lot_count(monkeypatch, tmp_path):
+    """官方 STFTop10 口徑：依口數排，小型合約自成一檔（規模不同，副標要註明）。"""
+    _seed_overview(monkeypatch, tmp_path)
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert d["date"] == "2026-09-17"
+    assert [x["root"] for x in d["hot"]] == ["QF", "CD"]     # 36062 > 8192
+    assert d["hot"][0]["name"] == "小型台積電"
+
+
+def test_overview_splits_gainers_and_losers_by_official_chg_pct(monkeypatch, tmp_path):
+    """漲幅榜只收真的漲的、跌幅榜只收真的跌的——湊滿榜單的那一列會直接說謊。"""
+    _seed_overview(monkeypatch, tmp_path)
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert [x["root"] for x in d["ranks"]["gainers"]] == ["CD"]
+    assert [x["root"] for x in d["ranks"]["losers"]] == ["QF"]
+
+
+def test_overview_candle_percentages_are_against_the_prior_settlement(monkeypatch, tmp_path):
+    """參考價＝收盤−漲跌（官方漲跌是對前日結算價，不是對前日收盤）。"""
+    _seed_overview(monkeypatch, tmp_path)
+    cd = [x for x in _client(monkeypatch, tmp_path).get(
+        "/api/ssf/overview").json()["ranks"]["volume"] if x["root"] == "CD"][0]
+    assert cd["ref"] == 2401.0                                  # 2433 − 32
+    assert round(cd["close_pct"], 2) == 1.33
+    assert round(cd["amplitude"], 2) == round((2453 - 2410) / 2401 * 100, 2)
+
+
+def test_overview_basis_is_in_ticks_and_lists_each_underlying_once(monkeypatch, tmp_path):
+    """標準與小型共用同一個結算價，同一檔標的只列一列。"""
+    _seed_overview(monkeypatch, tmp_path)
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert [x["code"] for x in d["basis"]] == ["2330"]
+    b = d["basis"][0]
+    assert b["futures"] == 2432.0 and b["spot"] == 2425.0
+    assert b["ticks"] == 7          # 2425→2432，2500 以下 1 元一檔
+
+
+def test_overview_oi_change_needs_both_days(monkeypatch, tmp_path):
+    """前一日缺列就整檔不列——缺值不可當成 0（那會捏造一筆大增）。"""
+    _seed_overview(monkeypatch, tmp_path)
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    ups = {x["root"]: x for x in d["oi_change"]["up"]}
+    assert ups["CD"]["oi_change"] == 1045
+    assert "QF" not in ups          # QF 兩天相同，不算增加
+
+
+def test_overview_heatmap_leaves_a_missing_day_empty(monkeypatch, tmp_path):
+    """缺的交易日是空欄，絕不拿別天的資料頂替。"""
+    _seed_overview(monkeypatch, tmp_path)
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert d["heatmap"]["dates"] == ["2026-09-16", "2026-09-17"]
+    assert len(d["heatmap"]["rows"]) >= 1
+    assert d["heatmap"]["rows"][0][0]["root"] in ("QF", "CD")

@@ -820,3 +820,134 @@ def ssf_margin():
             "etf_updated": margin.get("etf_updated"),
             "index_updated": margin.get("index_updated"),
             "rows": rows, "by_stock": by_stock, "index": index}
+
+
+SSF_HOT_N = 10
+SSF_RANK_N = 20
+SSF_HEATMAP_DAYS = 10
+SSF_HEATMAP_ROWS = 10
+
+
+def _ssf_cell(row: dict, info: dict) -> dict:
+    return {"root": row["root"], "name": (info or {}).get("name") or row["root"],
+            "code": (info or {}).get("code"),
+            "close": row.get("close"), "chg": row.get("chg"),
+            "chg_pct": row.get("chg_pct"), "volume": row.get("volume") or 0,
+            "oi": row.get("oi"), "main_month": row.get("main_month")}
+
+
+def _ssf_candle(row: dict, info: dict) -> dict:
+    """相對前日結算價的 %。參考價＝收盤−漲跌（官方漲跌是對前日**結算價**）。
+
+    絕對價格也要帶上——tooltip 同時顯示價與 %，少了 open/high/low 那三行會全是「—」。
+    """
+    out = _ssf_cell(row, info)
+    out.update({k: row.get(k) for k in ("open", "high", "low")})
+    close, chg = row.get("close"), row.get("chg")
+    ref = (close - chg) if (close is not None and chg is not None) else None
+    out["ref"] = ref
+    for key, src in (("open_pct", "open"), ("high_pct", "high"),
+                     ("low_pct", "low"), ("close_pct", "close")):
+        v = row.get(src)
+        out[key] = round((v - ref) / ref * 100, 2) if (ref and v is not None) else None
+    hi, lo = row.get("high"), row.get("low")
+    out["amplitude"] = (round((hi - lo) / ref * 100, 2)
+                        if (ref and hi is not None and lo is not None) else None)
+    return out
+
+
+@router.get("/ssf/overview")
+def ssf_overview(date: str | None = None):
+    """股期概況：熱門、量漲跌前 20、期現價差、未平倉增減、近 10 日排行熱力圖。"""
+    c = conn()
+    dates = get_ssf_dates(c, limit=SSF_HEATMAP_DAYS)
+    if not dates:
+        return {"date": None, "dates": [], "hot": [], "ranks": {}, "basis": [],
+                "oi_change": {"up": [], "down": []}, "heatmap": {"dates": [], "rows": []},
+                "coverage": {"stored_days": 0}}
+    day = date if date in dates else dates[0]
+    contracts = _ssf_contracts(c)
+    rows_all = get_ssf_rows(c, dates)
+    by_day: dict[str, list] = {}
+    for r in rows_all:
+        by_day.setdefault(r["date"], []).append(r)
+    today_rows = sorted(by_day.get(day, []), key=lambda r: r.get("volume") or 0, reverse=True)
+
+    hot = [_ssf_cell(r, contracts.get(r["root"])) for r in today_rows[:SSF_HOT_N]]
+    vol_rank = [_ssf_candle(r, contracts.get(r["root"])) for r in today_rows[:SSF_RANK_N]]
+    with_pct = [r for r in today_rows if r.get("chg_pct") is not None]
+    gainers = [_ssf_candle(r, contracts.get(r["root"]))
+               for r in sorted(with_pct, key=lambda r: r["chg_pct"], reverse=True)
+               if r["chg_pct"] > 0][:SSF_RANK_N]
+    losers = [_ssf_candle(r, contracts.get(r["root"]))
+              for r in sorted(with_pct, key=lambda r: r["chg_pct"])
+              if r["chg_pct"] < 0][:SSF_RANK_N]
+
+    # 期現價差：現貨收盤走既有的逐日快取（含 ETF；stock_ohlc 濾掉 ETF 且稀疏，不可用）
+    spots = {**_quotes_for(c, day), **_otc_quotes_for(c, day)}
+    basis, seen, no_code, no_spot = [], set(), 0, 0
+    for r in today_rows:
+        info = contracts.get(r["root"])
+        if not info:
+            no_code += 1
+            continue
+        if info["code"] in seen:        # 標準與小型共用結算價，同一檔標的只列一次
+            continue
+        spot = (spots.get(info["code"]) or {}).get("close")
+        fut = r.get("settlement")
+        if spot is None or fut is None:
+            no_spot += 1
+            continue
+        seen.add(info["code"])
+        basis.append({"root": r["root"], "name": info["name"], "code": info["code"],
+                      "futures": fut, "spot": spot, "diff": round(fut - spot, 4),
+                      "ticks": taifex_ssf.ssf_basis_ticks(fut, spot, info["is_etf"]),
+                      # 收盤晚於現貨 13:30 的（14 檔 ETF 期貨到 16:15）要另標，
+                      # 它們的落差是 2.5 小時而不是 15 分鐘，不能與其他列一起讀
+                      "late_session": bool(info.get("late_session")),
+                      "session_end": info.get("session_end") or ""})
+        if len(basis) >= SSF_RANK_N:
+            break
+
+    # 未平倉增減：前一日缺列就整檔不列（缺值當 0 會捏造一筆大增）
+    idx = dates.index(day)
+    prev = {r["root"]: r for r in by_day.get(dates[idx + 1], [])} if idx + 1 < len(dates) else {}
+    changes = []
+    for r in today_rows:
+        p = prev.get(r["root"])
+        if not p or r.get("oi") is None or p.get("oi") is None:
+            continue
+        d = r["oi"] - p["oi"]
+        if d:
+            changes.append({**_ssf_cell(r, contracts.get(r["root"])), "oi_change": d,
+                            "oi_prev": p["oi"]})
+    ups = sorted([x for x in changes if x["oi_change"] > 0],
+                 key=lambda x: x["oi_change"], reverse=True)[:SSF_HOT_N]
+    downs = sorted([x for x in changes if x["oi_change"] < 0],
+                   key=lambda x: x["oi_change"])[:SSF_HOT_N]
+
+    # 熱力圖：名次 × 交易日（舊到新）。缺的交易日是空欄，不拿別天頂替。
+    hm_dates = sorted(dates)
+    # 每天只排一次序——放進名次迴圈裡會對同一份資料排 10 次（10 名次 × 10 天＝100 次）
+    ranked = {d: sorted(by_day.get(d, []), key=lambda r: r.get("volume") or 0, reverse=True)
+              for d in hm_dates}
+    grid = []
+    for rank in range(SSF_HEATMAP_ROWS):
+        line = []
+        for d in hm_dates:
+            day_rows = ranked[d]
+            if rank < len(day_rows):
+                rr = day_rows[rank]
+                info = contracts.get(rr["root"]) or {}
+                line.append({"root": rr["root"], "name": info.get("name") or rr["root"],
+                             "chg_pct": rr.get("chg_pct")})
+            else:
+                line.append(None)
+        grid.append(line)
+
+    return {"date": day, "dates": dates, "hot": hot,
+            "ranks": {"volume": vol_rank, "gainers": gainers, "losers": losers},
+            "basis": basis, "oi_change": {"up": ups, "down": downs},
+            "heatmap": {"dates": hm_dates, "rows": grid},
+            "coverage": {"stored_days": len(dates), "roots": len(today_rows),
+                         "no_stock_code": no_code, "no_spot": no_spot}}
