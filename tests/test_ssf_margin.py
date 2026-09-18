@@ -1,3 +1,5 @@
+import pytest
+
 from stocks_power_rich.sources import taifex_ssf as ssf
 
 STOCK_MARGIN_CSV = """一、股票期貨契約保證金一覽表
@@ -130,6 +132,7 @@ class _FakeClient:
         return self._by_url[url]
 
 
+@pytest.mark.real_ssf_fetch  # 這裡就是在測 fetch_ssf_margin_table 本身（自己樁掉 ssf.httpx.Client）
 def test_fetch_margin_table_returns_empty_on_non_2xx_and_logs_the_status(monkeypatch, caplog):
     """TAIFEX 回錯誤頁時，httpx 預設不會自動丟例外——不加 raise_for_status 的話，
     錯誤頁的位元組會被硬拿去解析，多半解出一份「不合格的表」，log 只會講
@@ -151,6 +154,7 @@ def test_fetch_margin_table_returns_empty_on_non_2xx_and_logs_the_status(monkeyp
                for r in caplog.records)
 
 
+@pytest.mark.real_ssf_fetch  # 這裡就是在測 fetch_ssf_margin_table 本身（自己樁掉 ssf.httpx.Client）
 def test_fetch_margin_table_rejects_an_implausible_index_section(monkeypatch, caplog):
     """docstring 說「任何一份不合格就整份回 {}」，但原本的合理性檢查漏了指數段——
     股票與 ETF 兩段正常、指數 CSV 解析成空表時，舊版仍會把這個殘缺的指數併入

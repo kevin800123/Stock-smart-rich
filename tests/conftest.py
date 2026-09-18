@@ -110,8 +110,33 @@ def _no_startup_catchup(request, monkeypatch):
                         lambda *a, **kw: {"stubbed": True}, raising=True)
 
 
+@pytest.fixture(autouse=True)
+def _no_ssf_network(request, monkeypatch):
+    """`GET /api/picks/self-screen`（`picks_self_screen`）會呼叫 `_attach_ssf_margin`，
+    快取沒中時它經 `_ssf_contracts`／`_ssf_margin_table`（`api/helpers.py`）打
+    `taifex_ssf.fetch_ssf_contract_map`／`fetch_ssf_margin_table` 兩個外部端點
+    （www.taifex.com.tw）。每個測試 DB 都是空的，所以每一次呼叫這支端點的測試
+    都會真的連外——而且兩個 fetcher 失敗時本來就回空 dict（見它們自己的
+    docstring：「呼叫端的月/日快取兩端都擋空值，不會把失敗永久化」），所以樁成
+    空 dict 完全落在既有的容錯路徑內，不是在模擬一個特殊情境。
+
+    這正是 CLAUDE.md 記過的那種問題：測試沒有因為連網路而變紅，只是變慢又
+    看網路臉色，所以一直沒被發現（同一份教訓先前發生在杯柄型態測試安靜地打
+    TPEx）。預設樁成回空字典；要測**這兩支 fetcher 本身**的測試標
+    `@pytest.mark.real_ssf_fetch` 退出這一層（它們自己樁掉 `ssf.httpx.Client`，
+    不會真的連外）。"""
+    if request.node.get_closest_marker("real_ssf_fetch"):
+        return
+    from stocks_power_rich.sources import taifex_ssf as _ssf
+
+    monkeypatch.setattr(_ssf, "fetch_ssf_contract_map", lambda *a, **kw: {}, raising=True)
+    monkeypatch.setattr(_ssf, "fetch_ssf_margin_table", lambda *a, **kw: {}, raising=True)
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers", "real_calendar: 不套用 _no_calendar_network 的樁（測試自行樁掉 fetcher）")
     config.addinivalue_line(
         "markers", "real_catchup: 不套用 _no_startup_catchup 的樁（測試自行樁掉 job 函式）")
+    config.addinivalue_line(
+        "markers", "real_ssf_fetch: 不套用 _no_ssf_network 的樁（測試自行樁掉 ssf.httpx.Client）")

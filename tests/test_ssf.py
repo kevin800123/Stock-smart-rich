@@ -342,6 +342,7 @@ class _ListClient:
         return self._resp
 
 
+@pytest.mark.real_ssf_fetch  # 這裡就是在測 fetch_ssf_contract_map 本身（自己樁掉 ssf.httpx.Client）
 def test_fetch_contract_map_returns_empty_on_non_2xx_without_raising(monkeypatch, caplog):
     """TAIFEX 回錯誤頁時，httpx 預設不會自動丟例外——不加 raise_for_status 的話，
     regex 在錯誤頁裡找不到任何合格列、安靜地回傳 {}，`except` 那行 log 永遠不會跑，
@@ -360,6 +361,7 @@ def test_fetch_contract_map_returns_empty_on_non_2xx_without_raising(monkeypatch
                for r in caplog.records)
 
 
+@pytest.mark.real_ssf_fetch  # 這裡就是在測 fetch_ssf_contract_map 本身（自己樁掉 ssf.httpx.Client）
 def test_fetch_contract_map_logs_a_warning_when_the_parsed_map_is_implausibly_small(
         monkeypatch, caplog):
     """200 但只解析到 4 檔（正常 320），代表頁面版型可能變了——這種「有回應但
