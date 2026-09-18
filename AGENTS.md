@@ -287,6 +287,75 @@ flex 再分給容器更多高度，形成迴圈（實測每 400ms 長 ~35px）�
 每查必誤報。改成依週期查表 `KLINE_GAP_DAYS`（日 14／週 21／月 45），實測正常資料不警示、
 挖掉一段仍會亮（反證三種週期都做過）。提示改指向 `scripts/sync_ohlc.bat`。
 
+### 股期概況（`view-ssf`）＋ 原始保證金試算（2026-09）
+
+盤後版新頁（v1 無即時，MIS 已探測可達留 v2）。`sources/taifex_ssf.py`（與 `taifex.py` 分開，
+CSV 形狀/主力月規則/tick 級距都不同）：340 個合約代碼收斂成 320 個 root、~150KB/1,900 餘列。
+`GET /api/ssf/overview`（五區塊：熱門卡片/量漲跌前20 K線/期現價差/未平倉增減/近10日熱力圖）＋
+`GET /api/ssf/margin`（口數留前端乘整數）。個股頁（`#stock-ssf-margin`，同 `#today-focus`
+`:empty` 做法）與自算選股（`SS_FIELDS` 的「股期保證金」欄，同「融資3日」取捨純參考不進計分）
+都借 `by_stock` 反查索引。`ssf_daily` 表 PK `(date,root)`，COALESCE upsert，留 60 個交易日；
+合約表/保證金表沿用 `ai_cache` 快取（讀取端也守衛筆數：合約 <300、保證金缺 `stock_updated`
+視為未命中）。排程 `ssf_daily` 平日 17:15/18:15/20:15，行情與保證金獨立更新。
+
+**三種「200 但假成功」**（既有 `taifex._post_csv` 全部會誤判為成功）：區間超過一月→UTF-8
+616B 警告頁；非交易日→MS950 197B 只有表頭；今天只有夜盤→**逐交易日**（非整個回應加總）檢查
+一般列數 ≥`MIN_GENERAL_ROWS`(1200，正常1629)，否則排程 6 天重疊視窗會讓 13 天的量蓋過今天
+的不足。連線例外刻意往上拋不吞（同月營收教訓），由 `run_job` 記失敗留原因。
+
+**漲跌% 參考價是前一日結算價非收盤價**：實測 CCF 202610 09-04 自算 4.38% vs 官方欄位
+**4.80%**（參考價 125.0=09-03結算，非09-03收盤125.5）——直接用官方欄位。
+
+**股期 tick 級距與現貨不同（500–2500：股期跳1／現貨跳5），價差必須沿網格走**：實測 KBF
+495/501=**11檔**（除單一tick得6或12皆錯）。期貨結算價(13:44-45)與現貨收盤(13:30)本身不同步，
+實測最多差5 tick，標題須註明；14檔ETF期貨到16:15（落差2.5小時）另標`late_session`。
+
+**調整後合約（`root+1`如CM1）只併成交量絕不併價格**（乘數非標準，實測見過2020/5965.5892等）：
+量＝全部非價差列(含盤後/調整後)依root加總(官方STFTop10口徑)，價/結算價/OI只取`root+F`列。
+
+**保證金四條紀律**（`margin_amount`）：(1) 必須`Decimal`+`ROUND_HALF_UP`不可`round()`——1,181
+個(合約,月份)中**101個**不同，CAF 96,592.5→96,593、PWF 42,808.5→42,809。(2) 用官方兩位小數
+比例欄不可`×1.35/×1.035`反推——467個不同。(3) ETF不套公式，用公布固定金額。(4) TMF固定
+35,050（維持26,900）＝TX/20。寫入守衛股票≥290列/ETF≥20列(正常296/24)，**三段任一段不合格
+整份回`{}`**（含指數段：`index_updated`存在且TMF原始保證金>0，原本指數段沒被檢查會讓半套
+結果冒充成功）。
+
+**保證金生效日只在CSV/HTML的「更新日期」，不可用OpenAPI的`Date`**（後者天天跳、非生效日）；
+處置股臨時加成1.5/2/3倍常見，故**每天重抓**。價格輸入用「當日結算價」（官方僅盤後時段規定
+前日結算價，日盤實際券商用最新成交價，20/20對得上）——畫面須標「以YYYY-MM-DD結算價估算，
+實際以期貨商收取為準」。
+
+**顏色：價差正負/OI增減/保證金金額都不著紅綠**（不是行情方向）；熱力圖白字用
+`--up-fill`/`--down-fill`，`sectorColor`加`scale`參數(新呼叫端7%/舊呼叫端仍3%，10樣本驗證
+不影響既有呼叫端)。
+
+**2026-09-18 production 探測（`ssf_probe.py`，設計§8，先探測再寫程式，同 Yahoo/mopsfin/ohlc
+backfill 前例，驗完即刪、本次任務已移除）**：7項全過含MIS即時（1,533檔）、14天區間1.65MB/
+2.7秒未被切斷→v1全雲端跑不需本機抓匯入、回補同步分批夠用不必背景執行緒。**D的日盤資料約
+17:25前可取得**，17:15/18:15/20:15三時段維持不變。
+
+**資料源坑**：保證金CSV須`csv.reader`不可`split(",")`（"TPK Holding Co., Ltd."引號內逗號會
+使第6欄起整排位移，筆數守衛296/24看不出來）；ETF區段真實標題是「標的證券為受益憑證之股票期貨
+契約」非「…ETF之股票期貨」（fixture 要用真實標題）；每支擷取器都要`raise_for_status()`。
+
+**計算/資料坑**：`count_ssf_dates`要數真實總數不可`len(dates)`（被熱力圖10日軸寬夾住永遠
+≤10）；覆蓋率計數器(`no_stock_code`/`no_spot`)要走訪全部root不能在湊滿輸出上限時break（否則
+資料越殘缺計數越接近0）；6488(環球晶)其實有股期，1234(黑松)才是無股期範例。
+
+**前端坑**：設計文件的`gt-sub`/`.empty`/`card-title`/`--fs-xxs`不存在，改用既有
+`muted small`/`card-label`/`--fs-xs`；圖表一律`initChart(el)`不可直接`echarts.init`；空資料
+不可`innerHTML`蓋活著的圖表實例(改`clear()`+切兄弟元素)；頁面標題不可掛`.group-title`且h2要
+`flex-shrink:0`(同ui58 `#view-rotation`)；candlestick缺值給`'-'`絕不給`null`(否則`setOption`
+中止且不進console)。
+
+**測試坑**：新端點依賴(`_attach_ssf_margin`)讓~5條既有自算選股測試真連外卻照樣通過→conftest
+加autouse樁`_no_ssf_network`+`@pytest.mark.real_ssf_fetch`退出標記；測試替身要委派真實
+`httpx.Response.raise_for_status()`不可自編Exception；「測試通過但理由不對」三例(sr-only測
+在不讀的欄位/OI測兩天OI相同被錯誤路徑排除/熱力圖測兩天root相同)——**每道守衛都要反證**。
+
+**未處理留後續**：`/api/ssf/backfill`缺`max_fetch`與remaining收斂契約(現況最壞19秒可接受)；
+6個`card-group`帶`data-key`但收合初始化只綁`#view-overview`，點了沒反應。
+
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.

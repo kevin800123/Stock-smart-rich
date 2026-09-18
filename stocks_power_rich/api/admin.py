@@ -849,13 +849,3 @@ def line_test():
 @router.post("/intraday/test")
 def intraday_test(push: int = 0):
     return _intraday_scan(conn(), push=bool(push))
-
-
-# --- 一次性診斷，驗完即刪 ---------------------------------------------------
-# 股期概況動工前確認期交所端點從 Zeabur 打得到（見
-# docs/superpowers/specs/2026-09-18-stock-futures-overview-design.md §8）。
-# 目標網址全部寫死在 ssf_probe.py 裡、不吃任何輸入；純讀，不寫 DB 也不寫快取。
-@router.get("/ssf/probe")
-def ssf_probe(restart: int = 0):
-    from .. import ssf_probe as _p
-    return _p.start_or_status(restart=bool(restart))
