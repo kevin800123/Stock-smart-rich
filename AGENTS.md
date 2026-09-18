@@ -379,6 +379,22 @@ SSF 資料日」的列數——看交易日不看日曆天（同 `renderFreshnes
 `flex-shrink:0`(同ui58 `#view-rotation`)；candlestick缺值給`'-'`絕不給`null`(否則`setOption`
 中止且不進console)。
 
+**前端 review 修復**(2026-09)：保證金表補表頭排序——標的/契約乘數/1口保證金/維持保證金
+可排序，同 selfcheck 既有的 `th.sc-sort`/`aria-sort`/`scope="col"` 慣例，`<tr id=
+"ssf-margin-head">` 整列重繪，N口合計是1口金額的單調倍數不開獨立排序鍵(I4)；切走再切回
+股期頁要對 `ssfCharts` 逐一補 `resize()`(同 cup-handle 既有寫法——`ssfLoaded` 在
+`loadSsf()` 之前就同步設 true，切走再切回不會重新載入也不會補救，I5)；`renderSsfFreshness`
+改讀 `coverage.lag_trading_days` 不再自己拿日曆天硬算(週五資料撐過整個週末會被算成落後
+2~3天而誤亮琥珀，I6 前端部分)；期現價差表補顯示 `main_month`(換月會讓價差跳動，沒有月份
+看不出正/逆價差算的是哪個月合約，#2 前端部分)；`.ssf-oi-name` 補 `title`(同 `.hm-bar-name`
+既有慣例，#4)；漲跌%判斷改 `>0` 不用 `>=0`(剛好平盤不再顯示「+0.00%」；熱力圖底色對
+`chg_pct===0` 直接給中性色 `#2b3038`——同 `sectorColor` 對 `null` 用的字面值，不動
+`sectorColor` 本身，它還給總覽熱力圖/權值卡用，#5)；note 補 `coverage.no_spot`(算了但沒印，
+比照既有 `no_stock_code`，M3)；保證金表搜尋加 `normTW()`(台→臺)+指數三檔別名表(微台/微台指
+/tmf→微型臺指、小台/小台指/mtx→小型臺指、大台/台指期/tx→臺股)，**別名比對用完全相等不
+用 `includes`**(MTX 字面含 TX 子字串，方向反了會讓「TX」連小型臺指也撈出來，M8)；個股頁
+股期保證金依 `kind` 分文案：ETF 是官方公布固定金額，股票才是結算價估算(M9)。
+
 **測試坑**：新端點依賴(`_attach_ssf_margin`)讓~5條既有自算選股測試真連外卻照樣通過→conftest
 加autouse樁`_no_ssf_network`+`@pytest.mark.real_ssf_fetch`退出標記（2026-09 後續：review I3
 把這個修到根，`_attach_ssf_margin` 改用 `fetch=False` 後結構上就不會呼叫這兩支 fetcher，這道
