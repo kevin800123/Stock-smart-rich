@@ -225,11 +225,11 @@ def test_refresh_groups_multi_date_response_by_date_before_summarizing(tmp_path,
     assert rows17[sample]["close"] == 9.9
 
 
-import os, tempfile
-
-
 def _client(monkeypatch, tmp_path):
-    os.environ["SPR_DB_PATH"] = str(tmp_path / "api.sqlite")
+    # review M1：改用 monkeypatch.setenv，不直接改 os.environ——後者沒有 monkeypatch
+    # fixture 的自動 teardown，會把這個測試的 tmp DB 路徑一路漏進同一個 pytest
+    # session 裡跑在它之後、剛好沒有自己設定 SPR_DB_PATH 的其他測試。
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "api.sqlite"))
     from fastapi.testclient import TestClient
     from stocks_power_rich.main import create_app
     return TestClient(create_app(enable_scheduler=False))

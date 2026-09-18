@@ -185,6 +185,53 @@ def test_fetch_margin_table_rejects_an_implausible_index_section(monkeypatch, ca
     assert "指數期貨保證金不完整" in caplog.text
 
 
+@pytest.mark.real_ssf_fetch  # 這裡就是在測 fetch_ssf_margin_table 本身（自己樁掉 ssf.httpx.Client）
+def test_fetch_margin_table_rejects_a_missing_etf_updated_date(monkeypatch, caplog):
+    """review M4：合理性檢查原本只查 `stock_updated`，沒查 `etf_updated`。ETF 段
+    「更新日期」那一行若解析失敗（格式跑掉、那一行被移掉…），股票與 ETF 兩段的
+    **筆數**門檻（290／20）跟那一行解不解析得出來完全無關，照樣會通過——讓一份
+    缺了 ETF 生效日期的殘缺結果冒充「合格」逃出去，而 ETF 生效日期正是判斷保證金
+    數字是否過期的唯一依據（CLAUDE.md：處置股臨時加成，每天重抓比對生效日）。
+    """
+    import logging
+    stock = {f"S{i:03d}": {"code": str(1000 + i), "name": "x", "tier": "級距1",
+                            "clearing_pct": 10.0, "maintenance_pct": 10.35,
+                            "initial_pct": 13.5} for i in range(290)}
+    etf = {f"E{i:02d}": {"code": str(50 + i), "name": "y",
+                          "clearing": 1000, "maintenance": 1000, "initial": 1000}
+           for i in range(20)}
+    monkeypatch.setattr(ssf, "parse_stock_margining_csv", lambda text: {
+        "stock_updated": "2026/09/15", "etf_updated": None,   # ETF 那行解析失敗
+        "stock": stock, "etf": etf})
+    monkeypatch.setattr(ssf, "parse_index_margining_csv", lambda text: {
+        "updated": "2026/08/12",
+        "items": {"微型臺指期貨": {"clearing": 25950, "maintenance": 26900, "initial": 35050}}})
+    monkeypatch.setattr(ssf.httpx, "Client", lambda *a, **kw: _FakeClient({
+        ssf.STOCK_MARGIN_URL: _FakeResp(b"irrelevant"),
+        ssf.INDEX_MARGIN_URL: _FakeResp(b"irrelevant"),
+    }))
+    with caplog.at_level(logging.WARNING, logger="spr"):
+        result = ssf.fetch_ssf_margin_table()
+    assert result == {}
+    assert "保證金表不完整" in caplog.text
+
+
+def test_index_margin_handles_a_quoted_name_containing_a_comma():
+    """review M5：`parse_index_margining_csv` 與 `parse_stock_margining_csv`
+    是同一份官方 CSV 家族，形狀相同，卻只有股票那支改用 `csv.reader`。指數段
+    目前的 4 個商品名稱剛好都不含逗號，這條沒被踩到只是運氣好——同
+    `test_stock_margin_handles_a_quoted_name_containing_a_comma` 那個既有教訓，
+    商品名稱一旦帶英文逗號並用引號包住，裸 `str.split(",")` 會把這一格從中間
+    切開，讓後面的欄位全部錯位一格。
+    """
+    csv_text = ('更新日期:2026/08/12\n'
+                '商品別,結算保證金,維持保證金,原始保證金,,\n'
+                '"Mini S&P 500, Micro",100,200,300,\n')
+    m = ssf.parse_index_margining_csv(csv_text)
+    assert m["items"]["Mini S&P 500, Micro"] == {
+        "clearing": 100, "maintenance": 200, "initial": 300}
+
+
 def test_margin_matches_the_officially_published_examples():
     # CDF 202610，2026-09-17 結算 2,432，級距1 原始 13.50%
     assert ssf.margin_amount(2432, 2000, 13.50) == 656640

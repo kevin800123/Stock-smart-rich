@@ -384,7 +384,14 @@ def parse_stock_margining_csv(text: str) -> dict:
 
 
 def parse_index_margining_csv(text: str) -> dict:
-    """指數期貨固定金額（台指／小台／微台）。"""
+    """指數期貨固定金額（台指／小台／微台）。
+
+    **與 `parse_stock_margining_csv` 同一份官方 CSV 家族、同一種形狀，一樣要用
+    `csv.reader`（review M5）**：目前的 4 個指數商品名稱剛好都不含逗號，裸
+    `str.split(",")` 現在測不出問題，但商品名稱一旦帶英文逗號並用引號包住
+    （同股票段 JNF／「TPK Holding Co., Ltd.」那個既有教訓），裸 split 會把這一
+    格從中間切開，讓後面的三個金額欄位全部錯位一格。
+    """
     out = {"updated": None, "items": {}}
     for raw in text.splitlines():
         line = raw.strip()
@@ -393,7 +400,7 @@ def parse_index_margining_csv(text: str) -> dict:
         m = _UPDATED.search(line)
         if m:
             out["updated"] = m.group(1); continue
-        p = [x.strip() for x in line.split(",")]
+        p = [x.strip() for x in next(csv.reader([line]))]
         if len(p) < 4 or p[0] in ("商品別", ""):
             continue
         if _i(p[1]) is None:
@@ -415,6 +422,12 @@ def fetch_ssf_margin_table() -> dict:
     「成功」逃出去，讓部分失敗偷偷冒充整體成功（設計 §1.3 明講「任何一份不合格
     就整份回 {}」，指數段原本不在被檢查之列）。現在指數段也要通過自己的檢查：
     `index_updated` 存在，且微型臺指期貨（TMF）的原始保證金是正數。
+
+    **合理性檢查也要求 `etf_updated`（review M4）**：原本只查 `stock_updated`，
+    沒查 `etf_updated`——ETF 段「更新日期」那一行若解析失敗，股票／ETF 兩段的
+    **筆數**門檻（290／20）與那一行解不解析得出來完全無關，照樣會通過，讓一份
+    缺了 ETF 生效日期的殘缺結果冒充「合格」逃出去。ETF 生效日期正是判斷保證金
+    數字是否過期（處置股臨時加成）的唯一依據，缺了它整份不能算合格。
     """
     try:
         with httpx.Client(timeout=30, follow_redirects=True,
@@ -430,9 +443,11 @@ def fetch_ssf_margin_table() -> dict:
     except Exception as e:  # noqa: BLE001
         log.warning("[ssf] 保證金表抓取失敗：%s: %s", type(e).__name__, e)
         return {}
-    if len(stock["stock"]) < 290 or len(stock["etf"]) < 20 or not stock["stock_updated"]:
-        log.warning("[ssf] 保證金表不完整：股期 %d 列／ETF %d 列／更新日 %s",
-                    len(stock["stock"]), len(stock["etf"]), stock["stock_updated"])
+    if (len(stock["stock"]) < 290 or len(stock["etf"]) < 20
+            or not stock["stock_updated"] or not stock["etf_updated"]):
+        log.warning("[ssf] 保證金表不完整：股期 %d 列／ETF %d 列／更新日 %s／ETF更新日 %s",
+                    len(stock["stock"]), len(stock["etf"]),
+                    stock["stock_updated"], stock["etf_updated"])
         return {}
     tmf = index["items"].get(_INDEX_REQUIRED_ITEM) or {}
     index_ok = bool(index["updated"]) and (tmf.get("initial") or 0) > 0
