@@ -730,12 +730,14 @@ const SC_FIELDS = [   // [key, 欄名, 單位]——單位另置副標，不讓�
   ["holder_drop_ratio", "人數降比", "%"], ["trust_3d", "投信3日", "張"], ["foreign_3d", "外資3日", "張"],
   ["lan_score", "財報分", "蘭質"], ["est_profit", "推估EPS", "元"], ["mu_score", "木質", "分"], ["mu_value", "木率", ""],
 ];
-// 自算選股表格＝對照表那 10 欄 ＋ 融資3日（**只在這頁出現**：selfcheck 是 CSV 逐欄對照，
-// CSV 沒有融資欄、放進去只會多一整排 csv_na）。融資3日是參考欄，不進木質/木率計分。
-// **刻意不著色**：全站紅綠鎖給行情漲跌，而融資餘額減少是籌碼清洗、不是下跌——總覽那張
-// 融資餘額卡的 .card-note 也是基於同一理由不著色（見 CLAUDE.md）。不列入 SC_SIGNED/SC_SCORE
-// 就自然拿不到漸層色，不需要額外的例外規則。
-const SS_FIELDS = SC_FIELDS.concat([["margin_3d", "融資3日", "張"]]);
+// 自算選股表格＝對照表那 10 欄 ＋ 融資3日 ＋ 股期保證金（**只在這頁出現**：selfcheck 是
+// CSV 逐欄對照，CSV 沒有這兩欄、放進去只會多一整排 csv_na）。兩欄都是參考欄，不進木質/木率
+// 計分：融資3日不進 screen_pass；股期保證金更晚——它是 `_attach_ssf_margin` 在後端篩選/排序
+// 都完成後才補上的頂層鍵（`r.ssf`/`r.ssf_margin`，不在 `r.vals` 裡），結構上不可能回頭影響
+// 入選或排序。**刻意不著色**：全站紅綠鎖給行情漲跌，融資餘額減少是籌碼清洗、股期保證金是
+// 要準備的錢，都不是漲跌——總覽那張融資餘額卡的 .card-note 也是基於同一理由不著色（見
+// CLAUDE.md）。不列入 SC_SIGNED/SC_SCORE 就自然拿不到漸層色，不需要額外的例外規則。
+const SS_FIELDS = SC_FIELDS.concat([["margin_3d", "融資3日", "張"], ["ssf_margin", "股期保證金", "1 口"]]);
 const SC_MARK = { match: ["✓", "sc-ok"], diff: ["~", "sc-diff"], self_na: ["", "sc-na"], csv_na: ["", "sc-na"] };
 // 數值上色＋強度漸層（heatmap 感）：值越大顏色越亮。有正負意義的欄＝正紅負綠
 // （沿用全站紅漲綠跌）；W55 翻多(1)紅、0 中性；木質/木率是分數不是漲跌 → 中性藍
@@ -1243,6 +1245,9 @@ function fitMarketCells(root) {
 
 function ssSortVal(r, k) {
   if (k === "__code") { const n = parseFloat(r.code); return isNaN(n) ? (r.code || "") : n; }
+  // 股期保證金放在列的頂層（r.ssf/r.ssf_margin），不在 r.vals 裡（它是 _attach_ssf_margin
+  // 在篩選/排序都結束後才補上的參考欄）；沒有股期時視同缺值，排序照樣沉底。
+  if (k === "ssf_margin") return r.ssf ? r.ssf_margin : null;
   return r.vals[k];
 }
 // 新進榜標籤。判定在後端（signal_ledger 記下的正式名單），這裡只畫：
@@ -1316,10 +1321,15 @@ function renderSelfScreenTable() {
     + SS_FIELDS.map(([k, label, unit]) => hcell(k, label, unit, "num ")).join("") + "</tr>";
   const body = rows.map((r) => "<tr><td>" + stockLink(r.code, r.name) + ssNewBadge(r) + "</td>"
     + SS_FIELDS.map(([k]) => {
-      const v = r.vals[k];
+      // 股期保證金是參考欄，值放在列的頂層（r.ssf/r.ssf_margin），不在 r.vals 裡
+      // ——_attach_ssf_margin 在後端篩選/排序都結束後才補上，刻意不進 vals（那是餵給
+      // screen_pass/mu_score 的計分輸入）。
+      const v = k === "ssf_margin" ? r.ssf_margin : r.vals[k];
       const vs = scValStyle(k, v, ssCaps[k]);
-      // W55 是布林（入選股一律翻多）→ ✓/— 比孤零零的 1/0 好讀；其餘照數值
-      const txt = v == null ? "—" : (k === "w55" ? (v > 0 ? "✓" : "—") : fmt(v, 2));
+      // W55 是布林（入選股一律翻多）→ ✓/— 比孤零零的 1/0 好讀；股期保證金沒股期／算不出都是
+      // "—"（金額不著紅綠——不是漲跌）；其餘照數值。
+      const txt = k === "ssf_margin" ? (r.ssf && v != null ? fmt(v, 0) : "—")
+        : (v == null ? "—" : (k === "w55" ? (v > 0 ? "✓" : "—") : fmt(v, 2)));
       return `<td class="num"><span${vs ? ` style="${vs}"` : ""}>${txt}</span></td>`;
     }).join("") + "</tr>").join("");
   el.innerHTML = `<table${ssBadgeFresh ? ' class="ss-badge-fresh"' : ""}><thead>${head}</thead><tbody>${body}</tbody></table>`;

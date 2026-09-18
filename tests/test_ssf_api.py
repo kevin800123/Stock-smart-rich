@@ -186,6 +186,31 @@ _MARGIN = {
 }
 
 
+def test_self_screen_rows_carry_the_stock_futures_margin(monkeypatch, tmp_path):
+    """自算選股表的參考欄：有沒有股期、1 口要多少錢。"""
+    from stocks_power_rich.api import admin as A
+    monkeypatch.setattr(A, "_ssf_contracts", lambda c: _CONTRACTS)
+    monkeypatch.setattr(A, "_ssf_margin_table", lambda c: _MARGIN)
+    rows = [{"code": "2330", "mu_value": 90}, {"code": "6488", "mu_value": 80}]
+    out = A._attach_ssf_margin(get_connection(str(tmp_path / "x.sqlite")), rows,
+                               settlements={"CD": 2432.0, "QF": 2432.0})
+    assert out[0]["ssf"] is True and out[0]["ssf_margin"] == 656640   # 取標準約，非小型
+    assert out[1]["ssf"] is False and out[1]["ssf_margin"] is None
+
+
+def test_attaching_ssf_margin_never_changes_the_screening_result(monkeypatch, tmp_path):
+    """它是參考欄：不進篩選、不進計分，只多兩個鍵。"""
+    from stocks_power_rich.api import admin as A
+    monkeypatch.setattr(A, "_ssf_contracts", lambda c: _CONTRACTS)
+    monkeypatch.setattr(A, "_ssf_margin_table", lambda c: _MARGIN)
+    rows = [{"code": "2330", "mu_value": 90, "mu_score": 12}]
+    before = dict(rows[0])
+    out = A._attach_ssf_margin(get_connection(str(tmp_path / "y.sqlite")), rows,
+                               settlements={"CD": 2432.0})
+    assert len(out) == 1
+    assert {k: v for k, v in out[0].items() if k not in ("ssf", "ssf_margin")} == before
+
+
 def _seed_margin(monkeypatch, tmp_path):
     from stocks_power_rich.api import market as M
     monkeypatch.setattr(M, "_ssf_contracts", lambda c: _CONTRACTS)

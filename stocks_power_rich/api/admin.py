@@ -16,13 +16,15 @@ from .helpers import (
     _insti_for,
     ai_calls_today,
     line_quota_paused,
+    _ssf_contracts,
+    _ssf_margin_table,
     REPO_DIR
 )
 from datetime import date
 from ..db import (get_setting, set_setting, get_snapshot_dates, get_tx_history, get_ai_cache,
                   backup_db, get_connection, bulk_upsert_financials, bulk_upsert_ohlc,
                   latest_financial_quarter, latest_revenue_month,
-                  bulk_upsert_ssf_daily, get_ssf_dates)
+                  bulk_upsert_ssf_daily, get_ssf_dates, get_ssf_rows)
 from ..config import load_config
 from .. import updater, gemini, analysis, selfcheck, patterns
 from ..sources import taifex_ssf
@@ -396,6 +398,40 @@ def _screen_threshold(c, key: str, default) -> float:
         return float(default)
 
 
+def _attach_ssf_margin(c, rows: list[dict], settlements: dict | None = None) -> list[dict]:
+    """幫每一列補上「有沒有股期、1 口原始保證金」。
+
+    **純參考欄**：不進 `screen_pass` 的篩選條件、也不進木質／木率計分
+    （同「融資3日」的既有取捨——不動搖既有的木質刻度與門檻）。呼叫點在
+    `picks_self_screen` 回傳之前、緊接在篩選（`screen_pass`）與排序（依 mu_value）
+    都已完成之後，對 `result["rows"]` 就地補兩個鍵，結構上不可能回頭影響哪些股入選
+    或入選後的順序。
+    同一檔標的有標準與小型時**取標準約**：那才是「一口股期」的一般認知。
+    """
+    contracts = _ssf_contracts(c)
+    margin = (_ssf_margin_table(c).get("stock") or {})
+    if settlements is None:
+        dates = get_ssf_dates(c, limit=1)
+        settlements = {r["root"]: r.get("settlement") for r in get_ssf_rows(c, dates)}
+    by_code: dict[str, list] = {}
+    for root, info in contracts.items():
+        if not info["is_etf"]:
+            by_code.setdefault(info["code"], []).append((root, info))
+    for r in rows:
+        code = str(r.get("code", "")).split(".")[0]
+        best = None
+        for root, info in sorted(by_code.get(code, []), key=lambda x: -x[1]["multiplier"]):
+            m = margin.get(root + "F")
+            amt = taifex_ssf.margin_amount(settlements.get(root), info["multiplier"],
+                                           (m or {}).get("initial_pct"))
+            if amt is not None:
+                best = amt
+                break
+        r["ssf"] = bool(by_code.get(code))
+        r["ssf_margin"] = best
+    return rows
+
+
 @router.get("/picks/self-screen")
 def picks_self_screen(date: str | None = None, conds: str | None = None,
                       mu_value_min: float | None = None, mu_score_min: float | None = None):
@@ -438,6 +474,10 @@ def picks_self_screen(date: str | None = None, conds: str | None = None,
     result["precomputed"] = pre is not None      # 讓「今天是現算還是吃快取」看得見
     result["ready_at"] = (pre or {}).get("ready_at")         # 這天的名單最早幾點算好
     result["computed_at"] = (pre or {}).get("computed_at")
+    # 參考欄（有沒有股期／1 口原始保證金）：刻意放在所有篩選/排序都已完成之後的
+    # 最後一步，只對已經定案的 rows 就地補兩個鍵，不進 screen_pass、不進木質/木率計分
+    # （同「融資3日」的既有取捨）。
+    _attach_ssf_margin(c, result["rows"])
     return result
 
 @router.get("/picks/new-push-preview")
