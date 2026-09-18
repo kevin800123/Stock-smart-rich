@@ -680,6 +680,15 @@
           <div class="group-title">熱門股期　<span class="muted small">依官方成交口數；口數含小型合約，規模不同</span></div>
           <div class="cards" id="ssf-hot"></div>
         </div>
+
+        <!-- gt-sub／.empty 不存在，沿用本頁既有的 .muted small（同 renderSsfHot 的慣例，
+             見 app.js renderSsfHot 上方註解）。 -->
+        <div class="card-group span-full" data-key="ssf-ranks">
+          <div class="group-title">成交量／漲幅／跌幅前 20　<span class="muted small">K 棒為相對前一日結算價的 %</span></div>
+          <div class="chart" id="ssf-chart-volume" style="height:260px"></div>
+          <div class="chart" id="ssf-chart-gainers" style="height:260px"></div>
+          <div class="chart" id="ssf-chart-losers" style="height:260px"></div>
+        </div>
       </section>
 
       <!-- ===== 設定 ===== -->

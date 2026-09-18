@@ -858,6 +858,7 @@ async function loadSsf() {
   }
   renderSsfFreshness(d.date);
   renderSsfHot(d.hot || []);
+  renderSsfRanks(d.ranks);
 }
 
 // SSF_STALE_DAYS = 2：落後 1 天是常態（盤後才更新、假日不開盤），1 天就叫會變成
@@ -888,6 +889,58 @@ function renderSsfHot(rows) {
       + `<div class="card-chg ${dir}">${r.chg_pct == null ? "—" : (r.chg_pct >= 0 ? "+" : "") + r.chg_pct.toFixed(2) + "%"}</div>`
       + `<div class="card-note">${esc(r.code || "")}　${fmt(r.volume, 0)} 口　OI ${fmt(r.oi, 0)}</div></div>`;
   }).join("");
+}
+
+let ssfCharts = {};
+
+function ssfCandleOption(rows) {
+  const names = rows.map(r => r.name);
+  // ECharts candlestick 是 [open, close, low, high]；**缺值給 '-' 絕不給 null**
+  // （null 會在 getInitialData 丟 TypeError 讓整個 setOption 中止且不進 console）。
+  const data = rows.map(r => {
+    const v = [r.open_pct, r.close_pct, r.low_pct, r.high_pct];
+    return v.some(x => x == null) ? "-" : v;
+  });
+  return {
+    grid: { left: 48, right: 16, top: 16, bottom: 64 },
+    xAxis: { type: "category", data: names, axisLabel: { rotate: 45, fontSize: 10 } },
+    yAxis: { type: "value", axisLabel: { formatter: "{value}%" }, splitNumber: 4 },
+    tooltip: {
+      trigger: "axis",
+      formatter: (ps) => {
+        const r = rows[ps[0].dataIndex]; if (!r) return "";
+        const pct = (x) => x == null ? "—" : x.toFixed(2) + "%";
+        return `${esc(r.name)}（${esc(r.main_month || "")}）<br>`
+          + `開 ${fmt(r.open)} ${pct(r.open_pct)}<br>`
+          + `高 ${fmt(r.high)} ${pct(r.high_pct)}<br>`
+          + `低 ${fmt(r.low)} ${pct(r.low_pct)}<br>`
+          + `收 ${fmt(r.close)} ${pct(r.close_pct)}<br>`
+          + `參考價 ${fmt(r.ref)}（前日結算）<br>`
+          + `量 ${fmt(r.volume, 0)} 口　OI ${fmt(r.oi, 0)}<br>`
+          + `振幅 ${pct(r.amplitude)}`;
+      },
+    },
+    series: [{
+      type: "candlestick", data,
+      // 上面沒有文字，紅漲綠跌用亮色 C.up/C.down（不是給文字底色用的 upFill/downFill）。
+      itemStyle: { color: C.up, color0: C.down, borderColor: C.up, borderColor0: C.down },
+    }],
+  };
+}
+
+// 三張圖各 20 根 K 棒（不是 60 張小圖）：成交量／漲幅／跌幅前 20，X 軸＝合約簡稱、
+// Y 軸＝相對前一日結算價的 %。
+function renderSsfRanks(ranks) {
+  [["volume", "ssf-chart-volume"], ["gainers", "ssf-chart-gainers"],
+   ["losers", "ssf-chart-losers"]].forEach(([key, id]) => {
+    const el = $(id); if (!el) return;
+    const rows = (ranks && ranks[key]) || [];
+    // .empty 不存在（同 renderSsfHot 上方註解的既有教訓），沿用 .muted small。
+    if (!rows.length) { el.innerHTML = '<div class="muted small">尚無資料</div>'; return; }
+    const ch = ssfCharts[key] || (ssfCharts[key] = echarts.init(el));
+    ch.setOption(ssfCandleOption(rows), true);
+    ch.resize();   // echarts.init 會凍結它看到的容器尺寸，setOption 後一定要 resize
+  });
 }
 
 // ========== 自算籌碼/基本選股（全市場自算池，零 CSV） ==========
@@ -4078,6 +4131,7 @@ window.addEventListener("resize", () => {
   [chipChart, stockChipsChart, stockCustodyChart, pulseChart, cupChart, distChart,
     instBreadthChart, instAlphaChart]
     .forEach((c) => c && c.resize());
+  Object.values(ssfCharts).forEach(ch => ch && ch.resize());
   if (sectorChart) { sectorChart.resize(); if (lastHeatmapData) fitHeatmapFonts(lastHeatmapData); }
   // DOM treemap 的切割方向取決於容器長寬；跨 breakpoint／手機轉向時重新排一次。
   if (ssData && $("view-self-screen").classList.contains("active")) {
