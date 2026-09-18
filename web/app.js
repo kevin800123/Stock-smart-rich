@@ -934,10 +934,21 @@ function renderSsfRanks(ranks) {
   [["volume", "ssf-chart-volume"], ["gainers", "ssf-chart-gainers"],
    ["losers", "ssf-chart-losers"]].forEach(([key, id]) => {
     const el = $(id); if (!el) return;
+    // 用共用的 initChart（套站內主題：tooltip 底色/邊框、座標軸線與標籤色、數字字型），
+    // 不要用裸的 echarts.init——這三張圖原本是全站唯一沒吃 ECHARTS_THEME 的圖。
+    const ch = ssfCharts[key] || (ssfCharts[key] = initChart(el));
     const rows = (ranks && ranks[key]) || [];
-    // .empty 不存在（同 renderSsfHot 上方註解的既有教訓），沿用 .muted small。
-    if (!rows.length) { el.innerHTML = '<div class="muted small">尚無資料</div>'; return; }
-    const ch = ssfCharts[key] || (ssfCharts[key] = echarts.init(el));
+    const empty = $(`${id}-empty`);
+    if (!rows.length) {
+      // 同 loadDistribution 的 distChart.clear() 做法：清空既有實例、不寫 el.innerHTML。
+      // 直接覆寫容器會把 ECharts 的 canvas 從 DOM 移除，但 ssfCharts[key] 仍指著那個
+      // 實例——下一次資料回來（data→empty→data）時 setOption/resize 會畫在一個已經
+      // 不在畫面上的 canvas，畫面停在「尚無資料」、resize handler 卻繼續呼叫它。
+      ch.clear();
+      if (empty) empty.classList.remove("hidden");
+      return;
+    }
+    if (empty) empty.classList.add("hidden");
     ch.setOption(ssfCandleOption(rows), true);
     ch.resize();   // echarts.init 會凍結它看到的容器尺寸，setOption 後一定要 resize
   });
