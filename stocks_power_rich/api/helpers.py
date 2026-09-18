@@ -206,20 +206,18 @@ def refresh_ssf_daily(c, day=None) -> dict:
     if ds in get_ssf_dates(c, limit=3):
         return {"skipped": "already_done", "date": ds, "margin_ok": margin_ok}
 
-    # 一併重抓前 2 個交易日：官方偶有更正，而 COALESCE 讓重寫是安全的
+    # 一併重抓前幾個交易日：官方偶有更正，而 COALESCE 讓重寫是安全的
     start = (d - timedelta(days=6)).strftime("%Y/%m/%d")
     rows = taifex_ssf.fetch_ssf_daily(start, d.strftime("%Y/%m/%d"))
     if not rows:
         return {"skipped": "data_not_ready", "date": ds, "margin_ok": margin_ok}
-    by_date: dict[str, list] = {}
-    for r in rows:
-        by_date.setdefault(r["date"], []).append(r)
-    summary = []
-    for one in by_date.values():
-        summary.extend(taifex_ssf.summarize_ssf_day(one))
+    # 分組邏輯在 summarize_ssf_days 裡（見該函式 docstring）；這裡只留下報表要用的
+    # 日期集合，不必再自己重複一次「依 date 分組」的迴圈。
+    dates_in_rows = {r["date"] for r in rows}
+    summary = taifex_ssf.summarize_ssf_days(rows)
     bulk_upsert_ssf_daily(c, summary)
     pruned = prune_ssf_daily(c, keep_days=60)
-    return {"date": ds, "days": len(by_date), "roots": len(summary),
+    return {"date": ds, "days": len(dates_in_rows), "roots": len(summary),
             "margin_ok": margin_ok, "pruned": pruned}
 
 

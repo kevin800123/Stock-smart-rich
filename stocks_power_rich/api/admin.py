@@ -116,12 +116,7 @@ def ssf_backfill(days: int = 30):
             span = min(13, days - total)
             start = end - _td(days=span)
             rows = taifex_ssf.fetch_ssf_daily(start.strftime("%Y/%m/%d"), end.strftime("%Y/%m/%d"))
-            by_date = {}
-            for r in rows:
-                by_date.setdefault(r["date"], []).append(r)
-            summary = []
-            for one in by_date.values():
-                summary.extend(taifex_ssf.summarize_ssf_day(one))
+            summary = taifex_ssf.summarize_ssf_days(rows)
             wrote += bulk_upsert_ssf_daily(c, summary)
             total += span + 1
             end = start - _td(days=1)

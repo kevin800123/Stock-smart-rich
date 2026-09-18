@@ -103,6 +103,27 @@ def test_summary_falls_back_to_the_nearest_month_when_nothing_traded():
     assert vq["settlement"] == 64.7      # 但結算價還在，保證金算得出來
 
 
+def test_summarize_days_groups_by_date_before_summarizing():
+    """`summarize_ssf_day` 只認一天的列（用列本身的 date 決定日期與主力月價格），呼叫端
+    若不先依日期分組、整批一次丟給它，兩天的資料會被壓成同一天、留下誰的價格純屬巧合。
+
+    這正是 `refresh_ssf_daily`／`ssf_backfill` 原本各自重寫一次的那段「先分組再逐日呼叫
+    summarize_ssf_day」迴圈要防的事——`summarize_ssf_days` 把分組做進函式本身，兩個呼叫端
+    改成共用同一份，不必再各自記得這個前提。
+    """
+    text = SSF_HEADER_LINE + "\n" + "\n".join([
+        "2026/09/17,CDF,202610  ,100,100,100,100,1,1.00%,10,100,10,100,100,100,100,,一般,,",
+        "2026/09/18,CDF,202610  ,200,200,200,200,2,1.00%,20,200,20,200,200,200,200,,一般,,",
+    ]) + "\n"
+    rows = ssf.parse_ssf_daily_csv(text)
+    out = ssf.summarize_ssf_days(rows)
+    by_date = {r["date"]: r for r in out}
+    assert set(by_date) == {"2026-09-17", "2026-09-18"}
+    assert by_date["2026-09-17"]["close"] == 100.0
+    assert by_date["2026-09-18"]["close"] == 200.0
+    assert by_date["2026-09-17"]["root"] == by_date["2026-09-18"]["root"] == "CD"
+
+
 @pytest.mark.parametrize("price,tick", [
     (9.99, 0.01), (10, 0.05), (49.95, 0.05), (50, 0.1), (99.9, 0.1),
     (100, 0.5), (499.5, 0.5), (500, 1), (2499, 1), (2500, 5), (3000, 5),

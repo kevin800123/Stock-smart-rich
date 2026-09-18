@@ -178,6 +178,24 @@ def summarize_ssf_day(rows: list[dict]) -> list[dict]:
     return out
 
 
+def summarize_ssf_days(rows: list[dict]) -> list[dict]:
+    """多天的逐列 → 每個 (date, root) 一列摘要。
+
+    `summarize_ssf_day` 只認一天（用列本身的 `date` 決定日期與主力月），呼叫端若不先
+    依日期分組、整批一次丟給它，兩天的資料會被壓成同一天，留下誰的價格純屬巧合。
+    `refresh_ssf_daily`（排程每日更新）與 `ssf_backfill`（一次性回補）原本各自重寫一次
+    「先依 date 分組、再逐日呼叫 summarize_ssf_day」這段迴圈，這支把分組做進函式本身，
+    兩個呼叫端改成共用，這個前提也不必再讓兩邊各自記得一次。
+    """
+    by_date: dict[str, list[dict]] = {}
+    for r in rows:
+        by_date.setdefault(r["date"], []).append(r)
+    out: list[dict] = []
+    for one in by_date.values():
+        out.extend(summarize_ssf_day(one))
+    return out
+
+
 # (上限, 一檔) —— 上限為開區間。股期自 2026-07-06 起與現貨不同：
 # 現貨在 1000–2500 跳 5 元，股期跳 1 元。
 _TICKS_STOCK = ((Decimal("10"), Decimal("0.01")), (Decimal("50"), Decimal("0.05")),
