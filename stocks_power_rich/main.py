@@ -238,6 +238,7 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         "osfut_morning": osfut_job,
         "osfut_evening": osfut_job,
         "self_screen_early": self_screen_early_job,
+        "ssf_daily": lambda: _helpers.refresh_ssf_daily(conn()),
         "intraday_watch": intraday_watch_job,
         "weekly_line": weekly_line_job,
         **{f"news_{slot}": news_job(slot) for slot in ("morning", "midday", "afternoon", "evening")},

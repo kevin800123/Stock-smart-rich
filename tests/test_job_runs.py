@@ -80,6 +80,7 @@ def test_mark_interrupted_with_started_before_leaves_runs_of_this_process_alone(
 def test_job_schedule_depends_on_configured_channels():
     ids = {s["id"] for s in helpers.job_schedule(_cfg(), "21:00")}
     assert ids == {"daily_update", "osfut_morning", "osfut_evening", "self_screen_early",
+                   "ssf_daily",
                    "news_morning", "news_midday", "news_afternoon", "news_evening",
                    "picks_new_daily", "picks_new_weekly",
                    "intraday_watch", "weekly_line"}
@@ -117,9 +118,10 @@ def test_catchup_plan_only_today_latest_slot_per_family(c):
     specs = helpers.job_schedule(_cfg(), "21:00")
     plan = {p["job_id"]: p for p in helpers.catchup_plan(c, specs, FRI_22)}
     # 22:00：今天所有時段都過了，每個家族只留最近的一場
-    assert set(plan) == {"daily_update", "osfut_evening", "self_screen_early", "news_evening",
-                         "picks_new_daily"}
+    assert set(plan) == {"daily_update", "osfut_evening", "self_screen_early", "ssf_daily",
+                         "news_evening", "picks_new_daily"}
     assert plan["self_screen_early"]["run_key"] == "2026-09-11:19:30"
+    assert plan["ssf_daily"]["run_key"] == "2026-09-11:20:15"
     assert plan["daily_update"]["last_status"] is None
     # 依時段排序：21:00 daily_update 在 21:10 news_evening 之前
     order = [p["job_id"] for p in helpers.catchup_plan(c, specs, FRI_22)]
@@ -214,11 +216,14 @@ def test_catchup_runs_missed_jobs_once_and_not_again_on_restart(c, monkeypatch):
     _clock(monkeypatch, FRI_22)
     specs = helpers.job_schedule(_cfg(telegram_token=""), "21:00")
     calls, jobs = _stub_jobs("daily_update", "osfut_morning", "osfut_evening", "self_screen_early",
-                             "intraday_watch", "weekly_line")
+                             "ssf_daily", "intraday_watch", "weekly_line")
     r = helpers.catchup_missed_jobs(c, specs, jobs, now=FRI_22)
-    assert [x["job_id"] for x in r["ran"]] == ["self_screen_early", "daily_update", "osfut_evening"]
+    # 依時段排序：self_screen_early 19:30 → ssf_daily 20:15 → daily_update 21:00 → osfut_evening 21:30
+    assert [x["job_id"] for x in r["ran"]] == \
+        ["self_screen_early", "ssf_daily", "daily_update", "osfut_evening"]
     assert all(x["result"] == "ok" for x in r["ran"])
     assert calls["daily_update"] == 1 and calls["osfut_evening"] == 1 and calls["osfut_morning"] == 0
+    assert calls["ssf_daily"] == 1
     assert calls["intraday_watch"] == 0 and calls["weekly_line"] == 0
     assert db.latest_job_runs(c)["daily_update"]["trigger"] == "catchup"
     # 第二次啟動：全部已 ok → 什麼都不跑

@@ -21,9 +21,11 @@ from .helpers import (
 from datetime import date
 from ..db import (get_setting, set_setting, get_snapshot_dates, get_tx_history, get_ai_cache,
                   backup_db, get_connection, bulk_upsert_financials, bulk_upsert_ohlc,
-                  latest_financial_quarter, latest_revenue_month)
+                  latest_financial_quarter, latest_revenue_month,
+                  bulk_upsert_ssf_daily, get_ssf_dates)
 from ..config import load_config
 from .. import updater, gemini, analysis, selfcheck, patterns
+from ..sources import taifex_ssf
 
 router = APIRouter(prefix="/api")
 
@@ -85,6 +87,32 @@ def chips_backfill(days: int = 90, max_fetch: int = 15):
         return {"filled": filled, "remaining": remaining}
     finally:
         _backfill_lock.release()
+
+@router.get("/ssf/backfill")
+def ssf_backfill(days: int = 30):
+    """一次性回補股期歷史（熱力圖要近 10 個交易日）。
+
+    官方限制查詢區間不可超過一個月，所以逐段切；實測 14 天一段在 Zeabur 是
+    1.65MB／2.7 秒，離代理逾時很遠，維持同步即可（設計 §8.1）。
+    """
+    from datetime import date as _d, timedelta as _td
+    c = conn()
+    end = _d.today()
+    total, wrote = 0, 0
+    while total < days:
+        span = min(25, days - total)
+        start = end - _td(days=span)
+        rows = taifex_ssf.fetch_ssf_daily(start.strftime("%Y/%m/%d"), end.strftime("%Y/%m/%d"))
+        by_date = {}
+        for r in rows:
+            by_date.setdefault(r["date"], []).append(r)
+        summary = []
+        for one in by_date.values():
+            summary.extend(taifex_ssf.summarize_ssf_day(one))
+        wrote += bulk_upsert_ssf_daily(c, summary)
+        total += span + 1
+        end = start - _td(days=1)
+    return {"wrote": wrote, "dates": len(get_ssf_dates(c, limit=90))}
 
 @router.get("/margin-maintenance/heal")
 def margin_maintenance_heal(days: int = 45, max_fetch: int = 15):

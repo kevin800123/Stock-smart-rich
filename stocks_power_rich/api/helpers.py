@@ -6,7 +6,7 @@ import secrets
 import threading
 import tempfile
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from .. import ss_trader
 from ..config import load_config
@@ -28,6 +28,9 @@ from ..db import (
     finish_job_run,
     job_run_status,
     mark_interrupted_job_runs,
+    bulk_upsert_ssf_daily,
+    get_ssf_dates,
+    prune_ssf_daily,
 )
 from .. import line_push
 from ..sources import twse, tpex, mis, taifex_ssf
@@ -187,6 +190,37 @@ def _ssf_margin_table(c) -> dict:
             return fresh
         return m if isinstance(m, dict) else {}
     return m
+
+
+def refresh_ssf_daily(c, day=None) -> dict:
+    """股期每日摘要更新（排程 `ssf_daily` 用）。
+
+    回傳一個看得懂的 dict 進 `job_runs.note`——「今天沒做」與「做了但沒資料」要分得出來。
+    保證金與行情是**兩件獨立的事**：行情沒到齊時保證金照樣更新（處置股加成天天在變）。
+    """
+    d = day or _now().date()
+    margin_ok = bool(_ssf_margin_table(c).get("stock_updated"))
+    if d.weekday() >= 5:
+        return {"skipped": "weekend", "margin_ok": margin_ok}
+    ds = d.strftime("%Y-%m-%d")
+    if ds in get_ssf_dates(c, limit=3):
+        return {"skipped": "already_done", "date": ds, "margin_ok": margin_ok}
+
+    # 一併重抓前 2 個交易日：官方偶有更正，而 COALESCE 讓重寫是安全的
+    start = (d - timedelta(days=6)).strftime("%Y/%m/%d")
+    rows = taifex_ssf.fetch_ssf_daily(start, d.strftime("%Y/%m/%d"))
+    if not rows:
+        return {"skipped": "data_not_ready", "date": ds, "margin_ok": margin_ok}
+    by_date: dict[str, list] = {}
+    for r in rows:
+        by_date.setdefault(r["date"], []).append(r)
+    summary = []
+    for one in by_date.values():
+        summary.extend(taifex_ssf.summarize_ssf_day(one))
+    bulk_upsert_ssf_daily(c, summary)
+    pruned = prune_ssf_daily(c, keep_days=60)
+    return {"date": ds, "days": len(by_date), "roots": len(summary),
+            "margin_ok": margin_ok, "pruned": pruned}
 
 
 def _otc_quotes_for(c, date: str) -> dict:
@@ -1185,6 +1219,11 @@ def job_schedule(cfg, schedule_time: str) -> list[dict]:
         # 20:00 之前（使用者要求）。實測 2026-08-26 19:27 行情與法人已到齊、只差融資。
         {"id": "self_screen_early", "family": "self_screen_early",
          "hour": "17,18,19", "minute": "30", "dow": "mon-fri"},
+        # 股期概況：平日 17:15／18:15／20:15 各試一次。D 的日盤資料幾點發佈尚未量到
+        # （逐筆檔的 Last-Modified 是 16:38），三次重試就是為了吸收這個未知；
+        # 抓取器的守衛會擋掉「只有夜盤」的半套資料，所以早試不會寫壞。
+        {"id": "ssf_daily", "family": "ssf_daily",
+         "hour": "17,18,20", "minute": "15", "dow": "mon-fri"},
     ]
     # Telegram 新聞：token 與 chat id 缺一不可（只檢查 token 會註冊永遠送不出去的工作）。
     # 平日四場、週末只留 12:00／21:10（盤前／收盤快訊在沒開盤的日子是在報舊事）。

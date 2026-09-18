@@ -97,13 +97,18 @@ def test_create_app_with_line_token_registers_all_jobs(tmp_path, monkeypatch):
     try:
         ids = {j.id for j in app.state.scheduler.get_jobs()}
         assert ids == {"daily_update", "osfut_morning", "osfut_evening",
-                       "intraday_watch", "weekly_line", "self_screen_early"}
+                       "intraday_watch", "weekly_line", "self_screen_early", "ssf_daily"}
         # 自算選股提早算（使用者要求 20:00 前）：用真的 APScheduler 驗觸發條件，
         # 假排程器只記得參數、證明不了 hour="17,18,19" 真的被接受成三個時段
         ss = app.state.scheduler.get_job("self_screen_early")
         sf = {f.name: str(f) for f in ss.trigger.fields}
         assert sf["day_of_week"] == "mon-fri"
         assert sf["hour"] == "17,18,19" and sf["minute"] == "30"
+        # 股期概況：平日 17:15／18:15／20:15，同樣是無條件註冊（不看任何 cfg 旗標）
+        ssf = app.state.scheduler.get_job("ssf_daily")
+        ssff = {f.name: str(f) for f in ssf.trigger.fields}
+        assert ssff["day_of_week"] == "mon-fri"
+        assert ssff["hour"] == "17,18,20" and ssff["minute"] == "15"
         # 籌碼週報固定週六，時間讀 cfg.weekly_push_time（Asia/Taipei，scheduler 時區已設）
         wk = app.state.scheduler.get_job("weekly_line")
         fields = {f.name: str(f) for f in wk.trigger.fields}
