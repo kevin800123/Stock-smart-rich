@@ -197,14 +197,33 @@ def refresh_ssf_daily(c, day=None) -> dict:
 
     回傳一個看得懂的 dict 進 `job_runs.note`——「今天沒做」與「做了但沒資料」要分得出來。
     保證金與行情是**兩件獨立的事**：行情沒到齊時保證金照樣更新（處置股加成天天在變）。
+
+    **`already_done` 的定義是「D 已經寫入」（`ssf_ready:{D}` 這個 marker 存在），不是
+    「`ssf_daily` 裡剛好已經有 D 這個列」**（review I2／Fix C）——排程抓的是 6 天重疊
+    區間，D 的前幾個交易日幾乎必定回得來，即使 D 自己的日盤資料還沒發佈；若只看
+    `get_ssf_dates` 判斷已完成，`/api/ssf/backfill` 或別的來源先把 D 的列寫進去時會被
+    誤判成「排程已確認過 D 到齊」而跳過重新確認。`ssf_ready:{D}` 只在 D 真的被寫入時
+    才寫，記下**第一次**成功的時間（沿用自算選股 `ready_at` 的既有模式）：之後同一天
+    再呼叫都回報同一個時間，這樣 `/api/health` 的 `jobs.ssf_daily.note.ready_at` 才能
+    回答「D 是哪個時段第一次到齊」，不必事後用猜的。
+
+    D 若不在這次抓到的日期裡（`fetch_ssf_daily` 對每一天的「一般、非價差」列數各自
+    把關，D 尚未發佈就不會出現在回傳值裡），仍把已經抓到的前幾天寫回 DB（COALESCE
+    讓重寫安全、能吸收官方偶有的更正），但**不可**謊稱這次處理的是 D——回報
+    `data_not_ready` 並用 `refreshed_prior` 列出真的更新了哪些日期。少了這道分辨，
+    每個時段（17:15／18:15／20:15）都會回報「成功」，讓「查 /api/health 判斷哪個時段
+    先拿到資料」這個既有的量測方法完全失效（見 probe_review2.py 的重現）。
     """
     d = day or _now().date()
     margin_ok = bool(_ssf_margin_table(c).get("stock_updated"))
     if d.weekday() >= 5:
         return {"skipped": "weekend", "margin_ok": margin_ok}
     ds = d.strftime("%Y-%m-%d")
-    if ds in get_ssf_dates(c, limit=3):
-        return {"skipped": "already_done", "date": ds, "margin_ok": margin_ok}
+    ready_key = f"ssf_ready:{ds}"
+    ready = get_ai_cache(c, ready_key)
+    if ready:
+        return {"skipped": "already_done", "date": ds, "margin_ok": margin_ok,
+                "ready_at": ready.get("at")}
 
     # 一併重抓前幾個交易日：官方偶有更正，而 COALESCE 讓重寫是安全的
     start = (d - timedelta(days=6)).strftime("%Y/%m/%d")
@@ -217,8 +236,15 @@ def refresh_ssf_daily(c, day=None) -> dict:
     summary = taifex_ssf.summarize_ssf_days(rows)
     bulk_upsert_ssf_daily(c, summary)
     pruned = prune_ssf_daily(c, keep_days=60)
+    if ds not in dates_in_rows:
+        # D 還沒發佈；已把回應窗內其他日期的更正/補寫落地，但不可宣稱這次處理了 D。
+        return {"skipped": "data_not_ready", "date": ds,
+                "refreshed_prior": sorted(dates_in_rows),
+                "margin_ok": margin_ok, "pruned": pruned}
+    stamp = _now().isoformat(timespec="seconds")
+    set_ai_cache(c, ready_key, {"at": stamp})
     return {"date": ds, "days": len(dates_in_rows), "roots": len(summary),
-            "margin_ok": margin_ok, "pruned": pruned}
+            "margin_ok": margin_ok, "pruned": pruned, "ready_at": stamp}
 
 
 def _otc_quotes_for(c, date: str) -> dict:

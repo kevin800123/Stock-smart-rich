@@ -318,19 +318,26 @@ def test_fetch_rejects_wrong_content_type_even_with_a_perfectly_valid_body(monke
     assert ssf.fetch_ssf_daily("2026/09/17", "2026/09/17") == []
 
 
-def test_fetch_rejects_a_genuinely_different_header_even_with_plenty_of_rows(monkeypatch):
+def test_fetch_raises_when_the_header_has_genuinely_changed(monkeypatch):
     """孤立測試：Content-Type 正確、列數遠超門檻，但表頭真的被官方改版。
 
-    只有守衛 2（接住 `parse_ssf_daily_csv` 的 ValueError）擋得下這筆——Content-Type
-    正確會通過守衛 1，若解析不因表頭而中止、列數本身遠超門檻也會通過守衛 3。
-    拿掉守衛 2 時，ValueError 會直接從 `fetch_ssf_daily` 炸出來，而不是被吞成 []。
+    **契約變更（review I2／Fix C）**：這條原本斷言 `fetch_ssf_daily` 把
+    `parse_ssf_daily_csv` 的 ValueError 吞成 `[]`。改成讓例外原樣往上拋，理由是
+    吞掉會讓「表頭真的改版、程式再也解析不出來」與「今天資料還沒發佈」變成同一種
+    看起來人畜無害的空結果——`run_job` 只會記到一個含糊的狀態，兩種需要完全不同
+    的處理（前者要有人去改解析邏輯，後者等下一輪重試就會自己好）卻分不出來。
+    這與「非交易日只有表頭」的回應不衝突：那種回應的表頭本身沒變，
+    `parse_ssf_daily_csv` 正常解析出 0 列，走的是後面「一般列 0 列」那道獨立守衛，
+    不會經過這裡的 ValueError；也與 UTF-8 警告頁不衝突，那種回應在更早的
+    Content-Type 檢查（守衛 1）就被擋下，根本不會走到 `parse_ssf_daily_csv`。
     """
     bad_header = ssf.SSF_HEADER.replace("未沖銷契約數", "未平倉量")
     body = (bad_header + "\n" +
             "\n".join([f"2026/09/17,X{i:02d}F,202610  ,1,1,1,1,0,0.00%,1,1,1,1,1,1,1,,一般,,"
                        for i in range(1300)]) + "\n")
     _patch_client(monkeypatch, [_Resp(body.encode("ms950"), "text/html;charset=MS950")])
-    assert ssf.fetch_ssf_daily("2026/09/17", "2026/09/17") == []
+    with pytest.raises(ValueError, match="表頭"):
+        ssf.fetch_ssf_daily("2026/09/17", "2026/09/17")
 
 
 STOCK_LISTS_HTML = """

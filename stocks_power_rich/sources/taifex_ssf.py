@@ -29,29 +29,37 @@ MIN_GENERAL_ROWS = 1200
 def fetch_ssf_daily(start: str, end: str) -> list[dict]:
     """抓指定區間（`YYYY/MM/DD`，**不可超過一個月**）的股期日檔。
 
-    三種「HTTP 200 但不算成功」的假象逐一擋掉，全部回空 list 並留一行 warning
+    兩種「HTTP 200 但不算成功」的假象仍擋掉，回空 list 並留一行 warning
     （呼叫端據此略過、不寫入）：
     1. Content-Type 不是 MS950 → 區間超過一個月的 UTF-8 HTML 警告頁
-    2. 表頭不符或只有表頭 → 非交易日
-    3. 「一般、非價差」列數**逐日**檢查不足 → 該日日盤資料還沒發佈（早上打只會有
+    2. 「一般、非價差」列數**逐日**檢查不足 → 該日日盤資料還沒發佈（早上打只會有
        盤後列，且日期算在下一個交易日）。**逐日判定，不是整個回應加總**：
-       `start`/`end` 常是排程重疊補最近幾個交易日的多日區間，若用加總，13 個完整
+       `start`/`end` 常是排程重疊補最近幾個交易日的多日區間，若用加總，好幾個完整
        交易日（每天 1,629 列）＋ 今天只有盤後列（一般 0 列）加起來遠超門檻，
        今天那半天的資料反而會被其他日期的量掩蓋掉、照樣寫進 DB——這正是這道守衛
        原本要防的事。逐日判定讓某一天資料不足時只剔除那一天，不連累其他已齊全的
        日期，也不會被它們的量沖淡。
 
-    以上三種假象都限定在「HTTP 200」之內。POST 回應會先過 `raise_for_status()`：
-    4xx/5xx（例如伺服器忙碌時偶爾出現的 503 錯誤頁，Content-Type 也常常是
-    text/html）在這裡就以 `httpx.HTTPStatusError` 往上拋，不會落進守衛 1 被誤判成
-    「區間超過一個月的警告頁」——那正是本站在 `sources/revenue.py` 修過的「失敗
-    歸因錯誤」（見 CLAUDE.md 2026-09「月營收告警查不出原因」一節），這裡是同一
-    類問題的預防。
+    **表頭真的改版時（`parse_ssf_daily_csv` 丟的 ValueError）不再被吞成 `[]`，
+    而是原樣往上拋（review I2／Fix C）**：吞掉的話，「表頭改版、程式再也解析不
+    出來」與「今天日盤資料還沒發佈」會變成同一種看起來人畜無害的空結果，
+    `run_job` 只能記到一個含糊的 `data_not_ready`，看不出哪一種——前者要有人去
+    改解析邏輯，後者等下一輪重試就會自己好，處理方式完全不同。這與「非交易日
+    只有表頭」的回應不衝突：那種回應的表頭本身沒變，`parse_ssf_daily_csv` 正常
+    解析出 0 列，走的是上面守衛 2（「一般列 0 列」）；也與 UTF-8 警告頁不衝突，
+    那種回應在更早的守衛 1（Content-Type）就被擋下，根本不會走到解析這一步。
 
-    連線層例外（timeout／連線中斷／TLS 等）與 HTTP 錯誤狀態一樣，刻意不在這裡
-    攔截，原樣往上拋給呼叫端：呼叫端是排程 Job，經 `run_job` 記錄失敗狀態與例外
-    訊息；若在這裡吞掉，「網路不通」「伺服器錯誤」與「日盤還沒發佈」會變得無法
-    分辨。
+    以上兩種假象、以及表頭改版的 ValueError，都限定在「HTTP 200」之內。POST 回應
+    會先過 `raise_for_status()`：4xx/5xx（例如伺服器忙碌時偶爾出現的 503 錯誤頁，
+    Content-Type 也常常是 text/html）在這裡就以 `httpx.HTTPStatusError` 往上拋，
+    不會落進守衛 1 被誤判成「區間超過一個月的警告頁」——那正是本站在
+    `sources/revenue.py` 修過的「失敗歸因錯誤」（見 CLAUDE.md 2026-09「月營收
+    告警查不出原因」一節），這裡是同一類問題的預防。
+
+    連線層例外（timeout／連線中斷／TLS 等）與 HTTP 錯誤狀態、表頭改版一樣，刻意
+    不在這裡攔截，原樣往上拋給呼叫端：呼叫端是排程 Job，經 `run_job` 記錄失敗
+    狀態與例外訊息；若在這裡吞掉，「網路不通」「伺服器錯誤」「表頭改版」與
+    「日盤還沒發佈」會變得無法分辨。
     """
     with httpx.Client(timeout=60, follow_redirects=True,
                       headers={"User-Agent": "Mozilla/5.0"}) as cli:
@@ -68,11 +76,10 @@ def fetch_ssf_daily(start: str, end: str) -> list[dict]:
         log.warning("[ssf] %s~%s 回應不是 MS950（多半是區間超過一個月的警告頁）：%s",
                     start, end, ct)
         return []
-    try:
-        rows = parse_ssf_daily_csv(r.content.decode("ms950", errors="replace"))
-    except ValueError as e:
-        log.warning("[ssf] %s~%s 解析失敗：%s", start, end, e)
-        return []
+    # 表頭不符時 parse_ssf_daily_csv 丟的 ValueError 不在這裡攔截，原樣往上拋
+    # （見上方 docstring）——非交易日「只有表頭」的回應表頭本身沒變，會正常解析
+    # 出 0 列，不會觸發這個例外。
+    rows = parse_ssf_daily_csv(r.content.decode("ms950", errors="replace"))
     if not rows:
         log.warning("[ssf] %s~%s 一般列只有 0 列（<%d），視為資料未發佈",
                     start, end, MIN_GENERAL_ROWS)

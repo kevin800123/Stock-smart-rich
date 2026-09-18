@@ -79,6 +79,76 @@ def test_refresh_still_updates_the_margin_table_when_quotes_are_not_ready(tmp_pa
     assert called["n"] == 1
 
 
+def test_refresh_reports_data_not_ready_when_D_itself_is_missing_even_if_prior_days_came_back(
+        tmp_path, monkeypatch):
+    """review I2：排程抓的是多日重疊區間，前幾個交易日幾乎必定回得來，即使今天
+    (D) 還沒發佈。舊行為在這種情況下會把「早幾天有寫」誤報成「今天成功」——
+    run_job 記到的狀態與 note 讓每一個時段看起來都成功，`/api/health` 的
+    `jobs.ssf_daily` 因此永遠分不出哪個時段才是 D 真正到齊的那一次
+    （見 probe_review2.py 的重現）。D 不在這次抓到的日期裡時，即使前面幾天的
+    列已經被寫回 DB（COALESCE 讓重寫安全），也要老實回報 data_not_ready，並列出
+    真的更新了哪些日期（`refreshed_prior`），而不是謊稱『date』那天處理成功。
+    """
+    conn = _db(tmp_path)
+    prior_rows = _fake_rows("2026-09-15") + _fake_rows("2026-09-16")
+    monkeypatch.setattr(ssf, "fetch_ssf_daily", lambda s, e: prior_rows)
+    monkeypatch.setattr(H, "_ssf_margin_table", lambda c: {"stock_updated": "2026/09/15"})
+    res = H.refresh_ssf_daily(conn, day=_dt.date(2026, 9, 17))
+    assert res["skipped"] == "data_not_ready"
+    assert res["date"] == "2026-09-17"
+    assert res["refreshed_prior"] == ["2026-09-15", "2026-09-16"]
+    assert set(get_ssf_dates(conn)) == {"2026-09-15", "2026-09-16"}   # 前幾天確實有寫
+    assert "2026-09-17" not in get_ssf_dates(conn)                    # 但 D 沒被寫進去
+
+
+def test_refresh_records_ready_at_the_first_time_D_is_written_and_keeps_reporting_it(
+        tmp_path, monkeypatch):
+    """D 第一次真的寫入時要記下時間戳（`ssf_ready:{D}`），之後同一天的
+    already_done 回應要繼續帶著這個時間戳——`/api/health` 的
+    `jobs.ssf_daily.note.ready_at` 才能回答『D 是哪個時段第一次到齊』。
+    """
+    conn = _db(tmp_path)
+    monkeypatch.setattr(ssf, "fetch_ssf_daily", lambda s, e: _fake_rows(e.replace("/", "-")))
+    monkeypatch.setattr(H, "_ssf_margin_table", lambda c: {"stock_updated": "2026/09/15"})
+    monkeypatch.setattr(H, "_now", lambda: _dt.datetime(2026, 9, 17, 18, 15, 3))
+    res1 = H.refresh_ssf_daily(conn, day=_dt.date(2026, 9, 17))
+    assert res1["date"] == "2026-09-17"
+    assert res1["ready_at"] == "2026-09-17T18:15:03"
+
+    # 之後（例如 20:15 那次）同一天再呼叫：已經 ready，不該再重抓，但要繼續回報
+    # 第一次成功的時間，不是這一次呼叫的時間。
+    monkeypatch.setattr(ssf, "fetch_ssf_daily",
+                        lambda s, e: (_ for _ in ()).throw(AssertionError("已 ready 不該再連外")))
+    monkeypatch.setattr(H, "_now", lambda: _dt.datetime(2026, 9, 17, 20, 15, 7))
+    res2 = H.refresh_ssf_daily(conn, day=_dt.date(2026, 9, 17))
+    assert res2["skipped"] == "already_done"
+    assert res2["ready_at"] == "2026-09-17T18:15:03"     # 仍是第一次成功的時間，不是這次
+
+
+def test_refresh_already_done_means_D_was_actually_written_not_merely_a_row_existing(
+        tmp_path, monkeypatch):
+    """`already_done` 的定義是『`ssf_ready:{D}` 這個 marker 存在』，不是『`ssf_daily`
+    裡剛好已經有 D 這個列』——例如 `/api/ssf/backfill` 可能先把 D 的列寫進去，
+    這時排程不該把它誤判成『自己已經確認過 D 到齊』而略過重新確認。
+    """
+    conn = _db(tmp_path)
+    from stocks_power_rich.db import bulk_upsert_ssf_daily
+    bulk_upsert_ssf_daily(conn, ssf.summarize_ssf_days(_fake_rows("2026-09-17")))
+    assert "2026-09-17" in get_ssf_dates(conn)     # D 已經有列，但沒有 ready marker
+
+    called = {"n": 0}
+
+    def fake_fetch(s, e):
+        called["n"] += 1
+        return _fake_rows(e.replace("/", "-"))
+    monkeypatch.setattr(ssf, "fetch_ssf_daily", fake_fetch)
+    monkeypatch.setattr(H, "_ssf_margin_table", lambda c: {"stock_updated": "2026/09/15"})
+    res = H.refresh_ssf_daily(conn, day=_dt.date(2026, 9, 17))
+    assert called["n"] == 1              # 沒有 ready marker，仍然要重新確認
+    assert res["date"] == "2026-09-17"
+    assert "ready_at" in res
+
+
 def test_job_schedule_registers_ssf_on_weekday_evenings():
     """時段刻意避開現有全部排程：17:00 news／17:30、18:30、19:30 self_screen_early／
     21:00 daily_update／21:10 news／21:30 osfut／21:40 picks_new_daily。"""
