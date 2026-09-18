@@ -864,7 +864,7 @@ async function loadSsf() {
     note.textContent = `資料日 ${d.date}　${cov.roots || 0} 檔　已存 ${cov.stored_days || 0} 個交易日`
       + (cov.no_stock_code ? `　${cov.no_stock_code} 檔查不到標的代號` : "");
   }
-  renderSsfFreshness(d.date);
+  renderSsfFreshness(d.date, cov.lag_trading_days);
   renderSsfHot(d.hot || []);
   renderSsfRanks(d.ranks);
   renderSsfBasis(d.basis || []);
@@ -873,18 +873,23 @@ async function loadSsf() {
   loadSsfMargin();
 }
 
-// SSF_STALE_DAYS = 2：落後 1 天是常態（盤後才更新、假日不開盤），1 天就叫會變成
-// 永遠亮著的裝飾。落差用**日曆天**，沿用 `renderFreshness` 的既有決定——跨週末說
-// 「落後 3 天」是事實，硬換算成交易日會讓週一早上看起來像資料很新。
+// SSF_STALE_DAYS = 2 個交易日：落後 1 個交易日是常態（盤後才更新、假日不開盤），
+// 1 天就標記會變成永遠亮著的裝飾。落差改用**交易日**（`coverage.lag_trading_days`，
+// 後端算——見 market.py::ssf_overview，market_daily 裡「有加權指數、且日期晚於
+// SSF 資料日」的列數，天生排除週末／假日）。舊寫法直接拿「今天」與資料日相減的
+// **日曆天**判斷，週五的資料撐過整個週末會被算成「落後 2～3 天」而亮琥珀，即使
+// 那已經是當下最新的資料（review I6，2026-09 修正）。這與 `renderFreshness` 把
+// 「該不該擔心」交給後端已考慮週末的 `data_stale` 判斷、而不是自己拿日曆天硬算，
+// 是同一個道理——舊註解說這裡「沿用 renderFreshness 的既有決定」，用的卻是日曆天，
+// 剛好寫反了。
 const SSF_STALE_DAYS = 2;
 
-function renderSsfFreshness(date) {
+function renderSsfFreshness(date, lagTradingDays) {
   const el = $("ssf-fresh"); if (!el) return;
   el.textContent = ""; el.classList.remove("stale");
   if (!date) return;
-  const days = Math.floor((new Date().setHours(0, 0, 0, 0)
-    - new Date(date + "T00:00:00").getTime()) / 86400000);
-  if (days >= SSF_STALE_DAYS) { el.textContent = `落後 ${days} 天`; el.classList.add("stale"); }
+  const days = lagTradingDays || 0;
+  if (days >= SSF_STALE_DAYS) { el.textContent = `落後 ${days} 個交易日`; el.classList.add("stale"); }
 }
 
 // card-label／muted small 沿用既有卡片與 group-title 慣例（見 #view-hiprice／#view-self-screen），
