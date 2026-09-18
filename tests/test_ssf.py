@@ -134,8 +134,15 @@ def test_basis_returns_none_when_either_side_is_missing():
 
 
 class _Resp:
-    def __init__(self, body: bytes, ct: str):
-        self.status_code, self.content, self.headers = 200, body, {"content-type": ct}
+    def __init__(self, body: bytes, ct: str, status_code: int = 200):
+        self.status_code, self.content, self.headers = status_code, body, {"content-type": ct}
+
+    def raise_for_status(self):
+        """委派給真的 httpx.Response，行為與例外訊息才與正式程式碼一致——
+        同 `_ListResp.raise_for_status` 的做法，不自己編一個 Exception。"""
+        if self.status_code >= 400:
+            req = ssf.httpx.Request("POST", ssf.SSF_DOWN)
+            ssf.httpx.Response(self.status_code, request=req).raise_for_status()
 
 
 class _Client:
@@ -173,6 +180,22 @@ def test_fetch_returns_rows_on_a_normal_response(monkeypatch):
     assert len(rows) == 1300
     assert client.posted[0]["commodity_id"] == "specialid"
     assert client.posted[0]["commodity_id2"] == "all"
+
+
+def test_fetch_raises_on_http_error_status_instead_of_returning_empty(monkeypatch, caplog):
+    """TAIFEX 若回 503 錯誤頁，Content-Type 常常也是 text/html——沒有
+    `raise_for_status()` 的話會被守衛 1（Content-Type 檢查）接住，誤判成『區間
+    超過一個月的警告頁』並回傳 []。加上之後，HTTP 錯誤狀態要在守衛之前就以
+    `httpx.HTTPStatusError` 往上拋，讓 `run_job` 記到真正的原因，而不是一句
+    誤導的 warning。
+    """
+    import logging
+    _patch_client(monkeypatch, [_Resp(b"<html>503 Service Unavailable</html>",
+                                      "text/html; charset=UTF-8", status_code=503)])
+    with caplog.at_level(logging.WARNING, logger="spr"):
+        with pytest.raises(ssf.httpx.HTTPStatusError):
+            ssf.fetch_ssf_daily("2026/09/17", "2026/09/17")
+    assert not any("回應不是 MS950" in r.getMessage() for r in caplog.records)
 
 
 def test_fetch_rejects_the_utf8_alert_page_for_an_over_long_range(monkeypatch):

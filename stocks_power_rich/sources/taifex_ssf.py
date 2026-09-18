@@ -41,18 +41,28 @@ def fetch_ssf_daily(start: str, end: str) -> list[dict]:
        原本要防的事。逐日判定讓某一天資料不足時只剔除那一天，不連累其他已齊全的
        日期，也不會被它們的量沖淡。
 
-    連線層例外（timeout／連線中斷／TLS 等）刻意不在這裡攔截，原樣往上拋給呼叫端：
-    呼叫端是排程 Job，經 `run_job` 記錄失敗狀態與例外訊息；若在這裡吞掉，「網路
-    不通」與「日盤還沒發佈」會變得無法分辨（同月營收那次「例外被吞兩層、事後查
-    不出原因」的教訓，見 CLAUDE.md 2026-09「月營收告警查不出原因」一節）。
+    以上三種假象都限定在「HTTP 200」之內。POST 回應會先過 `raise_for_status()`：
+    4xx/5xx（例如伺服器忙碌時偶爾出現的 503 錯誤頁，Content-Type 也常常是
+    text/html）在這裡就以 `httpx.HTTPStatusError` 往上拋，不會落進守衛 1 被誤判成
+    「區間超過一個月的警告頁」——那正是本站在 `sources/revenue.py` 修過的「失敗
+    歸因錯誤」（見 CLAUDE.md 2026-09「月營收告警查不出原因」一節），這裡是同一
+    類問題的預防。
+
+    連線層例外（timeout／連線中斷／TLS 等）與 HTTP 錯誤狀態一樣，刻意不在這裡
+    攔截，原樣往上拋給呼叫端：呼叫端是排程 Job，經 `run_job` 記錄失敗狀態與例外
+    訊息；若在這裡吞掉，「網路不通」「伺服器錯誤」與「日盤還沒發佈」會變得無法
+    分辨。
     """
     with httpx.Client(timeout=60, follow_redirects=True,
                       headers={"User-Agent": "Mozilla/5.0"}) as cli:
+        # 只為了設 cookie；這支已知會 302 → 404.htm，raise_for_status 會誤傷這條
+        # happy path，不可加在這裡。
         cli.get(SSF_FORM, headers={"Referer": SSF_FORM})
         r = cli.post(SSF_DOWN, headers={"Referer": SSF_FORM}, data={
             "down_type": "1", "commodity_id": "specialid", "commodity_id2": "all",
             "queryStartDate": start, "queryEndDate": end,
         })
+        r.raise_for_status()  # 非 2xx 不能被守衛 1 接住，誤判成「區間過長」的警告頁
     ct = (r.headers.get("content-type") or "").upper()
     if "MS950" not in ct:
         log.warning("[ssf] %s~%s 回應不是 MS950（多半是區間超過一個月的警告頁）：%s",
