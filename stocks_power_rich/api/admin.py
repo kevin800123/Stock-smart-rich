@@ -16,15 +16,14 @@ from .helpers import (
     _insti_for,
     ai_calls_today,
     line_quota_paused,
-    _ssf_contracts,
-    _ssf_margin_table,
+    ssf_margin_index,
     REPO_DIR
 )
 from datetime import date
 from ..db import (get_setting, set_setting, get_snapshot_dates, get_tx_history, get_ai_cache,
                   backup_db, get_connection, bulk_upsert_financials, bulk_upsert_ohlc,
                   latest_financial_quarter, latest_revenue_month,
-                  bulk_upsert_ssf_daily, get_ssf_dates, get_ssf_rows)
+                  bulk_upsert_ssf_daily, get_ssf_dates)
 from ..config import load_config
 from .. import updater, gemini, analysis, selfcheck, patterns
 from ..sources import taifex_ssf
@@ -393,7 +392,7 @@ def _screen_threshold(c, key: str, default) -> float:
         return float(default)
 
 
-def _attach_ssf_margin(c, rows: list[dict], settlements: dict | None = None) -> list[dict]:
+def _attach_ssf_margin(c, rows: list[dict]) -> list[dict]:
     """幫每一列補上「有沒有股期、1 口原始保證金」。
 
     **純參考欄**：不進 `screen_pass` 的篩選條件、也不進木質／木率計分
@@ -401,29 +400,27 @@ def _attach_ssf_margin(c, rows: list[dict], settlements: dict | None = None) -> 
     `picks_self_screen` 回傳之前、緊接在篩選（`screen_pass`）與排序（依 mu_value）
     都已完成之後，對 `result["rows"]` 就地補兩個鍵，結構上不可能回頭影響哪些股入選
     或入選後的順序。
-    同一檔標的有標準與小型時**取標準約**：那才是「一口股期」的一般認知。
+
+    **只認標準合約，絕不退而求其次改用小型（review I3／Fix F）**：同一檔標的有
+    標準與小型時，「一口股期」的一般認知指的是標準合約——舊版在標準合約缺結算價
+    時會往下找小型合約算出一個金額（實測 2330 標準查無結算價時顯示 32,832，
+    只有標準合約真正金額 656,640 的 1/20，畫面上卻沒有任何跡象顯示這其實是
+    小型的數字）。標準合約算不出來就是 `None`，不猜。
+
+    **不連外（review I3／Fix F）**：計算改經共用的 `ssf_margin_index(c, fetch=False)`
+    ——它只讀快取，找不到今天的就退回最近一次存過的，兩者都沒有就是空——自算選股
+    這一欄從來不依賴 TAIFEX，一個純參考欄不該讓整頁陪著它抽風（快取沒中時原本
+    每次開頁都要連兩個可能各 30 秒逾時的端點）。
     """
-    contracts = _ssf_contracts(c)
-    margin = (_ssf_margin_table(c).get("stock") or {})
-    if settlements is None:
-        dates = get_ssf_dates(c, limit=1)
-        settlements = {r["root"]: r.get("settlement") for r in get_ssf_rows(c, dates)}
-    by_code: dict[str, list] = {}
-    for root, info in contracts.items():
-        if not info["is_etf"]:
-            by_code.setdefault(info["code"], []).append((root, info))
+    if not rows:      # 沒有入選股就不必載入任何東西，連 ai_cache 都不查
+        return rows
+    by_stock = ssf_margin_index(c, fetch=False).get("by_stock") or {}
     for r in rows:
         code = str(r.get("code", "")).split(".")[0]
-        best = None
-        for root, info in sorted(by_code.get(code, []), key=lambda x: -x[1]["multiplier"]):
-            m = margin.get(root + "F")
-            amt = taifex_ssf.margin_amount(settlements.get(root), info["multiplier"],
-                                           (m or {}).get("initial_pct"))
-            if amt is not None:
-                best = amt
-                break
-        r["ssf"] = bool(by_code.get(code))
-        r["ssf_margin"] = best
+        stock_entries = [e for e in (by_stock.get(code) or []) if e.get("kind") == "stock"]
+        std = next((e for e in stock_entries if not e.get("is_mini")), None)
+        r["ssf"] = bool(stock_entries)
+        r["ssf_margin"] = std.get("initial") if std else None
     return rows
 
 

@@ -1012,6 +1012,23 @@ def set_ai_cache(conn: sqlite3.Connection, key: str, payload: dict) -> None:
     conn.commit()
 
 
+def latest_ai_cache_with_prefix(conn: sqlite3.Connection, prefix: str):
+    """`prefix` 開頭、`cache_key` 字典序最大（＝日期最新，鍵名本身就帶 ISO 日期）的
+    那筆 payload；沒有任何符合的鍵就回 None。
+
+    給「只讀快取、絕不連外」的呼叫端用（見 `api/helpers.py` 的 `_ssf_contracts`／
+    `_ssf_margin_table` 在 `fetch=False` 時的退路）：今天的鍵沒有就退回最近一次
+    存過的，寧可顯示稍舊的資料，也不要為了它去打一次可能逾時的請求（同
+    `pick_close_for`「找不到當下就找最近一次」的精神，只是這裡找的是快取鍵而非
+    交易日）。
+    """
+    row = conn.execute(
+        "SELECT payload FROM ai_cache WHERE cache_key LIKE ? ORDER BY cache_key DESC LIMIT 1",
+        (prefix + "%",),
+    ).fetchone()
+    return json.loads(row[0]) if row else None
+
+
 # ---------------------------------------------------------------------------
 # 排程執行紀錄（job_runs）
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ from stocks_power_rich.db import (
     get_snapshot,
     get_ai_cache,
     set_ai_cache,
+    latest_ai_cache_with_prefix,
     upsert_tx_history,
     get_tx_history,
     weekly_amounts,
@@ -77,6 +78,20 @@ def test_ai_cache_roundtrip(tmp_path):
     set_ai_cache(conn, "market:2026-06-17", {"enabled": True, "text": "盤勢偏多"})
     got = get_ai_cache(conn, "market:2026-06-17")
     assert got == {"enabled": True, "text": "盤勢偏多"}
+
+
+def test_latest_ai_cache_with_prefix_picks_the_lexicographically_newest_key(tmp_path):
+    """`fetch=False` 只讀快取的呼叫端（Fix F）用它退回『最近一次存過的』——鍵名帶
+    ISO 日期時字典序就是時間序，取字典序最大等於取最新日期，不必額外解析日期。
+    沒有任何符合前綴的鍵時回 None，讓呼叫端能分辨『真的沒有』與『有但是舊的』。
+    """
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    assert latest_ai_cache_with_prefix(conn, "ssfmargin:v1:") is None
+    set_ai_cache(conn, "ssfmargin:v1:2026-09-10", {"stock_updated": "old"})
+    set_ai_cache(conn, "ssfmargin:v1:2026-09-17", {"stock_updated": "new"})
+    set_ai_cache(conn, "unrelated:2026-09-30", {"x": 1})   # 前綴不符，不該被選到
+    assert latest_ai_cache_with_prefix(conn, "ssfmargin:v1:") == {"stock_updated": "new"}
 
 
 def test_market_daily_upsert(tmp_path):

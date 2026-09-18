@@ -17,6 +17,7 @@ from ..db import (
     set_setting,
     get_ai_cache,
     set_ai_cache,
+    latest_ai_cache_with_prefix,
     list_watch,
     set_watch_estimate,
     get_snapshot_dates,
@@ -30,6 +31,7 @@ from ..db import (
     mark_interrupted_job_runs,
     bulk_upsert_ssf_daily,
     get_ssf_dates,
+    get_ssf_rows,
     prune_ssf_daily,
 )
 from .. import line_push
@@ -157,13 +159,23 @@ def _otc_industry(c) -> dict:
     return m or {}
 
 
-def _ssf_contracts(c) -> dict:
+def _ssf_contracts(c, fetch: bool = True) -> dict:
     """股期合約對照表 {root: {...}}，月快取（比照 `_industry_map`）。
 
     **讀取端也要守衛**：正常有 320 筆，少於 MIN_PLAUSIBLE_CONTRACTS 一律視為未命中重抓——
     只有寫入守衛擋不住「已經寫進去的半套結果」（本專案兩次快取事故的教訓）。
+
+    `fetch=False`（自算選股參考欄／`_attach_ssf_margin` 用，review I3／Fix F）：
+    只讀快取、絕不連外——這一頁不該因為 TAIFEX 抽風而卡住。今天這個月份沒有就
+    退回「最近一次存過的」（`latest_ai_cache_with_prefix`），寧可顯示稍舊的合約
+    對照表，也不要為了它去打一次可能逾時的請求；兩者都沒有才回 `{}`。
     """
     key = f"ssf_contracts:{datetime.now().strftime('%Y-%m')}"
+    if not fetch:
+        m = get_ai_cache(c, key)
+        if isinstance(m, dict) and m:
+            return m
+        return latest_ai_cache_with_prefix(c, "ssf_contracts:") or {}
     m = get_ai_cache(c, key)
     if not m or len(m) < taifex_ssf.MIN_PLAUSIBLE_CONTRACTS:
         fresh = taifex_ssf.fetch_ssf_contract_map()
@@ -174,22 +186,107 @@ def _ssf_contracts(c) -> dict:
     return m
 
 
-def _ssf_margin_table(c) -> dict:
+# 保證金表抓失敗後的退避冷卻（review I3／Fix F，比照 `_osfut_cooling_down`）：
+# 一次抓取要打兩個端點，逾時各 30 秒；TAIFEX 沒有 Gemini 那種每日配額，但持續
+# 失敗時每次呼叫都重打一次仍然很傷，靜置一段時間再試才不會把故障放大成每次
+# 開頁都要等一分鐘。
+_SSF_MARGIN_FAIL_COOLDOWN = 900  # 秒（15 分鐘）
+
+
+def _ssf_margin_cooling_down(c) -> bool:
+    fail = get_ai_cache(c, "ssfmargin:fail_at")
+    if not fail:
+        return False
+    try:
+        return (datetime.now() - datetime.fromisoformat(fail["at"])).total_seconds() \
+            < _SSF_MARGIN_FAIL_COOLDOWN
+    except (KeyError, ValueError, TypeError):
+        return False
+
+
+def _ssf_margin_table(c, fetch: bool = True) -> dict:
     """股期保證金比例表，**逐日快取**。
 
     處置股會臨時加成 1.5／2／3 倍，2026-08~09 每隔幾天就有一次公告，
     抓一次放著會給出過期數字（設計 §1.3）。
     讀取端要求 `stock_updated` 存在——缺這個鍵的舊快取一律視為未命中。
+
+    `fetch=False`（自算選股參考欄／`_attach_ssf_margin` 用，review I3／Fix F）：
+    只讀快取、絕不連外。今天的鍵沒有就退回「最近一次存過的」，兩者都沒有才回
+    `{}`——這一頁不該因為 TAIFEX 抽風而被拖成 30 秒逾時。
+    `fetch=True` 抓失敗時進入冷卻（`_ssf_margin_cooling_down`），避免故障期間
+    每次呼叫都重打一次。
     """
     key = f"ssfmargin:v1:{datetime.now().strftime('%Y-%m-%d')}"
+    if not fetch:
+        m = get_ai_cache(c, key)
+        if isinstance(m, dict) and m.get("stock_updated"):
+            return m
+        return latest_ai_cache_with_prefix(c, "ssfmargin:v1:") or {}
     m = get_ai_cache(c, key)
-    if not isinstance(m, dict) or not m.get("stock_updated"):
-        fresh = taifex_ssf.fetch_ssf_margin_table()
-        if fresh.get("stock_updated"):
-            set_ai_cache(c, key, fresh)
-            return fresh
+    if isinstance(m, dict) and m.get("stock_updated"):
+        return m
+    if _ssf_margin_cooling_down(c):
         return m if isinstance(m, dict) else {}
-    return m
+    fresh = taifex_ssf.fetch_ssf_margin_table()
+    if fresh.get("stock_updated"):
+        set_ai_cache(c, key, fresh)
+        return fresh
+    set_ai_cache(c, "ssfmargin:fail_at", {"at": datetime.now().isoformat()})
+    return m if isinstance(m, dict) else {}
+
+
+def ssf_margin_index(c, fetch: bool = True) -> dict:
+    """股期原始／維持保證金的**唯一權威計算**：`rows`（逐合約）、`by_stock`
+    （代號反查索引）、`index`（指數期貨固定金額）都在這裡算一次。
+
+    `GET /api/ssf/margin`（`fetch=True`，可連外抓最新合約表／保證金表）與
+    `_attach_ssf_margin`（`fetch=False`，自算選股參考欄，cache-only）共用這支，
+    差別只在 `fetch` 旗標——以前兩處各自重寫一次幾乎一樣的迴圈，`by_stock` 的
+    形狀（含哪些欄位）一旦要改就要記得兩邊都改，容易漂移（review #F）。
+    """
+    contracts = _ssf_contracts(c, fetch=fetch)
+    margin = _ssf_margin_table(c, fetch=fetch)
+    dates = get_ssf_dates(c, limit=1)
+    price_date = dates[0] if dates else None
+    prices = {r["root"]: r for r in get_ssf_rows(c, dates)} if dates else {}
+
+    rows, by_stock = [], {}
+    for root, info in sorted(contracts.items()):
+        contract = root + "F"
+        rec = {"root": root, "contract": contract, "name": info["name"],
+               "code": info["code"], "multiplier": info["multiplier"],
+               "initial_pct": None, "initial": None, "maintenance": None,
+               "kind": "etf" if info["is_etf"] else "stock",
+               # is_mini 讓呼叫端（_attach_ssf_margin）挑得出「標準合約」，
+               # 不必回頭再查一次 contracts——同一份資料只算一次。
+               "is_mini": bool(info.get("is_mini"))}
+        if info["is_etf"]:
+            # ETF 期貨公布固定金額，不套價格×比例
+            m = (margin.get("etf") or {}).get(contract)
+            if m:
+                rec["initial"], rec["maintenance"] = m["initial"], m["maintenance"]
+        else:
+            m = (margin.get("stock") or {}).get(contract)
+            settle = (prices.get(root) or {}).get("settlement")
+            if m:
+                rec["initial_pct"] = m["initial_pct"]
+                rec["initial"] = taifex_ssf.margin_amount(
+                    settle, info["multiplier"], m["initial_pct"])
+                rec["maintenance"] = taifex_ssf.margin_amount(
+                    settle, info["multiplier"], m["maintenance_pct"])
+        rows.append(rec)
+        by_stock.setdefault(info["code"], []).append(rec)
+
+    index = [{"name": k.replace("期貨", ""), "initial": v["initial"],
+              "maintenance": v["maintenance"], "kind": "index"}
+             for k, v in (margin.get("index") or {}).items()
+             if "選擇權" not in k]
+    return {"price_date": price_date,
+            "stock_updated": margin.get("stock_updated"),
+            "etf_updated": margin.get("etf_updated"),
+            "index_updated": margin.get("index_updated"),
+            "rows": rows, "by_stock": by_stock, "index": index}
 
 
 def refresh_ssf_daily(c, day=None) -> dict:
@@ -213,23 +310,30 @@ def refresh_ssf_daily(c, day=None) -> dict:
     `data_not_ready` 並用 `refreshed_prior` 列出真的更新了哪些日期。少了這道分辨，
     每個時段（17:15／18:15／20:15）都會回報「成功」，讓「查 /api/health 判斷哪個時段
     先拿到資料」這個既有的量測方法完全失效（見 probe_review2.py 的重現）。
+
+    **順手暖合約對照表**（review I3／Fix F）：自算選股的股期參考欄改成 `fetch=False`
+    （cache-only，見 `_ssf_contracts`），如果從沒有人開過股期概況頁，這份快取永遠
+    是空的，那一欄就永遠顯示不出東西。這裡已經在暖保證金表，合約對照表一併暖，
+    兩者都是「每天一次、順手做」的成本。
     """
     d = day or _now().date()
     margin_ok = bool(_ssf_margin_table(c).get("stock_updated"))
+    contracts_ok = len(_ssf_contracts(c)) >= taifex_ssf.MIN_PLAUSIBLE_CONTRACTS
     if d.weekday() >= 5:
-        return {"skipped": "weekend", "margin_ok": margin_ok}
+        return {"skipped": "weekend", "margin_ok": margin_ok, "contracts_ok": contracts_ok}
     ds = d.strftime("%Y-%m-%d")
     ready_key = f"ssf_ready:{ds}"
     ready = get_ai_cache(c, ready_key)
     if ready:
         return {"skipped": "already_done", "date": ds, "margin_ok": margin_ok,
-                "ready_at": ready.get("at")}
+                "contracts_ok": contracts_ok, "ready_at": ready.get("at")}
 
     # 一併重抓前幾個交易日：官方偶有更正，而 COALESCE 讓重寫是安全的
     start = (d - timedelta(days=6)).strftime("%Y/%m/%d")
     rows = taifex_ssf.fetch_ssf_daily(start, d.strftime("%Y/%m/%d"))
     if not rows:
-        return {"skipped": "data_not_ready", "date": ds, "margin_ok": margin_ok}
+        return {"skipped": "data_not_ready", "date": ds, "margin_ok": margin_ok,
+                "contracts_ok": contracts_ok}
     # 分組邏輯在 summarize_ssf_days 裡（見該函式 docstring）；這裡只留下報表要用的
     # 日期集合，不必再自己重複一次「依 date 分組」的迴圈。
     dates_in_rows = {r["date"] for r in rows}
@@ -240,11 +344,12 @@ def refresh_ssf_daily(c, day=None) -> dict:
         # D 還沒發佈；已把回應窗內其他日期的更正/補寫落地，但不可宣稱這次處理了 D。
         return {"skipped": "data_not_ready", "date": ds,
                 "refreshed_prior": sorted(dates_in_rows),
-                "margin_ok": margin_ok, "pruned": pruned}
+                "margin_ok": margin_ok, "contracts_ok": contracts_ok, "pruned": pruned}
     stamp = _now().isoformat(timespec="seconds")
     set_ai_cache(c, ready_key, {"at": stamp})
     return {"date": ds, "days": len(dates_in_rows), "roots": len(summary),
-            "margin_ok": margin_ok, "pruned": pruned, "ready_at": stamp}
+            "margin_ok": margin_ok, "contracts_ok": contracts_ok,
+            "pruned": pruned, "ready_at": stamp}
 
 
 def _otc_quotes_for(c, date: str) -> dict:

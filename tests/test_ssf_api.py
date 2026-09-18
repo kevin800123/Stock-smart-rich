@@ -256,35 +256,217 @@ _MARGIN = {
 }
 
 
-def test_self_screen_rows_carry_the_stock_futures_margin(monkeypatch, tmp_path):
+def _today_contracts_key():
+    return f"ssf_contracts:{_dt.datetime.now().strftime('%Y-%m')}"
+
+
+def _today_margin_key():
+    return f"ssfmargin:v1:{_dt.datetime.now().strftime('%Y-%m-%d')}"
+
+
+def _seed_ssf_cache_for_self_screen(conn):
+    """review I3／Fix F：自算選股的股期參考欄改成只讀快取（`fetch=False`），不再
+    透過 `_attach_ssf_margin` 的 `settlements=` 參數手動注入結算價——那個參數已經
+    隨著改用共用的 `ssf_margin_index()` 一併移除。改成直接把合約表／保證金表寫進
+    `ai_cache`（今天的鍵，貼近真實情境），再用 `bulk_upsert_ssf_daily` 寫入
+    `ssf_daily` 供結算價查詢，同 `/api/ssf/margin` 端點測試（`_seed_margin`）的
+    做法，只是這裡不必監聽 HTTP 端點、直接呼叫 `_attach_ssf_margin`。
+    """
+    from stocks_power_rich.db import set_ai_cache, bulk_upsert_ssf_daily
+    set_ai_cache(conn, _today_contracts_key(), _CONTRACTS)
+    set_ai_cache(conn, _today_margin_key(), _MARGIN)
+    bulk_upsert_ssf_daily(conn, [
+        {"date": "2026-09-17", "root": "CD", "main_month": "202610", "settlement": 2432.0,
+         "close": 2433.0, "chg_pct": 1.33, "volume": 8192, "oi": 25045, "oi_total": 25045,
+         "main_volume": 6027},
+        {"date": "2026-09-17", "root": "QF", "main_month": "202610", "settlement": 2432.0,
+         "close": 2434.0, "chg_pct": 1.37, "volume": 36062, "oi": 53174, "oi_total": 53174,
+         "main_volume": 26032},
+    ])
+
+
+def test_self_screen_rows_carry_the_stock_futures_margin(tmp_path):
     """自算選股表的參考欄：有沒有股期、1 口要多少錢。"""
     from stocks_power_rich.api import admin as A
-    monkeypatch.setattr(A, "_ssf_contracts", lambda c: _CONTRACTS)
-    monkeypatch.setattr(A, "_ssf_margin_table", lambda c: _MARGIN)
+    conn = get_connection(str(tmp_path / "x.sqlite"))
+    init_db(conn)
+    _seed_ssf_cache_for_self_screen(conn)
     rows = [{"code": "2330", "mu_value": 90}, {"code": "6488", "mu_value": 80}]
-    out = A._attach_ssf_margin(get_connection(str(tmp_path / "x.sqlite")), rows,
-                               settlements={"CD": 2432.0, "QF": 2432.0})
+    out = A._attach_ssf_margin(conn, rows)
     assert out[0]["ssf"] is True and out[0]["ssf_margin"] == 656640   # 取標準約，非小型
     assert out[1]["ssf"] is False and out[1]["ssf_margin"] is None
 
 
-def test_attaching_ssf_margin_never_changes_the_screening_result(monkeypatch, tmp_path):
+def test_attaching_ssf_margin_never_changes_the_screening_result(tmp_path):
     """它是參考欄：不進篩選、不進計分，只多兩個鍵。"""
     from stocks_power_rich.api import admin as A
-    monkeypatch.setattr(A, "_ssf_contracts", lambda c: _CONTRACTS)
-    monkeypatch.setattr(A, "_ssf_margin_table", lambda c: _MARGIN)
+    conn = get_connection(str(tmp_path / "y.sqlite"))
+    init_db(conn)
+    _seed_ssf_cache_for_self_screen(conn)
     rows = [{"code": "2330", "mu_value": 90, "mu_score": 12}]
     before = dict(rows[0])
-    out = A._attach_ssf_margin(get_connection(str(tmp_path / "y.sqlite")), rows,
-                               settlements={"CD": 2432.0})
+    out = A._attach_ssf_margin(conn, rows)
     assert len(out) == 1
     assert {k: v for k, v in out[0].items() if k not in ("ssf", "ssf_margin")} == before
 
 
+def test_attach_ssf_margin_returns_immediately_when_there_are_no_rows(monkeypatch, tmp_path):
+    """review I3／Fix F：沒有入選股時（例如當天全市場自算 0 檔入選）應該立刻回傳，
+    連 ai_cache 都不必查——用會 raise 的樁確認完全沒有觸碰任何一個可能連外的
+    路徑（即使快取是空的，`_ssf_contracts`／`_ssf_margin_table` 的 fetch=True
+    分支也可能被誤觸而連外，這裡連讀都不該讀）。
+    """
+    from stocks_power_rich.api import admin as A
+    conn = get_connection(str(tmp_path / "z.sqlite"))
+    init_db(conn)
+    monkeypatch.setattr(ssf, "fetch_ssf_contract_map",
+                        lambda: (_ for _ in ()).throw(AssertionError("不該連外：contract map")))
+    monkeypatch.setattr(ssf, "fetch_ssf_margin_table",
+                        lambda: (_ for _ in ()).throw(AssertionError("不該連外：margin table")))
+    assert A._attach_ssf_margin(conn, []) == []
+
+
+def test_attach_ssf_margin_makes_zero_network_calls_even_with_a_completely_empty_cache(
+        monkeypatch, tmp_path):
+    """review I3／Fix F：自算選股頁的股期參考欄只是純參考欄，不該讓整頁陪著 TAIFEX
+    抽風——即使快取完全是空的（今天第一個打開這頁的人，也還沒有人開過股期概況頁
+    暖過快取），也絕不能連外。用會 raise 的樁而非回傳空字典的樁，才能真的證明
+    程式路徑不會呼叫到它們，而不是呼叫了、只是被既有的容錯路徑接住。
+    """
+    from stocks_power_rich.api import admin as A
+    conn = get_connection(str(tmp_path / "empty.sqlite"))
+    init_db(conn)
+    monkeypatch.setattr(ssf, "fetch_ssf_contract_map",
+                        lambda: (_ for _ in ()).throw(AssertionError("不該連外：contract map")))
+    monkeypatch.setattr(ssf, "fetch_ssf_margin_table",
+                        lambda: (_ for _ in ()).throw(AssertionError("不該連外：margin table")))
+    rows = [{"code": "2330"}]
+    A._attach_ssf_margin(conn, rows)
+    assert rows[0]["ssf"] is False
+    assert rows[0]["ssf_margin"] is None
+
+
+def test_attach_ssf_margin_never_falls_back_to_the_mini_when_the_standard_is_unpriced(
+        tmp_path):
+    """review I3 重現：標準合約當天查無結算價時，舊碼的迴圈會退而求其次改用小型
+    合約算出的金額（32,832，只有標準合約真正金額 656,640 的 1/20），畫面上卻沒有
+    任何跡象顯示這其實是小型的數字。自算選股的參考欄只認標準合約，查不到就是
+    None，絕不能安靜地換成別的合約規模。
+    """
+    from stocks_power_rich.api import admin as A
+    from stocks_power_rich.db import set_ai_cache, bulk_upsert_ssf_daily
+    conn = get_connection(str(tmp_path / "fallback.sqlite"))
+    init_db(conn)
+    set_ai_cache(conn, _today_contracts_key(), _CONTRACTS)
+    set_ai_cache(conn, _today_margin_key(), _MARGIN)
+    # 只有小型（QF）有結算價，標準（CD）當天缺列。
+    bulk_upsert_ssf_daily(conn, [
+        {"date": "2026-09-17", "root": "QF", "main_month": "202610", "settlement": 2432.0,
+         "close": 2434.0, "chg_pct": 1.37, "volume": 36062, "oi": 53174, "oi_total": 53174,
+         "main_volume": 26032},
+    ])
+    rows = [{"code": "2330"}]
+    A._attach_ssf_margin(conn, rows)
+    assert rows[0]["ssf"] is True             # 這檔標的仍有股期（有小型合約）
+    assert rows[0]["ssf_margin"] is None       # 但不可退而求其次變成小型的 32,832
+
+
+def test_ssf_contracts_fetch_false_never_touches_network_and_falls_back_to_a_stale_cache(
+        tmp_path, monkeypatch):
+    """`fetch=False`（自算選股參考欄用）只讀快取：今天的鍵沒有就退回最近一次存過
+    的舊快取，絕不連外。這裡故意只種一個很久以前的月份，證明『沒有今天的』時
+    不會被當成完全沒有資料而白白浪費既有的合約表。
+    """
+    conn = _db(tmp_path)
+    from stocks_power_rich.db import set_ai_cache
+    set_ai_cache(conn, "ssf_contracts:2020-01", _CONTRACTS)
+    monkeypatch.setattr(ssf, "fetch_ssf_contract_map",
+                        lambda: (_ for _ in ()).throw(AssertionError("fetch=False 不該連外")))
+    assert H._ssf_contracts(conn, fetch=False) == _CONTRACTS
+
+
+def test_ssf_margin_table_fetch_false_never_touches_network_and_falls_back_to_a_stale_cache(
+        tmp_path, monkeypatch):
+    """同上一條，換保證金表：`fetch=False` 找不到今天的鍵時退回最近一次存過的。"""
+    conn = _db(tmp_path)
+    from stocks_power_rich.db import set_ai_cache
+    set_ai_cache(conn, "ssfmargin:v1:2020-01-01", _MARGIN)
+    monkeypatch.setattr(ssf, "fetch_ssf_margin_table",
+                        lambda: (_ for _ in ()).throw(AssertionError("fetch=False 不該連外")))
+    assert H._ssf_margin_table(conn, fetch=False) == _MARGIN
+
+
+def test_ssf_margin_table_fetch_true_enters_cooldown_after_a_failed_fetch(tmp_path, monkeypatch):
+    """TAIFEX 持續失敗時，`fetch=True`（股期概況頁／排程）不該每次呼叫都重打一次
+    可能 30 秒逾時的請求——比照既有 `_osfut_cooling_down` 的做法：失敗一次後在
+    冷卻期間內不再重試。
+    """
+    conn = _db(tmp_path)
+    calls = {"n": 0}
+
+    def fail():
+        calls["n"] += 1
+        return {}
+    monkeypatch.setattr(ssf, "fetch_ssf_margin_table", fail)
+    assert H._ssf_margin_table(conn, fetch=True) == {}
+    assert calls["n"] == 1
+    assert H._ssf_margin_table(conn, fetch=True) == {}   # 冷卻中，不重打
+    assert calls["n"] == 1
+
+
+def test_refresh_ssf_daily_also_warms_the_contract_map_cache(tmp_path, monkeypatch):
+    """cache-only 的自算選股參考欄要有資料可讀，前提是**有人**暖過快取——`ssf_daily`
+    排程已經在暖保證金表，合約對照表也要一併暖，否則從沒開過股期概況頁時，
+    這欄會永遠顯示不出東西。
+    """
+    conn = _db(tmp_path)
+    calls = {"n": 0}
+
+    def fake_contracts(c):
+        calls["n"] += 1
+        return {}
+    monkeypatch.setattr(H, "_ssf_contracts", fake_contracts)
+    monkeypatch.setattr(H, "_ssf_margin_table", lambda c: {"stock_updated": "2026/09/15"})
+    monkeypatch.setattr(ssf, "fetch_ssf_daily", lambda s, e: [])
+    H.refresh_ssf_daily(conn, day=_dt.date(2026, 9, 17))
+    assert calls["n"] == 1
+
+
+def test_picks_self_screen_endpoint_with_no_picks_makes_zero_taifex_calls(tmp_path, monkeypatch):
+    """整條 `/api/picks/self-screen` 請求路徑最終都會呼叫 `_attach_ssf_margin`；
+    候選池為空時它應該立刻回傳、連 ai_cache 都不查（見對應的單元測試），這裡從
+    端點層級再驗證一次，確認 `picks_self_screen` 真的把空 rows 一路傳到底。
+
+    需要一筆 `market_daily` 列讓 `_latest_date` 有日期可選——完全空的資料庫會讓
+    `chosen` 是 None、連帶讓 `annotate_new_entries`（與這次修復無關的既有路徑）
+    在算集保週期時對 `None` 呼叫 `date.fromisoformat` 而炸掉，那是另一個問題，
+    不是本測試要驗證的對象。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.api import admin as A
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    conn.execute("INSERT INTO market_daily (date, taiex) VALUES ('2026-09-17', 1.0)")
+    conn.commit()
+    monkeypatch.setattr(A, "_industry_map", lambda c: {})
+    monkeypatch.setattr(A, "_otc_industry", lambda c: {})
+    monkeypatch.setattr(ssf, "fetch_ssf_contract_map",
+                        lambda: (_ for _ in ()).throw(AssertionError("不該連外：contract map")))
+    monkeypatch.setattr(ssf, "fetch_ssf_margin_table",
+                        lambda: (_ for _ in ()).throw(AssertionError("不該連外：margin table")))
+    app = create_app()
+    client = TestClient(app)
+    resp = client.get("/api/picks/self-screen")
+    assert resp.status_code == 200
+    assert resp.json()["rows"] == []
+
+
 def _seed_margin(monkeypatch, tmp_path):
-    from stocks_power_rich.api import market as M
-    monkeypatch.setattr(M, "_ssf_contracts", lambda c: _CONTRACTS)
-    monkeypatch.setattr(M, "_ssf_margin_table", lambda c: _MARGIN)
+    # `/api/ssf/margin` 端點（Fix F 之後）委派給共用的 `H.ssf_margin_index`，它內部
+    # 呼叫的是 helpers 自己的 `_ssf_contracts`／`_ssf_margin_table`，不是
+    # market.py 匯入的那份副本——樁在 `M` 上對它沒有作用，要樁在 `H` 上。
+    monkeypatch.setattr(H, "_ssf_contracts", lambda c, fetch=True: _CONTRACTS)
+    monkeypatch.setattr(H, "_ssf_margin_table", lambda c, fetch=True: _MARGIN)
     conn = get_connection(str(tmp_path / "api.sqlite"))
     init_db(conn)
     from stocks_power_rich.db import bulk_upsert_ssf_daily

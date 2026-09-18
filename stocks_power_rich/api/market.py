@@ -23,7 +23,7 @@ from .helpers import (
     active_picks,
     csv_picks,
     _ssf_contracts,
-    _ssf_margin_table,
+    ssf_margin_index,
 )
 from ..sources import twse, taifex, mis, tpex
 from ..sources import taifex_ssf
@@ -779,47 +779,13 @@ def ssf_margin():
 
     口數換算刻意留給前端乘：規則是「先四捨五入單口再乘 N」，所以前端乘整數完全正確，
     不必為了改口數往返伺服器。
+
+    計算本身在 `helpers.ssf_margin_index` 裡——`rows`／`by_stock`／`index` 與
+    自算選股參考欄（`admin._attach_ssf_margin`）共用同一份，這裡用 `fetch=True`
+    （可連外抓最新合約表／保證金表），後者用 `fetch=False`（cache-only，見
+    review I3／Fix F）。
     """
-    c = conn()
-    contracts = _ssf_contracts(c)
-    margin = _ssf_margin_table(c)
-    dates = get_ssf_dates(c, limit=1)
-    price_date = dates[0] if dates else None
-    prices = {r["root"]: r for r in get_ssf_rows(c, dates)} if dates else {}
-
-    rows, by_stock = [], {}
-    for root, info in sorted(contracts.items()):
-        contract = root + "F"
-        rec = {"root": root, "contract": contract, "name": info["name"],
-               "code": info["code"], "multiplier": info["multiplier"],
-               "initial_pct": None, "initial": None, "maintenance": None,
-               "kind": "etf" if info["is_etf"] else "stock"}
-        if info["is_etf"]:
-            # ETF 期貨公布固定金額，不套價格×比例
-            m = (margin.get("etf") or {}).get(contract)
-            if m:
-                rec["initial"], rec["maintenance"] = m["initial"], m["maintenance"]
-        else:
-            m = (margin.get("stock") or {}).get(contract)
-            settle = (prices.get(root) or {}).get("settlement")
-            if m:
-                rec["initial_pct"] = m["initial_pct"]
-                rec["initial"] = taifex_ssf.margin_amount(
-                    settle, info["multiplier"], m["initial_pct"])
-                rec["maintenance"] = taifex_ssf.margin_amount(
-                    settle, info["multiplier"], m["maintenance_pct"])
-        rows.append(rec)
-        by_stock.setdefault(info["code"], []).append(rec)
-
-    index = [{"name": k.replace("期貨", ""), "initial": v["initial"],
-              "maintenance": v["maintenance"], "kind": "index"}
-             for k, v in (margin.get("index") or {}).items()
-             if "選擇權" not in k]
-    return {"price_date": price_date,
-            "stock_updated": margin.get("stock_updated"),
-            "etf_updated": margin.get("etf_updated"),
-            "index_updated": margin.get("index_updated"),
-            "rows": rows, "by_stock": by_stock, "index": index}
+    return ssf_margin_index(conn(), fetch=True)
 
 
 SSF_HOT_N = 10
