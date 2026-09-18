@@ -51,3 +51,48 @@ def parse_ssf_daily_csv(text: str) -> list[dict]:
             "settlement": _f(r.get("結算價")), "oi": _i(r.get("未沖銷契約數")),
         })
     return out
+
+
+def root_of(contract: str) -> str:
+    """母合約＝代碼前 2 碼。正常合約 root+F、調整後 root+1 自動歸在一起。"""
+    return (contract or "")[:2]
+
+
+def summarize_ssf_day(rows: list[dict]) -> list[dict]:
+    """逐列 → 每個 root 每日一列摘要。
+
+    量與價**刻意用不同的母體**：
+    - 量：所有非價差列、全月份、一般＋盤後、含調整後合約（官方 STFTop10 口徑）
+    - 價：只取 `root+F` 的一般、非價差列（調整後合約乘數非標準，價格不可混用）
+    """
+    vol: dict[str, int] = {}
+    price_rows: dict[str, list[dict]] = {}
+    dates: dict[str, str] = {}
+    for r in rows:
+        if r["is_spread"]:
+            continue
+        root = root_of(r["contract"])
+        if not root:
+            continue
+        vol[root] = vol.get(root, 0) + (r["volume"] or 0)
+        dates.setdefault(root, r["date"])
+        if r["session"] == "一般" and r["contract"] == root + "F":
+            price_rows.setdefault(root, []).append(r)
+
+    out = []
+    for root, cands in price_rows.items():
+        # 結算價為 0 的是到期腳：價格與價差都不可採用（但量已經算進去了）
+        usable = [r for r in cands if (r["settlement"] or 0) > 0] or cands
+        traded = [r for r in usable if (r["volume"] or 0) > 0]
+        main = (max(traded, key=lambda r: r["volume"]) if traded
+                else min(usable, key=lambda r: r["month"]))
+        out.append({
+            "date": dates.get(root) or main["date"],
+            "root": root, "main_month": main["month"],
+            "open": main["open"], "high": main["high"],
+            "low": main["low"], "close": main["close"],
+            "chg": main["chg"], "chg_pct": main["chg_pct"],
+            "settlement": main["settlement"], "oi": main["oi"],
+            "volume": vol.get(root, 0), "main_volume": main["volume"] or 0,
+        })
+    return out
