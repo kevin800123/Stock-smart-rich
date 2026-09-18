@@ -195,12 +195,20 @@ def test_margin_matches_the_officially_published_examples():
 def test_margin_uses_round_half_up_not_bankers_rounding():
     """兩個實測的半元案例，券商公布數字對得上的是 ROUND_HALF_UP。
 
-    Python 的 round() 用銀行家進位，這兩個各會少 1 元。實測 1,181 個合約月中
-    有 101 個兩者結果不同，所以這不是理論風險。
+    **契約與文字修正（review #1）**：原本第二個例子（小型台積電 33,115.5）其實
+    兩種算法算出來都是 33116——33116 是偶數，銀行家進位「四捨五入到最接近的
+    偶數」剛好也是往上，所以這個例子分辨不出兩種算法的差異，舊 docstring
+    「這兩個各會少 1 元」因此不實（只有 96592.5 那個會）。換成南亞另一筆
+    月份的半元案例（42,808.5，42808 是偶數）——ROUND_HALF_UP 進到奇數的
+    42809，`round()` 銀行家進位會退回偶數的 42808，兩者才真的不同，兩個例子
+    合起來才都是 load-bearing 的。
+
+    Python 的 round() 用銀行家進位（四捨五入到最接近的偶數）。實測 1,181 個
+    合約月中有 101 個兩者結果不同，所以這不是理論風險。
     """
     assert ssf.margin_amount(238.5, 2000, 20.25) == 96593      # 南亞 CAF，96,592.5
-    assert ssf.margin_amount(2453, 100, 13.50) == 33116        # 小型台積電，33,115.5
-    assert round(96592.5) == 96592 and round(33115.5) == 33116  # 證明 round() 真的不同
+    assert ssf.margin_amount(2114, 100, 20.25) == 42809        # 南亞另一月份，42,808.5
+    assert round(96592.5) == 96592 and round(42808.5) == 42808  # 證明 round() 真的不同
 
 
 def test_margin_returns_none_when_an_input_is_missing():
