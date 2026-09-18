@@ -1,7 +1,10 @@
 import datetime as _dt
 
+from fastapi.testclient import TestClient
+
 from stocks_power_rich.db import get_connection, init_db, get_ssf_dates, get_ssf_rows
 from stocks_power_rich.api import helpers as H
+from stocks_power_rich.main import create_app
 from stocks_power_rich.sources import taifex_ssf as ssf
 
 
@@ -88,3 +91,65 @@ def test_job_schedule_registers_ssf_on_weekday_evenings():
     assert by_id["ssf_daily"]["minute"] == "15"
     taken = {(s["hour"], s["minute"]) for k, s in by_id.items() if k != "ssf_daily"}
     assert ("17,18,20", "15") not in taken     # 不與既有時段同分鐘
+
+
+def test_ssf_backfill_endpoint_writes_rows_and_stays_within_a_month(tmp_path, monkeypatch):
+    """`/api/ssf/backfill`：驗證真的寫進資料並回報筆數，且每一次實際打給
+    `fetch_ssf_daily` 的區間都要在官方硬性限制（不可超過一個月，超過只會拿到 200
+    的 HTML 警告頁而非資料）之內。刻意帶一個遠超合理範圍的 days，確認迴圈不會失控——
+    這正是 clamp（Fix 2）要擋下的形狀。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    calls = []
+
+    def fake_fetch(s, e):
+        calls.append((s, e))
+        return _fake_rows(e.replace("/", "-"))
+
+    monkeypatch.setattr(ssf, "fetch_ssf_daily", fake_fetch)
+    app = create_app()
+    client = TestClient(app)
+    resp = client.get("/api/ssf/backfill?days=999999")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["wrote"] > 0
+    assert body["dates"] > 0
+    assert calls                 # 真的呼叫了 fetch_ssf_daily
+    assert len(calls) < 50       # 迴圈確實有界會結束——不是因為它剛好夠快，是因為 days 被 clamp 了
+    for s, e in calls:
+        sd = _dt.datetime.strptime(s, "%Y/%m/%d").date()
+        ed = _dt.datetime.strptime(e, "%Y/%m/%d").date()
+        assert (ed - sd).days <= 30
+
+
+def test_refresh_groups_multi_date_response_by_date_before_summarizing(tmp_path, monkeypatch):
+    """`fetch_ssf_daily` 一次回應本來就常橫跨多天（`refresh_ssf_daily` 自己也會一併重抓
+    前 2 個交易日）。`summarize_ssf_day` 用『該 root 第一次出現』的列決定日期與主力月價格，
+    所以呼叫端**必須先依日期分組**再逐日呼叫——若整批一次丟給它，兩天的資料會被壓成
+    同一天，且哪天的價格留下來純屬巧合（見 CLAUDE.md 對這支函式的說明）。
+
+    兩個日期用同一批 root、但收盤價明顯不同（1.5 vs 9.9），才分得出「有沒有被誰蓋掉」。
+    """
+    conn = _db(tmp_path)
+
+    def two_date_rows(s, e):
+        day1 = _fake_rows("2026-09-16")
+        day2 = _fake_rows("2026-09-17")
+        for r in day2:
+            r["close"] = 9.9
+            r["chg_pct"] = -3.3
+        return day1 + day2
+
+    monkeypatch.setattr(ssf, "fetch_ssf_daily", two_date_rows)
+    monkeypatch.setattr(H, "_ssf_margin_table", lambda c: {"stock_updated": "2026/09/15"})
+    res = H.refresh_ssf_daily(conn, day=_dt.date(2026, 9, 17))
+    assert res["date"] == "2026-09-17"
+    assert res["days"] == 2
+    assert set(get_ssf_dates(conn)) == {"2026-09-16", "2026-09-17"}
+    rows16 = {r["root"]: r for r in get_ssf_rows(conn, ["2026-09-16"])}
+    rows17 = {r["root"]: r for r in get_ssf_rows(conn, ["2026-09-17"])}
+    assert rows16 and rows17
+    common = set(rows16) & set(rows17)
+    assert common
+    sample = next(iter(common))
+    assert rows16[sample]["close"] == 1.5
+    assert rows17[sample]["close"] == 9.9

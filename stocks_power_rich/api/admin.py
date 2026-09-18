@@ -92,27 +92,40 @@ def chips_backfill(days: int = 90, max_fetch: int = 15):
 def ssf_backfill(days: int = 30):
     """一次性回補股期歷史（熱力圖要近 10 個交易日）。
 
-    官方限制查詢區間不可超過一個月，所以逐段切；實測 14 天一段在 Zeabur 是
-    1.65MB／2.7 秒，離代理逾時很遠，維持同步即可（設計 §8.1）。
+    官方限制查詢區間不可超過一個月，所以逐段切；每段 span=13（含頭尾共 14 天），
+    實測 14 天一段在 Zeabur 是 1.65MB／2.7 秒，離代理逾時很遠，維持同步即可（設計 §8.1）。
+
+    **days 上限 90**：`prune_ssf_daily` 只保留最新 60 個**交易日**，換算日曆天（本站
+    慣例交易日/日曆天約 0.67，見「自算選股改成每日排程預算」一節）約落在 90 天——
+    再往前補的資料，下一次排程 prune 就會被砍掉，是白做工也是白打一輪 TAIFEX 請求
+    （股期日檔來源同 CLAUDE.md 記載的期交所/TWSE 端點，已知不穩、需要節制呼叫次數）。
+    不設上限的話，一個過大的 days 會驅動一長串同步的 TAIFEX 來回，正是這個專案在
+    `stock-flow/research` 與 `financials/backfill-report` 兩處都撞過的反向代理 502 形狀。
     """
-    from datetime import date as _d, timedelta as _td
-    c = conn()
-    end = _d.today()
-    total, wrote = 0, 0
-    while total < days:
-        span = min(25, days - total)
-        start = end - _td(days=span)
-        rows = taifex_ssf.fetch_ssf_daily(start.strftime("%Y/%m/%d"), end.strftime("%Y/%m/%d"))
-        by_date = {}
-        for r in rows:
-            by_date.setdefault(r["date"], []).append(r)
-        summary = []
-        for one in by_date.values():
-            summary.extend(taifex_ssf.summarize_ssf_day(one))
-        wrote += bulk_upsert_ssf_daily(c, summary)
-        total += span + 1
-        end = start - _td(days=1)
-    return {"wrote": wrote, "dates": len(get_ssf_dates(c, limit=90))}
+    if not _backfill_lock.acquire(blocking=False):
+        return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
+    try:
+        from datetime import date as _d, timedelta as _td
+        c = conn()
+        days = max(5, min(days, 90))
+        end = _d.today()
+        total, wrote = 0, 0
+        while total < days:
+            span = min(13, days - total)
+            start = end - _td(days=span)
+            rows = taifex_ssf.fetch_ssf_daily(start.strftime("%Y/%m/%d"), end.strftime("%Y/%m/%d"))
+            by_date = {}
+            for r in rows:
+                by_date.setdefault(r["date"], []).append(r)
+            summary = []
+            for one in by_date.values():
+                summary.extend(taifex_ssf.summarize_ssf_day(one))
+            wrote += bulk_upsert_ssf_daily(c, summary)
+            total += span + 1
+            end = start - _td(days=1)
+        return {"wrote": wrote, "dates": len(get_ssf_dates(c, limit=90))}
+    finally:
+        _backfill_lock.release()
 
 @router.get("/margin-maintenance/heal")
 def margin_maintenance_heal(days: int = 45, max_fetch: int = 15):
