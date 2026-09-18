@@ -726,6 +726,26 @@
             <div><div class="ssf-oi-title">減少最多</div><ol id="ssf-oi-down" class="ssf-oi-list"></ol></div>
           </div>
         </div>
+
+        <!-- 原始保證金試算：口數／搜尋框用事件委派（CSP script-src 'self' 會靜默丟掉
+             inline on*= 屬性），監聽掛在 app.js 的 .ssf-margin-bar 委派上。
+             口數換算在前端乘整數就完全正確——後端 initial/maintenance 已經是
+             「單口四捨五入後」的金額，交易所自己的規則就是先四捨五入單口再乘 N。 -->
+        <div class="card-group span-full" data-key="ssf-margin">
+          <div class="group-title">原始保證金試算</div>
+          <div class="ssf-margin-bar">
+            <label>口數 <input id="ssf-lots" type="number" min="1" max="999" value="1"></label>
+            <label>搜尋 <input id="ssf-margin-q" type="search" placeholder="代號或名稱"></label>
+            <span class="pane-count" id="ssf-margin-note"></span>
+          </div>
+          <div class="table-wrap" id="ssf-margin-wrap">
+            <table id="ssf-margin-table"><thead><tr>
+              <th scope="col">標的</th><th scope="col">契約乘數</th><th scope="col">原始比例</th>
+              <th scope="col">1 口原始保證金</th><th scope="col">維持保證金</th>
+              <th scope="col" id="ssf-margin-total-th">N 口合計</th>
+            </tr></thead><tbody></tbody></table>
+          </div>
+        </div>
       </section>
 
       <!-- ===== 設定 ===== -->

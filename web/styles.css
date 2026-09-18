@@ -1237,6 +1237,26 @@ button.file-label { font: inherit; }
 .ssf-oi-list .ssf-oi-name { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ssf-oi-list .ssf-oi-delta { flex: 0 0 auto; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ssf-oi-list .ssf-oi-base { flex: 0 0 auto; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
+/* 保證金試算列：口數／搜尋框橫排，容器窄時自動換行（同 .picks-filter 既有手法）。
+   兩個 input 沒有既有的 .mini-input/.stock-input 可直接借（寬度不同、且 .mini-input
+   是設定頁專屬語境），這裡另外定義深色底樣式（配色抄 .gsearch input），否則會落回
+   瀏覽器預設的白底輸入框，在深色介面上非常突兀。
+   金額不是漲跌方向，全表不套 .up/.down／C.up/C.down，.ssf-total 只加粗不改色。
+   第一欄凍結／斑馬紋／hover 都吃既有的全域 table 規則（手機 ≤600px 的凍結規則是
+   `tbody tr td:not([colspan]):first-child`，本表第一欄 `.ssf-name` 沒有 colspan，
+   自動套用，不必再寫一條 #ssf-margin-table 專屬選擇器）。 */
+.ssf-margin-bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 8px; }
+.ssf-margin-bar label { display: flex; align-items: center; gap: 6px; }
+.ssf-margin-bar input {
+  background: var(--sunken); color: var(--text); border: 1px solid var(--border);
+  border-radius: var(--r); padding: 6px 10px; font: inherit; font-size: var(--fs-sm);
+}
+.ssf-margin-bar input:focus { outline: none; border-color: var(--accent); }
+.ssf-margin-bar input::placeholder { color: var(--muted); }
+.ssf-margin-bar input[type="number"] { width: 72px; }
+.ssf-margin-bar input[type="search"] { width: 160px; }
+#ssf-margin-table .ssf-total { font-weight: 650; }
+#ssf-margin-table .ssf-code { color: var(--muted); font-size: var(--fs-xs); margin-left: 6px; }
 .pane-count, .all-filter { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
 .active-filter { display: inline-flex; align-items: center; gap: 6px; padding: 3px 5px 3px 8px; background: rgba(112, 184, 255, .14); color: #b9d8f8; border-radius: 5px; font-size: var(--fs-xs); }
 .active-filter b { color: var(--text-primary); }

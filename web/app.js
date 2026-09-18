@@ -67,8 +67,10 @@ let ssNewFilter = null;
 // 名單怪怪的、卻忘了自己關過某一關」。
 let ssConds = null;
 let ssSort = { key: "mu_value", dir: -1 };
-// 股期概況：進頁才載入（比照 cupLoaded）。四個區塊共用同一份 /api/ssf/overview 回應。
-let ssfLoaded = false, ssfData = null;
+// 股期概況：進頁才載入（比照 cupLoaded）。五個區塊共用同一份 /api/ssf/overview 回應；
+// ssfMargin 是原始保證金試算表，資料來自另一支端點 /api/ssf/margin，全域保留
+// 供 Task 18 的個股頁共用（不必再打一次 API）。
+let ssfLoaded = false, ssfData = null, ssfMargin = null;
 let instBreadthChart = null, instAlphaChart = null;
 let instCoverage = null, instReport = null, instSegment = "combined", instResearchLoading = false;
 // 進頁才載入的旗標（比照 cupLoaded）。**這兩支是開頁流量的大頭**：實測總覽開頁抓
@@ -862,6 +864,7 @@ async function loadSsf() {
   renderSsfBasis(d.basis || []);
   renderSsfHeatmap(d.heatmap);
   renderSsfOi(d.oi_change);
+  loadSsfMargin();
 }
 
 // SSF_STALE_DAYS = 2：落後 1 天是常態（盤後才更新、假日不開盤），1 天就叫會變成
@@ -1017,6 +1020,61 @@ function renderSsfOi(oi) {
       <span class="ssf-oi-delta">${r.oi_change > 0 ? "▲" : "▼"}${fmt(Math.abs(r.oi_change), 0)}</span>
       <span class="ssf-oi-base">OI ${fmt(r.oi, 0)}</span></li>`).join("");
   });
+}
+
+// 原始保證金試算全表：股期／ETF 期貨／台指系列的單口原始與維持保證金，
+// 供 Task 18 的個股頁共用同一份 ssfMargin（不必再打一次 /api/ssf/margin）。
+async function loadSsfMargin() {
+  try {
+    ssfMargin = await getJSON("/api/ssf/margin");
+  } catch (e) { return; }
+  renderSsfMargin();
+}
+
+// index 陣列缺 code/multiplier/契約，補成跟股期/ETF 期貨同一種列形狀，
+// 這樣渲染與搜尋不必為指數期貨另外分岔判斷。
+function ssfMarginRows() {
+  if (!ssfMargin) return [];
+  const idx = (ssfMargin.index || []).map(x => ({
+    root: "", contract: "", name: x.name, code: "", multiplier: null,
+    initial_pct: null, initial: x.initial, maintenance: x.maintenance, kind: "index",
+  }));
+  return idx.concat(ssfMargin.rows || []);
+}
+
+// 口數輸入要安靜地擋掉亂填：空白/0/負數/非數字一律退回 1，不產生 NaN 或負的合計；
+// 上限比照 input 本身的 max="999"，避免貼一個誇張數字把表格撐壞。
+function ssfLotsValue() {
+  const raw = parseInt($("ssf-lots").value, 10);
+  return Number.isFinite(raw) ? Math.min(999, Math.max(1, raw)) : 1;
+}
+
+function renderSsfMargin() {
+  const tb = document.querySelector("#ssf-margin-table tbody"); if (!tb) return;
+  const lots = ssfLotsValue();
+  const q = ($("ssf-margin-q").value || "").trim().toLowerCase();
+  const th = $("ssf-margin-total-th"); if (th) th.textContent = `${lots} 口合計`;
+
+  const rows = ssfMarginRows().filter(r => !q
+    || (r.name || "").toLowerCase().includes(q) || (r.code || "").includes(q));
+  const note = $("ssf-margin-note");
+  if (note && ssfMargin) {
+    note.textContent = `以 ${ssfMargin.price_date || "—"} 結算價估算；`
+      + `比例更新日 ${ssfMargin.stock_updated || "—"}（ETF ${ssfMargin.etf_updated || "—"}、`
+      + `指數 ${ssfMargin.index_updated || "—"}）；實際以期貨商收取為準　${rows.length} 檔`;
+  }
+  // 「N 口＝單口四捨五入後金額 × N」是交易所自己的算法（先四捨五入單口、再乘口數）；
+  // 後端 initial/maintenance 已經是四捨五入後的整數，前端直接乘整數完全正確——
+  // 不可用「結算價 × 乘數 × 比例」在前端重算一次（四捨五入時機會兜不起來），
+  // 也不可再四捨五入一次。金額不是漲跌方向，一律中性色，不套 .up/.down。
+  tb.innerHTML = rows.map(r => `<tr>
+    <td class="ssf-name">${esc(r.name)}${r.code ? `<span class="ssf-code">${esc(r.code)}</span>` : ""}</td>
+    <td>${r.multiplier == null ? "—" : fmt(r.multiplier, 0)}</td>
+    <td>${r.initial_pct == null ? "—" : r.initial_pct.toFixed(2) + "%"}</td>
+    <td>${r.initial == null ? "—" : fmt(r.initial, 0)}</td>
+    <td>${r.maintenance == null ? "—" : fmt(r.maintenance, 0)}</td>
+    <td class="ssf-total">${r.initial == null ? "—" : fmt(r.initial * lots, 0)}</td>
+  </tr>`).join("") || '<tr><td colspan="6" class="muted small">查無符合的合約</td></tr>';
 }
 
 // ========== 自算籌碼/基本選股（全市場自算池，零 CSV） ==========
@@ -4199,6 +4257,12 @@ document.querySelectorAll(".rku").forEach((b) => b.addEventListener("click", () 
   document.querySelectorAll(".rku").forEach((x) => x.classList.toggle("active", x === b));
   rankUnit = b.dataset.unit; loadInstRanking();
 }));
+// 保證金試算的口數／搜尋框：CSP 是 script-src 'self'，inline on*= 屬性會被瀏覽器
+// 靜默丟掉（不報錯、handler 就是不會觸發），委派在容器上，同 .cpn checkbox 那條。
+const ssfMarginBar = document.querySelector(".ssf-margin-bar");
+if (ssfMarginBar) ssfMarginBar.addEventListener("input", (e) => {
+  if (e.target.closest("#ssf-lots, #ssf-margin-q")) renderSsfMargin();
+});
 // **這裡要列出「每一張」ECharts 圖**，漏掉的那張在視窗變動後就永遠停在舊尺寸
 // （echarts.init 凍住容器尺寸，見上面各載入函式的註解）。手機上這條路徑不是罕見情境
 // ——轉個方向就會走到，而 375↔812 的寬度差足以讓漏網的圖整張畫錯位。
