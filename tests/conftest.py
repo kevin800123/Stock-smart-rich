@@ -112,13 +112,18 @@ def _no_startup_catchup(request, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_ssf_network(request, monkeypatch):
-    """`GET /api/picks/self-screen`（`picks_self_screen`）會呼叫 `_attach_ssf_margin`，
-    快取沒中時它經 `_ssf_contracts`／`_ssf_margin_table`（`api/helpers.py`）打
+    """`fetch=True` 的呼叫端——`GET /api/ssf/margin`、排程 `refresh_ssf_daily`
+    （經 `_ssf_contracts`／`_ssf_margin_table`，`api/helpers.py`）——會打
     `taifex_ssf.fetch_ssf_contract_map`／`fetch_ssf_margin_table` 兩個外部端點
-    （www.taifex.com.tw）。每個測試 DB 都是空的，所以每一次呼叫這支端點的測試
+    （www.taifex.com.tw）。每個測試 DB 都是空的，沒有另外樁掉這兩支函式的測試
     都會真的連外——而且兩個 fetcher 失敗時本來就回空 dict（見它們自己的
     docstring：「呼叫端的月/日快取兩端都擋空值，不會把失敗永久化」），所以樁成
     空 dict 完全落在既有的容錯路徑內，不是在模擬一個特殊情境。
+
+    **`GET /api/picks/self-screen`（`_attach_ssf_margin`）已經不會踩到這裡**
+    （review I3／Fix F，2026-09 修正）：它改成 `ssf_margin_index(c, fetch=False)`，
+    結構上只走 cache-only 路徑，永遠不會呼叫這兩支 fetcher——這支 fixture 原本是
+    為它加的，現在單純是其餘 `fetch=True` 呼叫端的通用防護。
 
     這正是 CLAUDE.md 記過的那種問題：測試沒有因為連網路而變紅，只是變慢又
     看網路臉色，所以一直沒被發現（同一份教訓先前發生在杯柄型態測試安靜地打

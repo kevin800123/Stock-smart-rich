@@ -84,8 +84,8 @@ def test_refresh_reports_data_not_ready_when_D_itself_is_missing_even_if_prior_d
     """review I2：排程抓的是多日重疊區間，前幾個交易日幾乎必定回得來，即使今天
     (D) 還沒發佈。舊行為在這種情況下會把「早幾天有寫」誤報成「今天成功」——
     run_job 記到的狀態與 note 讓每一個時段看起來都成功，`/api/health` 的
-    `jobs.ssf_daily` 因此永遠分不出哪個時段才是 D 真正到齊的那一次
-    （見 probe_review2.py 的重現）。D 不在這次抓到的日期裡時，即使前面幾天的
+    `jobs.ssf_daily` 因此永遠分不出哪個時段才是 D 真正到齊的那一次。
+    D 不在這次抓到的日期裡時，即使前面幾天的
     列已經被寫回 DB（COALESCE 讓重寫安全），也要老實回報 data_not_ready，並列出
     真的更新了哪些日期（`refreshed_prior`），而不是謊稱『date』那天處理成功。
     """
@@ -104,8 +104,9 @@ def test_refresh_reports_data_not_ready_when_D_itself_is_missing_even_if_prior_d
 def test_refresh_records_ready_at_the_first_time_D_is_written_and_keeps_reporting_it(
         tmp_path, monkeypatch):
     """D 第一次真的寫入時要記下時間戳（`ssf_ready:{D}`），之後同一天的
-    already_done 回應要繼續帶著這個時間戳——`/api/health` 的
-    `jobs.ssf_daily.note.ready_at` 才能回答『D 是哪個時段第一次到齊』。
+    already_done 回應要繼續帶著這個時間戳——`/api/health` 的 `jobs.ssf_daily.note`
+    才能回答『D 是哪個時段第一次到齊』（`note` 是 `run_job` 把這個 dict 字串化
+    存進去的結果，不是巢狀物件，`ready_at` 要從那段字串裡讀）。
     """
     conn = _db(tmp_path)
     monkeypatch.setattr(ssf, "fetch_ssf_daily", lambda s, e: _fake_rows(e.replace("/", "-")))
@@ -193,9 +194,10 @@ def test_ssf_backfill_endpoint_writes_rows_and_stays_within_a_month(tmp_path, mo
 
 def test_refresh_groups_multi_date_response_by_date_before_summarizing(tmp_path, monkeypatch):
     """`fetch_ssf_daily` 一次回應本來就常橫跨多天（`refresh_ssf_daily` 自己也會一併重抓
-    前 2 個交易日）。`summarize_ssf_day` 用『該 root 第一次出現』的列決定日期與主力月價格，
-    所以呼叫端**必須先依日期分組**再逐日呼叫——若整批一次丟給它，兩天的資料會被壓成
-    同一天，且哪天的價格留下來純屬巧合（見 CLAUDE.md 對這支函式的說明）。
+    `[D-6, D]` 約 7 個日曆天的重疊區間）。`summarize_ssf_day` 用『該 root 第一次出現』的
+    列決定日期與主力月價格，所以呼叫端**必須先依日期分組**再逐日呼叫——若整批一次丟給
+    它，兩天的資料會被壓成同一天，且哪天的價格留下來純屬巧合（見 CLAUDE.md 對這支函式
+    的說明）。
 
     兩個日期用同一批 root、但收盤價明顯不同（1.5 vs 9.9），才分得出「有沒有被誰蓋掉」。
     """
@@ -745,7 +747,7 @@ def test_overview_oi_change_uses_the_total_not_the_rolled_main_month(monkeypatch
     未平倉大減——這裡兩天的真實總量只變動 +500，但成交量最大的月份從 202610 換成
     202611，若用主力月口徑相減會得到 −8500 並被列進「減少最多」，其副標會告訴讀者
     「部位在減少」，但那是錯的。`oi_change` 必須用 `oi_total`，該檔也不能被歸類成
-    減少。數字取自 review I1 的重現腳本（`probe_review.py`）。
+    減少。數字取自 review I1 實測換月當天真實官方回應算出的重現案例，不是隨手編的。
     """
     from stocks_power_rich.api import market as M
     from stocks_power_rich.db import bulk_upsert_ssf_daily
@@ -955,8 +957,10 @@ def test_overview_empty_payload_has_the_same_coverage_keys_as_the_populated_one(
 
 
 def test_overview_reports_trading_day_lag_not_calendar_days(monkeypatch, tmp_path):
-    """freshness 徽章要看『交易日』落後幾天，不是日曆天——跨週末不是真正的落後
-    （同 `renderFreshness` 既有的決定，見 CLAUDE.md「資料新鮮度徽章」一節）。
+    """freshness 徽章要看『交易日』落後幾天，不是日曆天——跨週末不是真正的落後。
+    這裡跟總覽 `renderFreshness` 不是同一招：`renderFreshness` 的文案本身仍是
+    日曆天，只有底色吃後端已經考慮週末的 `data_stale`（見 CLAUDE.md「資料新鮮度
+    徽章」一節）；股期頁沒有 `data_stale` 可借，所以文字與顏色都直接吃交易日落差。
 
     SSF 資料只到 2026-09-17（週四）；market_daily 之後有 09-18（週五）與 09-22
     （週一，中間的 09-19/20 週末與 09-21 那個「假日」都刻意不建列，模擬真實的

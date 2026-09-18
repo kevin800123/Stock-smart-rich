@@ -956,10 +956,14 @@ def ssf_overview(date: str | None = None):
             # 就永遠看不出來（見 db.count_ssf_dates 的說明）。
             #
             # lag_trading_days（review I6／Fix E）：用「交易日」而非日曆天衡量
-            # 新鮮度落後多少——同總覽 renderFreshness 既有的決定，跨週末說「落後
-            # 3 天」是事實，硬換算成「落後 1 個交易日」在週一早上會看起來像資料
-            # 很新。market_daily 只在真的開盤那天才有列（見 CLAUDE.md），所以
-            # 「比 SSF 資料日晚、且有加權指數」的列數天生就排除了週末／假日。
+            # 新鮮度落後多少。這裡跟總覽 renderFreshness **不是同一招**：
+            # renderFreshness 的文案本身仍是日曆天（今天−資料日），只有底色
+            # （stale/ok）吃後端已經考慮週末的 data_stale——文字與顏色本來就是
+            # 兩個獨立的量。股期頁沒有對應 data_stale 的欄位可借，所以乾脆讓
+            # 文字與顏色都直接吃交易日落差，兩者不分家，跨週末也不會把「上週五
+            # 的資料」誤標成「落後 3 天」而亮起琥珀。market_daily 只在真的開盤
+            # 那天才有列（見 CLAUDE.md），所以「比 SSF 資料日晚、且有加權指數」
+            # 的列數天生就排除了週末／假日。
             "coverage": {"stored_days": count_ssf_dates(c), "roots": len(today_rows),
                          "no_stock_code": no_code, "no_spot": no_spot,
                          "no_std_contract": no_std_contract,

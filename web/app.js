@@ -883,10 +883,13 @@ async function loadSsf() {
 // 後端算——見 market.py::ssf_overview，market_daily 裡「有加權指數、且日期晚於
 // SSF 資料日」的列數，天生排除週末／假日）。舊寫法直接拿「今天」與資料日相減的
 // **日曆天**判斷，週五的資料撐過整個週末會被算成「落後 2～3 天」而亮琥珀，即使
-// 那已經是當下最新的資料（review I6，2026-09 修正）。這與 `renderFreshness` 把
-// 「該不該擔心」交給後端已考慮週末的 `data_stale` 判斷、而不是自己拿日曆天硬算，
-// 是同一個道理——舊註解說這裡「沿用 renderFreshness 的既有決定」，用的卻是日曆天，
-// 剛好寫反了。
+// 那已經是當下最新的資料（review I6，2026-09 修正）。
+//
+// 這裡跟總覽 `renderFreshness` **不是同一招**（final review #1，2026-09 修正說明
+// 用詞）：renderFreshness 的文案本身仍是日曆天（`今天−資料日`），只有底色
+// （stale/ok）吃後端已經考慮週末的 `data_stale`——文字與顏色本來就是兩個獨立的量。
+// 股期頁沒有對應 `data_stale` 的欄位可借，所以乾脆讓文字與顏色都直接吃交易日落差，
+// 兩者不分家。
 const SSF_STALE_DAYS = 2;
 
 function renderSsfFreshness(date, lagTradingDays) {

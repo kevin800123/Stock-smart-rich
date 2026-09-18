@@ -301,12 +301,16 @@ CSV 形狀/主力月規則/tick 級距都不同）：340 個合約代碼收斂�
 的唯一權威計算，端點與自算選股共用、差別只在 `fetch` 旗標。`ssf_daily` 表 PK `(date,root)`
 （含 `oi_total`，見下）COALESCE upsert，留 60 個交易日；合約表/保證金表沿用 `ai_cache` 快取
 （`_ssf_contracts`/`_ssf_margin_table` 都吃 `fetch` 旗標；讀取端也守衛筆數：合約 <300、保證金
-缺 `stock_updated` 視為未命中；`fetch=True` 連續失敗進冷卻 15 分鐘，同 `_osfut_cooling_down`）。
+缺 `stock_updated` 視為未命中，退回的舊快取一樣要過這關，不能原樣放行（final review #3）。
+**只有保證金表有冷卻，合約表沒有**：抓一次失敗就進冷卻 15 分鐘，同 `_osfut_cooling_down`；
+冷卻中或失敗都退回最近一次通過檢查的舊表，不再直接回 `{}`（final review #2））。
 排程 `ssf_daily` 平日 17:15/18:15/20:15，行情/保證金/合約表三者獨立更新（合約表也要暖，否則
 cache-only 路徑永遠拿不到資料）。**「已完成」＝`ai_cache` 鍵 `ssf_ready:{D}` 存在（D 真的被
 寫入），不是「`ssf_daily` 有 D 這列」**（review I2）：D 沒發佈時仍寫回已抓到的前幾天，但回報
 `data_not_ready`+`refreshed_prior`，不謊稱處理了 D——否則三個時段都「看起來成功」，
-`/api/health` 的 `jobs.ssf_daily.note.ready_at` 判斷哪個時段先到齊的方法就失效。
+`/api/health` 的 `jobs.ssf_daily.note` 判斷哪個時段先到齊的方法就失效。`note` 是 `run_job`
+存進去的回傳值字串化結果（`str(dict)`），不是巢狀物件——`ready_at` 要從這段字串裡讀，不是
+`note.ready_at` 這種取值路徑（final review #5）。
 
 **假成功防線**（既有 `taifex._post_csv` 全部會誤判為成功）：區間超過一月→UTF-8 616B 警告頁；
 今天只有夜盤→**逐交易日**（非整個回應加總）檢查一般列數 ≥`MIN_GENERAL_ROWS`(1200，正常1629)，

@@ -509,7 +509,8 @@ def bulk_upsert_ssf_daily(conn: sqlite3.Connection, rows: list[dict]) -> int:
     """股期每日摘要批次入庫。每筆自帶 date（回補一次會跨多天）。
 
     **COALESCE，null 不洗掉既有值**（同 `bulk_upsert_ohlc` 的規矩）：排程每次會重抓
-    前 2 個交易日，官方偶爾少給某欄，不能讓「這次沒抓到」變成「把既有值清空」。
+    `[D-6, D]` 約 7 個日曆天（正常約 5 個交易日）的重疊區間，官方偶爾少給某欄，
+    不能讓「這次沒抓到」變成「把既有值清空」。
     """
     data = [(r["date"], r["root"], *(r.get(c) for c in _SSF_COLS)) for r in rows]
     if not data:

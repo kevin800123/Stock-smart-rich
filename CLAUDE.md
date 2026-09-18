@@ -1498,9 +1498,14 @@ fetch=False)`（`admin._attach_ssf_margin` 內部用），`fetch=False` 只讀 `
 `fetch=True` 才會連外抓取，`fetch=False`＝cache-only：今天的鍵沒有就用
 `db.latest_ai_cache_with_prefix` 退回最近一次存過的，兩者都沒有才是 `{}`，絕不觸發網路請求，
 自算選股的參考欄用這個模式）。**讀取端也要守衛筆數**，同全站兩次快取事故的教訓：合約表少於
-`MIN_PLAUSIBLE_CONTRACTS`(300)、保證金表缺 `stock_updated` 一律視為未命中重抓；`fetch=True`
-連續失敗會進入冷卻（`_ssf_margin_cooling_down`，15 分鐘，比照既有 `_osfut_cooling_down`），
-故障期間不會每次呼叫都重打兩個各可能 30 秒逾時的端點。
+`MIN_PLAUSIBLE_CONTRACTS`(300)、保證金表缺 `stock_updated` 一律視為未命中重抓；**退回的舊
+快取（`latest_ai_cache_with_prefix` 找到的那一筆）也要通過同一個檢查**，不能原樣放行
+（final review #3）。**只有保證金表有冷卻，合約表沒有**：`_ssf_margin_table(fetch=True)`
+抓**一次**失敗就進入冷卻（`_ssf_margin_cooling_down`，15 分鐘，比照既有
+`_osfut_cooling_down`），不必連續失敗才觸發；冷卻中或抓取失敗都改退回最近一次存過、通過
+檢查的表，不再直接回 `{}`（final review #2）——原本這兩種情況會讓 `/api/ssf/margin` 與
+個股頁的保證金列在整個冷卻週期空白，即使昨天才成功抓過一次，也不會每次呼叫都重打一次它
+內部要打的兩個端點（各可能 30 秒逾時）。
 
 排程 `ssf_daily`（`job_schedule` 的 `family`）平日 17:15／18:15／20:15 各試一次；
 `refresh_ssf_daily` 讓**保證金、合約對照表與行情是各自獨立的事**——行情沒到齊時保證金
@@ -1511,8 +1516,11 @@ I2，2026-09 修正）：`ai_cache` 鍵 `ssf_ready:{D}` 只在 D 真的被寫入
 區間（不是「前 2 個交易日」），讓官方偶有的更正吸收得到；若 D 本身還沒發佈（`fetch_ssf_daily`
 對每一天的一般列數各自把關，D 尚未發佈就不會出現在回應裡），仍把已抓到的前幾天寫回 DB，但
 回報 `{"skipped": "data_not_ready", "date": D, "refreshed_prior": [...]}`，不謊稱處理了 D。
-少了這道分辨，三個時段都會回報「成功」，讓「查 `/api/health` 的 `jobs.ssf_daily.note.ready_at`
-判斷哪個時段先拿到資料」這個量測方法完全失效——這正是現在量測發佈時間唯一的方法。
+少了這道分辨，三個時段都會回報「成功」，讓「查 `/api/health` 的 `jobs.ssf_daily.note`
+判斷哪個時段先拿到資料」這個量測方法完全失效——這正是現在量測發佈時間唯一的方法。**`note`
+是 `run_job` 把 job 回傳值整包字串化（`str(dict)`，超過 300 字截斷）存進去的結果，不是巢狀
+物件**：`ready_at` 要在這段字串裡找，不能用 `jobs.ssf_daily.note.ready_at` 這種路徑取值
+（final review #5，2026-09 修正誤述）。
 
 **股期日檔有三種「HTTP 200 但不算成功」的假象，既有 `taifex._post_csv` 只驗
 `status_code==200 and content`，三種全部會矇混過去**：
@@ -1654,8 +1662,11 @@ MIS 即時確定可用，v2 的即時版不必先放棄。實作期間量到兩�
   回補落後多少天永遠看不出來（`/api/ssf/overview` 的 `coverage.stored_days` 用前者）。
 - **新鮮度徽章要看「交易日」落後幾天，不是日曆天**（review I6，2026-09 新增）：
   `coverage.lag_trading_days` = `market_daily` 裡「`taiex` 非 NULL 且日期晚於 SSF 資料日」
-  的列數——同總覽 `renderFreshness` 既有的決定，跨週末說「落後 3 天」是事實，硬換算成
-  「落後 1 個交易日」在週一早上會讓資料看起來比實際新。`market_daily` 只在真的開盤那天才
+  的列數。**這裡跟總覽 `renderFreshness` 不是同一招**（final review #1，2026-09 修正說明
+  用詞）：`renderFreshness` 的文案本身仍是日曆天（`今天−資料日`），只有底色（stale/ok）吃
+  後端已經考慮週末的 `data_stale`——文字與顏色本來就是兩個獨立的量。股期頁沒有對應
+  `data_stale` 的欄位可借，所以乾脆讓文字與顏色都直接吃交易日落差，兩者不分家，跨週末
+  也不會把「上週五的資料」誤標成「落後 3 天」而亮起琥珀。`market_daily` 只在真的開盤那天才
   建列，這個查詢天生就排除了週末／假日，不必額外處理行事曆。空資料庫時這個鍵仍要回
   `0`（跟 `stored_days` 等其他四個鍵一樣），不能只給前面幾個鍵，否則前端在空站上直接
   KeyError。
