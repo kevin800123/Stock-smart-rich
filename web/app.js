@@ -861,8 +861,13 @@ async function loadSsf() {
   }
   const cov = d.coverage || {};
   if (note) {
+    // no_spot（M3）：查不到現貨價而被剔出期現價差表的標的數。這一項本來就有算
+    // （後端回傳 coverage.no_spot），但沒有顯示出來——上櫃報價來源斷線這類問題
+    // 會讓價差表悄悄變短，沒有這行讀者看不出「表變短」是因為缺報價，還是今天
+    // 本來就只有這麼多合約。
     note.textContent = `資料日 ${d.date}　${cov.roots || 0} 檔　已存 ${cov.stored_days || 0} 個交易日`
-      + (cov.no_stock_code ? `　${cov.no_stock_code} 檔查不到標的代號` : "");
+      + (cov.no_stock_code ? `　${cov.no_stock_code} 檔查不到標的代號` : "")
+      + (cov.no_spot ? `　${cov.no_spot} 檔查無現貨價（未列入期現價差）` : "");
   }
   renderSsfFreshness(d.date, cov.lag_trading_days);
   renderSsfHot(d.hot || []);
@@ -901,9 +906,11 @@ function renderSsfHot(rows) {
     // 用全站共用的 chgClass（三態：漲/跌/平），不要自己寫二元判斷——原本
     // `>= 0 ? "up" : "down"` 會把「剛好收平盤」也上紅（誤讀成上漲）。
     const dir = r.chg_pct == null ? "" : chgClass(r.chg_pct);
+    // >0 而非 >=0：剛好收平盤（chg_pct 精確等於 0）不能加「+」，「+0.00%」的正號
+    // 讀起來像上漲（review #5）。負值本來就會由 toFixed 自己帶出負號，不受影響。
     return `<div class="card"><div class="card-label">${esc(r.name)}</div>`
       + `<div class="card-val">${fmt(r.close)}</div>`
-      + `<div class="card-chg ${dir}">${r.chg_pct == null ? "—" : (r.chg_pct >= 0 ? "+" : "") + r.chg_pct.toFixed(2) + "%"}</div>`
+      + `<div class="card-chg ${dir}">${r.chg_pct == null ? "—" : (r.chg_pct > 0 ? "+" : "") + r.chg_pct.toFixed(2) + "%"}</div>`
       + `<div class="card-note">${esc(r.code || "")}　${fmt(r.volume, 0)} 口　OI ${fmt(r.oi, 0)}</div></div>`;
   }).join("");
 }
@@ -1010,8 +1017,12 @@ function renderSsfHeatmap(hm) {
   tb.innerHTML = rows.map((line, i) => '<tr><th scope="row">' + (i + 1) + "</th>"
     + line.map(cell => {
         if (!cell) return '<td class="ssf-hm-cell"></td>';   // 缺的交易日留空，不頂替
-        const bg = sectorColor(cell.chg_pct, 7);
-        const pct = cell.chg_pct == null ? "" : (cell.chg_pct >= 0 ? "+" : "") + cell.chg_pct.toFixed(1) + "%";
+        // 剛好收平盤（chg_pct===0）不能走 sectorColor：它只判斷 chg>=0，0 會被歸類
+        // 成「漲」而疊出一格淡紅（review #5）。sectorColor 本身也給總覽熱力圖／
+        // 權值卡用，不能為了這裡改整支函式，改在這裡直接給中性底色——同 sectorColor
+        // 對 chg==null 用的同一個底色字面值，兩處本來就該保持一致，不是隨手挑的顏色。
+        const bg = cell.chg_pct === 0 ? "#2b3038" : sectorColor(cell.chg_pct, 7);
+        const pct = cell.chg_pct == null ? "" : (cell.chg_pct > 0 ? "+" : "") + cell.chg_pct.toFixed(1) + "%";
         return `<td class="ssf-hm-cell" style="background:${bg}">`
           + `<span class="ssf-hm-name">${esc(cell.name)}</span>`
           + `<span class="ssf-hm-pct">${pct}</span></td>`;
@@ -1030,8 +1041,9 @@ function renderSsfOi(oi) {
       el.innerHTML = '<li class="muted small">尚無資料（需要前一交易日的資料）</li>';
       return;
     }
+    // title 讓截斷的長合約名稱仍讀得到全名（review #4，同 .hm-bar-name 既有慣例）。
     el.innerHTML = rows.map(r => `<li>
-      <span class="ssf-oi-name">${esc(r.name)}</span>
+      <span class="ssf-oi-name" title="${esc(r.name)}">${esc(r.name)}</span>
       <span class="ssf-oi-delta">${r.oi_change > 0 ? "▲" : "▼"}${fmt(Math.abs(r.oi_change), 0)}</span>
       <span class="ssf-oi-base">OI ${fmt(r.oi, 0)}</span></li>`).join("");
   });
@@ -1076,13 +1088,38 @@ function ssfMarginSortVal(r, k) {
   return k === "name" ? (r.name || "") : r[k];
 }
 
+// 使用者慣用「台」，官方資料兩種寫法都有（同一份 CSV 裡「台積電期貨」用台、
+// 「臺股期貨」用臺）——正規化成同一個字，兩種輸入都找得到（review M8）。
+const normTW = (s) => (s || "").replace(/台/g, "臺");
+
+// 指數三檔的官方全稱使用者不會照打：「微台」「小台」「大台」是市場慣用俗名，
+// TAIFEX 官方名稱經 market.py 去掉「期貨」二字後是「微型臺指」「小型臺指」「臺股」
+// （見 helpers.ssf_margin_index），字面上互不包含，光靠 includes 對不上（M8，
+// 實測：搜尋「微台」「微台指」都查無資料）。只有指數列需要別名表，股票／ETF
+// 期貨本身的簡稱（如「台積電期貨」）已經可以直接搜到，不必額外列別名。
+const SSF_MARGIN_ALIASES = {
+  "微型臺指": ["微台", "微台指", "tmf"],
+  "小型臺指": ["小台", "小台指", "mtx"],
+  "臺股": ["大台", "台指期", "tx"],
+};
+
+function ssfMarginMatches(r, q) {   // q 已經過 normTW + toLowerCase
+  if (!q) return true;
+  if (normTW((r.name || "").toLowerCase()).includes(q)) return true;
+  if ((r.code || "").toLowerCase().includes(q)) return true;
+  // 別名用完全相等，不用 includes——「MTX」（小型臺指的別名）字面上就含有「TX」，
+  // 若比對方向是「別名 includes 查詢字」，打 TX 會連小型臺指一起撈出來。別名清單
+  // 本身已經把每個要支援的簡稱都列成獨立項目（微台／微台指各自一項），不需要靠
+  // 子字串包含來補「打一半也找得到」，改完全相等後查詢意圖才不會互相污染。
+  return (SSF_MARGIN_ALIASES[r.name] || []).some((a) => normTW(a.toLowerCase()) === q);
+}
+
 function renderSsfMargin() {
   const tb = document.querySelector("#ssf-margin-table tbody"); if (!tb) return;
   const lots = ssfLotsValue();
-  const q = ($("ssf-margin-q").value || "").trim().toLowerCase();
+  const q = normTW(($("ssf-margin-q").value || "").trim().toLowerCase());
 
-  let rows = ssfMarginRows().filter(r => !q
-    || (r.name || "").toLowerCase().includes(q) || (r.code || "").includes(q));
+  let rows = ssfMarginRows().filter((r) => ssfMarginMatches(r, q));
   if (ssfMarginSort.key) {                    // 空值永遠沉底，不受升降冪影響
     const k = ssfMarginSort.key, dir = ssfMarginSort.dir;
     rows = rows.slice().sort((ra, rb) => {
@@ -3857,9 +3894,18 @@ async function renderStockSsfMargin(code) {
   const list = (ssfMargin.by_stock || {})[String(code).split(".")[0]] || [];
   const usable = list.filter((x) => x.initial != null);
   if (!usable.length) return;        // 沒有股期（或金額算不出來）就整行不出現
+  // ETF 期貨用官方公布的固定金額，不是拿結算價套比例算出來的——「以 YYYY-MM-DD
+  // 結算價估算」這句話對 ETF 期貨是錯的（沒有結算價這個輸入），要看每一列自己的
+  // kind 分開講（M9）。同一檔標的的所有列（標準＋小型合約）kind 理論上一致
+  // （ETF／股票是標的本身的屬性，不會同一檔股票一半是 ETF 一半不是），用第一列
+  // 判斷即可；`every` 在混到極端情況時會保守退回結算價估算文案，不會誤標成
+  // 「公布金額」而遮蓋掉真正的估算性質。
+  const allEtf = usable.every((x) => x.kind === "etf");
+  const note = allEtf ? "期交所公布金額，實際以期貨商收取為準"
+    : `以 ${esc(ssfMargin.price_date || "—")} 結算價估算，實際以期貨商收取為準`;
   el.innerHTML = '<span class="muted small">股期原始保證金</span>'
     + usable.map((x) => `<span class="ssm-item">${esc(x.name)}期 1 口 ${fmt(x.initial, 0)}</span>`).join("")
-    + `<span class="muted small">以 ${esc(ssfMargin.price_date || "—")} 結算價估算，實際以期貨商收取為準</span>`;
+    + `<span class="muted small">${note}</span>`;
 }
 
 async function loadStock(code, name) {
