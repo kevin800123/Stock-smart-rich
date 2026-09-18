@@ -893,36 +893,48 @@ def ssf_overview(date: str | None = None):
               for r in sorted(with_pct, key=lambda r: r["chg_pct"])
               if r["chg_pct"] < 0][:SSF_RANK_N]
 
-    # 期現價差：現貨收盤走既有的逐日快取（含 ETF；stock_ohlc 濾掉 ETF 且稀疏，不可用）
+    # 期現價差：每個標的（stock code）一列，不是每個合約一列——期現價差是「標的」的
+    # 屬性，標準與小型指的是同一檔股票（review #2／Fix D）。
     spots = {**_quotes_for(c, day), **_otc_quotes_for(c, day)}
-    # no_stock_code／no_spot 的定義：當天『每一個合約(root)』查無代號對照／查無現貨
-    # 報價的次數，用來讓資料缺口看得見。這兩個計數必須掃完當天全部合約，不能被下面
-    # 「輸出列表最多 SSF_RANK_N 筆」的上限擋住——先前把計數與 append 綁在同一個
-    # `break` 之前，一旦湊滿上限就整個迴圈提早結束，排在後面（成交量較低）的合約
-    # 永遠不會被走訪，缺口計數因此固定停在很小的數字：資料越殘缺、算出來的計數反而
-    # 越接近 0，正好與這兩個計數存在的目的相反。現在改成只封頂「要塞進 basis 的
-    # 清單長度」，計數的判斷仍對每一筆 today_rows 執行。
-    # dedup（seen，同一檔標的只列一次）不算進任何一個計數：被跳過是因為這檔標的已經
-    # 由另一個合約（標準／小型共用結算價）代表過，不是這個合約本身查無代號或現貨，
-    # 兩者是不同的事，不可混為一談，也不會讓同一個合約被算進兩個計數。
-    basis, seen, no_code, no_spot = [], set(), 0, 0
+    # no_stock_code 仍逐『合約(root)』計數（查無代號對照是合約層級的事），計數必須
+    # 掃完當天全部合約、不能被下面「輸出列表最多 SSF_RANK_N 筆」的上限擋住——先前
+    # 把計數與 append 綁在同一個 break 之前，一旦湊滿上限就整個迴圈提早結束，排在
+    # 後面（成交量較低）的合約永遠不會被走訪，缺口計數因此固定停在很小的數字：
+    # 資料越殘缺、算出來的計數反而越接近 0，正好與這個計數存在的目的相反。
+    by_code: dict[str, list[dict]] = {}
+    no_code = 0
     for r in today_rows:
         info = contracts.get(r["root"])
         if not info:
             no_code += 1
             continue
-        if info["code"] in seen:        # 標準與小型共用結算價，同一檔標的只列一次
+        by_code.setdefault(info["code"], []).append(r)
+
+    # 排名依「該標的全部合約（標準＋小型）成交量合計」，不是單一合約的成交量——
+    # 標準合約成交量普通、但小型合約很活躍的股票，用單一合約排名會排錯位置。
+    ranked = sorted(by_code.items(),
+                    key=lambda kv: sum(rr.get("volume") or 0 for rr in kv[1]),
+                    reverse=True)
+    basis, no_spot = [], 0
+    for code, group in ranked:
+        # 價格與主力月一律取標準合約（is_mini=False）——每個掛牌標的恰有一個標準
+        # 合約；成交量較高的常是小型合約，但那不代表標的本身，混進來會讓同一檔
+        # 股票在不同天可能因為哪個合約比較活躍而顯示不同的結算價/主力月。
+        std = next((rr for rr in group
+                   if not (contracts.get(rr["root"]) or {}).get("is_mini")), None)
+        if std is None:      # 理論上不會發生：每個掛牌標的都有一個標準合約
             continue
-        spot = (spots.get(info["code"]) or {}).get("close")
-        fut = r.get("settlement")
+        info = contracts[std["root"]]
+        spot = (spots.get(code) or {}).get("close")
+        fut = std.get("settlement")
         if spot is None or fut is None:
             no_spot += 1
             continue
-        seen.add(info["code"])
         if len(basis) < SSF_RANK_N:     # 只封頂輸出，計數在上面已經做完、不受影響
-            basis.append({"root": r["root"], "name": info["name"], "code": info["code"],
+            basis.append({"root": std["root"], "name": info["stock_name"], "code": code,
                           "futures": fut, "spot": spot, "diff": round(fut - spot, 4),
                           "ticks": taifex_ssf.ssf_basis_ticks(fut, spot, info["is_etf"]),
+                          "main_month": std.get("main_month"),
                           # 收盤晚於現貨 13:30 的（14 檔 ETF 期貨到 16:15）要另標，
                           # 它們的落差是 2.5 小時而不是 15 分鐘，不能與其他列一起讀
                           "late_session": bool(info.get("late_session")),

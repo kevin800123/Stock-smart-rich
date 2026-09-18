@@ -404,6 +404,78 @@ def test_overview_basis_is_in_ticks_and_lists_each_underlying_once(monkeypatch, 
     assert b["ticks"] == 7          # 2425→2432，2500 以下 1 元一檔
 
 
+def test_overview_basis_uses_the_standard_contracts_price_and_label_even_when_mini_out_trades_it(
+        monkeypatch, tmp_path):
+    """review #2／Fix D：去重原本保留成交量較高的合約——2330 的小型合約經常量比
+    標準合約大，會讓這一列的結算價、主力月與標籤全部來自小型合約（標成「小型
+    台積電」）。但期現價差是**標的**的屬性，標準與小型指的是同一檔股票，不該
+    因為哪個合約成交量比較大而換人代表。改成一律從標準合約（`is_mini=False`）
+    取結算價與主力月，標籤固定用合約表既有的 `stock_name`。
+    """
+    from stocks_power_rich.api import market as M
+    from stocks_power_rich.db import bulk_upsert_ssf_daily
+    monkeypatch.setattr(M, "_ssf_contracts", lambda c: _CONTRACTS)
+    monkeypatch.setattr(M, "_quotes_for", lambda c, d: {"2330": {"close": 2400.0}})
+    monkeypatch.setattr(M, "_otc_quotes_for", lambda c, d: {})
+    conn = get_connection(str(tmp_path / "api.sqlite"))
+    init_db(conn)
+    bulk_upsert_ssf_daily(conn, [
+        {"date": "2026-09-17", "root": "CD", "main_month": "202610", "settlement": 2410.0,
+         "close": 2410.0, "chg_pct": 1.0, "volume": 3000, "oi": 100, "oi_total": 100,
+         "main_volume": 3000},
+        {"date": "2026-09-17", "root": "QF", "main_month": "202611", "settlement": 2450.0,
+         "close": 2450.0, "chg_pct": 1.0, "volume": 50000, "oi": 200, "oi_total": 200,
+         "main_volume": 50000},
+    ])
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert [x["code"] for x in d["basis"]] == ["2330"]
+    row = d["basis"][0]
+    assert row["name"] == "台積電"          # stock_name，不是小型合約的「小型台積電」
+    assert row["root"] == "CD"              # 標準合約的 root
+    assert row["futures"] == 2410.0         # 標準合約的結算價，不是量大的小型 2450.0
+    assert row["main_month"] == "202610"    # 標準合約的主力月，不是小型的 202611
+
+
+def test_overview_basis_ranks_underlyings_by_combined_volume_not_a_single_contract(
+        monkeypatch, tmp_path):
+    """排名要看『同一檔標的所有合約加總的成交量』，不是『成交量最高的那一個合約』。
+
+    A 的標準合約(3000)單獨看比 B(3050)少，但 A 還有一個小型合約(100)，兩者相加
+    (3100) 超過 B——舊排序法直接照 `today_rows`（單一合約、逐列排序）走訪，
+    B 因單一合約量較大而先出現、代表它的 code 先被記入 `seen`，排名變成
+    [B, A]；用合計成交量排名應該是 [A, B]，兩種答案不同才能驗證真的用了合計。
+    """
+    from stocks_power_rich.api import market as M
+    from stocks_power_rich.db import bulk_upsert_ssf_daily
+    contracts = {
+        "AS": {"code": "1111", "stock_name": "A股", "name": "A股",
+               "multiplier": 2000, "is_etf": False, "is_mini": False},
+        "AM": {"code": "1111", "stock_name": "A股", "name": "小型A股",
+               "multiplier": 100, "is_etf": False, "is_mini": True},
+        "BS": {"code": "2222", "stock_name": "B股", "name": "B股",
+               "multiplier": 2000, "is_etf": False, "is_mini": False},
+    }
+    monkeypatch.setattr(M, "_ssf_contracts", lambda c: contracts)
+    monkeypatch.setattr(M, "_quotes_for", lambda c, d: {
+        "1111": {"close": 100.0}, "2222": {"close": 200.0}})
+    monkeypatch.setattr(M, "_otc_quotes_for", lambda c, d: {})
+    conn = get_connection(str(tmp_path / "api.sqlite"))
+    init_db(conn)
+    bulk_upsert_ssf_daily(conn, [
+        {"date": "2026-09-17", "root": "AS", "main_month": "202610", "settlement": 101.0,
+         "close": 101.0, "chg_pct": 1.0, "volume": 3000, "oi": 10, "oi_total": 10,
+         "main_volume": 3000},
+        {"date": "2026-09-17", "root": "AM", "main_month": "202610", "settlement": 101.0,
+         "close": 101.0, "chg_pct": 1.0, "volume": 100, "oi": 10, "oi_total": 10,
+         "main_volume": 100},
+        {"date": "2026-09-17", "root": "BS", "main_month": "202610", "settlement": 201.0,
+         "close": 201.0, "chg_pct": 1.0, "volume": 3050, "oi": 10, "oi_total": 10,
+         "main_volume": 3050},
+    ])
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert [x["code"] for x in d["basis"]] == ["1111", "2222"]
+
+
 def test_overview_oi_change_needs_both_days(monkeypatch, tmp_path):
     """前一日缺列就整檔不列——缺值不可當成 0（那會捏造一筆大增）。"""
     _seed_overview(monkeypatch, tmp_path)
