@@ -374,8 +374,11 @@ ETF 更新日那行解析失敗跟筆數門檻無關，會讓殘缺結果冒充�
 ≤10）；覆蓋率計數器(`no_stock_code`/`no_spot`)要走訪全部root不能在湊滿輸出上限時break（否則
 資料越殘缺計數越接近0）；6488(環球晶)其實有股期，1234(黑松)才是無股期範例。
 **`coverage.lag_trading_days`**（review I6）＝`market_daily` 裡「`taiex` 非 NULL 且日期晚於
-SSF 資料日」的列數——看交易日不看日曆天（同 `renderFreshness` 決定），`market_daily` 只在
-真的開盤才建列，天生排除週末/假日；空資料庫這個鍵仍回 0，同其他四個 coverage 鍵一起給。
+SSF 資料日」的列數，文字與顏色都吃它——**與總覽 `renderFreshness` 不是同一招**：後者文案
+仍是日曆天、只有顏色吃後端已考慮週末的 `data_stale`；股期頁沒有 `data_stale` 可借，所以文字
+與顏色一起用交易日落差（落後 ≥2 個交易日才亮琥珀）。**不要照「同 renderFreshness」改回日曆
+天**——那會讓每個週日與週一傍晚前都誤亮琥珀。`market_daily` 只在真的開盤才建列，天生排除
+週末/假日；空資料庫這個鍵仍回 0，同其他 coverage 鍵一起給。
 
 **前端坑**：設計文件的`gt-sub`/`.empty`/`card-title`/`--fs-xxs`不存在，改用既有
 `muted small`/`card-label`/`--fs-xs`；圖表一律`initChart(el)`不可直接`echarts.init`；空資料

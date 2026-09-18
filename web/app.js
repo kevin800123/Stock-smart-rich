@@ -4406,8 +4406,9 @@ const ssfMarginBar = document.querySelector(".ssf-margin-bar");
 if (ssfMarginBar) ssfMarginBar.addEventListener("input", (e) => {
   if (e.target.closest("#ssf-lots, #ssf-margin-q")) renderSsfMargin();
 });
-// 表頭排序：委派在 <table> 本身（靜態 HTML 就有這個 id，thead 內容雖是動態重繪，
-// 監聽只需掛一次），同 #selfcheck-table／#self-screen-table 既有的 sc-sort 慣例。
+// 表頭排序：委派在 <table> 本身（靜態 HTML 就有這個 id，監聽只需掛一次）。表頭格子也是
+// 靜態的（資料載入前就要看得到），JS 只依 data-k 更新各格的 aria-sort 與箭頭、不重建整列，
+// 同 #selfcheck-table／#self-screen-table 既有的 sc-sort 慣例。
 $("ssf-margin-table").addEventListener("click", (e) => {
   const th = e.target.closest("th.sc-sort"); if (!th) return;
   const k = th.dataset.k;
