@@ -861,6 +861,7 @@ async function loadSsf() {
   renderSsfRanks(d.ranks);
   renderSsfBasis(d.basis || []);
   renderSsfHeatmap(d.heatmap);
+  renderSsfOi(d.oi_change);
 }
 
 // SSF_STALE_DAYS = 2：落後 1 天是常態（盤後才更新、假日不開盤），1 天就叫會變成
@@ -997,6 +998,25 @@ function renderSsfHeatmap(hm) {
           + `<span class="ssf-hm-name">${esc(cell.name)}</span>`
           + `<span class="ssf-hm-pct">${pct}</span></td>`;
       }).join("") + "</tr>").join("");
+}
+
+// 未平倉增減：OI 增減是「有沒有新倉/解倉」，不是價格漲跌，全站紅綠只保留給行情
+// 漲跌方向，這裡一律中性色，方向改用全站既有的 ▲▼ 字彙（不套 .up/.down、不用
+// C.up/C.down）。前一日缺列的合約後端直接不列進 up/down（缺值當 0 會捏造一筆
+// 大增/大減），所以兩份清單本來就可能偏短甚至掛零——空狀態要講出原因。
+function renderSsfOi(oi) {
+  [["up", "ssf-oi-up"], ["down", "ssf-oi-down"]].forEach(([key, id]) => {
+    const el = $(id); if (!el) return;
+    const rows = (oi && oi[key]) || [];
+    if (!rows.length) {
+      el.innerHTML = '<li class="muted small">尚無資料（需要前一交易日的資料）</li>';
+      return;
+    }
+    el.innerHTML = rows.map(r => `<li>
+      <span class="ssf-oi-name">${esc(r.name)}</span>
+      <span class="ssf-oi-delta">${r.oi_change > 0 ? "▲" : "▼"}${fmt(Math.abs(r.oi_change), 0)}</span>
+      <span class="ssf-oi-base">OI ${fmt(r.oi, 0)}</span></li>`).join("");
+  });
 }
 
 // ========== 自算籌碼/基本選股（全市場自算池，零 CSV） ==========

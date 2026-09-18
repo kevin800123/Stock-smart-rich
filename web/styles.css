@@ -1225,6 +1225,18 @@ button.file-label { font: inherit; }
 #ssf-hm-table .ssf-hm-cell { color: #fff; text-align: center; padding: 6px 4px; min-width: 76px; }
 #ssf-hm-table .ssf-hm-name { display: block; font-size: var(--fs-xs); }
 #ssf-hm-table .ssf-hm-pct { display: block; font-weight: 650; }
+/* 未平倉增減：兩欄在寬螢幕並排，容器窄到放不下兩個 240px 欄時 auto-fit 自動收成
+   一欄，不必另寫 @media（同全站既有的 .cards/.mv-grid 響應式手法）。
+   OI 增減不是漲跌方向，delta 一律中性色（不用 --up/--down），方向靠 ▲▼ 字彙表達。
+   長合約名稱用 ellipsis 截斷（同 .hm-bar-name/.mv-name 既有慣例）而不是讓它把
+   後面的數字擠出這一列——name 用 min-width:0 讓出空間，delta/base 固定不縮。 */
+.ssf-oi-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.ssf-oi-title { color: var(--muted); font-size: var(--fs-xs); margin-bottom: 6px; }
+.ssf-oi-list { margin: 0; padding-left: 20px; }
+.ssf-oi-list li { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; }
+.ssf-oi-list .ssf-oi-name { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ssf-oi-list .ssf-oi-delta { flex: 0 0 auto; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ssf-oi-list .ssf-oi-base { flex: 0 0 auto; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
 .pane-count, .all-filter { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
 .active-filter { display: inline-flex; align-items: center; gap: 6px; padding: 3px 5px 3px 8px; background: rgba(112, 184, 255, .14); color: #b9d8f8; border-radius: 5px; font-size: var(--fs-xs); }
 .active-filter b { color: var(--text-primary); }

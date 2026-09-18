@@ -713,6 +713,19 @@
             <table id="ssf-hm-table"><thead><tr id="ssf-hm-head"></tr></thead><tbody></tbody></table>
           </div>
         </div>
+
+        <!-- 未平倉增減：OI 增減不是價格方向（是否有新倉/解倉），不是漲跌，所以全站
+             紅綠鎖給行情漲跌這條規矩在這裡完全不適用——一律中性色，方向改用全站既有
+             的 ▲▼ 字彙表達（不套 .up/.down）。前一日缺列的合約後端直接不列進 up/down
+             （見 market.py 註解：缺值當 0 會捏造一筆大增/大減），所以兩份清單本來就
+             可能偏短甚至掛零，空狀態要講出原因，不能只寫「尚無資料」。 -->
+        <div class="card-group" data-key="ssf-oi">
+          <div class="group-title">未平倉增減　<span class="muted small">大量搭配 OI 大增是建倉，大量搭配 OI 大減是平倉</span></div>
+          <div class="ssf-oi-cols">
+            <div><div class="ssf-oi-title">增加最多</div><ol id="ssf-oi-up" class="ssf-oi-list"></ol></div>
+            <div><div class="ssf-oi-title">減少最多</div><ol id="ssf-oi-down" class="ssf-oi-list"></ol></div>
+          </div>
+        </div>
       </section>
 
       <!-- ===== 設定 ===== -->
