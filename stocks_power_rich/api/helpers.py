@@ -171,6 +171,24 @@ def _ssf_contracts(c) -> dict:
     return m
 
 
+def _ssf_margin_table(c) -> dict:
+    """股期保證金比例表，**逐日快取**。
+
+    處置股會臨時加成 1.5／2／3 倍，2026-08~09 每隔幾天就有一次公告，
+    抓一次放著會給出過期數字（設計 §1.3）。
+    讀取端要求 `stock_updated` 存在——缺這個鍵的舊快取一律視為未命中。
+    """
+    key = f"ssfmargin:v1:{datetime.now().strftime('%Y-%m-%d')}"
+    m = get_ai_cache(c, key)
+    if not isinstance(m, dict) or not m.get("stock_updated"):
+        fresh = taifex_ssf.fetch_ssf_margin_table()
+        if fresh.get("stock_updated"):
+            set_ai_cache(c, key, fresh)
+            return fresh
+        return m if isinstance(m, dict) else {}
+    return m
+
+
 def _otc_quotes_for(c, date: str) -> dict:
     """上櫃 {code: {name, close, chg_pct}}，逐日快取（對齊 _quotes_for 上市版）。"""
     qkey = f"otc_quotes:{date}"

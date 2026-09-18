@@ -277,3 +277,96 @@ def fetch_ssf_contract_map() -> dict:
     except Exception as e:  # noqa: BLE001
         log.warning("[ssf] 合約對照表抓取失敗：%s: %s", type(e).__name__, e)
         return {}
+
+
+STOCK_MARGIN_URL = "https://www.taifex.com.tw/cht/5/stockMarginingDown"
+INDEX_MARGIN_URL = "https://www.taifex.com.tw/cht/5/indexMargingDown"
+
+_UPDATED = re.compile(r"更新日期[:：]\s*(\d{4}/\d{2}/\d{2})")
+
+
+def _pct(s) -> float | None:
+    return _f(s)          # '13.50%' → 13.5
+
+
+def parse_stock_margining_csv(text: str) -> dict:
+    """四個區段的 CSV → 股票標的比例 ＋ ETF（受益憑證）固定金額，各帶自己的更新日期。
+
+    **更新日期只存在於這份 CSV**：OpenAPI 的 `Date` 是每日快照、天天跳，
+    拿它當生效日是那種讀者永遠發現不了的錯（設計 §1.3）。
+    選擇權那兩個區段直接略過。
+    """
+    out = {"stock_updated": None, "etf_updated": None, "stock": {}, "etf": {}}
+    section = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if "標的證券為股票之股票期貨" in line:
+            section = "stock"; continue
+        if "標的證券為受益憑證之股票期貨" in line or "標的證券為ETF之股票期貨" in line:
+            section = "etf"; continue
+        if line.startswith("二、") or "選擇權" in line:
+            section = None; continue
+        m = _UPDATED.search(line)
+        if m:
+            if section == "stock":
+                out["stock_updated"] = m.group(1)
+            elif section == "etf":
+                out["etf_updated"] = m.group(1)
+            continue
+        if section is None or line.startswith("序號"):
+            continue
+        p = [x.strip().strip('"') for x in line.split(",")]
+        if len(p) < 9 or not p[0].isdigit():
+            continue
+        contract = p[1]
+        if section == "stock":
+            out["stock"][contract] = {
+                "code": p[2], "name": p[3], "tier": p[5],
+                "clearing_pct": _pct(p[6]), "maintenance_pct": _pct(p[7]),
+                "initial_pct": _pct(p[8])}
+        else:
+            out["etf"][contract] = {
+                "code": p[2], "name": p[3],
+                "clearing": _i(p[5]), "maintenance": _i(p[6]), "initial": _i(p[7])}
+    return out
+
+
+def parse_index_margining_csv(text: str) -> dict:
+    """指數期貨固定金額（台指／小台／微台）。"""
+    out = {"updated": None, "items": {}}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        m = _UPDATED.search(line)
+        if m:
+            out["updated"] = m.group(1); continue
+        p = [x.strip() for x in line.split(",")]
+        if len(p) < 4 or p[0] in ("商品別", ""):
+            continue
+        if _i(p[1]) is None:
+            continue
+        out["items"][p[0]] = {"clearing": _i(p[1]), "maintenance": _i(p[2]),
+                              "initial": _i(p[3])}
+    return out
+
+
+def fetch_ssf_margin_table() -> dict:
+    """抓兩份保證金 CSV 並合併。任何一份不合格就整份回 {}（不寫半套快取）。"""
+    try:
+        with httpx.Client(timeout=30, follow_redirects=True,
+                          headers={"User-Agent": "Mozilla/5.0"}) as cli:
+            s = cli.get(STOCK_MARGIN_URL).content.decode("ms950", errors="replace")
+            i = cli.get(INDEX_MARGIN_URL).content.decode("ms950", errors="replace")
+        stock = parse_stock_margining_csv(s)
+        index = parse_index_margining_csv(i)
+    except Exception as e:  # noqa: BLE001
+        log.warning("[ssf] 保證金表抓取失敗：%s: %s", type(e).__name__, e)
+        return {}
+    if len(stock["stock"]) < 290 or len(stock["etf"]) < 20 or not stock["stock_updated"]:
+        log.warning("[ssf] 保證金表不完整：股期 %d 列／ETF %d 列／更新日 %s",
+                    len(stock["stock"]), len(stock["etf"]), stock["stock_updated"])
+        return {}
+    return {**stock, "index_updated": index["updated"], "index": index["items"]}
