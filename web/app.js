@@ -402,7 +402,11 @@ function showView(name) {
   if (name === "traders") loadTraders();
   if (name === "selfcheck") loadSelfcheck();
   if (name === "self-screen" && !selfScreenLoaded) { selfScreenLoaded = true; loadSelfScreen(); }   // 原生 DOM treemap，進頁才載入
-  if (name === "ssf" && !ssfLoaded) { ssfLoaded = true; loadSsf(); }
+  // 若使用者在 /api/ssf/overview 回來前就切走，三張排行圖會在 view 是 display:none
+  // 時建立、被 echarts.init 凍結在 0 尺寸（同 cup-handle 頁既有的坑），之後再切回來
+  // 也不會自己修正——沿用 cup 的既有寫法，每次「不是第一次載入」的重新進入都補一次
+  // resize（同全域 resize handler 用的同一行，見下方 window resize listener）。
+  if (name === "ssf") { if (!ssfLoaded) { ssfLoaded = true; loadSsf(); } else Object.values(ssfCharts).forEach(ch => ch && ch.resize()); }
   if (name === "inst-research") {
     loadInstResearchCoverage();
     instBreadthChart && instBreadthChart.resize();
