@@ -317,7 +317,12 @@ def parse_stock_margining_csv(text: str) -> dict:
             continue
         if section is None or line.startswith("序號"):
             continue
-        p = [x.strip().strip('"') for x in line.split(",")]
+        # 「股票期貨標的證券」全名有時帶英文逗號並用引號包住（如 JNF／TPK-KY 期貨
+        # 的 "TPK Holding Co., Ltd."）。裸 str.split(",") 會把這一格從中間切開，
+        # 讓後面所有欄位（級距／三個比例）全部錯位一格且沒有任何錯誤訊息——
+        # 用 csv 模組逐行解析才能正確吃掉引號內的逗號；欄位仍是空白填充，
+        # split 完再逐欄 strip。
+        p = [x.strip() for x in next(csv.reader([line]))]
         if len(p) < 9 or not p[0].isdigit():
             continue
         contract = p[1]
@@ -353,13 +358,28 @@ def parse_index_margining_csv(text: str) -> dict:
     return out
 
 
+_INDEX_REQUIRED_ITEM = "微型臺指期貨"  # 指數段的合理性檢查依賴這檔（本功能實際要用到的最小項目）
+
+
 def fetch_ssf_margin_table() -> dict:
-    """抓兩份保證金 CSV 並合併。任何一份不合格就整份回 {}（不寫半套快取）。"""
+    """抓兩份保證金 CSV 並合併。股票／ETF／指數三段任何一段不合格就整份回 {}
+    （不寫半套快取）。
+
+    原本的合理性檢查只查了股票與 ETF 兩段，指數段（`index`/`index_updated`）是
+    無條件併入回傳值的——一份解析壞掉的指數 CSV（空表或格式跑掉）照樣會被當成
+    「成功」逃出去，讓部分失敗偷偷冒充整體成功（設計 §1.3 明講「任何一份不合格
+    就整份回 {}」，指數段原本不在被檢查之列）。現在指數段也要通過自己的檢查：
+    `index_updated` 存在，且微型臺指期貨（TMF）的原始保證金是正數。
+    """
     try:
         with httpx.Client(timeout=30, follow_redirects=True,
                           headers={"User-Agent": "Mozilla/5.0"}) as cli:
-            s = cli.get(STOCK_MARGIN_URL).content.decode("ms950", errors="replace")
-            i = cli.get(INDEX_MARGIN_URL).content.decode("ms950", errors="replace")
+            s_resp = cli.get(STOCK_MARGIN_URL)
+            s_resp.raise_for_status()  # 非 2xx 不能安靜地往下解析——那只會解出一份不合格的表
+            i_resp = cli.get(INDEX_MARGIN_URL)
+            i_resp.raise_for_status()
+            s = s_resp.content.decode("ms950", errors="replace")
+            i = i_resp.content.decode("ms950", errors="replace")
         stock = parse_stock_margining_csv(s)
         index = parse_index_margining_csv(i)
     except Exception as e:  # noqa: BLE001
@@ -368,5 +388,11 @@ def fetch_ssf_margin_table() -> dict:
     if len(stock["stock"]) < 290 or len(stock["etf"]) < 20 or not stock["stock_updated"]:
         log.warning("[ssf] 保證金表不完整：股期 %d 列／ETF %d 列／更新日 %s",
                     len(stock["stock"]), len(stock["etf"]), stock["stock_updated"])
+        return {}
+    tmf = index["items"].get(_INDEX_REQUIRED_ITEM) or {}
+    index_ok = bool(index["updated"]) and (tmf.get("initial") or 0) > 0
+    if not index_ok:
+        log.warning("[ssf] 指數期貨保證金不完整：更新日 %s／%s 原始保證金 %s",
+                    index["updated"], _INDEX_REQUIRED_ITEM, tmf.get("initial"))
         return {}
     return {**stock, "index_updated": index["updated"], "index": index["items"]}
