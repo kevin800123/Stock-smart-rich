@@ -859,6 +859,7 @@ async function loadSsf() {
   renderSsfFreshness(d.date);
   renderSsfHot(d.hot || []);
   renderSsfRanks(d.ranks);
+  renderSsfBasis(d.basis || []);
 }
 
 // SSF_STALE_DAYS = 2：落後 1 天是常態（盤後才更新、假日不開盤），1 天就叫會變成
@@ -952,6 +953,23 @@ function renderSsfRanks(ranks) {
     ch.setOption(ssfCandleOption(rows), true);
     ch.resize();   // echarts.init 會凍結它看到的容器尺寸，setOption 後一定要 resize
   });
+}
+
+// 期現價差：正負是「期貨相對現貨的位置」不是漲跌方向，全站紅綠只保留給行情漲跌，
+// 這裡一律中性色，方向改由文字「正價差／逆價差」表達（不套 .up/.down、不用 C.up/C.down）。
+// 第一欄（標的）沿用全站既有的 tbody td:first-child sticky 規則自動凍結，不必另寫。
+function renderSsfBasis(rows) {
+  const tb = document.querySelector("#ssf-basis-table tbody"); if (!tb) return;
+  if (!rows.length) { tb.innerHTML = '<tr><td colspan="6" class="muted small">尚無資料</td></tr>'; return; }
+  tb.innerHTML = rows.map(r => `<tr>
+    <td class="ssf-name">${esc(r.name)}<span class="ssf-code">${esc(r.code || "")}</span>${
+      // 收盤到 16:15 的那 14 檔 ETF 期貨，落差是 2.5 小時而非 15 分鐘，必須標出來
+      r.late_session ? `<span class="ssf-late" title="期貨交易到 ${esc(r.session_end)}，與現貨 13:30 收盤落差更大">⏱</span>` : ""}</td>
+    <td>${fmt(r.futures)}</td><td>${fmt(r.spot)}</td>
+    <td>${r.diff == null ? "—" : (r.diff > 0 ? "+" : "") + fmt(r.diff)}</td>
+    <td>${r.ticks == null ? "—" : (r.ticks > 0 ? "+" : "") + fmt(r.ticks, 0)}</td>
+    <td class="ssf-basis-dir">${r.ticks == null ? "—" : (r.ticks > 0 ? "正價差" : r.ticks < 0 ? "逆價差" : "持平")}</td>
+  </tr>`).join("");
 }
 
 // ========== 自算籌碼/基本選股（全市場自算池，零 CSV） ==========

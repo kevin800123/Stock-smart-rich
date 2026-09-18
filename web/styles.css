@@ -1214,6 +1214,12 @@ button.file-label { font: inherit; }
    600 那組樣式，讓這頁標題比其他頁小又暗。用 ID 範圍只動這裡，不影響 .pane-heading h3
    （交易帳本／自算選股等既有小標）或其他頁面的 h2。 */
 #view-ssf .pane-heading h2 { margin: 0; color: var(--text-primary); font-size: var(--fs-lg); font-weight: 700; letter-spacing: -.015em; flex-shrink: 0; }
+/* 期現價差表：正負是「期貨相對現貨的位置」，不是漲跌方向——全站紅綠鎖給行情漲跌，
+   這裡一律中性色，方向改由文字「正價差／逆價差」表達，不套 .up/.down。
+   第一欄凍結／斑馬紋／hover 都吃既有的全域 table 規則，不必在此另寫一份。 */
+#ssf-basis-table .ssf-basis-dir { color: var(--muted); }
+#ssf-basis-table .ssf-code { color: var(--muted); font-size: var(--fs-xs); margin-left: 6px; }
+#ssf-basis-table .ssf-late { margin-left: 4px; color: var(--muted); cursor: help; }
 .pane-count, .all-filter { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
 .active-filter { display: inline-flex; align-items: center; gap: 6px; padding: 3px 5px 3px 8px; background: rgba(112, 184, 255, .14); color: #b9d8f8; border-radius: 5px; font-size: var(--fs-xs); }
 .active-filter b { color: var(--text-primary); }
