@@ -1213,7 +1213,7 @@ button.file-label { font: inherit; }
    粗體），不是 .card-group 內的分組標題——之前掛 .group-title 會借到 16px／--label／
    600 那組樣式，讓這頁標題比其他頁小又暗。用 ID 範圍只動這裡，不影響 .pane-heading h3
    （交易帳本／自算選股等既有小標）或其他頁面的 h2。 */
-#view-ssf .pane-heading h2 { margin: 0; color: var(--text-primary); font-size: var(--fs-lg); font-weight: 700; letter-spacing: -.015em; }
+#view-ssf .pane-heading h2 { margin: 0; color: var(--text-primary); font-size: var(--fs-lg); font-weight: 700; letter-spacing: -.015em; flex-shrink: 0; }
 .pane-count, .all-filter { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
 .active-filter { display: inline-flex; align-items: center; gap: 6px; padding: 3px 5px 3px 8px; background: rgba(112, 184, 255, .14); color: #b9d8f8; border-radius: 5px; font-size: var(--fs-xs); }
 .active-filter b { color: var(--text-primary); }
@@ -1665,6 +1665,9 @@ a.stock:hover { text-decoration: underline; }
   #view-rotation .pane-heading { flex-wrap: wrap; align-items: flex-start; }
   #view-rotation .pane-heading > div { flex: 1 1 100%; min-width: 0; }
   #view-rotation .pane-count { white-space: normal; }
+  /* 股期概況頁標題被擠成垂直條：說明文字 nowrap 且比標題列寬，標題預設 flex-shrink:1 被壓扁；同 ui58 的交叉選股修法。 */
+  #view-ssf .pane-heading { flex-wrap: wrap; align-items: flex-start; }
+  #view-ssf .pane-count { white-space: normal; }
   .table-wrap.fill-half { max-height: 60vh; }
   .ss-market-map { height: 620px; min-height: 620px; border-radius: var(--r); }
   .ss-map-heading { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 5px; }
