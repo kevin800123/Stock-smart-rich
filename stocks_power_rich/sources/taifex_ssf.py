@@ -255,13 +255,25 @@ def parse_stock_lists(html: str) -> dict:
     return out
 
 
+# 正常一次抓到 320 檔。200 但只解析到這個數字以下，代表頁面版型變了或只抓到半頁，
+# 不是「今天比較少」——即使仍照舊回傳（呼叫端 `_ssf_contracts` 自己也有 <300 的
+# plausibility guard，可能寧可用舊快取），這裡也要留一行 warning，不能悄悄過關。
+MIN_PLAUSIBLE_CONTRACTS = 300
+
+
 def fetch_ssf_contract_map() -> dict:
     """抓合約對照表。失敗回空 dict——呼叫端的月快取兩端都擋空值，不會把失敗永久化。"""
     try:
         with httpx.Client(timeout=30, follow_redirects=True,
                           headers={"User-Agent": "Mozilla/5.0"}) as cli:
             r = cli.get(STOCK_LISTS_URL)
-        return parse_stock_lists(r.content.decode("utf-8", errors="replace"))
+            r.raise_for_status()  # 非 2xx 不能安靜地往下解析——那只會解出一個空 dict
+        m = parse_stock_lists(r.content.decode("utf-8", errors="replace"))
+        if len(m) < MIN_PLAUSIBLE_CONTRACTS:
+            # 觀察用，不是攔截用：仍照舊回傳這個小 map，是否改用快取交給呼叫端判斷。
+            log.warning("[ssf] 合約對照表回應正常但只解析到 %d 檔（正常約 320），"
+                        "頁面版型可能已變動", len(m))
+        return m
     except Exception as e:  # noqa: BLE001
         log.warning("[ssf] 合約對照表抓取失敗：%s: %s", type(e).__name__, e)
         return {}

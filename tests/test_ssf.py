@@ -256,7 +256,8 @@ STOCK_LISTS_HTML = """
 <table id="myTable"><tbody>
 <tr><td>CD</td><td>台灣積體電路製造股份有限公司</td><td>2330</td><td>台積電</td>
 <td><span class="sr-only">是</span>●</td><td></td><td></td>
-<td>◎</td><td></td><td></td><td></td><td>2,000</td><td>08:45~13:45</td><td>17:25~05:00</td></tr>
+<td>◎</td><td></td><td></td><td></td><td><span class="sr-only">股數</span>2,000</td>
+<td>08:45~13:45</td><td>17:25~05:00</td></tr>
 <tr><td>QF</td><td>台灣積體電路製造股份有限公司</td><td>2330</td><td>台積電</td>
 <td>●</td><td></td><td></td><td>◎</td><td></td><td></td><td></td><td>100</td>
 <td>08:45~13:45</td><td>17:25~05:00</td></tr>
@@ -298,7 +299,66 @@ def test_contract_map_flags_etf_underlyings():
     assert m["CD"]["is_etf"] is False
 
 
-def test_contract_map_ignores_sr_only_text_when_reading_flags():
-    """欄位裡藏著給螢幕閱讀器的『是』，直接讀 innerText 會把它當成標記。"""
+def test_contract_map_strips_sr_only_text_from_the_multiplier_cell():
+    """乘數欄（[11]）混著給螢幕閱讀器用的『股數』字樣，不 strip 後果比誤判 is_etf 嚴重得多：
+
+    欄[4] 那個『是』沒有被任何欄位讀取，藏在那裡的 sr-only 不 strip 也測不出任何差異
+    （這正是舊版此測試的問題——它斷言的 is_etf 只看欄[9]/[10]，跟欄[4]完全無關，
+    monkeypatch 掉 `_SR_ONLY` 後舊斷言照樣通過）。欄[11] 不一樣：`_i()` 解析失敗會
+    直接回 None，`parse_stock_lists` 對 mult 為 None 的列整列 `continue`——不 strip
+    的話這檔股期合約會從表裡完全消失，而不只是某個旗標判斷錯。
+    """
     m = ssf.parse_stock_lists(STOCK_LISTS_HTML)
-    assert m["CD"]["is_etf"] is False     # 欄[7] 是上市普通股 ◎，不是 ETF
+    assert "CD" in m                     # 沒 strip 的話 _i("股數2,000") 回 None，整列消失
+    assert m["CD"]["multiplier"] == 2000
+
+
+class _ListResp:
+    """`fetch_ssf_contract_map` 用的最小回應樁：`raise_for_status` 可控制是否丟例外。"""
+    def __init__(self, content: bytes, status_code: int = 200):
+        self.content = content
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise ssf.httpx.HTTPStatusError(
+                f"{self.status_code} error", request=None, response=None)
+
+
+class _ListClient:
+    """把 `fetch_ssf_contract_map` 用到的 `httpx.Client.get` 樁掉。"""
+    def __init__(self, resp):
+        self._resp = resp
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def get(self, *a, **kw):
+        return self._resp
+
+
+def test_fetch_contract_map_returns_empty_on_non_2xx_without_raising(monkeypatch):
+    """TAIFEX 回錯誤頁時，httpx 預設不會自動丟例外——不加 raise_for_status 的話，
+    regex 在錯誤頁裡找不到任何合格列、安靜地回傳 {}，`except` 那行 log 永遠不會跑，
+    整個失敗完全無聲。加了 raise_for_status 後，非 2xx 要變成例外被既有的
+    `except Exception` 接住並記錄下來，對外仍是回傳 {}、不往上炸。"""
+    monkeypatch.setattr(ssf.httpx, "Client",
+                        lambda *a, **kw: _ListClient(_ListResp(b"<html>error</html>", 500)))
+    assert ssf.fetch_ssf_contract_map() == {}
+
+
+def test_fetch_contract_map_logs_a_warning_when_the_parsed_map_is_implausibly_small(
+        monkeypatch, caplog):
+    """200 但只解析到 4 檔（正常 320），代表頁面版型可能變了——這種「有回應但
+    只懂一小撮」的狀況不能無聲無息，即使仍然把這個小 map 照常回傳。"""
+    import logging
+    monkeypatch.setattr(ssf.httpx, "Client",
+                        lambda *a, **kw: _ListClient(
+                            _ListResp(STOCK_LISTS_HTML.encode("utf-8"), 200)))
+    with caplog.at_level(logging.WARNING, logger="spr"):
+        m = ssf.fetch_ssf_contract_map()
+    assert len(m) == 4                          # STOCK_LISTS_HTML 只有 4 檔，遠低於正常的 320
+    assert "只解析到 4 檔" in caplog.text
