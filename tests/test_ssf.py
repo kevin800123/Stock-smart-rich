@@ -131,3 +131,71 @@ def test_basis_sign_and_simple_cases():
 def test_basis_returns_none_when_either_side_is_missing():
     assert ssf.ssf_basis_ticks(None, 100, is_etf=False) is None
     assert ssf.ssf_basis_ticks(100, None, is_etf=False) is None
+
+
+class _Resp:
+    def __init__(self, body: bytes, ct: str):
+        self.status_code, self.content, self.headers = 200, body, {"content-type": ct}
+
+
+class _Client:
+    """把 httpx.Client 的最小介面樁掉。`post` 回下一個排好的回應。"""
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.posted = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def get(self, *a, **kw):
+        return _Resp(b"", "text/html")
+
+    def post(self, url, **kw):
+        self.posted.append(kw.get("data"))
+        return self._responses.pop(0)
+
+
+def _patch_client(monkeypatch, responses):
+    client = _Client(responses)
+    monkeypatch.setattr(ssf.httpx, "Client", lambda *a, **kw: client)
+    return client
+
+
+def test_fetch_returns_rows_on_a_normal_response(monkeypatch):
+    body = (SSF_HEADER_LINE + "\n" +
+            "\n".join([f"2026/09/17,X{i:02d}F,202610  ,1,1,1,1,0,0.00%,1,1,1,1,1,1,1,,一般,,"
+                       for i in range(1300)]) + "\n")
+    client = _patch_client(monkeypatch, [_Resp(body.encode("ms950"), "text/html;charset=MS950")])
+    rows = ssf.fetch_ssf_daily("2026/09/17", "2026/09/17")
+    assert len(rows) == 1300
+    assert client.posted[0]["commodity_id"] == "specialid"
+    assert client.posted[0]["commodity_id2"] == "all"
+
+
+def test_fetch_rejects_the_utf8_alert_page_for_an_over_long_range(monkeypatch):
+    """區間超過一個月時伺服器回 HTTP 200 的 HTML 警告頁，照 MS950 解碼會變亂碼。"""
+    _patch_client(monkeypatch, [_Resp(b"<!DOCTYPE HTML><html>too long</html>",
+                                      "text/html;charset=UTF-8")])
+    assert ssf.fetch_ssf_daily("2026/08/16", "2026/09/17") == []
+
+
+def test_fetch_rejects_a_header_only_response(monkeypatch):
+    """非交易日回 197 B 只有表頭。它會通過『200 且有 body』。"""
+    _patch_client(monkeypatch, [_Resp((SSF_HEADER_LINE + "\n").encode("ms950"),
+                                      "text/html;charset=MS950")])
+    assert ssf.fetch_ssf_daily("2026/09/13", "2026/09/13") == []
+
+
+def test_fetch_rejects_a_night_session_only_response(monkeypatch):
+    """實測當天早上 10:02 打，回 51 列全是盤後、一般 0 列。
+
+    少了這道守衛，17:15 的排程在資料還沒出來時會寫進一天只有夜盤的資料。
+    """
+    body = (SSF_HEADER_LINE + "\n" +
+            "\n".join([f"2026/09/18,X{i:02d}F,202610  ,1,1,1,1,0,0.00%,1,-,-,1,1,1,1,,盤後,,"
+                       for i in range(51)]) + "\n")
+    _patch_client(monkeypatch, [_Resp(body.encode("ms950"), "text/html;charset=MS950")])
+    assert ssf.fetch_ssf_daily("2026/09/18", "2026/09/18") == []

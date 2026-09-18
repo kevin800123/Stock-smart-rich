@@ -7,11 +7,57 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 from decimal import Decimal
+
+import httpx
+
+log = logging.getLogger("spr")
 
 SSF_HEADER = ("交易日期,契約,到期月份(週別),開盤價,最高價,最低價,收盤價,漲跌價,漲跌%,"
               "成交量,結算價,未沖銷契約數,最後最佳買價,最後最佳賣價,歷史最高價,歷史最低價,"
               "是否因訊息面暫停交易,交易時段,價差對單式委託成交量")
+
+SSF_FORM = "https://www.taifex.com.tw/cht/3/futDataDown"
+SSF_DOWN = "https://www.taifex.com.tw/cht/3/dlFutDataDown"
+# 一天正常有 1,629 列非價差的一般列。抓到的比這個少一截就是資料還沒齊，
+# 不是「今天比較冷清」——寧可不寫，也不要寫進半套。
+MIN_GENERAL_ROWS = 1200
+
+
+def fetch_ssf_daily(start: str, end: str) -> list[dict]:
+    """抓指定區間（`YYYY/MM/DD`，**不可超過一個月**）的股期日檔。
+
+    三種失敗都是 HTTP 200 且有 body，所以逐一擋掉：
+    1. Content-Type 不是 MS950 → 區間超過一個月的 UTF-8 HTML 警告頁
+    2. 表頭不符或只有表頭 → 非交易日
+    3. 「一般、非價差」列數不足 → 日盤資料還沒發佈（早上打只會有盤後列）
+
+    任何一種都回空 list（呼叫端據此略過，不寫入），並留下一行 warning。
+    """
+    with httpx.Client(timeout=60, follow_redirects=True,
+                      headers={"User-Agent": "Mozilla/5.0"}) as cli:
+        cli.get(SSF_FORM, headers={"Referer": SSF_FORM})
+        r = cli.post(SSF_DOWN, headers={"Referer": SSF_FORM}, data={
+            "down_type": "1", "commodity_id": "specialid", "commodity_id2": "all",
+            "queryStartDate": start, "queryEndDate": end,
+        })
+    ct = (r.headers.get("content-type") or "").upper()
+    if "MS950" not in ct:
+        log.warning("[ssf] %s~%s 回應不是 MS950（多半是區間超過一個月的警告頁）：%s",
+                    start, end, ct)
+        return []
+    try:
+        rows = parse_ssf_daily_csv(r.content.decode("ms950", errors="replace"))
+    except ValueError as e:
+        log.warning("[ssf] %s~%s 解析失敗：%s", start, end, e)
+        return []
+    general = [x for x in rows if x["session"] == "一般" and not x["is_spread"]]
+    if len(general) < MIN_GENERAL_ROWS:
+        log.warning("[ssf] %s~%s 一般列只有 %d 列（<%d），視為資料未發佈",
+                    start, end, len(general), MIN_GENERAL_ROWS)
+        return []
+    return rows
 
 
 def _f(s) -> float | None:
