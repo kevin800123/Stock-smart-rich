@@ -28,12 +28,22 @@ MIN_GENERAL_ROWS = 1200
 def fetch_ssf_daily(start: str, end: str) -> list[dict]:
     """抓指定區間（`YYYY/MM/DD`，**不可超過一個月**）的股期日檔。
 
-    三種失敗都是 HTTP 200 且有 body，所以逐一擋掉：
+    三種「HTTP 200 但不算成功」的假象逐一擋掉，全部回空 list 並留一行 warning
+    （呼叫端據此略過、不寫入）：
     1. Content-Type 不是 MS950 → 區間超過一個月的 UTF-8 HTML 警告頁
     2. 表頭不符或只有表頭 → 非交易日
-    3. 「一般、非價差」列數不足 → 日盤資料還沒發佈（早上打只會有盤後列）
+    3. 「一般、非價差」列數**逐日**檢查不足 → 該日日盤資料還沒發佈（早上打只會有
+       盤後列，且日期算在下一個交易日）。**逐日判定，不是整個回應加總**：
+       `start`/`end` 常是排程重疊補最近幾個交易日的多日區間，若用加總，13 個完整
+       交易日（每天 1,629 列）＋ 今天只有盤後列（一般 0 列）加起來遠超門檻，
+       今天那半天的資料反而會被其他日期的量掩蓋掉、照樣寫進 DB——這正是這道守衛
+       原本要防的事。逐日判定讓某一天資料不足時只剔除那一天，不連累其他已齊全的
+       日期，也不會被它們的量沖淡。
 
-    任何一種都回空 list（呼叫端據此略過，不寫入），並留下一行 warning。
+    連線層例外（timeout／連線中斷／TLS 等）刻意不在這裡攔截，原樣往上拋給呼叫端：
+    呼叫端是排程 Job，經 `run_job` 記錄失敗狀態與例外訊息；若在這裡吞掉，「網路
+    不通」與「日盤還沒發佈」會變得無法分辨（同月營收那次「例外被吞兩層、事後查
+    不出原因」的教訓，見 CLAUDE.md 2026-09「月營收告警查不出原因」一節）。
     """
     with httpx.Client(timeout=60, follow_redirects=True,
                       headers={"User-Agent": "Mozilla/5.0"}) as cli:
@@ -52,12 +62,24 @@ def fetch_ssf_daily(start: str, end: str) -> list[dict]:
     except ValueError as e:
         log.warning("[ssf] %s~%s 解析失敗：%s", start, end, e)
         return []
-    general = [x for x in rows if x["session"] == "一般" and not x["is_spread"]]
-    if len(general) < MIN_GENERAL_ROWS:
-        log.warning("[ssf] %s~%s 一般列只有 %d 列（<%d），視為資料未發佈",
-                    start, end, len(general), MIN_GENERAL_ROWS)
+    if not rows:
+        log.warning("[ssf] %s~%s 一般列只有 0 列（<%d），視為資料未發佈",
+                    start, end, MIN_GENERAL_ROWS)
         return []
-    return rows
+    # 逐日分組計數，而非整個回應加總——見上方 docstring 第 3 點。
+    dates_in_order = list(dict.fromkeys(x["date"] for x in rows))
+    general_counts = {d: 0 for d in dates_in_order}
+    for x in rows:
+        if x["session"] == "一般" and not x["is_spread"]:
+            general_counts[x["date"]] += 1
+    qualifying = {d for d, n in general_counts.items() if n >= MIN_GENERAL_ROWS}
+    dropped = {d: n for d, n in general_counts.items() if d not in qualifying}
+    if dropped:
+        log.warning("[ssf] %s~%s 以下日期一般列數不足（<%d），視為當日資料未發佈已剔除：%s",
+                    start, end, MIN_GENERAL_ROWS, dropped)
+    if not qualifying:
+        return []
+    return [x for x in rows if x["date"] in qualifying]
 
 
 def _f(s) -> float | None:

@@ -199,3 +199,54 @@ def test_fetch_rejects_a_night_session_only_response(monkeypatch):
                        for i in range(51)]) + "\n")
     _patch_client(monkeypatch, [_Resp(body.encode("ms950"), "text/html;charset=MS950")])
     assert ssf.fetch_ssf_daily("2026/09/18", "2026/09/18") == []
+
+
+def test_fetch_drops_a_day_that_only_has_night_rows_from_a_multi_day_range(monkeypatch):
+    """排程實際會打的是重疊補最近幾個交易日的多日區間，不是單日。
+
+    13 個完整交易日 × 1,629 列 ＋ 今天只有盤後列（一般 0 列）：若用整個回應加總，
+    21,177 列遠超門檻，守衛會誤判整批通過，今天那半天的資料就被寫進 DB。
+    這裡簡化成兩天（一天齊全、一天只有盤後）驗證同一個原則：逐日判定，只剔除
+    沒達標的那一天，齊全的那一天不受連累。
+    """
+    complete_day = "\n".join([
+        f"2026/09/16,X{i:02d}F,202610  ,1,1,1,1,0,0.00%,1,1,1,1,1,1,1,,一般,,"
+        for i in range(1300)
+    ])
+    night_only_day = "\n".join([
+        f"2026/09/17,X{i:02d}F,202610  ,1,1,1,1,0,0.00%,1,-,-,1,1,1,1,,盤後,,"
+        for i in range(51)
+    ])
+    body = SSF_HEADER_LINE + "\n" + complete_day + "\n" + night_only_day + "\n"
+    _patch_client(monkeypatch, [_Resp(body.encode("ms950"), "text/html;charset=MS950")])
+    rows = ssf.fetch_ssf_daily("2026/09/12", "2026/09/17")
+    assert len(rows) == 1300
+    assert {r["date"] for r in rows} == {"2026-09-16"}
+
+
+def test_fetch_rejects_wrong_content_type_even_with_a_perfectly_valid_body(monkeypatch):
+    """孤立測試：body 本身是合法 CSV、一般列數也遠超門檻，只有 Content-Type 錯。
+
+    只有守衛 1（Content-Type）擋得下這筆——body 若真的被拿去解析會完全通過守衛
+    2（表頭正確）與守衛 3（列數足夠），所以拿掉守衛 1 時這筆必然會被放行。
+    """
+    body = (SSF_HEADER_LINE + "\n" +
+            "\n".join([f"2026/09/17,X{i:02d}F,202610  ,1,1,1,1,0,0.00%,1,1,1,1,1,1,1,,一般,,"
+                       for i in range(1300)]) + "\n")
+    _patch_client(monkeypatch, [_Resp(body.encode("ms950"), "text/html;charset=UTF-8")])
+    assert ssf.fetch_ssf_daily("2026/09/17", "2026/09/17") == []
+
+
+def test_fetch_rejects_a_genuinely_different_header_even_with_plenty_of_rows(monkeypatch):
+    """孤立測試：Content-Type 正確、列數遠超門檻，但表頭真的被官方改版。
+
+    只有守衛 2（接住 `parse_ssf_daily_csv` 的 ValueError）擋得下這筆——Content-Type
+    正確會通過守衛 1，若解析不因表頭而中止、列數本身遠超門檻也會通過守衛 3。
+    拿掉守衛 2 時，ValueError 會直接從 `fetch_ssf_daily` 炸出來，而不是被吞成 []。
+    """
+    bad_header = ssf.SSF_HEADER.replace("未沖銷契約數", "未平倉量")
+    body = (bad_header + "\n" +
+            "\n".join([f"2026/09/17,X{i:02d}F,202610  ,1,1,1,1,0,0.00%,1,1,1,1,1,1,1,,一般,,"
+                       for i in range(1300)]) + "\n")
+    _patch_client(monkeypatch, [_Resp(body.encode("ms950"), "text/html;charset=MS950")])
+    assert ssf.fetch_ssf_daily("2026/09/17", "2026/09/17") == []
