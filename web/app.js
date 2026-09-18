@@ -3783,6 +3783,28 @@ $("stock-empty").addEventListener("click", (e) => {
 const KLINE_GAP_DAYS = { "1d": 14, "1wk": 21, "1mo": 45 };
 function klineGapDays(interval) { return KLINE_GAP_DAYS[interval] || 14; }
 
+// 股期原始保證金（1 口）：反查索引 by_stock 由後端在 /api/ssf/margin 組好（見「股期概況」
+// 那節的 ssfMargin／loadSsfMargin），這裡只是換一種讀法，前端不自己掃 rows 再組一份索引
+// （兩份索引遲早漂移）。使用者可能從沒去過股期概況頁，所以 ssfMargin 是 null 時才現抓一次，
+// 之後查其他股票直接重用同一份，不再重打 API。
+async function renderStockSsfMargin(code) {
+  const el = $("stock-ssf-margin");
+  if (!el) return;
+  el.innerHTML = "";                 // 先清空，換股查詢時才不會殘留上一檔的內容
+  if (!code) return;
+  if (!ssfMargin) {
+    try { ssfMargin = await getJSON("/api/ssf/margin"); } catch (e) { return; }
+    // 等待期間使用者可能已經切到別檔——這份資料已經過期，不能蓋掉新畫面
+    if (stockCode !== code) return;
+  }
+  const list = (ssfMargin.by_stock || {})[String(code).split(".")[0]] || [];
+  const usable = list.filter((x) => x.initial != null);
+  if (!usable.length) return;        // 沒有股期（或金額算不出來）就整行不出現
+  el.innerHTML = '<span class="muted small">股期原始保證金</span>'
+    + usable.map((x) => `<span class="ssm-item">${esc(x.name)}期 1 口 ${fmt(x.initial, 0)}</span>`).join("")
+    + `<span class="muted small">以 ${esc(ssfMargin.price_date || "—")} 結算價估算，實際以期貨商收取為準</span>`;
+}
+
 async function loadStock(code, name) {
   code = (code || "").trim().toUpperCase();
   if (!code) return;
@@ -3798,6 +3820,10 @@ async function loadStock(code, name) {
   try { renderProfile(await getJSON(`/api/stock/${encodeURIComponent(code)}/profile`)); } catch (e) { $("stock-profile").innerHTML = ""; }
   loadStockChips(code);
   loadStockCustody(code);
+  // 放在這裡（K 線 try 區塊之外）而不是等 K 線畫完才呼叫：K 線查無資料或抓取失敗時
+  // 會提早 return，若股期保證金掛在那之後，換到一檔沒有 K 線資料的股票時就會漏刷新，
+  // 讓上一檔的保證金殘留在畫面上——與其他兩個附屬面板（籌碼／集保）一樣，不等 K 線結果。
+  renderStockSsfMargin(code);
   try {
     const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/kline?interval=${stockInterval}`);
     if (!d.candles || !d.candles.length) {

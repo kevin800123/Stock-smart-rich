@@ -285,6 +285,10 @@
           <b>怎麼判斷的</b>：先用轉折% 抓出高低轉折點，取最近一段，<b>三大鐵律全部符合才標</b>：① 第2浪不跌破第1浪起點　② 第3浪不是最短　③ 第4浪不重疊第1浪價格區。其後若接合法的逆勢三波，再加標 A–B–C。不符合就不標（不硬湊）。
         </div>
         <div id="stock-profile" class="kline-profile"></div>
+        <!-- 股期原始保證金：內容全由 JS 產生，沒有股期的個股整行不出現（styles.css 的
+             :empty 規則），不是 #stock-profile 的子節點——renderProfile 每次都整段
+             innerHTML 覆寫，放裡面會被清空。 -->
+        <div id="stock-ssf-margin"></div>
         <!-- 空狀態：還沒查詢時，原本是 722px 的空白畫布、沒有任何提示。空畫面應該是
              邀請動作而不是等待——這裡直接把「可以查什麼」放上來：自選股與最近查詢
              都是一鍵就到的目的地，兩者的資料本來就有（/api/watchlist 與 localStorage）。

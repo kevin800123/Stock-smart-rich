@@ -1545,6 +1545,12 @@ a.stock:hover { text-decoration: underline; }
 .pf-item { color: var(--muted); margin-right: 10px; white-space: nowrap; }
 .pf-item b { color: var(--text); font-weight: 600; }
 
+/* 股期原始保證金（1 口）：沒有股期的個股整行不出現，標題也由 JS 產生，
+   否則沒有股期的日子會留一個空框（同 #today-focus 既有的 :empty 做法）。 */
+#stock-ssf-margin:empty { display: none; }
+#stock-ssf-margin { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; padding: 8px 0; }
+#stock-ssf-margin .ssm-item { font-weight: 650; }   /* 金額不是漲跌方向，不套 .up/.down */
+
 /* ===== 自選股：輸入預估面板 ===== */
 .watch-est { color: var(--info); text-decoration: none; }
 .est-panel { background: var(--bg); border: 1px solid var(--border); border-radius: var(--r); padding: 14px 16px; margin: 4px 0; }
