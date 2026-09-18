@@ -704,6 +704,15 @@
             </tr></thead><tbody></tbody></table>
           </div>
         </div>
+
+        <!-- 近 10 交易日排行熱力圖：列＝名次 1–10、欄＝交易日，格子＝當日該名次的合約＋
+             漲跌%。第一欄用 th scope="row"（名次是列標題，語意上不是資料格）。 -->
+        <div class="card-group span-full" data-key="ssf-heatmap">
+          <div class="group-title">近期排行熱力圖　<span class="muted small">每日成交口數前 10，格子為當日漲跌%</span></div>
+          <div class="table-wrap" id="ssf-hm-wrap">
+            <table id="ssf-hm-table"><thead><tr id="ssf-hm-head"></tr></thead><tbody></tbody></table>
+          </div>
+        </div>
       </section>
 
       <!-- ===== 設定 ===== -->

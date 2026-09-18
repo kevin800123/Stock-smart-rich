@@ -860,6 +860,7 @@ async function loadSsf() {
   renderSsfHot(d.hot || []);
   renderSsfRanks(d.ranks);
   renderSsfBasis(d.basis || []);
+  renderSsfHeatmap(d.heatmap);
 }
 
 // SSF_STALE_DAYS = 2：落後 1 天是常態（盤後才更新、假日不開盤），1 天就叫會變成
@@ -970,6 +971,32 @@ function renderSsfBasis(rows) {
     <td>${r.ticks == null ? "—" : (r.ticks > 0 ? "+" : "") + fmt(r.ticks, 0)}</td>
     <td class="ssf-basis-dir">${r.ticks == null ? "—" : (r.ticks > 0 ? "正價差" : r.ticks < 0 ? "逆價差" : "持平")}</td>
   </tr>`).join("");
+}
+
+// 近 10 交易日排行熱力圖：名次(1–10) × 交易日，格子＝該名次當天的合約＋漲跌%。
+// `hm.rows[rank][col]` 對齊 `hm.dates[col]`；缺的交易日（該名次那天沒那麼多合約）
+// 後端給 null，這裡必須留空、不可拿別天的格子頂替（同資料日 D 的規矩，不橫向搬資料）。
+// 格子帶白字 → 底色只能用 sectorColor 既有的 upFill/downFill（不是給小字調亮過的
+// C.up/C.down），飽和上限傳 7——個股期貨單日可達 ±10%，3% 的預設值會讓整片飽和、
+// 看不出強弱。
+function renderSsfHeatmap(hm) {
+  const head = $("ssf-hm-head");
+  const tb = document.querySelector("#ssf-hm-table tbody");
+  if (!head || !tb) return;
+  const dates = (hm && hm.dates) || [];
+  if (!dates.length) { tb.innerHTML = '<tr><td class="muted small">尚無資料</td></tr>'; return; }
+  head.innerHTML = '<th scope="col">#</th>'
+    + dates.map(d => `<th scope="col">${esc(d.slice(5))}</th>`).join("");
+  const rows = (hm && hm.rows) || [];
+  tb.innerHTML = rows.map((line, i) => '<tr><th scope="row">' + (i + 1) + "</th>"
+    + line.map(cell => {
+        if (!cell) return '<td class="ssf-hm-cell"></td>';   // 缺的交易日留空，不頂替
+        const bg = sectorColor(cell.chg_pct, 7);
+        const pct = cell.chg_pct == null ? "" : (cell.chg_pct >= 0 ? "+" : "") + cell.chg_pct.toFixed(1) + "%";
+        return `<td class="ssf-hm-cell" style="background:${bg}">`
+          + `<span class="ssf-hm-name">${esc(cell.name)}</span>`
+          + `<span class="ssf-hm-pct">${pct}</span></td>`;
+      }).join("") + "</tr>").join("");
 }
 
 // ========== 自算籌碼/基本選股（全市場自算池，零 CSV） ==========
@@ -2253,9 +2280,12 @@ function _hex(a, b, t) {
 }
 // 這些色塊上面疊白字（權值股卡、熱力圖），所以插值終點用 --up-fill/--down-fill 而非
 // --up/--down——後者為了小字對比調亮過，拿來當底會把白字壓到 3:1 以下。
-function sectorColor(chg) {
+// scale＝飽和上限（%），選用參數。類股平均日漲跌多在 ±3%（預設值，既有呼叫端都不傳
+// 第二參數、行為不變）；個股期貨單日可達 ±10%，股期熱力圖另傳 7——3% 會讓整片飽和、
+// 看不出強弱。
+function sectorColor(chg, scale = 3) {
   if (chg == null) return "#2b3038";
-  const t = 0.35 + 0.65 * Math.min(Math.abs(chg) / 3, 1); // 小漲跌也看得出方向
+  const t = 0.35 + 0.65 * Math.min(Math.abs(chg) / scale, 1); // 小漲跌也看得出方向
   return _hex("#2b3038", chg >= 0 ? C.upFill : C.downFill, t);
 }
 

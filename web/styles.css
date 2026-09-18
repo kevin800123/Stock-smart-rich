@@ -1220,6 +1220,11 @@ button.file-label { font: inherit; }
 #ssf-basis-table .ssf-basis-dir { color: var(--muted); }
 #ssf-basis-table .ssf-code { color: var(--muted); font-size: var(--fs-xs); margin-left: 6px; }
 #ssf-basis-table .ssf-late { margin-left: 4px; color: var(--muted); cursor: help; }
+/* 排行熱力圖：格子帶白字疊在色塊上，色塊來自 sectorColor 既有的 upFill/downFill
+   （不是給小字調亮過的 --up/--down），這裡只管文字排版，不重複調色邏輯。 */
+#ssf-hm-table .ssf-hm-cell { color: #fff; text-align: center; padding: 6px 4px; min-width: 76px; }
+#ssf-hm-table .ssf-hm-name { display: block; font-size: var(--fs-xs); }
+#ssf-hm-table .ssf-hm-pct { display: block; font-weight: 650; }
 .pane-count, .all-filter { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
 .active-filter { display: inline-flex; align-items: center; gap: 6px; padding: 3px 5px 3px 8px; background: rgba(112, 184, 255, .14); color: #b9d8f8; border-radius: 5px; font-size: var(--fs-xs); }
 .active-filter b { color: var(--text-primary); }
@@ -1842,6 +1847,22 @@ a.stock:hover { text-decoration: underline; }
   }
   #industry tbody tr td:first-child { position: static; box-shadow: none; }
   #industry tbody tr td:first-child::after { content: none; }
+
+  /* 排行熱力圖第一欄在 tbody 是 th[scope="row"]（名次），不是 td——上面的通用凍結
+     規則只認 `td:not([colspan]):first-child`，選擇器對不上 th，蓋不到它，因此另外
+     寫一條，手法沿用同一套技巧：sticky + 正 z-index 疊在儲存格本身，`::after` 補一層
+     不透明底、z-index:-1 讓它壓在儲存格自己的背景之上、文字之下。th 全域已有
+     `background:#1b2a3f`（見上方 `th{...}`）本身就不透明，這裡仍用 ::after 而非直接
+     覆寫 background，是為了與全站凍結第一欄的既有寫法保持一致。色值用 --card
+     （#142033，最接近 th 現有的 #1b2a3f 深藍）而非其餘凍結規則慣用的 --sunken
+     （#050910 太暗，疊上去會讓凍結欄與同一列的日期表頭色差過大）。 */
+  #ssf-hm-table tbody th[scope="row"] {
+    position: sticky; left: 0; z-index: 1;
+    box-shadow: inset -1px 0 0 var(--border-strong);
+  }
+  #ssf-hm-table tbody th[scope="row"]::after {
+    content: ""; position: absolute; inset: 0; z-index: -1; background: var(--card);
+  }
 
   /* 卡片固定 2 欄；並排區塊一律直排 */
   .card-grid, .cards { grid-template-columns: repeat(2, 1fr); gap: 7px; }
