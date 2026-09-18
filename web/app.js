@@ -1051,14 +1051,48 @@ function ssfLotsValue() {
   return Number.isFinite(raw) ? Math.min(999, Math.max(1, raw)) : 1;
 }
 
+// 排序（review I4）：340 列原本照 TAIFEX 代碼原序排列，找「哪個標的最便宜」只能整表
+// 捲動看。標的／契約乘數／1 口原始保證金／維持保證金可排序；「N 口合計」是「1 口
+// 金額 × 常數口數」的單調變換，排序結果與 1 口欄永遠相同，不必另開一個排序鍵去混淆
+// 使用者「這兩欄是不是各自獨立排序」，維持純文字表頭。同 selfcheck／自算選股既有
+// 慣例：換欄預設股票升冪、其餘降冪；空值永遠沉底，不受升降冪影響。排序作用在**搜尋
+// 後**的列表，換口數只改總欄顯示、不影響排序鍵，順序自然維持不變。
+let ssfMarginSort = { key: null, dir: -1 };   // key=null 時維持後端原序（TAIFEX 代碼序）
+
+function ssfMarginSortVal(r, k) {
+  return k === "name" ? (r.name || "") : r[k];
+}
+
 function renderSsfMargin() {
   const tb = document.querySelector("#ssf-margin-table tbody"); if (!tb) return;
   const lots = ssfLotsValue();
   const q = ($("ssf-margin-q").value || "").trim().toLowerCase();
-  const th = $("ssf-margin-total-th"); if (th) th.textContent = `${lots} 口合計`;
 
-  const rows = ssfMarginRows().filter(r => !q
+  let rows = ssfMarginRows().filter(r => !q
     || (r.name || "").toLowerCase().includes(q) || (r.code || "").includes(q));
+  if (ssfMarginSort.key) {                    // 空值永遠沉底，不受升降冪影響
+    const k = ssfMarginSort.key, dir = ssfMarginSort.dir;
+    rows = rows.slice().sort((ra, rb) => {
+      const va = ssfMarginSortVal(ra, k), vb = ssfMarginSortVal(rb, k);
+      const na = va == null || va === "", nb = vb == null || vb === "";
+      if (na && nb) return 0; if (na) return 1; if (nb) return -1;
+      if (typeof va === "string" || typeof vb === "string") return dir * String(va).localeCompare(String(vb));
+      return dir * (va - vb);
+    });
+  }
+  const arw = (k) => ssfMarginSort.key === k ? (ssfMarginSort.dir === 1 ? " ▲" : " ▼") : "";
+  const hcell = (k, label) => {              // scope/aria-sort 同 selfcheck／自算選股表頭慣例
+    const s = ssfMarginSort.key === k ? (ssfMarginSort.dir === 1 ? "ascending" : "descending") : "none";
+    return `<th class="sc-sort" scope="col" aria-sort="${s}" data-k="${k}">`
+      + `<span class="sc-h-label">${label}${arw(k)}</span></th>`;
+  };
+  const head = $("ssf-margin-head");
+  if (head) {
+    head.innerHTML = hcell("name", "標的") + hcell("multiplier", "契約乘數")
+      + '<th scope="col">原始比例</th>' + hcell("initial", "1 口原始保證金")
+      + hcell("maintenance", "維持保證金")
+      + `<th scope="col">${lots} 口合計</th>`;
+  }
   const note = $("ssf-margin-note");
   if (note && ssfMargin) {
     note.textContent = `以 ${ssfMargin.price_date || "—"} 結算價估算；`
@@ -4298,6 +4332,15 @@ document.querySelectorAll(".rku").forEach((b) => b.addEventListener("click", () 
 const ssfMarginBar = document.querySelector(".ssf-margin-bar");
 if (ssfMarginBar) ssfMarginBar.addEventListener("input", (e) => {
   if (e.target.closest("#ssf-lots, #ssf-margin-q")) renderSsfMargin();
+});
+// 表頭排序：委派在 <table> 本身（靜態 HTML 就有這個 id，thead 內容雖是動態重繪，
+// 監聽只需掛一次），同 #selfcheck-table／#self-screen-table 既有的 sc-sort 慣例。
+$("ssf-margin-table").addEventListener("click", (e) => {
+  const th = e.target.closest("th.sc-sort"); if (!th) return;
+  const k = th.dataset.k;
+  if (ssfMarginSort.key === k) ssfMarginSort.dir = -ssfMarginSort.dir;
+  else ssfMarginSort = { key: k, dir: k === "name" ? 1 : -1 };
+  renderSsfMargin();
 });
 // **這裡要列出「每一張」ECharts 圖**，漏掉的那張在視窗變動後就永遠停在舊尺寸
 // （echarts.init 凍住容器尺寸，見上面各載入函式的註解）。手機上這條路徑不是罕見情境

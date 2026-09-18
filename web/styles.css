@@ -1194,9 +1194,12 @@ button.file-label { font: inherit; }
 @media (max-width: 600px) {
   #self-screen-table .ss-badge { display: flex; width: fit-content; margin: 3px 0 0; }
 }
-#selfcheck-table th.sc-sort, #self-screen-table th.sc-sort { cursor: pointer; user-select: none; white-space: nowrap; vertical-align: bottom; }
-#selfcheck-table th.sc-sort:hover .sc-h-label, #self-screen-table th.sc-sort:hover .sc-h-label { color: var(--text-primary); }
-#selfcheck-table th .sc-h-label, #self-screen-table th .sc-h-label { display: block; }
+/* 第三張表加入 sc-sort 共用規則（股期概況的原始保證金試算表，review I4）——同一種
+   排序表頭樣式現在三張表都在用，選擇器一起列出，避免各自漂移（同 selfcheck／
+   自算選股那次的既有教訓）。ssf-margin-table 沒有 sc-h-unit 兩層表頭，故不列。 */
+#selfcheck-table th.sc-sort, #self-screen-table th.sc-sort, #ssf-margin-table th.sc-sort { cursor: pointer; user-select: none; white-space: nowrap; vertical-align: bottom; }
+#selfcheck-table th.sc-sort:hover .sc-h-label, #self-screen-table th.sc-sort:hover .sc-h-label, #ssf-margin-table th.sc-sort:hover .sc-h-label { color: var(--text-primary); }
+#selfcheck-table th .sc-h-label, #self-screen-table th .sc-h-label, #ssf-margin-table th .sc-h-label { display: block; }
 #selfcheck-table th .sc-h-unit, #self-screen-table th .sc-h-unit { display: block; margin-top: 1px; font-size: var(--fs-xs); font-weight: 500; color: var(--muted); }
 .picks-feedback { flex: 1 1 220px; min-width: 0; color: var(--muted); font-size: var(--fs-xs); text-align: right; }
 .picks-split { display: flex; gap: 12px; flex: 1; min-height: 0; }
