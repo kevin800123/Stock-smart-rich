@@ -280,15 +280,19 @@ def _seed_overview(monkeypatch, tmp_path):
     conn = get_connection(str(tmp_path / "api.sqlite"))
     init_db(conn)
     from stocks_power_rich.db import bulk_upsert_ssf_daily
+    # 每個 root 每天只有一個月份（一列即代表全部），故 oi_total 與 oi 同值——不是湊數，
+    # 這正是「該 root 當天只有一個 root+F 月份」時 oi_total 該有的樣子。
     rows = []
     for day, oi_cd in (("2026-09-16", 24000), ("2026-09-17", 25045)):
         rows += [
             {"date": day, "root": "CD", "main_month": "202610", "open": 2425.0,
              "high": 2453.0, "low": 2410.0, "close": 2433.0, "chg": 32.0, "chg_pct": 1.33,
-             "settlement": 2432.0, "oi": oi_cd, "volume": 8192, "main_volume": 6027},
+             "settlement": 2432.0, "oi": oi_cd, "oi_total": oi_cd,
+             "volume": 8192, "main_volume": 6027},
             {"date": day, "root": "QF", "main_month": "202610", "open": 2423.0,
              "high": 2453.0, "low": 2412.0, "close": 2434.0, "chg": 33.0, "chg_pct": -2.5,
-             "settlement": 2432.0, "oi": 53174, "volume": 36062, "main_volume": 26032},
+             "settlement": 2432.0, "oi": 53174, "oi_total": 53174,
+             "volume": 36062, "main_volume": 26032},
         ]
     bulk_upsert_ssf_daily(conn, rows)
 
@@ -340,13 +344,52 @@ def test_overview_oi_change_needs_both_days(monkeypatch, tmp_path):
     conn = get_connection(str(tmp_path / "api.sqlite"))
     bulk_upsert_ssf_daily(conn, [
         {"date": "2026-09-17", "root": "NY", "main_month": "202610", "settlement": 108.3,
-         "close": 108.3, "chg_pct": 0.5, "volume": 100, "oi": 500, "main_volume": 100},
+         "close": 108.3, "chg_pct": 0.5, "volume": 100, "oi": 500, "oi_total": 500,
+         "main_volume": 100},
     ])
     d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
     ups = {x["root"]: x for x in d["oi_change"]["up"]}
     assert ups["CD"]["oi_change"] == 1045
     assert "QF" not in ups          # QF 兩天相同，不算增加（變化為零的過濾規則）
     assert "NY" not in ups          # NY 前一天缺列，不可當成 0 算出一筆假的暴增
+
+
+def test_overview_oi_change_uses_the_total_not_the_rolled_main_month(monkeypatch, tmp_path):
+    """主力月換月時（結算日附近常態），用「主力月自己的 OI」相減會把單純的移倉誤讀成
+    未平倉大減——這裡兩天的真實總量只變動 +500，但成交量最大的月份從 202610 換成
+    202611，若用主力月口徑相減會得到 −8500 並被列進「減少最多」，其副標會告訴讀者
+    「部位在減少」，但那是錯的。`oi_change` 必須用 `oi_total`，該檔也不能被歸類成
+    減少。數字取自 review I1 的重現腳本（`probe_review.py`）。
+    """
+    from stocks_power_rich.api import market as M
+    from stocks_power_rich.db import bulk_upsert_ssf_daily
+    from stocks_power_rich.sources import taifex_ssf as ssf_mod
+    monkeypatch.setattr(M, "_ssf_contracts", lambda c: {
+        "CD": {"code": "2330", "stock_name": "台積電", "name": "台積電",
+               "multiplier": 2000, "is_etf": False, "is_mini": False}})
+    monkeypatch.setattr(M, "_quotes_for", lambda c, d: {})
+    monkeypatch.setattr(M, "_otc_quotes_for", lambda c, d: {})
+    conn = get_connection(str(tmp_path / "api.sqlite"))
+    init_db(conn)
+    day1 = ssf_mod.SSF_HEADER + "\n" + "\n".join([
+        "2026/10/19,CDF,202610  ,2400,2400,2400,2400,0,0.00%,9000,2400,25000,2400,2400,2400,2400,,一般,,",
+        "2026/10/19,CDF,202611  ,2405,2405,2405,2405,0,0.00%,3000,2405,3000,2405,2405,2405,2405,,一般,,",
+    ]) + "\n"
+    day2 = ssf_mod.SSF_HEADER + "\n" + "\n".join([
+        "2026/10/20,CDF,202610  ,2410,2410,2410,2410,0,0.00%,7000,2410,12000,2410,2410,2410,2410,,一般,,",
+        "2026/10/20,CDF,202611  ,2415,2415,2415,2415,0,0.00%,9000,2415,16500,2415,2415,2415,2415,,一般,,",
+    ]) + "\n"
+    rows = ssf_mod.summarize_ssf_days(
+        ssf_mod.parse_ssf_daily_csv(day1) + ssf_mod.parse_ssf_daily_csv(day2))
+    bulk_upsert_ssf_daily(conn, rows)
+
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert d["date"] == "2026-10-20"
+    ups = {x["root"]: x for x in d["oi_change"]["up"]}
+    downs = {x["root"]: x for x in d["oi_change"]["down"]}
+    assert "CD" not in downs                # 不可被誤判成「減少最多」
+    assert ups["CD"]["oi_change"] == 500    # 真實總量變化，不是主力月口徑的 −8500
+    assert ups["CD"]["oi"] == 28500         # 顯示值＝總量，不是主力月自己的 16500
 
 
 def test_overview_heatmap_leaves_a_missing_day_empty(monkeypatch, tmp_path):

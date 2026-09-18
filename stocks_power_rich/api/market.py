@@ -833,11 +833,15 @@ def _ssf_cell(row: dict, info: dict) -> dict:
     # （同一個 dict 裡 oi/chg/close 缺值本來就是回 None，volume 不該是唯一的例外）。
     # 排序鍵（today_rows／ranked 的 `r.get("volume") or 0`）吃的是資料庫原始 row，
     # 不是這裡回傳的 dict，所以缺量的合約只會在排序上退到最後，這裡的顯示值不受影響。
+    #
+    # 顯示的「oi」刻意讀 oi_total（root+F 一般、非價差全部月份的加總），不是主力月
+    # 自己的 oi：主力月換月（結算日附近的常態）當天會整個換掉，用主力月口徑會把
+    # 單純的移倉顯示成一次假的規模驟降；oi_total 才反映這檔股期真正的總部位。
     return {"root": row["root"], "name": (info or {}).get("name") or row["root"],
             "code": (info or {}).get("code"),
             "close": row.get("close"), "chg": row.get("chg"),
             "chg_pct": row.get("chg_pct"), "volume": row.get("volume"),
-            "oi": row.get("oi"), "main_month": row.get("main_month")}
+            "oi": row.get("oi_total"), "main_month": row.get("main_month")}
 
 
 def _ssf_candle(row: dict, info: dict) -> dict:
@@ -924,18 +928,20 @@ def ssf_overview(date: str | None = None):
                           "late_session": bool(info.get("late_session")),
                           "session_end": info.get("session_end") or ""})
 
-    # 未平倉增減：前一日缺列就整檔不列（缺值當 0 會捏造一筆大增）
+    # 未平倉增減：前一日缺列就整檔不列（缺值當 0 會捏造一筆大增）。用 oi_total 而非
+    # 主力月自己的 oi——換月當天兩者差很大（見 _ssf_cell 的說明），用主力月相減會把
+    # 移倉誤讀成大減/大增，副標「減少最多」會直接誤導讀者。
     idx = dates.index(day)
     prev = {r["root"]: r for r in by_day.get(dates[idx + 1], [])} if idx + 1 < len(dates) else {}
     changes = []
     for r in today_rows:
         p = prev.get(r["root"])
-        if not p or r.get("oi") is None or p.get("oi") is None:
+        if not p or r.get("oi_total") is None or p.get("oi_total") is None:
             continue
-        d = r["oi"] - p["oi"]
+        d = r["oi_total"] - p["oi_total"]
         if d:
             changes.append({**_ssf_cell(r, contracts.get(r["root"])), "oi_change": d,
-                            "oi_prev": p["oi"]})
+                            "oi_prev": p["oi_total"]})
     ups = sorted([x for x in changes if x["oi_change"] > 0],
                  key=lambda x: x["oi_change"], reverse=True)[:SSF_HOT_N]
     downs = sorted([x for x in changes if x["oi_change"] < 0],

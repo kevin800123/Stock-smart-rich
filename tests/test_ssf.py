@@ -96,6 +96,43 @@ def test_summary_skips_an_expiring_leg_whose_settlement_is_zero():
     assert cd["volume"] == 9999 + 50     # 量仍含到期腳（官方口徑）
 
 
+def test_summary_oi_total_sums_every_general_month_of_the_F_contract():
+    """oi_total 是「這個 root 的 F 合約、一般時段、非價差」全部月份 OI 加總——
+    不是主力月自己的 OI。SAMPLE 的 CD 有 202610（一般，oi=25045）與 202611
+    （一般，oi=3120）兩個月份，盤後那列（oi 恆 None，見 test_parse_keeps_night_
+    rows_but_their_settlement_and_oi_are_none）不計入。"""
+    rows = ssf.parse_ssf_daily_csv(SAMPLE)
+    cd = {r["root"]: r for r in ssf.summarize_ssf_day(rows)}["CD"]
+    assert cd["oi"] == 25045          # 主力月自己的 OI 維持既有語意，不變
+    assert cd["oi_total"] == 25045 + 3120
+
+
+def test_summary_oi_total_reflects_the_true_change_across_a_roll_over():
+    """主力月換月時，用「主力月自己的 OI」相減會把單純的移倉誤讀成未平倉大減。
+
+    這裡兩天的真實總量幾乎沒變（28000→28500，+500），但成交量最大的月份從
+    202610（day1）換成 202611（day2），導致「主力月 OI」從 25000 掉到 16500
+    （−8500）——`oi_total` 必須反映前者（真實小增），不能被換月抵銷掉。
+    數字取自 final-review-minors.md 記載的 review I1 重現腳本。
+    """
+    day1 = SSF_HEADER_LINE + "\n" + "\n".join([
+        "2026/10/19,CDF,202610  ,2400,2400,2400,2400,0,0.00%,9000,2400,25000,2400,2400,2400,2400,,一般,,",
+        "2026/10/19,CDF,202611  ,2405,2405,2405,2405,0,0.00%,3000,2405,3000,2405,2405,2405,2405,,一般,,",
+    ]) + "\n"
+    day2 = SSF_HEADER_LINE + "\n" + "\n".join([
+        "2026/10/20,CDF,202610  ,2410,2410,2410,2410,0,0.00%,7000,2410,12000,2410,2410,2410,2410,,一般,,",
+        "2026/10/20,CDF,202611  ,2415,2415,2415,2415,0,0.00%,9000,2415,16500,2415,2415,2415,2415,,一般,,",
+    ]) + "\n"
+    s1 = ssf.summarize_ssf_day(ssf.parse_ssf_daily_csv(day1))[0]
+    s2 = ssf.summarize_ssf_day(ssf.parse_ssf_daily_csv(day2))[0]
+    assert s1["main_month"] == "202610" and s1["oi"] == 25000
+    assert s2["main_month"] == "202611" and s2["oi"] == 16500      # 主力月換了
+    assert s1["oi_total"] == 25000 + 3000 == 28000
+    assert s2["oi_total"] == 12000 + 16500 == 28500
+    assert s2["oi_total"] - s1["oi_total"] == 500                 # 真實變化：小增
+    assert s2["oi"] - s1["oi"] == -8500                           # 主力月口徑：假性大減
+
+
 def test_summary_falls_back_to_the_nearest_month_when_nothing_traded():
     vq = {r["root"]: r for r in ssf.summarize_ssf_day(ssf.parse_ssf_daily_csv(SAMPLE))}["VQ"]
     assert vq["main_month"] == "202611"

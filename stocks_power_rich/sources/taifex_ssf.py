@@ -144,6 +144,12 @@ def summarize_ssf_day(rows: list[dict]) -> list[dict]:
     量與價**刻意用不同的母體**：
     - 量：所有非價差列、全月份、一般＋盤後、含調整後合約（官方 STFTop10 口徑）
     - 價：只取 `root+F` 的一般、非價差列（調整後合約乘數非標準，價格不可混用）
+
+    `oi`（主力月自己的未沖銷契約數）與 `oi_total`（`root+F` 一般、非價差列**全部
+    月份**加總）也刻意分開：主力月是「成交量最大的月份」，換月（每月結算日附近）
+    當天會整個換掉，此時 `oi` 相減會把單純的移倉算成一次假的未平倉大增/大減——
+    實測換月當天用主力月口徑算出 −8,500，但兩天的真實總量只變動 +500。`oi_total`
+    才是回答「整體部位有沒有變化」該用的數字，`oi` 保留給「這個主力月自己的規模」。
     """
     vol: dict[str, int] = {}
     price_rows: dict[str, list[dict]] = {}
@@ -166,6 +172,9 @@ def summarize_ssf_day(rows: list[dict]) -> list[dict]:
         traded = [r for r in usable if (r["volume"] or 0) > 0]
         main = (max(traded, key=lambda r: r["volume"]) if traded
                 else min(usable, key=lambda r: r["month"]))
+        # oi_total 從 cands（root+F 一般、非價差，全部月份）加總，刻意不用 usable——
+        # 到期腳結算價為 0 只代表價格不可用，它的未沖銷契約數在結算前仍是真實部位。
+        oi_total = sum((r["oi"] or 0) for r in cands)
         out.append({
             "date": dates.get(root) or main["date"],
             "root": root, "main_month": main["month"],
@@ -173,6 +182,7 @@ def summarize_ssf_day(rows: list[dict]) -> list[dict]:
             "low": main["low"], "close": main["close"],
             "chg": main["chg"], "chg_pct": main["chg_pct"],
             "settlement": main["settlement"], "oi": main["oi"],
+            "oi_total": oi_total,
             "volume": vol.get(root, 0), "main_volume": main["volume"] or 0,
         })
     return out

@@ -168,7 +168,7 @@ def init_db(conn: sqlite3.Connection) -> None:
     # v1 的四個區塊都用不到，而全市場逐月份是 5 倍的量（見設計 §0 決定 5）。
     conn.execute("CREATE TABLE IF NOT EXISTS ssf_daily (date TEXT, root TEXT, "
                  "main_month TEXT, open REAL, high REAL, low REAL, close REAL, "
-                 "chg REAL, chg_pct REAL, settlement REAL, oi INTEGER, "
+                 "chg REAL, chg_pct REAL, settlement REAL, oi INTEGER, oi_total INTEGER, "
                  "volume INTEGER, main_volume INTEGER, PRIMARY KEY (date, root))")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_ssf_root ON ssf_daily(root, date)")
     conn.execute(
@@ -256,6 +256,9 @@ def init_db(conn: sqlite3.Connection) -> None:
     custody_existing = {r[1] for r in conn.execute("PRAGMA table_info(custody_dist)").fetchall()}
     if "total_holders" not in custody_existing:
         conn.execute("ALTER TABLE custody_dist ADD COLUMN total_holders REAL")
+    ssf_existing = {r[1] for r in conn.execute("PRAGMA table_info(ssf_daily)").fetchall()}
+    if "oi_total" not in ssf_existing:
+        conn.execute("ALTER TABLE ssf_daily ADD COLUMN oi_total INTEGER")
     # 一次性資料修正：jpy 語意由「日圓兌台幣(~0.2)」改為「美元兌日圓(~150)」，清掉舊語意殘值
     conn.execute("UPDATE market_daily SET jpy=NULL, jpy_chg=NULL WHERE jpy IS NOT NULL AND jpy < 10")
     conn.commit()
@@ -499,7 +502,7 @@ def bulk_upsert_ohlc(conn: sqlite3.Connection, date: str, rows: dict) -> int:
 
 
 _SSF_COLS = ("main_month", "open", "high", "low", "close", "chg", "chg_pct",
-             "settlement", "oi", "volume", "main_volume")
+             "settlement", "oi", "oi_total", "volume", "main_volume")
 
 
 def bulk_upsert_ssf_daily(conn: sqlite3.Connection, rows: list[dict]) -> int:
