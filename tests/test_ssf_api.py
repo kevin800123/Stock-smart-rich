@@ -665,9 +665,41 @@ def test_overview_cell_volume_is_none_not_zero_when_missing(monkeypatch, tmp_pat
 
 
 def test_overview_empty_payload_has_the_same_coverage_keys_as_the_populated_one(monkeypatch, tmp_path):
-    """沒有任何資料時，coverage 仍要帶滿四個鍵——有資料時的路徑永遠會給
-    roots/no_stock_code/no_spot，前端一律讀這幾個鍵，空資料庫若只給
-    stored_days 會直接 KeyError。"""
+    """沒有任何資料時，coverage 仍要帶滿五個鍵——有資料時的路徑永遠會給
+    roots/no_stock_code/no_spot/lag_trading_days，前端一律讀這幾個鍵，空資料庫
+    若少了任何一個會直接 KeyError。
+
+    **契約變更（review I6／Fix E）**：新增 `lag_trading_days`，斷言字典跟著補上
+    這個鍵（值 0——沒有 SSF 資料日可比較，沒有落後可言，同 stored_days 的 0 是
+    同一種「查無資料」的預設值，不是「資料是最新的」那種 0）。
+    """
     d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
     assert d["date"] is None
-    assert d["coverage"] == {"stored_days": 0, "roots": 0, "no_stock_code": 0, "no_spot": 0}
+    assert d["coverage"] == {"stored_days": 0, "roots": 0, "no_stock_code": 0,
+                             "no_spot": 0, "lag_trading_days": 0}
+
+
+def test_overview_reports_trading_day_lag_not_calendar_days(monkeypatch, tmp_path):
+    """freshness 徽章要看『交易日』落後幾天，不是日曆天——跨週末不是真正的落後
+    （同 `renderFreshness` 既有的決定，見 CLAUDE.md「資料新鮮度徽章」一節）。
+
+    SSF 資料只到 2026-09-17（週四）；market_daily 之後有 09-18（週五）與 09-22
+    （週一，中間的 09-19/20 週末與 09-21 那個「假日」都刻意不建列，模擬真實的
+    交易日曆只在真的開盤那天才有列）兩個有加權指數的交易日——落後天數要是 2，
+    不能把跳過的週末／假日也算進去。
+    """
+    _seed_overview(monkeypatch, tmp_path)
+    conn = get_connection(str(tmp_path / "api.sqlite"))
+    for d in ("2026-09-18", "2026-09-22"):
+        conn.execute("INSERT INTO market_daily (date, taiex) VALUES (?, 1.0)", (d,))
+    conn.commit()
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert d["date"] == "2026-09-17"
+    assert d["coverage"]["lag_trading_days"] == 2
+
+
+def test_overview_lag_is_zero_when_ssf_data_is_current(monkeypatch, tmp_path):
+    """market_daily 沒有比 SSF 資料日更晚的交易日時，落後天數是 0（資料是最新的）。"""
+    _seed_overview(monkeypatch, tmp_path)
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert d["coverage"]["lag_trading_days"] == 0

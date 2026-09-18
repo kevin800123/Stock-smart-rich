@@ -870,11 +870,13 @@ def ssf_overview(date: str | None = None):
     c = conn()
     dates = get_ssf_dates(c, limit=SSF_HEATMAP_DAYS)
     if not dates:
-        # coverage 的鍵要跟有資料時一致（stored_days/roots/no_stock_code/no_spot）：
-        # 前端一律讀這四個鍵，缺資料庫時若只給 stored_days 會在空站上直接 KeyError。
+        # coverage 的鍵要跟有資料時一致（stored_days/roots/no_stock_code/no_spot/
+        # lag_trading_days）：前端一律讀這五個鍵，缺資料庫時若少一個會在空站上
+        # 直接 KeyError。
         return {"date": None, "dates": [], "hot": [], "ranks": {}, "basis": [],
                 "oi_change": {"up": [], "down": []}, "heatmap": {"dates": [], "rows": []},
-                "coverage": {"stored_days": 0, "roots": 0, "no_stock_code": 0, "no_spot": 0}}
+                "coverage": {"stored_days": 0, "roots": 0, "no_stock_code": 0,
+                            "no_spot": 0, "lag_trading_days": 0}}
     day = date if date in dates else dates[0]
     contracts = _ssf_contracts(c)
     rows_all = get_ssf_rows(c, dates)
@@ -985,5 +987,14 @@ def ssf_overview(date: str | None = None):
             # stored_days 要回報 ssf_daily 實際存了幾天，不能用 len(dates)——那是
             # 熱力圖固定 10 日視窗的長度，永遠 <=SSF_HEATMAP_DAYS，回補落後多少天
             # 就永遠看不出來（見 db.count_ssf_dates 的說明）。
+            #
+            # lag_trading_days（review I6／Fix E）：用「交易日」而非日曆天衡量
+            # 新鮮度落後多少——同總覽 renderFreshness 既有的決定，跨週末說「落後
+            # 3 天」是事實，硬換算成「落後 1 個交易日」在週一早上會看起來像資料
+            # 很新。market_daily 只在真的開盤那天才有列（見 CLAUDE.md），所以
+            # 「比 SSF 資料日晚、且有加權指數」的列數天生就排除了週末／假日。
             "coverage": {"stored_days": count_ssf_dates(c), "roots": len(today_rows),
-                         "no_stock_code": no_code, "no_spot": no_spot}}
+                         "no_stock_code": no_code, "no_spot": no_spot,
+                         "lag_trading_days": c.execute(
+                             "SELECT COUNT(*) FROM market_daily "
+                             "WHERE taiex IS NOT NULL AND date > ?", (day,)).fetchone()[0]}}
