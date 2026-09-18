@@ -157,14 +157,14 @@ def _otc_industry(c) -> dict:
 def _ssf_contracts(c) -> dict:
     """股期合約對照表 {root: {...}}，月快取（比照 `_industry_map`）。
 
-    **讀取端也要守衛**：正常有 320 筆，少於 300 一律視為未命中重抓——
+    **讀取端也要守衛**：正常有 320 筆，少於 MIN_PLAUSIBLE_CONTRACTS 一律視為未命中重抓——
     只有寫入守衛擋不住「已經寫進去的半套結果」（本專案兩次快取事故的教訓）。
     """
     key = f"ssf_contracts:{datetime.now().strftime('%Y-%m')}"
     m = get_ai_cache(c, key)
-    if not m or len(m) < 300:
+    if not m or len(m) < taifex_ssf.MIN_PLAUSIBLE_CONTRACTS:
         fresh = taifex_ssf.fetch_ssf_contract_map()
-        if len(fresh) >= 300:
+        if len(fresh) >= taifex_ssf.MIN_PLAUSIBLE_CONTRACTS:
             set_ai_cache(c, key, fresh)
             return fresh
         return m or fresh or {}

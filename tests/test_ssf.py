@@ -321,8 +321,8 @@ class _ListResp:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise ssf.httpx.HTTPStatusError(
-                f"{self.status_code} error", request=None, response=None)
+            # 簡單地拋出異常，文案包含狀態碼，這樣測試的斷言能找到"500"字樣
+            raise Exception(f"HTTP {self.status_code} error")
 
 
 class _ListClient:
@@ -340,14 +340,21 @@ class _ListClient:
         return self._resp
 
 
-def test_fetch_contract_map_returns_empty_on_non_2xx_without_raising(monkeypatch):
+def test_fetch_contract_map_returns_empty_on_non_2xx_without_raising(monkeypatch, caplog):
     """TAIFEX 回錯誤頁時，httpx 預設不會自動丟例外——不加 raise_for_status 的話，
     regex 在錯誤頁裡找不到任何合格列、安靜地回傳 {}，`except` 那行 log 永遠不會跑，
     整個失敗完全無聲。加了 raise_for_status 後，非 2xx 要變成例外被既有的
     `except Exception` 接住並記錄下來，對外仍是回傳 {}、不往上炸。"""
-    monkeypatch.setattr(ssf.httpx, "Client",
-                        lambda *a, **kw: _ListClient(_ListResp(b"<html>error</html>", 500)))
-    assert ssf.fetch_ssf_contract_map() == {}
+    import logging
+    # monkeypatch ssf 模塊本身的 httpx 物件，因為 ssf.py 中是 `import httpx` 而非 `from ... import`
+    mock_httpx = type('MockHTTPX', (), {
+        'Client': lambda *a, **kw: _ListClient(_ListResp(b"<html>error</html>", 500))
+    })()
+    monkeypatch.setattr(ssf, "httpx", mock_httpx)
+    with caplog.at_level(logging.WARNING, logger="spr"):
+        result = ssf.fetch_ssf_contract_map()
+    assert result == {}
+    assert any("抓取失敗" in r.message and "500" in r.message for r in caplog.records)
 
 
 def test_fetch_contract_map_logs_a_warning_when_the_parsed_map_is_implausibly_small(
