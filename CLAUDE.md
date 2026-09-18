@@ -1709,8 +1709,6 @@ MIS 即時確定可用，v2 的即時版不必先放棄。實作期間量到兩�
 **尚未處理，留給後續清理（不要當成已完成）**：
 - `/api/ssf/backfill` 還缺同類端點都有的 `max_fetch` 與「`remaining` 會收斂」契約——目前最
   壞情況 7 次 × 2.7 秒 ≈ 19 秒，遠低於會觸發 502 的量級，暫時安全但不是最終形態。
-- 股期頁的 6 個 `card-group` 都帶 `data-key`、顯示可收合的游標與 ▾，但收合初始化
-  （`initCollapsibleGroups`）只綁 `#view-overview`，點了沒有反應。
 
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):

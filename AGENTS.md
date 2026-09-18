@@ -387,8 +387,7 @@ SSF 資料日」的列數——看交易日不看日曆天（同 `renderFreshnes
 不對」三例(sr-only測在不讀的欄位/OI測兩天OI相同被錯誤路徑排除/熱力圖測兩天root相同)——
 **每道守衛都要反證**。
 
-**未處理留後續**：`/api/ssf/backfill`缺`max_fetch`與remaining收斂契約(現況最壞19秒可接受)；
-6個`card-group`帶`data-key`但收合初始化只綁`#view-overview`，點了沒反應。
+**未處理留後續**：`/api/ssf/backfill`缺`max_fetch`與remaining收斂契約(現況最壞19秒可接受)。
 
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):

@@ -680,7 +680,7 @@
           <span class="freshness" id="ssf-fresh"></span>
         </div>
 
-        <div class="card-group" data-key="ssf-hot">
+        <div class="card-group">
           <div class="group-title">熱門股期　<span class="muted small">依官方成交口數；口數含小型合約，規模不同</span></div>
           <div class="cards" id="ssf-hot"></div>
         </div>
@@ -689,7 +689,7 @@
              不寫進 .chart 容器本身——那個容器是 ECharts 的 canvas，寫 innerHTML 會把
              canvas 從 DOM 移除，讓 ssfCharts[key] 之後指到一個已經不在畫面上的實例
              （見 app.js renderSsfRanks 的註解）。預設 .hidden，資料為空時才顯示。 -->
-        <div class="card-group span-full" data-key="ssf-ranks">
+        <div class="card-group span-full">
           <div class="group-title">成交量／漲幅／跌幅前 20　<span class="muted small">K 棒為相對前一日結算價的 %</span></div>
           <div class="chart" id="ssf-chart-volume" style="height:260px"></div>
           <div class="muted small hidden" id="ssf-chart-volume-empty">尚無資料</div>
@@ -699,7 +699,7 @@
           <div class="muted small hidden" id="ssf-chart-losers-empty">尚無資料</div>
         </div>
 
-        <div class="card-group" data-key="ssf-basis">
+        <div class="card-group">
           <div class="group-title">熱門股期對現貨價差　<span class="muted small">期貨 13:45 結算價 vs 現貨 13:30 收盤，兩者時間不同步</span></div>
           <div class="table-wrap" id="ssf-basis-wrap">
             <table id="ssf-basis-table"><thead><tr>
@@ -711,7 +711,7 @@
 
         <!-- 近 10 交易日排行熱力圖：列＝名次 1–10、欄＝交易日，格子＝當日該名次的合約＋
              漲跌%。第一欄用 th scope="row"（名次是列標題，語意上不是資料格）。 -->
-        <div class="card-group span-full" data-key="ssf-heatmap">
+        <div class="card-group span-full">
           <div class="group-title">近期排行熱力圖　<span class="muted small">每日成交口數前 10，格子為當日漲跌%</span></div>
           <div class="table-wrap" id="ssf-hm-wrap">
             <table id="ssf-hm-table"><thead><tr id="ssf-hm-head"></tr></thead><tbody></tbody></table>
@@ -723,7 +723,7 @@
              的 ▲▼ 字彙表達（不套 .up/.down）。前一日缺列的合約後端直接不列進 up/down
              （見 market.py 註解：缺值當 0 會捏造一筆大增/大減），所以兩份清單本來就
              可能偏短甚至掛零，空狀態要講出原因，不能只寫「尚無資料」。 -->
-        <div class="card-group" data-key="ssf-oi">
+        <div class="card-group">
           <div class="group-title">未平倉增減　<span class="muted small">大量搭配 OI 大增是建倉，大量搭配 OI 大減是平倉</span></div>
           <div class="ssf-oi-cols">
             <div><div class="ssf-oi-title">增加最多</div><ol id="ssf-oi-up" class="ssf-oi-list"></ol></div>
@@ -737,7 +737,7 @@
              「單口四捨五入後」的金額，交易所自己的規則就是先四捨五入單口再乘 N。
              表頭（含排序用的 th.sc-sort／aria-sort）由 renderSsfMargin() 整列
              重繪，同 #ssf-hm-head 的既有寫法——這裡的 <tr> 在靜態 HTML 裡刻意留空。 -->
-        <div class="card-group span-full" data-key="ssf-margin">
+        <div class="card-group span-full">
           <div class="group-title">原始保證金試算</div>
           <div class="ssf-margin-bar">
             <label>口數 <input id="ssf-lots" type="number" min="1" max="999" value="1"></label>
