@@ -979,6 +979,10 @@ function renderSsfBasis(rows) {
   if (!rows.length) { tb.innerHTML = '<tr><td colspan="6" class="muted small">尚無資料</td></tr>'; return; }
   tb.innerHTML = rows.map(r => `<tr>
     <td class="ssf-name">${esc(r.name)}<span class="ssf-code">${esc(r.code || "")}</span>${
+      // 主力月放在名稱旁、比照現有 .ssf-code 的小字muted 樣式（review #2 之後 main_month
+      // 已固定取標準合約，這裡只是把它顯示出來）——價差會隨換月移動，讀者要知道這個
+      // 價差算的是哪個月份的合約，不然「正價差／逆價差」看起來像是憑空冒出來的結論。
+      r.main_month ? `<span class="ssf-code" title="價差取用的主力月合約">${esc(r.main_month)}</span>` : ""}${
       // 收盤到 16:15 的那 14 檔 ETF 期貨，落差是 2.5 小時而非 15 分鐘，必須標出來
       r.late_session ? `<span class="ssf-late" title="期貨交易到 ${esc(r.session_end)}，與現貨 13:30 收盤落差更大">⏱</span>` : ""}</td>
     <td>${fmt(r.futures)}</td><td>${fmt(r.spot)}</td>
