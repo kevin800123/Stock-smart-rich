@@ -526,6 +526,17 @@ def get_ssf_dates(conn: sqlite3.Connection, limit: int = 10) -> list[str]:
         "SELECT DISTINCT date FROM ssf_daily ORDER BY date DESC LIMIT ?", (limit,))]
 
 
+def count_ssf_dates(conn: sqlite3.Connection) -> int:
+    """股期日檔實際存了幾個**交易日**，與 `get_ssf_dates` 的 `limit` 無關。
+
+    `get_ssf_dates(limit=10)` 是熱力圖固定軸寬，`len(...)` 永遠 `<=10`；覆蓋率要
+    回報的是「真的存了多少天」才看得出離回補目標還差多少，兩者不能共用同一次查詢
+    結果（見 `api/market.py::ssf_overview` 的 `coverage.stored_days`）。
+    """
+    row = conn.execute("SELECT COUNT(DISTINCT date) FROM ssf_daily").fetchone()
+    return row[0] if row else 0
+
+
 def get_ssf_rows(conn: sqlite3.Connection, dates: list[str]) -> list[dict]:
     """取得指定交易日的股期日檔所有列。"""
     if not dates:

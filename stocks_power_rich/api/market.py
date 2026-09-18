@@ -27,7 +27,7 @@ from .helpers import (
 )
 from ..sources import twse, taifex, mis, tpex
 from ..sources import taifex_ssf
-from ..db import get_ssf_dates, get_ssf_rows
+from ..db import get_ssf_dates, get_ssf_rows, count_ssf_dates
 from .. import analysis, gemini, ss_trader, traders
 from ..config import load_config
 
@@ -964,5 +964,8 @@ def ssf_overview(date: str | None = None):
             "ranks": {"volume": vol_rank, "gainers": gainers, "losers": losers},
             "basis": basis, "oi_change": {"up": ups, "down": downs},
             "heatmap": {"dates": hm_dates, "rows": grid},
-            "coverage": {"stored_days": len(dates), "roots": len(today_rows),
+            # stored_days 要回報 ssf_daily 實際存了幾天，不能用 len(dates)——那是
+            # 熱力圖固定 10 日視窗的長度，永遠 <=SSF_HEATMAP_DAYS，回補落後多少天
+            # 就永遠看不出來（見 db.count_ssf_dates 的說明）。
+            "coverage": {"stored_days": count_ssf_dates(c), "roots": len(today_rows),
                          "no_stock_code": no_code, "no_spot": no_spot}}

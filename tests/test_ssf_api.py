@@ -401,6 +401,33 @@ def test_overview_basis_coverage_counts_gaps_beyond_the_cap(monkeypatch, tmp_pat
     assert resp["coverage"]["no_spot"] == 3
 
 
+def test_overview_stored_days_reports_the_true_total_not_the_heatmap_window(monkeypatch, tmp_path):
+    """『已存 N 個交易日』要回報 ssf_daily 實際存了幾天，不能被熱力圖固定的 10 日
+    視窗夾住——那個視窗（`dates`／`SSF_HEATMAP_DAYS`）只是熱力圖的軸寬，`len()`
+    永遠 <=10，回補是否落後（例如只存了 3 天）就永遠看不出來，而這正是這個欄位
+    存在的唯一理由。這裡存 15 個交易日：斷言 `coverage.stored_days`==15（真實總數）
+    但熱力圖軸 `dates` 仍固定在 10（視窗不變，只有計數變）。
+    """
+    from stocks_power_rich.api import market as M
+    from stocks_power_rich.db import bulk_upsert_ssf_daily
+    monkeypatch.setattr(M, "_ssf_contracts", lambda c: _CONTRACTS)
+    monkeypatch.setattr(M, "_quotes_for", lambda c, d: {})
+    monkeypatch.setattr(M, "_otc_quotes_for", lambda c, d: {})
+    conn = get_connection(str(tmp_path / "api.sqlite"))
+    init_db(conn)
+    rows = [
+        {"date": f"2026-08-{i + 1:02d}", "root": "CD", "main_month": "202610",
+         "settlement": 2432.0, "close": 2433.0, "chg_pct": 1.33,
+         "volume": 8192, "oi": 25045, "main_volume": 6027}
+        for i in range(15)                              # 15 個交易日 > 熱力圖視窗（10）
+    ]
+    bulk_upsert_ssf_daily(conn, rows)
+
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert d["coverage"]["stored_days"] == 15           # 真實總數，不是被視窗夾住的 10
+    assert len(d["dates"]) == 10                        # 熱力圖軸仍固定 10 天，不受影響
+
+
 def test_overview_cell_volume_is_none_not_zero_when_missing(monkeypatch, tmp_path):
     """缺量能要回 None，不可誤植為 0——0 是『零成交』這個事實，跟『查無資料』是
     兩件不同的事（同一個 dict 裡 oi/chg/close 缺值本來就是回 None，volume 不該是

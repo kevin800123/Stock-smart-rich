@@ -880,7 +880,9 @@ function renderSsfHot(rows) {
   const el = $("ssf-hot"); if (!el) return;
   if (!rows.length) { el.innerHTML = '<div class="muted small">尚無資料</div>'; return; }
   el.innerHTML = rows.map(r => {
-    const dir = r.chg_pct == null ? "" : (r.chg_pct >= 0 ? "up" : "down");
+    // 用全站共用的 chgClass（三態：漲/跌/平），不要自己寫二元判斷——原本
+    // `>= 0 ? "up" : "down"` 會把「剛好收平盤」也上紅（誤讀成上漲）。
+    const dir = r.chg_pct == null ? "" : chgClass(r.chg_pct);
     return `<div class="card"><div class="card-label">${esc(r.name)}</div>`
       + `<div class="card-val">${fmt(r.close)}</div>`
       + `<div class="card-chg ${dir}">${r.chg_pct == null ? "—" : (r.chg_pct >= 0 ? "+" : "") + r.chg_pct.toFixed(2) + "%"}</div>`

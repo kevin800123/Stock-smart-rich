@@ -614,11 +614,11 @@ body[data-public] .status-bar { display: none; }
 .group-title {
   display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
   font-size: var(--fs-md); color: var(--label); font-weight: 600;
-  /* margin 用 shorthand 而非只設 margin-bottom：既有用法全是 <div>（預設無邊距，
-     只設 bottom 就夠），但股期概況的 .pane-heading 標題改用 <h2>（維持全站「每個
-     view 一個標題層級」的慣例），h2 有瀏覽器預設的 margin-top，只蓋 bottom 蓋不掉，
-     標題列會多出一截空白。shorthand 三值（top/左右/bottom）把 top 與左右一併歸零，
-     對既有 <div> 寫法是無操作（本來就是 0），只在套到標題標籤時才有差。 */
+  /* margin 用 shorthand 而非只設 margin-bottom：曾經借給股期概況的頁面標題 <h2>
+     用過（h2 有瀏覽器預設 margin-top，只設 bottom 蓋不掉），2026-09 發現那其實是
+     誤用——頁面標題該比照 .picks-title-row h2（見下方 #view-ssf 專屬規則），已
+     改回不掛這個 class。現在的用法全是 <div>（預設無邊距），shorthand 對它是
+     無操作（本來就是 0），純粹維持寫法一致，不必改回 margin-bottom。 */
   margin: 0 0 var(--sp-2);
 }
 /* 收合：點標題列收合／展開，狀態存 localStorage（見 app.js initCollapsibleGroups）。
@@ -1209,6 +1209,11 @@ button.file-label { font: inherit; }
 .pane-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; margin-bottom: 7px; min-height: 38px; }
 .pane-heading h3 { margin: 0; color: var(--text-primary); font-size: var(--fs-md); }
 .pane-heading p { margin: 2px 0 0; color: var(--muted); font-size: var(--fs-xs); }
+/* 股期概況的 <h2> 是整頁標題（比照其他頁 .picks-title-row h2：20px／--text-primary／
+   粗體），不是 .card-group 內的分組標題——之前掛 .group-title 會借到 16px／--label／
+   600 那組樣式，讓這頁標題比其他頁小又暗。用 ID 範圍只動這裡，不影響 .pane-heading h3
+   （交易帳本／自算選股等既有小標）或其他頁面的 h2。 */
+#view-ssf .pane-heading h2 { margin: 0; color: var(--text-primary); font-size: var(--fs-lg); font-weight: 700; letter-spacing: -.015em; }
 .pane-count, .all-filter { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
 .active-filter { display: inline-flex; align-items: center; gap: 6px; padding: 3px 5px 3px 8px; background: rgba(112, 184, 255, .14); color: #b9d8f8; border-radius: 5px; font-size: var(--fs-xs); }
 .active-filter b { color: var(--text-primary); }
@@ -1641,6 +1646,7 @@ a.stock:hover { text-decoration: underline; }
   .picks-command { padding: 10px; gap: 8px; }
   .picks-title-row { justify-content: space-between; gap: 6px; }
   .picks-title-row h2 { font-size: var(--fs-md); }
+  #view-ssf .pane-heading h2 { font-size: var(--fs-md); }
   .picks-command-copy p { line-height: 1.4; }
   .picks-actions { overflow-x: visible; }
   .picks-action { min-height: 40px; }
