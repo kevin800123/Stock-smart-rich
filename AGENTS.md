@@ -182,6 +182,16 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 - **畫面標出「來源：排程預算／現算」**，排程失敗時端點會安靜退回現算，不標就發現不了。
 - 本機 0.42s 不具代表性（dev DB 無季報/OHLC≥55，貴的那半沒跑滿）。
 
+### 週集保一公布就反映（custody_watch，2026-09）
+
+週五 17:00–23:30、週六 08:00–21:30 每 30 分鐘只讀 TDCC 檔頭（`tdcc.peek_custody_week`），比最新**完整**
+週新才抓（`_accumulate_custody`）並重算快取裡那一天的自算選股（不寫前瞻紀錄）；完整週判定
+（`db._recent_custody_week_counts`，`custody_compare_weeks`／`custody_week_complete` 共用同一支查詢）
+避開個股「補歷史」寫進的殘缺週（舊碼會被它擋一整週）。週六週報 18:00–21:30 每 30 分鐘，本週集保到了
+就送、同週只送一次，21:30 照送並註明集保仍為上一週（`custody_is_current`）。前瞻紀錄只在訊號日當天寫。
+`slot_times` 支援 `minute="0,30"`（`_cron_minutes`）。頁面覆蓋率列標「集保 前週→本週・取得時間」，只有
+一週完整時標「尚無前一週可比」。細節見 CLAUDE.md 同名段落。
+
 ### `conn()` 不關連線：查證後刻意不修（2026-09）
 
 - **先量**：引用計數不回收（相依套件有循環參照），50 個請求尖峰 **44 條**開著，`gc.collect()` 後歸零，**握著寫入鎖的 0 條**（反證：刻意不 commit 的連線抓得到）。**不是那次 `database is locked` 的成因**，是資源浪費不是鎖競爭。

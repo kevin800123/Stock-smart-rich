@@ -1120,6 +1120,44 @@ self_screen 三格都會是「尚未到期」，那是**正確**顯示不是故�
   上櫃融資維持率，要靠之後的 `_heal_margin_maintenance` 補。尚未處理；可行的方向是行情重抓失敗時改用
   `stock_ohlc` 裡 17:30 已存好的當天收盤。
 
+### 週集保一公布就反映到自算選股（custody_watch，2026-09）
+
+使用者回報：週六新一週的集保已經公布，自算選股（資料日 09-18、17:30 算好）還沒更新。原因是
+集保只在每晚 21:00 的 `run_update` 裡抓，週五那次 TDCC 還沒放出新週；實測 2026-09-19 週六 13:23
+TDCC 已是 09-18 週。週六 18:00 的 Telegram「本週新進榜＋大戶買進前三」排在 21:00 之前，必然用舊集保。
+
+- **`custody_watch` 排程**（週五 17:00–23:30、週六 08:00–21:30，每 30 分鐘，family `custody_watch`）：
+  `tdcc.peek_custody_week` 只串流讀檔頭兩列取資料日期，比資料庫最新**完整**週新才完整下載
+  （`_accumulate_custody`）並重算自算選股快取（`record_signals=False`）。**重算快取裡那一天**，不用
+  `_latest_date`：週五 21:00 前 market_daily 還沒有週五，會算成週四、蓋掉 17:30 的名單。
+  第一次取得某週的時間記在 `ai_cache custody_fetched:{week}`，累積幾週後可以收窄輪詢時段。
+- **完整週判定只有一份查詢**（`db._recent_custody_week_counts`：最近 10 週有 `big400_pct` 的週與列數，
+  `custody_compare_weeks`／`latest_complete_custody_week`／`custody_week_complete` 都吃它，門檻同
+  `custody_compare_weeks` 既有的 `CUSTODY_WEEK_MIN_FRAC`=0.5）：個股頁「補歷史」會把單一檔寫進全市場
+  還沒公布的那一週，舊碼用 MAX 與「該週有任何一列」判斷，**全市場那一批會被 6 天節流與「已存在」
+  擋一整週**。
+- **週六週報等新集保**：`picks_new_weekly` 改成 18:00–21:30 每 30 分鐘；本週已送（`picks_weekly_sent:
+  {ISO年週}`）就略過、本週集保沒進來且未到 21:30 就等、21:30 照送並註明「集保仍為 MM-DD 週」。
+  送出成功才標記，失敗讓下一場重試。「本週集保進來了」＝最新完整週 ≥ 最新交易日所在 ISO 週的週一
+  （`custody_is_current`，週五放假時 TDCC 用週四也成立）。
+- **前瞻紀錄只在訊號日當天寫**（`refresh_self_screen_cache` 的守衛）：進場價是訊號日收盤，週末用收盤
+  後才公布的集保重算週五名單，不可拿它補寫那天的訊號。頁面上的名單會換成新集保的版本，前瞻紀錄
+  維持週五當天記下的名單。
+- **排程時段支援多個分鐘**（`_cron_minutes`）：`slot_times` 原本 `int(minute)`，`"0,30"` 會炸。
+- **頁面標出集保週**：自算選股覆蓋率列有兩個完整週時顯示「集保 09-11→09-18」，若當週已存
+  `custody_fetched:{week}` 快取再加「・09-19 09:30 取得」；只有一週完整時（大戶增比要兩週相減）
+  顯示「集保 09-18（尚無前一週可比）」而不畫懸空的「→」；一週都沒有就整段不顯示
+  （`coverage.custody_weeks`／`custody_fetched_at`）。
+- **測試改動**：`tests/test_job_runs.py::test_catchup_runs_missed_jobs_once_and_not_again_on_restart`
+  第二次啟動仍固定在同一個半點（22:15），維持「同一半點內不重跑」的既有斷言；新行為（重啟跨過
+  新的半點只補那一場、run_key 帶新的 `HH:MM`）改由另一條
+  `test_catchup_runs_the_next_due_half_hour_slot_of_custody_watch` 鎖住。
+  `tests/test_api.py::test_refresh_self_screen_cache_writes_the_cache_and_reports_what_it_did`
+  補上把 `_now` 對到訊號日——少了它，新加的「只在訊號日當天寫前瞻紀錄」守衛會讓 `recorded` 恆為
+  False，測試看起來照樣通過、實際上沒有真的跑到 ledger 那條路徑。`tests/test_scheduler.py`／
+  `tests/test_selfcheck.py` 是**擴充**斷言（補上 `custody_watch_fri`／`custody_watch_sat` 等新
+  job id、`coverage` 補上具體的 `custody_weeks` 值），不是放寬既有檢查。
+
 ### 排程補跑 ＋ 執行紀錄表 ＋ logging（2026-09）
 
 `scheduler.py` 用 APScheduler 的**記憶體 jobstore**。push 到 `main` 會觸發 Zeabur 重新部署＝程序重啟，
@@ -1150,6 +1188,8 @@ self_screen 三格都會是「尚未到期」，那是**正確**顯示不是故�
 - **排程規格只有一份 `job_schedule(cfg, schedule_time)`**：`main.py` 註冊 APScheduler 與啟動補跑都吃它，
   不會註冊一套、補跑另一套。每筆帶 `family`（補跑分組）與 `catchup`（`intraday_watch` 為 False：盤中警示
   過了時間就沒意義）。`run_key`：一天一場＝日期，一天多場（`self_screen_early` 三次）＝`日期:HH:MM`。
+  `custody_watch_fri`／`custody_watch_sat` 同屬 family `custody_watch`，補跑只補最近錯過的那一場
+  （重跑無害）；`picks_new_weekly` 一天 8 場，run_key 是 `日期:HH:MM`。
 - **標 interrupted 有啟動競態，兩道一起修（2026-09-15 審查抓到）**：原本只在補跑執行緒裡
   `UPDATE … WHERE status='running'`，而那條執行緒比排程器晚起來、又不設時間界線。兩個方向都會出事：
   (1) 排程器先觸發某支 job、寫進一列 running，補跑再把它標成 interrupted → plan 把它當沒跑完、
