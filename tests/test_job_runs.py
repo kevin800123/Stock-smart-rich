@@ -231,7 +231,6 @@ def test_catchup_runs_missed_jobs_once_and_not_again_on_restart(c, monkeypatch):
     assert db.latest_job_runs(c)["daily_update"]["trigger"] == "catchup"
     # 第二次啟動（同一個半點內，22:15）：一次性的家族全部已 ok → 不跑；custody_watch_fri
     # 也已在 22:00 那一場補跑過，同一個半點內不再補（由 run_key 去重）。
-    
     r2 = helpers.catchup_missed_jobs(c, specs, jobs, now=FRI_22.replace(minute=15))
     assert r2["plan"] == []
     assert r2["ran"] == []
@@ -241,23 +240,21 @@ def test_catchup_runs_missed_jobs_once_and_not_again_on_restart(c, monkeypatch):
 
 @pytest.mark.real_catchup
 def test_catchup_runs_the_next_due_half_hour_slot_of_custody_watch(c, monkeypatch):
-    """驗證半點時段邊界交叉：同一個時段不重跑，跨到下一個半點才補。"""
+    """每 30 分鐘一場的家族：重啟跨過新的半點就補那一場（新的 run_key），
+    不是重跑已 ok 的舊場；一天一場的家族照舊不重跑。"""
     _clock(monkeypatch, FRI_22)
     specs = helpers.job_schedule(_cfg(telegram_token=""), "21:00")
-    calls, jobs = _stub_jobs("custody_watch_fri")
-
-    # 第一次：22:00 時段
-    r1 = helpers.catchup_missed_jobs(c, specs, jobs, now=FRI_22)
-    assert calls["custody_watch_fri"] == 1  # 補跑一次
-
-    # 同一時段內（22:15）
-    r2 = helpers.catchup_missed_jobs(c, specs, jobs, now=FRI_22.replace(minute=15))
-    assert calls["custody_watch_fri"] == 1  # 不重跑
-
-    # 跨到下一個半點（22:30）
-    _clock(monkeypatch, FRI_22.replace(minute=30))
-    r3 = helpers.catchup_missed_jobs(c, specs, jobs, now=FRI_22.replace(minute=30))
-    assert calls["custody_watch_fri"] == 2  # 補跑第二次
+    calls, jobs = _stub_jobs("daily_update", "osfut_morning", "osfut_evening", "self_screen_early",
+                             "ssf_daily", "intraday_watch", "weekly_line", "custody_watch_fri")
+    helpers.catchup_missed_jobs(c, specs, jobs, now=FRI_22)
+    assert calls["custody_watch_fri"] == 1 and calls["daily_update"] == 1
+    later = FRI_22.replace(hour=23)
+    _clock(monkeypatch, later)
+    r2 = helpers.catchup_missed_jobs(c, specs, jobs, now=later)
+    assert [(p["job_id"], p["run_key"]) for p in r2["plan"]] == [("custody_watch_fri", "2026-09-11:23:00")]
+    assert [x["job_id"] for x in r2["ran"]] == ["custody_watch_fri"]
+    assert calls["custody_watch_fri"] == 2
+    assert calls["daily_update"] == 1 and calls["osfut_evening"] == 1 and calls["ssf_daily"] == 1
 
 
 @pytest.mark.real_catchup
