@@ -1106,15 +1106,25 @@ const SSF_MARGIN_ALIASES = {
   "臺股": ["大台", "台指期", "tx"],
 };
 
+// 查詢字若**剛好等於**某個別名，就只回那個別名指向的列——使用者打的是簡稱，不是在找
+// 名稱片段。只在名稱比對之外「再加上」別名命中是不夠的：「大台」會因「元大台灣50ETF」
+// 字面上就含「大台」（normTW 後是「大臺」），連帶撈出三檔 ETF 期貨。
+// 別名用完全相等，不用 includes——「MTX」（小型臺指的別名）字面上就含有「TX」，
+// 比對方向若是「別名 includes 查詢字」，打 TX 會連小型臺指一起撈出來。別名清單本身
+// 已把每個要支援的簡稱都列成獨立項目（微台／微台指各自一項），不需要靠子字串來補。
+function ssfAliasTarget(q) {   // q 已經過 normTW + toLowerCase
+  if (!q) return null;
+  for (const [name, aliases] of Object.entries(SSF_MARGIN_ALIASES))
+    if (aliases.some((a) => normTW(a.toLowerCase()) === q)) return name;
+  return null;
+}
+
 function ssfMarginMatches(r, q) {   // q 已經過 normTW + toLowerCase
   if (!q) return true;
-  if (normTW((r.name || "").toLowerCase()).includes(q)) return true;
-  if ((r.code || "").toLowerCase().includes(q)) return true;
-  // 別名用完全相等，不用 includes——「MTX」（小型臺指的別名）字面上就含有「TX」，
-  // 若比對方向是「別名 includes 查詢字」，打 TX 會連小型臺指一起撈出來。別名清單
-  // 本身已經把每個要支援的簡稱都列成獨立項目（微台／微台指各自一項），不需要靠
-  // 子字串包含來補「打一半也找得到」，改完全相等後查詢意圖才不會互相污染。
-  return (SSF_MARGIN_ALIASES[r.name] || []).some((a) => normTW(a.toLowerCase()) === q);
+  const alias = ssfAliasTarget(q);
+  if (alias) return r.name === alias;
+  return normTW((r.name || "").toLowerCase()).includes(q)
+    || (r.code || "").toLowerCase().includes(q);
 }
 
 function renderSsfMargin() {

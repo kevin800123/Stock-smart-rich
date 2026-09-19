@@ -399,7 +399,9 @@ SSF 資料日」的列數，文字與顏色都吃它——**與總覽 `renderFre
 `sectorColor` 本身，它還給總覽熱力圖/權值卡用，#5)；note 補 `coverage.no_spot`(算了但沒印，
 比照既有 `no_stock_code`，M3)；保證金表搜尋加 `normTW()`(台→臺)+指數三檔別名表(微台/微台指
 /tmf→微型臺指、小台/小台指/mtx→小型臺指、大台/台指期/tx→臺股)，**別名比對用完全相等不
-用 `includes`**(MTX 字面含 TX 子字串，方向反了會讓「TX」連小型臺指也撈出來，M8)；個股頁
+用 `includes`**(MTX 字面含 TX 子字串，方向反了會讓「TX」連小型臺指也撈出來，M8)；**查詢字
+剛好是別名時只回該列**(`ssfAliasTarget`：否則「大台」會因「元大台灣50ETF」字面含「大台」多帶
+出 3 檔 ETF；非別名查詢行為不變)；個股頁
 股期保證金依 `kind` 分文案：ETF 是官方公布固定金額，股票才是結算價估算(M9)。
 
 **測試坑**：新端點依賴(`_attach_ssf_margin`)讓~5條既有自算選股測試真連外卻照樣通過→conftest
@@ -410,7 +412,11 @@ SSF 資料日」的列數，文字與顏色都吃它——**與總覽 `renderFre
 不對」三例(sr-only測在不讀的欄位/OI測兩天OI相同被錯誤路徑排除/熱力圖測兩天root相同)——
 **每道守衛都要反證**。
 
-**未處理留後續**：`/api/ssf/backfill`缺`max_fetch`與remaining收斂契約(現況最壞19秒可接受)。
+**回補只補缺的交易日**：`GET /api/ssf/backfill?days=30&max_fetch=3`，重複呼叫直到`remaining`
+不再下降(同 chips/backfill)。交易日曆＝`market_daily` 有 `taiex` 的日子(同 `lag_trading_days`)，
+缺口依新到舊切成 ≤14 日曆天一段(`_ssf_missing_spans`)，每次最多 `max_fetch`(上限 7)段；
+**今天不算**(交給每日排程，否則白天 remaining 卡在 1)；窗口內沒有交易日時回應附 `note`
+(新部署先跑 `/api/backfill`)，不讓 `remaining=0` 被讀成已補齊。
 
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):

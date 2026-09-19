@@ -1734,6 +1734,10 @@ MIS 即時確定可用，v2 的即時版不必先放棄。實作期間量到兩�
   小型臺指；大台／台指期／tx → 臺股）。**別名比對要用完全相等，不能用 `includes`**——手動
   驗證時發現「MTX」字面上含有「TX」子字串，若比對方向是「別名 includes 查詢字」，打 TX
   會連小型臺指也撈出來，改完全相等後 9 個別名各自精準對應唯一一列。
+  **查詢字剛好是別名時，只回別名指向的那一列**（`ssfAliasTarget`，2026-09 後續修正）：原本
+  別名命中是「名稱子字串比對之外再加上」，結果打「大台」會因「元大台灣50ETF」字面含「大台」
+  （`normTW` 後是「大臺」）多帶出 3 檔 ETF 期貨。使用者打的是簡稱、不是名稱片段，所以
+  別名命中時就不再做子字串比對；不是別名的查詢（「元大」「台積」「2330」）行為不變。
 - **個股頁的股期保證金要分 ETF 與股票兩種文案**（review M9，2026-09 修正）：
   `renderStockSsfMargin` 原本無條件寫「以 YYYY-MM-DD 結算價估算」，但 ETF 期貨用官方公布
   的固定金額，沒有結算價這個輸入。改成看 `usable` 列的 `kind`：全部是 `"etf"` 才顯示
@@ -1760,9 +1764,18 @@ MIS 即時確定可用，v2 的即時版不必先放棄。實作期間量到兩�
   才知道測試有沒有在測它自己的名字。測試分散在 `tests/test_ssf.py`（純函式）／
   `test_ssf_db.py`／`test_ssf_margin.py`／`test_ssf_api.py`（端點）。
 
-**尚未處理，留給後續清理（不要當成已完成）**：
-- `/api/ssf/backfill` 還缺同類端點都有的 `max_fetch` 與「`remaining` 會收斂」契約——目前最
-  壞情況 7 次 × 2.7 秒 ≈ 19 秒，遠低於會觸發 502 的量級，暫時安全但不是最終形態。
+**回補只補缺的交易日，重複呼叫直到 `remaining` 不再下降**（2026-09 後續，補齊同類端點
+的契約）：`GET /api/ssf/backfill?days=30&max_fetch=3`。舊版每次都從今天往回走同一段、已存的
+也重抓——重打不會前進，也說不出還差幾天。現在：
+- **交易日曆＝`market_daily` 有收盤指數（`taiex` 非 NULL）的日子**，與
+  `coverage.lag_trading_days` 同一個定義；窗口內「在日曆上、但 `ssf_daily` 沒有」的日子就是
+  缺口。依新到舊切成每段不超過 14 個日曆天的請求（`_ssf_missing_spans`），每次最多
+  `max_fetch` 段（上限 7：90 天 ÷ 14 天；一段約 2.7 秒，一次最多約 19 秒）。回應帶
+  `fetched`／`remaining`／`window_trading_days`／`dates`。
+- **今天不算**，交給每日排程——白天打的時候今天的日盤資料還沒發佈，算進缺口的話
+  `remaining` 會整天卡在 1、看起來永遠補不完。
+- **`market_daily` 在窗口內沒有交易日時要講出來**（回應附 `note`）——新部署還沒跑
+  `/api/backfill` 時這支什麼都不會抓，只回 `remaining=0` 會被讀成「已經補齊」。
 
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
