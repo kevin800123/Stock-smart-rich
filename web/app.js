@@ -1177,9 +1177,10 @@ function ssfAliasTarget(q) {   // q 已經過 normTW + toLowerCase
   return null;
 }
 
-function ssfMarginMatches(r, q) {   // q 已經過 normTW + toLowerCase
+// alias＝ssfAliasTarget(q) 的結果，由呼叫端每次重畫算一次傳進來——它只跟查詢字有關，
+// 放在這裡面會對 340 列各重算一次別名表。
+function ssfMarginMatches(r, q, alias) {   // q 已經過 normTW + toLowerCase
   if (!q) return true;
-  const alias = ssfAliasTarget(q);
   if (alias) return r.name === alias;
   return normTW((r.name || "").toLowerCase()).includes(q)
     || (r.code || "").toLowerCase().includes(q);
@@ -1190,7 +1191,8 @@ function renderSsfMargin() {
   const lots = ssfLotsValue();
   const q = normTW(($("ssf-margin-q").value || "").trim().toLowerCase());
 
-  let rows = ssfMarginRows().filter((r) => ssfMarginMatches(r, q));
+  const alias = ssfAliasTarget(q);
+  let rows = ssfMarginRows().filter((r) => ssfMarginMatches(r, q, alias));
   if (ssfMarginSort.key) {                    // 空值永遠沉底，不受升降冪影響
     const k = ssfMarginSort.key, dir = ssfMarginSort.dir;
     rows = rows.slice().sort((ra, rb) => {

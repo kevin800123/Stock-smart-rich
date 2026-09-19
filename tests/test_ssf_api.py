@@ -1104,3 +1104,34 @@ def test_overview_lag_is_zero_when_ssf_data_is_current(monkeypatch, tmp_path):
     _seed_overview(monkeypatch, tmp_path)
     d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
     assert d["coverage"]["lag_trading_days"] == 0
+
+
+# ── _ssf_missing_spans：純函式，直接測（端點測試只間接走到它）─────────────────────
+def test_ssf_missing_spans_edges():
+    from stocks_power_rich.api.admin import _ssf_missing_spans
+    assert _ssf_missing_spans([]) == []
+    # 單一天自成一段（頭尾同一天）
+    assert _ssf_missing_spans(["2026-09-18"]) == [("2026-09-18", "2026-09-18")]
+    # 新到舊的連續交易日併成一段，回傳 (最舊, 最新)
+    assert _ssf_missing_spans(["2026-09-18", "2026-09-17", "2026-09-16"]) == [
+        ("2026-09-16", "2026-09-18")]
+
+
+def test_ssf_missing_spans_caps_each_span_at_14_calendar_days_inclusive():
+    from stocks_power_rich.api.admin import _ssf_missing_spans
+    # 頭尾差 13 天＝含頭尾 14 個日曆天，仍是同一段
+    assert _ssf_missing_spans(["2026-09-18", "2026-09-05"]) == [("2026-09-05", "2026-09-18")]
+    # 差 14 天＝15 個日曆天，超過上限，要切成兩段（新的那段在前）
+    assert _ssf_missing_spans(["2026-09-18", "2026-09-04"]) == [
+        ("2026-09-18", "2026-09-18"), ("2026-09-04", "2026-09-04")]
+    # 上限量的是「這一段的最新日」到候選日，不是相鄰兩天的間隔：
+    # 09-18→09-10→09-04 相鄰間隔都 <14，但 09-04 距這段最新日 09-18 已 14 天
+    assert _ssf_missing_spans(["2026-09-18", "2026-09-10", "2026-09-04"]) == [
+        ("2026-09-10", "2026-09-18"), ("2026-09-04", "2026-09-04")]
+
+
+def test_ssf_missing_spans_respects_custom_max_days():
+    from stocks_power_rich.api.admin import _ssf_missing_spans
+    days = ["2026-09-18", "2026-09-17", "2026-09-16", "2026-09-15"]
+    assert _ssf_missing_spans(days, max_days=2) == [
+        ("2026-09-17", "2026-09-18"), ("2026-09-15", "2026-09-16")]
