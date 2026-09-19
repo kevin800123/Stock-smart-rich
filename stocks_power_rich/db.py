@@ -393,6 +393,14 @@ def bulk_upsert_custody(conn: sqlite3.Connection, week: str, data: dict) -> int:
 CUSTODY_WEEK_MIN_FRAC = 0.5   # 略過「殘缺週」的相對門檻：見 custody_compare_weeks
 
 
+def _recent_custody_week_counts(conn: sqlite3.Connection, as_of: str | None = None) -> list:
+    """最近 10 週有 big400_pct 的週與列數——完整週判定與比較週共用同一支查詢。"""
+    cutoff = as_of or "9999-99-99"
+    return conn.execute(
+        "SELECT week, COUNT(*) FROM custody_dist WHERE week<=? AND big400_pct IS NOT NULL "
+        "GROUP BY week ORDER BY week DESC LIMIT 10", (cutoff,)).fetchall()
+
+
 def custody_compare_weeks(conn: sqlite3.Connection, as_of: str | None = None) -> list:
     """挑出算大戶增比要用的『最近兩週完整集保週』（新到舊），略過殘缺週。
 
@@ -402,10 +410,7 @@ def custody_compare_weeks(conn: sqlite3.Connection, as_of: str | None = None) ->
     只剩那幾檔、大戶增比幾乎全滅。改用相對門檻：某週 big400_pct 檔數若不到近期最大週的
     CUSTODY_WEEK_MIN_FRAC，就當殘缺週跳過。小樣本（測試）因各週檔數相近而不受影響。
     """
-    cutoff = as_of or "9999-99-99"
-    counts = conn.execute(
-        "SELECT week, COUNT(*) FROM custody_dist WHERE week<=? AND big400_pct IS NOT NULL "
-        "GROUP BY week ORDER BY week DESC LIMIT 10", (cutoff,)).fetchall()
+    counts = _recent_custody_week_counts(conn, as_of)
     if not counts:
         return []
     mx = max(c for _, c in counts)
@@ -424,9 +429,7 @@ def latest_complete_custody_week(conn: sqlite3.Connection) -> str | None:
 
 def custody_week_complete(conn: sqlite3.Connection, week: str) -> bool:
     """這一週是不是完整的全市場批次（檔數達到近 10 週最大週的 CUSTODY_WEEK_MIN_FRAC）。"""
-    counts = conn.execute(
-        "SELECT week, COUNT(*) FROM custody_dist WHERE big400_pct IS NOT NULL "
-        "GROUP BY week ORDER BY week DESC LIMIT 10").fetchall()
+    counts = _recent_custody_week_counts(conn)
     if not counts:
         return False
     mx = max(n for _, n in counts)
