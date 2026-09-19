@@ -1094,12 +1094,21 @@ def custody_is_current(c, pre: dict | None = None) -> dict:
     if pre is None:
         pre = selfcheck.load_latest_precomputed(c)
     week = _cache_custody_week(pre)
+    monday = _latest_trading_week_monday(c)
+    if not week or not monday:
+        return {"current": False, "week": week}
+    return {"current": week >= monday, "week": week}
+
+
+def _latest_trading_week_monday(c) -> str | None:
+    """最新交易日（market_daily 有加權指數的最後一天）所在 ISO 週的週一。「本週集保」的門檻：
+    集保週日期 ≥ 這一天就是本週的。custody_is_current（看名單快取）與週報註記（看資料表）共用。"""
     row = c.execute("SELECT MAX(date) FROM market_daily WHERE taiex IS NOT NULL").fetchone()
     last = row[0] if row else None
-    if not week or not last:
-        return {"current": False, "week": week}
+    if not last:
+        return None
     d = date.fromisoformat(last)
-    return {"current": week >= (d - timedelta(days=d.weekday())).isoformat(), "week": week}
+    return (d - timedelta(days=d.weekday())).isoformat()
 
 
 def new_picks_push_payload(c, kind: str, force: bool = False) -> dict:
@@ -1174,21 +1183,31 @@ def new_picks_push_payload(c, kind: str, force: bool = False) -> dict:
         # 週報**一律**附一行集保說明：大戶增比與大戶買進前三都是週資料，讀者要知道用的是哪兩週。
         # 沒等到新集保時寫「尚未取得」而不是「尚未公布」——程式只知道名單還沒用上本週集保，
         # 不知道 TDCC 到底有沒有公布。
+        # 名單沒用上本週集保時再分兩種：**資料表**已經有本週的完整集保（寫入後重算失敗／被重啟打斷／
+        # 回 skipped，到了 21:30 截止照送）寫「本週集保已取得，名單尚未重算」；資料表也還沒有才是
+        # 「本週集保尚未取得」。兩者要處理的事不同（前者要查重算為什麼沒成功），混成一句會讓人去等 TDCC。
+        # 門檻用「≥ 本週週一」而不是「比名單用的週新」：名單落後兩週、資料表只補到上週時，本週集保
+        # 其實還沒取得，說「已取得」是錯的。
+        from ..db import latest_complete_custody_week
         cust = custody_is_current(c, pre)
         cweeks = [w for w in ((pre.get("coverage") or {}).get("custody_weeks") or []) if w]
         if cust["current"]:
             custody_note = (f"集保 {cweeks[1][5:]}→{cweeks[0][5:]}" if len(cweeks) >= 2
                             else f"集保 {cweeks[0][5:]}")
-        elif cust["week"]:
-            custody_note = f"集保仍為 {cust['week'][5:]} 週（本週集保尚未取得）"
         else:
-            custody_note = "本週集保尚未取得"
+            stored, monday = latest_complete_custody_week(c), _latest_trading_week_monday(c)
+            got = ("本週集保已取得，名單尚未重算" if stored and monday and stored >= monday
+                   else "本週集保尚未取得")
+            custody_note = f"集保仍為 {cust['week'][5:]} 週（{got}）" if cust["week"] else got
         text = pick_push.compose_weekly_new_picks(
             day=day, week_start=week_start.isoformat(), total=counts["total"], n_week=counts["week"],
             items=[_item(r) for r in rows if r["is_week_new"]], basis=result["week_new_vs"],
             top_sectors=[(g["sector"], g["buy_value"]) for g in tops], ready_at=pre.get("ready_at"),
             custody_note=custody_note)
-    return {"kind": kind, "date": day, "counts": counts, "text": text}
+    # codes＝這份名單的**全部**入選代號（不只新進的那幾檔）：送出成功後記成「使用者看過的名單」，
+    # 下一份名單要比的是整份（見 _send_new_picks）。
+    return {"kind": kind, "date": day, "counts": counts, "text": text,
+            "codes": [r["code"] for r in rows]}
 
 
 # 週報「同一週只送一次」的鎖。run_job 的去重擋不住：週報一天 8 個 run_key（18:00–21:30 每 30 分鐘），
@@ -1204,7 +1223,14 @@ def telegram_new_picks_job(c, cfg, kind: str) -> dict:
     weekly（週六 18:00–21:30 每 30 分鐘）：本週已送過就略過；本週集保還沒進來、且還沒到
     WEEKLY_PUSH_DEADLINE 就先等（下一場再試）；到了截止時間照送，內文註明集保仍是上一週。
     送出成功才標記本週已送，失敗讓下一場重試。「讀標記 → 送出 → 寫標記」整段在
-    `_WEEKLY_PUSH_LOCK` 裡（理由見鎖的註解）；daily 一天一場，run_job 的去重就夠。"""
+    `_WEEKLY_PUSH_LOCK` 裡（理由見鎖的註解）；daily 一天一場，run_job 的去重就夠。
+
+    daily 與 weekly 送出**成功**後，都把這份名單的全部入選代號記成「使用者看過的名單」
+    （`ledger.record_shown_self_screen`，鍵是名單日期；weekly 在鎖裡記）——新進榜的比對基準＝
+    帳本 ∪ 推播實際送出過的名單。**只在這裡記、不在重算時記**：推播頻道才是使用者實際收到的東西；
+    週報送出之後的週末重算帶進來的新進股沒有人收到過，重算時就記的話週一不再是新進、永遠不會被播出。
+    送出失敗不記（沒有人收到）。沒設定 Telegram 時這個 job 不註冊、也就沒有看過的名單，比對基準
+    退回只看帳本（同改動前）。預覽端點只呼叫 new_picks_push_payload，不會記。"""
     if kind != "weekly":
         return _send_new_picks(c, cfg, kind, None)
     with _WEEKLY_PUSH_LOCK:
@@ -1220,14 +1246,20 @@ def telegram_new_picks_job(c, cfg, kind: str) -> dict:
 
 
 def _send_new_picks(c, cfg, kind: str, sent_key: str | None) -> dict:
-    """組好內容送出；sent_key 有給（週報）且送出成功才寫標記。"""
+    """組好內容送出；sent_key 有給（週報）且送出成功才寫標記。送出成功（daily 與 weekly）也把整份
+    名單記成「使用者看過的名單」（理由見 telegram_new_picks_job）；送出失敗兩者都不寫。"""
     from .. import telegram_push
+    from ..ledger import record_shown_self_screen
     payload = new_picks_push_payload(c, kind)
     if payload.get("skipped"):
         return {"kind": kind, "date": payload.get("date"), "skipped": payload["skipped"]}
     r = telegram_push.send_message(cfg.telegram_token, cfg.telegram_chat_id, payload["text"])
-    if sent_key and r.get("ok"):
-        set_ai_cache(c, sent_key, {"at": _now().isoformat(timespec="seconds"), "date": payload["date"]})
+    if r.get("ok"):
+        # 先寫「本週已送」再記看過的名單：萬一後者寫入失敗（例外照常往上拋給 run_job），代價是週一的
+        # 新進判定少了這份基準；反過來的話週報標記沒寫，下一場會把同一份週報再送一次給訂閱者。
+        if sent_key:
+            set_ai_cache(c, sent_key, {"at": _now().isoformat(timespec="seconds"), "date": payload["date"]})
+        record_shown_self_screen(c, payload["date"], payload["codes"])
     return {"kind": kind, "date": payload["date"], "counts": payload["counts"],
             "sent": bool(r.get("ok")), "parse_mode": r.get("parse_mode_used")}
 
@@ -1251,11 +1283,12 @@ def refresh_self_screen_cache(c, day: str | None = None, record_signals: bool = 
     用的是收盤後才公布的集保，拿它補寫那天的訊號等於用未來資料回測。代價是週五排程整晚失敗時，
     週六補算不會補記那一天——少一天樣本可以接受，偏一天會讓結論失真（同 partial_universe 的取捨）。
 
-    前瞻紀錄以外，每次寫入快取都把這次的入選代號記成「使用者看過的名單」
-    （`ledger.record_shown_self_screen`，**不論 record_signals**）：新進榜的比對基準＝帳本 ∪ 看過的
-    名單，週六用新集保重算的週五名單才不會在週一被再報一次「今天才進榜」。
+    **這裡不記「使用者看過的名單」**（`selfscreen_shown:{date}`）。那一份只在 Telegram 新進榜推播
+    **實際送出成功**時記（`_send_new_picks`）：重算不等於有人看到——週報一週只送一次、平日推播週末
+    不跑，週報送出之後的週末重算（週六／週日 21:00 的每日更新、custody_watch）帶進來的新進股，若在這裡
+    就記成「看過」，週一不再是新進、推播也就永遠不會播出它。
     """
-    from ..ledger import record_self_screen_signals, record_shown_self_screen
+    from ..ledger import record_self_screen_signals
     from .. import analysis, selfcheck
 
     day = day or _latest_date(c)
@@ -1292,11 +1325,8 @@ def refresh_self_screen_cache(c, day: str | None = None, record_signals: bool = 
     recorded = bool(record_signals and _now().date().isoformat() == day)
     if recorded:
         record_self_screen_signals(c, universe, vmin, smin, precomputed=pre, signal_date=day)
-    rows = selfcheck.build_self_screen(c, day, universe, vmin, smin, precomputed=pre)["rows"]
-    # 使用者看過的名單：週五 21:00 用新集保重算、週六 21:00 重算週五、custody_watch 補算都會改變畫面上
-    # 的名單，但都不寫帳本——所以這一行不看 recorded，每次寫入快取都記（重用上面算好的 rows，不多算一次）。
-    record_shown_self_screen(c, day, [r["code"] for r in rows])
-    picked = len(rows)
+    picked = len(selfcheck.build_self_screen(
+        c, day, universe, vmin, smin, precomputed=pre)["rows"])
     return {"cached": True, "date": day, "universe": len(universe),
             "listed": len(listed), "otc": len(otc),
             "rows": len(pre["rows"]), "sectors": len(pre["heatmap"]), "picked": picked,
@@ -1318,7 +1348,8 @@ def custody_watch(c) -> dict:
     重算全市場。
     TDCC 檔頭已是新週、完整下載卻沒寫入是**故障**不是略過（下載 5xx、維護頁被解析成空、週別對不上），
     丟 RuntimeError。例外一律往上拋給 run_job 記成 failed（/api/health 看得到），下一個 30 分鐘再試；
-    21:00 的每日更新仍會照舊抓，漏不掉。
+    21:00 的每日更新仍會照舊抓，漏不掉。丟錯前會重讀資料表：另一條路同時把那一週寫進去了（正常的
+    競爭）就照常重算，回 `stored_elsewhere: True`。
     """
     from .. import selfcheck, updater
     from ..db import latest_complete_custody_week
@@ -1337,12 +1368,22 @@ def custody_watch(c) -> dict:
         return {"retried": True, "week": local,
                 "self_screen": {k: ss.get(k) for k in ("cached", "date", "skipped")}}
     week = updater._accumulate_custody(c)
+    stored_elsewhere = False
     if not week:
-        raise RuntimeError(f"TDCC 檔頭是 {remote} 週，但完整下載沒有寫入（本機最新完整週 {local}）")
+        # 丟錯之前重讀一次資料表：同一時間另一條路（21:00 的 run_update、補跑執行緒與排程重疊）可能
+        # 已經把這一週寫進去，`_accumulate_custody` 看到「已完整／6 天內」就回 None——那是正常的競爭，
+        # 不是下載失敗，照常往下重算名單（它不一定已經重算過）。重讀之後仍比 TDCC 舊才是真的沒寫入。
+        again = latest_complete_custody_week(c)
+        if not again or again < remote:
+            raise RuntimeError(f"TDCC 檔頭是 {remote} 週，但完整下載沒有寫入（本機最新完整週 {again}）")
+        week, stored_elsewhere = again, True
     fetched = (get_ai_cache(c, f"custody_fetched:{week}") or {}).get("at")
     ss = refresh_self_screen_cache(c, day=listed, record_signals=False)
-    return {"week": week, "fetched_at": fetched,
-            "self_screen": {k: ss.get(k) for k in ("cached", "date", "skipped")}}
+    out = {"week": week, "fetched_at": fetched,
+           "self_screen": {k: ss.get(k) for k in ("cached", "date", "skipped")}}
+    if stored_elsewhere:
+        out["stored_elsewhere"] = True   # job_runs.note 看得出這次是別條路寫入的
+    return out
 
 
 def _intraday_scan(c, push: bool = True) -> dict:
