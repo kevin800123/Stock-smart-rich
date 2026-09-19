@@ -3185,6 +3185,7 @@ def test_refresh_self_screen_cache_waits_until_the_days_data_is_in(tmp_path, mon
     **有資料的**最近 3 天」，法人還沒公布時會安靜地拿昨天的窗口冒充今天，投信／外資三日
     又是木質的籌碼加分——名單會算錯，而且會被記進前瞻訊號、補不回來。
     融資不在門檻內：約 21:00 才公布，而且只是參考欄、不進篩選。"""
+    from datetime import datetime
     from stocks_power_rich import ledger
     from stocks_power_rich.api import helpers as H
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily, get_ai_cache
@@ -3195,6 +3196,7 @@ def test_refresh_self_screen_cache_waits_until_the_days_data_is_in(tmp_path, mon
     conn.commit()
     recorded = []
     monkeypatch.setattr(ledger, "record_self_screen_signals", lambda *a, **k: recorded.append(1))
+    monkeypatch.setattr(H, "_now", lambda: datetime(2026, 10, 1, 21, 0))   # 訊號日當天才寫前瞻紀錄
     monkeypatch.setattr(H, "_industry_map", lambda c: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1e9}})
     monkeypatch.setattr(H, "_otc_industry", lambda c: {"8069": {"sector": "光電業", "name": "元太", "shares": 1e9}})
 
@@ -3383,6 +3385,7 @@ def test_refresh_self_screen_cache_refuses_half_a_market(tmp_path, monkeypatch):
     偏差的樣本會永遠留在使用者正在等的勝率裡。**一天空缺只是少一天樣本，
     一天偏差會讓結論失真**——所以寧可跳過。
     """
+    from datetime import datetime
     from stocks_power_rich import ledger
     from stocks_power_rich.api import helpers as H
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily, get_ai_cache
@@ -3394,6 +3397,7 @@ def test_refresh_self_screen_cache_refuses_half_a_market(tmp_path, monkeypatch):
     _mark_inputs_ready(conn, "2026-10-01")
     recorded = []
     monkeypatch.setattr(ledger, "record_self_screen_signals", lambda *a, **k: recorded.append(1))
+    monkeypatch.setattr(H, "_now", lambda: datetime(2026, 10, 1, 21, 0))   # 訊號日當天才寫前瞻紀錄
 
     tse = {"2330": {"sector": "半導體", "name": "台積電", "shares": 1e9}}
     otc = {"8069": {"sector": "光電業", "name": "元太", "shares": 1e9}}

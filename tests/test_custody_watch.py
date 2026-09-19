@@ -115,3 +115,35 @@ def test_slot_times_support_multiple_minutes():
     assert helpers.scheduled_run_key(spec, datetime(2026, 9, 19, 20, 31, 5)) == "2026-09-19:20:30"
     one = {"id": "y", "family": "y", "hour": "21", "minute": "0", "dow": None}
     assert helpers.run_key_for(one, datetime(2026, 9, 19, 21, 0)) == "2026-09-19"   # 一天一場照舊
+
+
+def _ready(c, day):
+    for market in ("TWSE", "TPEx"):
+        for source in ("quotes", "institutional"):
+            db.set_stock_source_coverage(c, day, market, source, "complete", 1, None)
+
+
+def _universe(monkeypatch):
+    monkeypatch.setattr(helpers, "_industry_map",
+                        lambda c: {"2330": {"sector": "半導體", "name": "台積電", "shares": 1e9}})
+    monkeypatch.setattr(helpers, "_otc_industry",
+                        lambda c: {"8069": {"sector": "光電業", "name": "元太", "shares": 1e9}})
+
+
+@pytest.mark.parametrize("now,record_signals,expect", [
+    (datetime(2026, 9, 18, 21, 0), True, True),     # 訊號日當天：寫
+    (datetime(2026, 9, 19, 21, 0), True, False),    # 週六重算週五：不寫（收盤後才公布的集保）
+    (datetime(2026, 9, 18, 21, 0), False, False),   # custody_watch 明確不寫
+])
+def test_refresh_records_signals_only_on_the_signal_day(conn, monkeypatch, now, record_signals, expect):
+    db.upsert_market_daily(conn, {"date": "2026-09-18", "taiex": 20000.0})
+    conn.commit()
+    _ready(conn, "2026-09-18")
+    _universe(monkeypatch)
+    calls = []
+    monkeypatch.setattr(ledger, "record_self_screen_signals", lambda *a, **k: calls.append(k.get("signal_date")))
+    monkeypatch.setattr(helpers, "_now", lambda: now)
+    res = helpers.refresh_self_screen_cache(conn, record_signals=record_signals)
+    assert res["cached"] is True and res["date"] == "2026-09-18"
+    assert res["recorded"] is expect
+    assert calls == (["2026-09-18"] if expect else [])

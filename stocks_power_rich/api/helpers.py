@@ -1145,7 +1145,7 @@ def telegram_new_picks_job(c, cfg, kind: str) -> dict:
             "sent": bool(r.get("ok")), "parse_mode": r.get("parse_mode_used")}
 
 
-def refresh_self_screen_cache(c, day: str | None = None) -> dict:
+def refresh_self_screen_cache(c, day: str | None = None, record_signals: bool = True) -> dict:
     """每日排程的自算選股：**算一次、存一次**，前瞻追蹤吃同一份。回一份可觀察的結果。
 
     放在 helpers 而不是 main.py 的閉包裡，是本專案的既定分工（「排程 Job 需要的邏輯先
@@ -1158,6 +1158,11 @@ def refresh_self_screen_cache(c, day: str | None = None) -> dict:
 
     回傳的 dict 就是「這次到底做了什麼」：`date`／`universe`／`cached`／`picked`／
     `skipped`（沒做的原因）。呼叫端可以印出來，不必去猜。
+
+    `record_signals=False`（custody_watch 用）只重算快取、不碰前瞻紀錄。就算為 True，也**只有在
+    訊號日當天**（`_now()` 的日期＝day）才寫前瞻紀錄：進場價是訊號日收盤，週末重算週五名單時
+    用的是收盤後才公布的集保，拿它補寫那天的訊號等於用未來資料回測。代價是週五排程整晚失敗時，
+    週六補算不會補記那一天——少一天樣本可以接受，偏一天會讓結論失真（同 partial_universe 的取捨）。
     """
     from ..ledger import record_self_screen_signals
     from .. import analysis, selfcheck
@@ -1191,13 +1196,17 @@ def refresh_self_screen_cache(c, day: str | None = None) -> dict:
     pre["computed_at"] = stamp
     pre["ready_at"] = (prev or {}).get("ready_at") or stamp
     selfcheck.save_precomputed(c, pre)
-    # 前瞻追蹤吃同一份，不重算；訊號日明講是哪一天（提早計算時 market_daily 還沒有今天）
-    record_self_screen_signals(c, universe, vmin, smin, precomputed=pre, signal_date=day)
+    # 前瞻追蹤吃同一份，不重算；訊號日明講是哪一天（提早計算時 market_daily 還沒有今天）。
+    # 只在訊號日當天寫（見 docstring）。
+    recorded = bool(record_signals and _now().date().isoformat() == day)
+    if recorded:
+        record_self_screen_signals(c, universe, vmin, smin, precomputed=pre, signal_date=day)
     picked = len(selfcheck.build_self_screen(
         c, day, universe, vmin, smin, precomputed=pre)["rows"])
     return {"cached": True, "date": day, "universe": len(universe),
             "listed": len(listed), "otc": len(otc),
-            "rows": len(pre["rows"]), "sectors": len(pre["heatmap"]), "picked": picked}
+            "rows": len(pre["rows"]), "sectors": len(pre["heatmap"]), "picked": picked,
+            "recorded": recorded}
 
 
 def _intraday_scan(c, push: bool = True) -> dict:
