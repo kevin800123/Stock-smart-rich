@@ -1332,11 +1332,14 @@ async function loadSelfScreen(date, conds) {
       `資料日 <b>${esc(d.date || "—")}</b>`,
       // 大戶增比＝這兩週集保相減。週六新一週公布前名單用的還是上一週，只寫資料日看不出來
       // （2026-09-19 使用者回報）；有取得時間就一併標出（custody_watch 一公布就抓）。
-      ...((cov.custody_weeks || []).length
+      // 只有一週時算不出大戶增比（要兩週集保相減），照實寫出來，不畫懸空的「→」
+      ...((cov.custody_weeks || []).length >= 2
         ? [`<span title="大戶增比與人數降比＝這兩週集保相減">集保 <b>${
-            esc((cov.custody_weeks[1] || "").slice(5))}→${esc(cov.custody_weeks[0].slice(5))}</b>${
+            esc(cov.custody_weeks[1].slice(5))}→${esc(cov.custody_weeks[0].slice(5))}</b>${
             cov.custody_fetched_at ? `・${esc(cov.custody_fetched_at.slice(5, 16).replace("T", " "))} 取得` : ""}</span>`]
-        : []),
+        : (cov.custody_weeks || []).length === 1
+          ? [`<span title="大戶增比要兩週集保相減">集保 <b>${esc(cov.custody_weeks[0].slice(5))}</b>（尚無前一週可比）</span>`]
+          : []),
       `全市場 <b>${cov.universe || 0}</b>`,
       `大戶增比&gt;0 <b>${cov.big_holder_pos || 0}</b>`,
       `有成交額 <b>${cov.with_amount || 0}</b>`,
