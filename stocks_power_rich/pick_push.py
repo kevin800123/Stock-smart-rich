@@ -126,11 +126,15 @@ def compose_daily_new_picks(day: str, total: int, n_day: int, n_week: int, prev_
 
 def compose_weekly_new_picks(day: str, week_start: str, total: int, n_week: int, items: list,
                              basis: dict | None, top_sectors: list, ready_at: str | None,
+                             custody_note: str | None = None,
                              limit: int = DEFAULT_LIMIT) -> str:
     parts = [f"📋 *{_e('自算選股｜本週新進榜')}*　{_e(f'{_md(week_start)}～{_md(day)}')}",
              _e(f"入選 {total}｜本週新進 {n_week}")]
     if basis:
         parts.append(_e(f"（相較上一個集保週期 {_md(basis.get('from'))}～{_md(basis.get('to'))} 的名單）"))
+    if custody_note:
+        # 週報等新集保等到 21:30 仍沒有時照送，但要講清楚大戶增比還是上一週的（見 helpers）
+        parts.append(_e(custody_note))
     shown = items[:limit]
     if shown:
         conc = concentration_line(items)

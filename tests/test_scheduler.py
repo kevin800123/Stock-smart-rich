@@ -134,7 +134,7 @@ def test_new_picks_telegram_jobs_register_with_real_trigger_fields(tmp_path, mon
         d = {f.name: str(f) for f in app.state.scheduler.get_job("picks_new_daily").trigger.fields}
         assert (d["day_of_week"], d["hour"], d["minute"]) == ("mon-fri", "21", "40")
         w = {f.name: str(f) for f in app.state.scheduler.get_job("picks_new_weekly").trigger.fields}
-        assert (w["day_of_week"], w["hour"], w["minute"]) == ("sat", "18", "0")
+        assert (w["day_of_week"], w["hour"], w["minute"]) == ("sat", "18-21", "0,30")
     finally:
         app.state.scheduler.shutdown(wait=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID")

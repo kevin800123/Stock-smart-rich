@@ -1058,8 +1058,25 @@ def self_screen_thresholds(c) -> tuple:
             _th("screen_mu_score_min", analysis.SCREEN_MU_SCORE_MIN))
 
 
+WEEKLY_PUSH_DEADLINE = (21, 30)   # 週六週報最晚這個時間照送（新集保還沒來也送，並註明）
+
+
+def custody_is_current(c) -> dict:
+    """本週集保進來了沒：最新**完整**集保週 ≥ 最新交易日所在 ISO 週的週一。
+
+    以週為單位、不寫死週五：週五放假時 TDCC 用當週最後一個營業日（週四），照樣成立。"""
+    from ..db import latest_complete_custody_week
+    week = latest_complete_custody_week(c)
+    row = c.execute("SELECT MAX(date) FROM market_daily WHERE taiex IS NOT NULL").fetchone()
+    last = row[0] if row else None
+    if not week or not last:
+        return {"current": False, "week": week}
+    d = date.fromisoformat(last)
+    return {"current": week >= (d - timedelta(days=d.weekday())).isoformat(), "week": week}
+
+
 def new_picks_push_payload(c, kind: str, force: bool = False) -> dict:
-    """自算選股新進榜 Telegram 推播的內容。kind＝"daily"（平日 21:40）／"weekly"（週六 18:00）。
+    """自算選股新進榜 Telegram 推播的內容。kind＝"daily"（平日 21:40）／"weekly"（週六 18:00–21:30）。
 
     **只讀排程已算好的名單快取**（`selfcheck.load_latest_precomputed`），不在推播時現算全市場
     （同「請求裡不要放無界時間的同步計算」；排程 20:00 前就算好了）。新進榜判定與網頁共用
@@ -1127,20 +1144,40 @@ def new_picks_push_payload(c, kind: str, force: bool = False) -> dict:
     else:
         tops = sorted((g for g in pre.get("heatmap") or [] if (g.get("buy_value") or 0) > 0),
                       key=lambda g: g["buy_value"], reverse=True)[:3]
+        cust = custody_is_current(c)
+        custody_note = None if cust["current"] else (
+            f"集保仍為 {cust['week'][5:]} 週（本週尚未公布）" if cust["week"] else "集保資料尚未取得")
         text = pick_push.compose_weekly_new_picks(
             day=day, week_start=week_start.isoformat(), total=counts["total"], n_week=counts["week"],
             items=[_item(r) for r in rows if r["is_week_new"]], basis=result["week_new_vs"],
-            top_sectors=[(g["sector"], g["buy_value"]) for g in tops], ready_at=pre.get("ready_at"))
+            top_sectors=[(g["sector"], g["buy_value"]) for g in tops], ready_at=pre.get("ready_at"),
+            custody_note=custody_note)
     return {"kind": kind, "date": day, "counts": counts, "text": text}
 
 
 def telegram_new_picks_job(c, cfg, kind: str) -> dict:
-    """排程 job 本體（main.py 只呼叫）。回傳值存進 job_runs.note：略過原因或送出結果都看得見。"""
+    """排程 job 本體（main.py 只呼叫）。回傳值存進 job_runs.note：略過原因或送出結果都看得見。
+
+    weekly（週六 18:00–21:30 每 30 分鐘）：本週已送過就略過；本週集保還沒進來、且還沒到
+    WEEKLY_PUSH_DEADLINE 就先等（下一場再試）；到了截止時間照送，內文註明集保仍是上一週。
+    送出成功才標記本週已送，失敗讓下一場重試。"""
     from .. import telegram_push
+    sent_key = None
+    if kind == "weekly":
+        now = _now()
+        iso = now.isocalendar()
+        sent_key = f"picks_weekly_sent:{iso[0]}-W{iso[1]:02d}"
+        if get_ai_cache(c, sent_key):
+            return {"kind": kind, "skipped": "already_sent"}
+        cust = custody_is_current(c)
+        if not cust["current"] and (now.hour, now.minute) < WEEKLY_PUSH_DEADLINE:
+            return {"kind": kind, "skipped": "waiting_custody", "custody_week": cust["week"]}
     payload = new_picks_push_payload(c, kind)
     if payload.get("skipped"):
         return {"kind": kind, "date": payload.get("date"), "skipped": payload["skipped"]}
     r = telegram_push.send_message(cfg.telegram_token, cfg.telegram_chat_id, payload["text"])
+    if sent_key and r.get("ok"):
+        set_ai_cache(c, sent_key, {"at": _now().isoformat(timespec="seconds"), "date": payload["date"]})
     return {"kind": kind, "date": payload["date"], "counts": payload["counts"],
             "sent": bool(r.get("ok")), "parse_mode": r.get("parse_mode_used")}
 
@@ -1440,7 +1477,9 @@ def job_schedule(cfg, schedule_time: str) -> list[dict]:
             # 21:40 在 21:00 每日更新與 21:10 新聞之後；名單 20:00 前就算好，21:00 只是補融資。
             {"id": "picks_new_daily", "family": "picks_new_daily", "hour": "21", "minute": "40",
              "dow": "mon-fri"},
-            {"id": "picks_new_weekly", "family": "picks_new_weekly", "hour": "18", "minute": "0",
+            # 週六 18:00–21:30 每 30 分鐘：本週集保進來就送、同一週只送一次，21:30 仍沒有就照送並註明
+            # （使用者決定「等新集保再送」；判斷在 telegram_new_picks_job）。
+            {"id": "picks_new_weekly", "family": "picks_new_weekly", "hour": "18-21", "minute": "0,30",
              "dow": "sat"},
         ]
     # LINE：盤中突破（平日 09:00–13:55 每 5 分，不補跑）與週六選股週報（時間可調、日固定）

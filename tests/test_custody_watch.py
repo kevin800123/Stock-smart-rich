@@ -228,3 +228,89 @@ def test_custody_watch_without_cache_calls_refresh_with_day_and_no_signals(conn,
     assert r["week"] == "2026-09-18" and r["fetched_at"] == "2026-09-19T09:30:00"
     assert seen == {"day": None, "record_signals": False}
     assert r["self_screen"] == {"cached": False, "date": None, "skipped": None}
+
+
+def _cal(c, days):
+    for d in days:
+        db.upsert_market_daily(c, {"date": d, "taiex": 20000.0})
+    c.commit()
+
+
+def test_custody_is_current_by_iso_week(conn):
+    _cal(conn, ["2026-09-17", "2026-09-18"])
+    _week(conn, "2026-09-11", FULL)
+    assert helpers.custody_is_current(conn) == {"current": False, "week": "2026-09-11"}
+    _week(conn, "2026-09-18", FULL)
+    assert helpers.custody_is_current(conn) == {"current": True, "week": "2026-09-18"}
+
+
+def test_custody_is_current_when_friday_is_a_holiday(conn):
+    """週五放假：當週最後交易日是週四、TDCC 的週日期也是週四，仍算本週已公布。"""
+    _cal(conn, ["2026-09-16", "2026-09-17"])
+    _week(conn, "2026-09-11", FULL)
+    _week(conn, "2026-09-17", FULL)
+    assert helpers.custody_is_current(conn)["current"] is True
+
+
+def _weekly_setup(c, custody_weeks):
+    _cal(c, ["2026-09-11", "2026-09-14", "2026-09-18"])
+    for wk in custody_weeks:
+        _week(c, wk, FULL)
+    selfcheck.save_precomputed(c, {"date": "2026-09-18", "ready_at": "2026-09-18T17:31:00",
+                                   "heatmap": [], "coverage": {}, "rows": []})
+
+
+def _tg():
+    return Config(telegram_token="t", telegram_chat_id="c")
+
+
+def test_weekly_push_waits_for_new_custody_then_sends_once(conn, monkeypatch):
+    sent = []
+    monkeypatch.setattr(telegram_push, "send_message",
+                        lambda tok, chat, text: sent.append(text) or {"ok": True, "parse_mode_used": "MarkdownV2"})
+    _weekly_setup(conn, ["2026-09-04", "2026-09-11"])
+    monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 19, 18, 0))
+    r = helpers.telegram_new_picks_job(conn, _tg(), "weekly")
+    assert r == {"kind": "weekly", "skipped": "waiting_custody", "custody_week": "2026-09-11"}
+    assert sent == []
+    _week(conn, "2026-09-18", FULL)                            # 新集保 18:10 進來
+    monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 19, 18, 30))
+    r = helpers.telegram_new_picks_job(conn, _tg(), "weekly")
+    assert r["sent"] is True and len(sent) == 1 and "集保仍為" not in sent[0]
+    assert db.get_ai_cache(conn, "picks_weekly_sent:2026-W38")["date"] == "2026-09-18"
+    monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 19, 19, 0))
+    assert helpers.telegram_new_picks_job(conn, _tg(), "weekly") == {"kind": "weekly", "skipped": "already_sent"}
+    assert len(sent) == 1
+
+
+def test_weekly_push_sends_at_deadline_with_stale_note(conn, monkeypatch):
+    sent = []
+    monkeypatch.setattr(telegram_push, "send_message",
+                        lambda tok, chat, text: sent.append(text) or {"ok": True, "parse_mode_used": "MarkdownV2"})
+    _weekly_setup(conn, ["2026-09-04", "2026-09-11"])
+    monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 19, 21, 30))
+    r = helpers.telegram_new_picks_job(conn, _tg(), "weekly")
+    assert r["sent"] is True and len(sent) == 1
+    assert "集保仍為 09\-11 週" in sent[0]                   # MarkdownV2 跳脫後的樣子
+
+
+def test_weekly_push_failed_send_is_retried(conn, monkeypatch):
+    monkeypatch.setattr(telegram_push, "send_message", lambda *a: {"ok": False})
+    _weekly_setup(conn, ["2026-09-11", "2026-09-18"])
+    monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 19, 18, 0))
+    assert helpers.telegram_new_picks_job(conn, _tg(), "weekly")["sent"] is False
+    assert db.get_ai_cache(conn, "picks_weekly_sent:2026-W38") is None   # 沒送成功不標記，下一場重試
+
+
+def test_compose_weekly_includes_custody_note_only_when_given():
+    base = dict(day="2026-09-18", week_start="2026-09-14", total=0, n_week=0, items=[], basis=None,
+                top_sectors=[], ready_at=None)
+    assert "集保仍為" not in pick_push.compose_weekly_new_picks(**base)
+    assert "集保仍為 09\-11 週" in pick_push.compose_weekly_new_picks(
+        **base, custody_note="集保仍為 09-11 週（本週尚未公布）")
+
+
+def test_weekly_push_is_scheduled_every_half_hour_on_saturday_evening():
+    by_id = {s["id"]: s for s in helpers.job_schedule(_tg(), "21:00")}
+    got = [t.strftime("%H:%M") for t in helpers.slot_times(by_id["picks_new_weekly"], date(2026, 9, 19))]
+    assert got == ["18:00", "18:30", "19:00", "19:30", "20:00", "20:30", "21:00", "21:30"]
