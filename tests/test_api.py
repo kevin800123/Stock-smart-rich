@@ -3336,6 +3336,7 @@ def test_refresh_self_screen_cache_writes_the_cache_and_reports_what_it_did(tmp_
 
     **上櫃這邊原本給空 dict、還斷言照常寫快取——那正是後來被抓出來的漏洞**（見
     test_refresh_self_screen_cache_refuses_half_a_market），所以刻意改成兩個市場都有資料。"""
+    from datetime import datetime
     from stocks_power_rich.api import helpers as H
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily, get_ai_cache
 
@@ -3349,8 +3350,10 @@ def test_refresh_self_screen_cache_writes_the_cache_and_reports_what_it_did(tmp_
     conn.commit()
     _mark_inputs_ready(conn, "2026-09-07")
 
+    monkeypatch.setattr(H, "_now", lambda: datetime(2026, 9, 7, 21, 0))   # 訊號日當天才寫前瞻紀錄
     res = H.refresh_self_screen_cache(conn)
     assert res["cached"] is True and res["date"] == "2026-09-07"
+    assert res["recorded"] is True
     assert res["universe"] == 2 and res["rows"] == 2
     cached = get_ai_cache(conn, "selfscreen:v1")
     assert cached and cached["date"] == "2026-09-07"
