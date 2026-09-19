@@ -300,8 +300,12 @@ def test_build_self_screen_filters_sorts_and_builds_heatmap(tmp_path):
     assert out["heatmap"][0]["sector"] == "IC設計"  # heatmap 依 buy_value 由大到小
 
     # coverage：universe 2、大戶增比>0 2、有成交額 2、能算市值 1、有細分類 1（只有 2330 標 IC設計）、入選 1
+    # custody_weeks 是算大戶增比用的兩週（新到舊，同 db.custody_compare_weeks）；本測試沒有寫
+    # custody_fetched:{week} 快取，取得時間自然是 None（custody-watch 一節）。
     assert out["coverage"] == {"universe": 2, "big_holder_pos": 2, "with_amount": 2,
-                               "with_mcap": 1, "with_subindustry": 1, "picked": 1}
+                               "with_mcap": 1, "with_subindustry": 1, "picked": 1,
+                               "custody_weeks": ["2026-08-14", "2026-08-07"],
+                               "custody_fetched_at": None}
 
 
 def test_build_self_screen_thresholds_exclude_by_mu_value(tmp_path):

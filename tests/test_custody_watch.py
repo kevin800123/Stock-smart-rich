@@ -314,3 +314,20 @@ def test_weekly_push_is_scheduled_every_half_hour_on_saturday_evening():
     by_id = {s["id"]: s for s in helpers.job_schedule(_tg(), "21:00")}
     got = [t.strftime("%H:%M") for t in helpers.slot_times(by_id["picks_new_weekly"], date(2026, 9, 19))]
     assert got == ["18:00", "18:30", "19:00", "19:30", "20:00", "20:30", "21:00", "21:30"]
+
+
+def test_self_screen_coverage_reports_the_custody_weeks_used(conn):
+    _week(conn, "2026-09-11", FULL)
+    _week(conn, "2026-09-18", FULL)
+    db.set_ai_cache(conn, "custody_fetched:2026-09-18", {"at": "2026-09-19T09:30:00"})
+    cov = selfcheck.compute_self_screen(conn, "2026-09-18", {})["coverage"]
+    assert cov["custody_weeks"] == ["2026-09-18", "2026-09-11"]
+    assert cov["custody_fetched_at"] == "2026-09-19T09:30:00"
+    json.dumps(cov)                                           # 要進 ai_cache 的 TEXT 欄
+
+
+def test_self_screen_coverage_before_new_week_uses_previous_pair(conn):
+    _week(conn, "2026-09-04", FULL)
+    _week(conn, "2026-09-11", FULL)
+    cov = selfcheck.compute_self_screen(conn, "2026-09-18", {})["coverage"]
+    assert cov["custody_weeks"] == ["2026-09-11", "2026-09-04"] and cov["custody_fetched_at"] is None

@@ -229,11 +229,17 @@ def compute_self_screen(conn, date, universe: dict) -> dict:
                         "wow_pct": wow, "avg_big_holder": round(g["bhr"] / g["n"], 2),
                         "count": g["n"], "children": g["children"]})
     heatmap.sort(key=lambda x: x["buy_value"], reverse=True)   # 依大戶淨買進金額由大到小
+
+    # 大戶增比用的是哪兩週集保（新到舊）、本週集保幾點取得——頁面要標出來。週六新一週公布前
+    # 名單還是上一週的集保，只寫資料日的話，使用者只能憑「怎麼沒變」察覺（2026-09-19 回報）。
+    cweeks = db.custody_compare_weeks(conn, date) if date else []
+    cfetched = (db.get_ai_cache(conn, f"custody_fetched:{cweeks[0]}") or {}).get("at") if cweeks else None
     return {
         "date": date, "heatmap": heatmap, "rows": rows,
         "coverage": {"universe": len(universe), "big_holder_pos": big_pos,
                      "with_amount": with_amount, "with_mcap": with_mcap,
-                     "with_subindustry": with_subindustry},
+                     "with_subindustry": with_subindustry,
+                     "custody_weeks": cweeks, "custody_fetched_at": cfetched},
     }
 
 
