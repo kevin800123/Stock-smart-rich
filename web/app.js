@@ -911,16 +911,37 @@ function renderSsfHot(rows) {
     const dir = r.chg_pct == null ? "" : chgClass(r.chg_pct);
     // >0 而非 >=0：剛好收平盤（chg_pct 精確等於 0）不能加「+」，「+0.00%」的正號
     // 讀起來像上漲（review #5）。負值本來就會由 toFixed 自己帶出負號，不受影響。
-    return `<div class="card"><div class="card-label">${esc(r.name)}</div>`
+    // 代號放在標籤列、量與 OI 各自一個 span：原本三段擠在一行 nowrap 的 .card-note，
+    // 148px 寬的卡片放不下，10 張全被截掉（ui61）。兩個 span 各自不斷行、彼此可換行。
+    return `<div class="card"><div class="card-label">${esc(r.name)}`
+      + (r.code ? `<span class="ssf-code">${esc(r.code)}</span>` : "") + `</div>`
       + `<div class="card-val">${fmt(r.close)}</div>`
       + `<div class="card-chg ${dir}">${r.chg_pct == null ? "—" : (r.chg_pct > 0 ? "+" : "") + r.chg_pct.toFixed(2) + "%"}</div>`
-      + `<div class="card-note">${esc(r.code || "")}　${fmt(r.volume, 0)} 口　OI ${fmt(r.oi, 0)}</div></div>`;
+      + `<div class="card-note"><span>量 ${fmt(r.volume, 0)} 口</span><span>OI ${fmt(r.oi, 0)}</span></div></div>`;
   }).join("");
 }
 
 let ssfCharts = {};
 
-function ssfCandleOption(rows) {
+// 座標軸上的合約短名：三張圖並排後每根 K 棒只剩約 22px 寬，名稱改成直書，
+// 最長的「小型元大台灣50ETF」有 11 個字，直書要 120px 以上。所以只在軸上縮寫
+// （「小型」→「小」、去掉尾端 ETF、超過 6 字截成 5 字＋…），完整名稱留在 tooltip。
+// 上限 6 字是為了讓「元大台灣50」完整（5 字時會變成「元大台灣…」，50 正是它的識別）；
+// 也不能直接切前 N 字而不加 …：看起來會像另一檔。
+// 熱力圖格子也用同一套縮寫、但不截字（max＝Infinity）：「小型元大台灣50ETF」撐寬整欄，
+// 1181px 時熱力圖要橫捲 48px。
+const SSF_AXIS_NAME_MAX = 6;
+function ssfShortName(name, max = SSF_AXIS_NAME_MAX) {
+  const s = String(name || "").replace(/^小型/, "小").replace(/ETF$/, "");
+  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
+// yRange：{min, max}（% 值）。漲幅與跌幅兩張圖並排時要用同一個幅度，否則 +3% 與
+// −9% 的圖會一樣高，讀者會拿高度比大小而誤判（見 renderSsfRanks）。
+// longest：三張圖共用的「最長短名字數」。grid.bottom 由它決定，若各圖自己算，繪圖區
+// 高度會不同（實測 09-17 漲幅 3 字、跌幅 5 字 → 191 vs 169px），同一個 % 跨度畫出來
+// 高度還是不一樣，「同一幅度」就不成立，三張圖的 x 軸基線也對不齊。
+function ssfCandleOption(rows, yRange, longest) {
   const names = rows.map(r => r.name);
   // ECharts candlestick 是 [open, close, low, high]；**缺值給 '-' 絕不給 null**
   // （null 會在 getInitialData 丟 TypeError 讓整個 setOption 中止且不進 console）。
@@ -929,11 +950,20 @@ function ssfCandleOption(rows) {
     return v.some(x => x == null) ? "-" : v;
   });
   return {
-    grid: { left: 48, right: 16, top: 16, bottom: 64 },
-    xAxis: { type: "category", data: names, axisLabel: { rotate: 45, fontSize: 10 } },
-    yAxis: { type: "value", axisLabel: { formatter: "{value}%" }, splitNumber: 4 },
-    tooltip: {
-      trigger: "axis",
+    // bottom 跟著最長的短名走（直書一字一行，行高 11px）。
+    grid: { left: 44, right: 8, top: 12, bottom: 12 + (longest || 1) * 11 },
+    // interval: 0 一定要設：圖一變窄，ECharts 會自動隱藏一半的類目標籤，
+    // 20 根 K 棒只剩 10 個名字、而且不會有任何提示。
+    xAxis: { type: "category", data: names, axisLabel: {
+      interval: 0, fontSize: 10, lineHeight: 11,
+      formatter: (v) => ssfShortName(v).split("").join("\n"),
+    } },
+    yAxis: { type: "value", axisLabel: { formatter: "{value}%" }, splitNumber: 4,
+      ...(yRange || {}) },
+    // 用站內共用的 financeTooltip（帶 confine）：三張圖並排變窄後，最左邊那張的 tooltip
+    // 往左翻會超出 .content（overflow-x:hidden）被切掉，而軸上截短的名稱正是要靠這裡
+    // 的全名補回來。
+    tooltip: financeTooltip({
       formatter: (ps) => {
         const r = rows[ps[0].dataIndex]; if (!r) return "";
         const pct = (x) => x == null ? "—" : x.toFixed(2) + "%";
@@ -946,7 +976,7 @@ function ssfCandleOption(rows) {
           + `量 ${fmt(r.volume, 0)} 口　OI ${fmt(r.oi, 0)}<br>`
           + `振幅 ${pct(r.amplitude)}`;
       },
-    },
+    }),
     series: [{
       type: "candlestick", data,
       // 上面沒有文字，紅漲綠跌用亮色 C.up/C.down（不是給文字底色用的 upFill/downFill）。
@@ -955,15 +985,43 @@ function ssfCandleOption(rows) {
   };
 }
 
+// 漲幅／跌幅兩張圖的共用刻度：兩張圖的總跨度相同（mag＋ext），像素對 % 的比例才一樣。
+// mag＝漲幅圖最高點與跌幅圖最低點取大者；ext＝漲幅圖往下、跌幅圖往上的另一側
+// 延伸（開低走高的 K 棒會跌破 0），兩邊取大者。資料不足就回 null（照 ECharts 自動刻度）。
+function ssfSharedRange(ranks) {
+  const nums = (rows, k) => (rows || []).map(r => r[k]).filter(Number.isFinite);
+  const g = (ranks && ranks.gainers) || [], l = (ranks && ranks.losers) || [];
+  if (!g.length || !l.length) return null;
+  const mag = Math.ceil(Math.max(0, ...nums(g, "high_pct"), ...nums(l, "low_pct").map(v => -v)));
+  const ext = Math.ceil(Math.max(0, ...nums(g, "low_pct").map(v => -v), ...nums(l, "high_pct")));
+  if (!mag) return null;
+  return { gainers: { min: -ext, max: mag }, losers: { min: -mag, max: ext } };
+}
+
 // 三張圖各 20 根 K 棒（不是 60 張小圖）：成交量／漲幅／跌幅前 20，X 軸＝合約簡稱、
 // Y 軸＝相對前一日結算價的 %。
 function renderSsfRanks(ranks) {
+  const shared = ssfSharedRange(ranks);
+  const allNames = ["volume", "gainers", "losers"]
+    .flatMap(k => ((ranks && ranks[k]) || []).map(r => ssfShortName(r.name).length));
+  const longest = Math.max(1, ...allNames);
   [["volume", "ssf-chart-volume"], ["gainers", "ssf-chart-gainers"],
    ["losers", "ssf-chart-losers"]].forEach(([key, id]) => {
     const el = $(id); if (!el) return;
     // 用共用的 initChart（套站內主題：tooltip 底色/邊框、座標軸線與標籤色、數字字型），
     // 不要用裸的 echarts.init——這三張圖原本是全站唯一沒吃 ECHARTS_THEME 的圖。
-    const ch = ssfCharts[key] || (ssfCharts[key] = initChart(el));
+    if (!ssfCharts[key]) {
+      ssfCharts[key] = initChart(el);
+      // 三張圖並排在格線裡，寬度會因為與視窗無關的事改變（下方區塊把頁面撐出捲軸、
+      // 少掉 15px），window 的 resize 事件接不到。容器寬度為 0（切到別頁、
+      // display:none）時不重畫，否則 ECharts 會把尺寸記成 0。
+      if (window.ResizeObserver) {
+        new ResizeObserver(() => {
+          if (el.clientWidth > 0 && ssfCharts[key]) ssfCharts[key].resize();
+        }).observe(el);
+      }
+    }
+    const ch = ssfCharts[key];
     const rows = (ranks && ranks[key]) || [];
     const empty = $(`${id}-empty`);
     if (!rows.length) {
@@ -976,7 +1034,7 @@ function renderSsfRanks(ranks) {
       return;
     }
     if (empty) empty.classList.add("hidden");
-    ch.setOption(ssfCandleOption(rows), true);
+    ch.setOption(ssfCandleOption(rows, shared && shared[key], longest), true);
     ch.resize();   // echarts.init 會凍結它看到的容器尺寸，setOption 後一定要 resize
   });
 }
@@ -1026,8 +1084,8 @@ function renderSsfHeatmap(hm) {
         // 對 chg==null 用的同一個底色字面值，兩處本來就該保持一致，不是隨手挑的顏色。
         const bg = cell.chg_pct === 0 ? "#2b3038" : sectorColor(cell.chg_pct, 7);
         const pct = cell.chg_pct == null ? "" : (cell.chg_pct > 0 ? "+" : "") + cell.chg_pct.toFixed(1) + "%";
-        return `<td class="ssf-hm-cell" style="background:${bg}">`
-          + `<span class="ssf-hm-name">${esc(cell.name)}</span>`
+        return `<td class="ssf-hm-cell" style="background:${bg}" title="${esc(cell.name)}">`
+          + `<span class="ssf-hm-name">${esc(ssfShortName(cell.name, Infinity))}</span>`
           + `<span class="ssf-hm-pct">${pct}</span></td>`;
       }).join("") + "</tr>").join("");
 }

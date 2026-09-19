@@ -1217,26 +1217,116 @@ button.file-label { font: inherit; }
    600 那組樣式，讓這頁標題比其他頁小又暗。用 ID 範圍只動這裡，不影響 .pane-heading h3
    （交易帳本／自算選股等既有小標）或其他頁面的 h2。 */
 #view-ssf .pane-heading h2 { margin: 0; color: var(--text-primary); font-size: var(--fs-lg); font-weight: 700; letter-spacing: -.015em; flex-shrink: 0; }
+/* 股期概況版面（2026-09 ui61）：使用者回報「要滑到很下面才看得到」——實測 1904×980
+   整頁 17,693px＝19.2 個螢幕，其中保證金試算 342 列全部攤開就佔 14,634px（83%），
+   其餘區塊全部單欄堆疊（三張各 1566px 寬只放 20 根 K 棒、6 個短欄的價差表佔滿整列）。
+   改成總覽那套 12 欄格線（見 #view-overview.active 的說明：auto-fit 只能「1 欄或整列」、
+   區塊沒辦法佔 2 欄），每列 span 相加剛好 12。**第一列是使用者指定的：左邊熱門股期、
+   右邊保證金試算**，之後是三張 K 棒／未平倉／價差＋熱力圖：
+     ≥1641px     熱門 6（卡片 5×2）＋保證金 6（表格框固定 300px 高，熱門卡片撐滿同列）
+     1181–1640   熱門 5（卡片 2×5）＋保證金 7（熱門比較高，保證金表格填滿到同一條底線）
+     ≤1180       全部單欄，熱門在上、保證金在下
+   - 一定要掛在 `.active` 上：只寫 `#view-ssf { display:grid }` 的話 ID 會壓過
+     `.view { display:none }`，這一頁會出現在每一頁底下。
+   - 列距大於欄距（20／12）：同一列並排的兩塊要讀成一對，列與列之間才是段落。
+   - 預設每塊 1/-1（含 .pane-heading：只分到一欄會被擠成直條），並排的四塊另給 span。 */
+#view-ssf.active {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  align-content: start;
+  gap: 20px 12px;
+}
+#view-ssf.active > * { grid-column: 1 / -1; min-width: 0; }
+#view-ssf.active > .ssf-b-hot { grid-column: span 6; }
+#view-ssf.active > .ssf-b-margin { grid-column: span 6; }
+#view-ssf.active > .ssf-b-basis { grid-column: span 5; }
+#view-ssf.active > .ssf-b-hm { grid-column: span 7; }
+/* 熱力圖 11 欄（名次＋10 日）約需 730px 才不必橫捲（格子最小 68px，見 .ssf-hm-cell；
+   10×68＋名次欄＋框線）。span 7 的內寬＝7 欄＋6 個欄距−26，欄寬由視窗扣掉側欄 240、
+   scrollbar-gutter 15、view 內距 56 推得，≥1641px 時內寬約 745px 才放得下。這個寬度以下
+   改成價差與熱力圖各佔一整列（第一列仍維持並排）。 */
+@media (max-width: 1640px) {
+  #view-ssf.active > .ssf-b-basis, #view-ssf.active > .ssf-b-hm { grid-column: 1 / -1; }
+  /* 第一列改 5＋7：span 6 在這個寬度只剩 450～640px，5 欄卡片會窄到 82px。卡片改 2 欄
+     （由下面的容器查詢自動切換）。試過 4＋8：熱門只有 315px 寬、卡片 140px，量與 OI
+     被擠成兩行，1280px 時第一列 746px（比一個螢幕還高）；5＋7 卡片 180px、第一列 649px。
+     保證金表因此只剩 477～744px，要靠下面 #ssf-margin-table 的窄版規則才放得下。 */
+  #view-ssf.active > .ssf-b-hot { grid-column: span 5; }
+  #view-ssf.active > .ssf-b-margin { grid-column: span 7; }
+}
+@media (max-width: 1180px) {
+  #view-ssf.active > * { grid-column: 1 / -1 !important; }
+}
+/* 表格密度：本頁的表都是短欄數字，全站預設 10px 12px 的內距讓一列高 42px；
+   熱力圖格子自己的 .ssf-hm-cell 內距（ID＋class）權重較高，不受這條影響。 */
+#view-ssf th, #view-ssf td { padding: 6px 10px; }
+/* 區塊內的小標（圖表名稱、未平倉的增加／減少）：同一種角色只有一種樣式。 */
+.ssf-sub { color: var(--muted); font-size: var(--fs-xs); margin-bottom: 6px; }
+/* 三張 K 棒：內層 3 欄一定要 minmax(0,1fr)——ECharts 在容器裡放的是固定像素寬的
+   畫布，用 1fr（最小值＝內容寬）的話欄寬會被上一次的畫布撐住、縮不回去。
+   三欄並排的條件用容器查詢、不看視窗：座標軸強制畫出 20 個直書名稱（interval:0，
+   一字寬 10px），每張圖至少要 44＋8＋20×10＋框線 2＝254px，三張加欄距約 786px。
+   原本寫的是視窗 ≤760px 才改單欄，結果 761～1120px（頁面早已單欄）仍三欄並排，
+   每格只有 5.6～9.6px，相鄰名稱疊在一起讀不出來（861px 最嚴重）。 */
+#view-ssf .ssf-b-charts { container: ssf-charts / inline-size; }
+.ssf-charts { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+.ssf-chart-cell { min-width: 0; }
+.ssf-chart-box { position: relative; }
+#view-ssf .ssf-chart { height: 220px; }
+@container ssf-charts (min-width: 790px) {
+  .ssf-charts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  #view-ssf .ssf-chart { height: 250px; }
+}
+/* 「尚無資料」疊在圖表框裡、不放在圖表下方：放下方會讓這一格比同列另外兩張圖高。 */
+.ssf-chart-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+/* 熱門卡片：代號移進標籤列、量與 OI 各自不斷行但彼此可換行——原本三段擠在一行
+   nowrap，10 張卡全部被切掉（實測 scrollWidth 143 > 可視 122）。 */
+/* 欄數只用 5 或 2（永遠整除 10 張）：auto-fit 在 1721px 時排出 9＋1，第二排剩一張孤兒。
+   用容器查詢而不是視窗斷點：同一個寬度的視窗，熱門區塊在第一列可能分到 6 欄、4 欄或
+   整列，只有區塊自己的內寬說得準（同 .cards 當初從視窗斷點改 auto-fit 的理由）。
+   內寬 ≥620px 才排 5 欄（卡片 ≥116px，量過不截字）。區塊在第一列與保證金並排時要
+   撐滿同一列：卡片列用 1fr 平分高度，卡片內的 .card-val 本來就是上下 auto margin。 */
+#view-ssf .ssf-b-hot { display: flex; flex-direction: column; container: ssf-hot / inline-size; }
+#ssf-hot { flex: 1 1 auto; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 1fr; }
+@container ssf-hot (min-width: 620px) {
+  #ssf-hot { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
+#ssf-hot .card-note { white-space: normal; display: flex; flex-wrap: wrap; column-gap: 8px; }
+#ssf-hot .card-note > span { white-space: nowrap; }
 /* 期現價差表：正負是「期貨相對現貨的位置」，不是漲跌方向——全站紅綠鎖給行情漲跌，
    這裡一律中性色，方向改由文字「正價差／逆價差」表達，不套 .up/.down。
    第一欄凍結／斑馬紋／hover 都吃既有的全域 table 規則，不必在此另寫一份。 */
 #ssf-basis-table .ssf-basis-dir { color: var(--muted); }
-#ssf-basis-table .ssf-code { color: var(--muted); font-size: var(--fs-xs); margin-left: 6px; }
+#ssf-basis-table .ssf-code, #ssf-hot .ssf-code { color: var(--muted); font-size: var(--fs-xs); margin-left: 6px; }
 #ssf-basis-table .ssf-late { margin-left: 4px; color: var(--muted); cursor: help; }
 /* 排行熱力圖：格子帶白字疊在色塊上，色塊來自 sectorColor 既有的 upFill/downFill
    （不是給小字調亮過的 --up/--down），這裡只管文字排版，不重複調色邏輯。 */
-#ssf-hm-table .ssf-hm-cell { color: #fff; text-align: center; padding: 6px 4px; min-width: 76px; }
+#ssf-hm-table .ssf-hm-cell { color: #fff; text-align: center; padding: 6px 4px; min-width: 68px; }
 #ssf-hm-table .ssf-hm-name { display: block; font-size: var(--fs-xs); }
 #ssf-hm-table .ssf-hm-pct { display: block; font-weight: 650; }
-/* 未平倉增減：兩欄在寬螢幕並排，容器窄到放不下兩個 240px 欄時 auto-fit 自動收成
+/* 未平倉增減：兩欄在寬螢幕並排，容器窄到放不下兩個 260px 欄時 auto-fit 自動收成
    一欄，不必另寫 @media（同全站既有的 .cards/.mv-grid 響應式手法）。
    OI 增減不是漲跌方向，delta 一律中性色（不用 --up/--down），方向靠 ▲▼ 字彙表達。
    長合約名稱用 ellipsis 截斷（同 .hm-bar-name/.mv-name 既有慣例）而不是讓它把
    後面的數字擠出這一列——name 用 min-width:0 讓出空間，delta/base 固定不縮。 */
-.ssf-oi-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
-.ssf-oi-title { color: var(--muted); font-size: var(--fs-xs); margin-bottom: 6px; }
-.ssf-oi-list { margin: 0; padding-left: 20px; }
-.ssf-oi-list li { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; }
+.ssf-oi-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+/* 未平倉現在佔一整列，每份清單寬到 700px 以上：一列 10 項會讓名稱與數字隔得很遠、整塊
+   又高又空。清單夠寬（≥560px）時折成兩欄（1–5／6–10，由上而下再換欄），高度砍半。
+   用容器查詢量清單自己的寬度，不看視窗（具名，免得匹配到其他容器）。
+   名次用 CSS 計數器畫：li 是 display:flex、不是 list-item，<ol> 的編號從來沒有顯示過；
+   折成兩欄後不標名次，由左往右讀會把第 1 名和第 6 名當成同一列。空狀態那一列（.muted）
+   不編號。 */
+.ssf-oi-cols > div { min-width: 0; container: ssf-oi / inline-size; }
+.ssf-oi-list { margin: 0; padding-left: 0; counter-reset: ssf-oi; }
+.ssf-oi-list li { display: flex; gap: 8px; align-items: baseline; padding: 3px 0; break-inside: avoid; }
+.ssf-oi-list li:not(.muted) { counter-increment: ssf-oi; }
+.ssf-oi-list li:not(.muted)::before {
+  content: counter(ssf-oi); flex: 0 0 1.6em; text-align: right;
+  color: var(--muted); font-size: var(--fs-xs); font-variant-numeric: tabular-nums;
+}
+@container ssf-oi (min-width: 560px) {
+  .ssf-oi-list { columns: 2; column-gap: 32px; }
+}
 .ssf-oi-list .ssf-oi-name { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ssf-oi-list .ssf-oi-delta { flex: 0 0 auto; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ssf-oi-list .ssf-oi-base { flex: 0 0 auto; color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
@@ -1250,6 +1340,11 @@ button.file-label { font: inherit; }
    自動套用，不必再寫一條 #ssf-margin-table 專屬選擇器）。 */
 .ssf-margin-bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 8px; }
 .ssf-margin-bar label { display: flex; align-items: center; gap: 6px; }
+/* 說明列要能換行：它是 .pane-count（全域 nowrap），在 flex 列裡 min-content＝整行
+   約 625px。與熱門並排時保證金只有 477～765px，1181～1435px 會撐出卡片右框、結尾的
+   「實際以期貨商收取為準　N 檔」被 .content 的 overflow-x:hidden 切掉——那正是畫面上
+   必須出現的聲明。放得下時仍跟輸入框同一行。 */
+#ssf-margin-note { white-space: normal; min-width: 0; flex: 1 1 260px; }
 .ssf-margin-bar input {
   background: var(--sunken); color: var(--text); border: 1px solid var(--border);
   border-radius: var(--r); padding: 6px 10px; font: inherit; font-size: var(--fs-sm);
@@ -1260,6 +1355,42 @@ button.file-label { font: inherit; }
 .ssf-margin-bar input[type="search"] { width: 160px; }
 #ssf-margin-table .ssf-total { font-weight: 650; }
 #ssf-margin-table .ssf-code { color: var(--muted); font-size: var(--fs-xs); margin-left: 6px; }
+/* 保證金表內捲：區塊是直向 flex，表格框限高、表內捲動——限高之後全域 th 的 sticky
+   才真的有作用（原本外框從不捲動，表頭其實不會固定）。高度依版面分三種：
+     ≥1641px   固定 300px（表頭＋約 8 列）：這一列的高度由保證金決定、熱門卡片撐滿，第一屏
+               （1904×980）才放得下「熱門＋保證金＋三張 K 棒」。
+     1181–1640 填滿同一列（flex:1 1 0）：熱門卡片 2×5 比較高，由它決定這一列的高度。
+     ≤1180     單欄，min(60vh, 560px)。 */
+#view-ssf .ssf-b-margin { display: flex; flex-direction: column; }
+/* 熱力圖與價差表並排時，價差表 20 列比熱力圖 10 列高約 240px；讓熱力圖的格子長高填滿
+   同一列（色塊變大），不要在卡片底部留一塊空白。單欄時卡片就是內容高，這條不起作用。 */
+#view-ssf .ssf-b-hm { display: flex; flex-direction: column; }
+#ssf-hm-wrap { flex: 1 1 auto; }
+#ssf-hm-table { height: 100%; }
+#ssf-margin-wrap { flex: none; height: 300px; }
+@media (max-width: 1640px) {
+  #ssf-margin-wrap { flex: 1 1 0; height: auto; min-height: 360px; }
+}
+/* 保證金與熱門並排時，保證金只分到 6 或 7 欄（內寬 477～765px），但名稱欄被最長的
+   「小型元大台灣50ETF」撐到 215px、表頭又全部不換行，整張表要 684px，最右邊的
+   「N 口合計」（這個工具真正要看的欄）會被推出框外。讓名稱與表頭在空間不夠時換行，
+   寬螢幕上照樣單行（表格自動版面只在放不下時才折）。 */
+#ssf-margin-table th, #ssf-margin-table td.ssf-name { white-space: normal; }
+/* 可排序表頭另有一條 `… th.sc-sort { white-space: nowrap }`（1,1,1）壓過上一條，
+   同權重、寫在後面才蓋得過。 */
+#ssf-margin-table th.sc-sort { white-space: normal; }
+/* 名稱欄最窄只能縮到 127px：「群益ESG投等債20+ETF」後面緊接代號「00937B」、中間沒有
+   斷行點，整段 107px 不能折。anywhere 只影響最窄寬度（min-content），寬螢幕照樣單行。 */
+#ssf-margin-table td.ssf-name { min-width: 4.5em; overflow-wrap: anywhere; }
+/* ≤1640px 的所有寬度（含單欄與手機）左右內距縮到 6px。目的是 1181–1640 保證金只分到
+   7 欄（內寬 477～744px）：整張表最窄 529→約 440px，1181px 也放得下「N 口合計」；
+   單欄與手機順帶也變密。 */
+@media (max-width: 1640px) {
+  #ssf-margin-table th, #ssf-margin-table td { padding-left: 6px; padding-right: 6px; }
+}
+@media (max-width: 1180px) {
+  #ssf-margin-wrap { flex: none; height: min(60vh, 560px); min-height: 320px; }
+}
 .pane-count, .all-filter { color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
 .active-filter { display: inline-flex; align-items: center; gap: 6px; padding: 3px 5px 3px 8px; background: rgba(112, 184, 255, .14); color: #b9d8f8; border-radius: 5px; font-size: var(--fs-xs); }
 .active-filter b { color: var(--text-primary); }

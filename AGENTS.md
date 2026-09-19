@@ -387,8 +387,10 @@ SSF 資料日」的列數，文字與顏色都吃它——**與總覽 `renderFre
 中止且不進console)。
 
 **前端 review 修復**(2026-09)：保證金表補表頭排序——標的/契約乘數/1口保證金/維持保證金
-可排序，同 selfcheck 既有的 `th.sc-sort`/`aria-sort`/`scope="col"` 慣例，`<tr id=
-"ssf-margin-head">` 整列重繪，N口合計是1口金額的單調倍數不開獨立排序鍵(I4)；切走再切回
+(＋原始比例，final review #7)可排序，同 selfcheck 既有的 `th.sc-sort`/`aria-sort`/
+`scope="col"` 慣例；**表頭在靜態 HTML 裡是完整的，`renderSsfMargin` 只更新各 th 的
+aria-sort／箭頭與 N 口合計文字，不整列重繪**(final review #6；整列重繪的話資料沒回來時表頭
+一片空白)，N口合計是1口金額的單調倍數不開獨立排序鍵(I4)；切走再切回
 股期頁要對 `ssfCharts` 逐一補 `resize()`(同 cup-handle 既有寫法——`ssfLoaded` 在
 `loadSsf()` 之前就同步設 true，切走再切回不會重新載入也不會補救，I5)；`renderSsfFreshness`
 改讀 `coverage.lag_trading_days` 不再自己拿日曆天硬算(週五資料撐過整個週末會被算成落後
@@ -417,6 +419,27 @@ SSF 資料日」的列數，文字與顏色都吃它——**與總覽 `renderFre
 缺口依新到舊切成 ≤14 日曆天一段(`_ssf_missing_spans`)，每次最多 `max_fetch`(上限 7)段；
 **今天不算**(交給每日排程，否則白天 remaining 卡在 1)；窗口內沒有交易日時回應附 `note`
 (新部署先跑 `/api/backfill`)，不讓 `remaining=0` 被讀成已補齊。
+
+**版面（ui61）**：12 欄格線（掛在 `#view-ssf.active`，少了 `.active` 這頁會出現在每一頁）。
+**第一列是使用者指定的：左邊熱門股期、右邊保證金試算**；之後是三張 K 棒 12／未平倉 12／價差
+5＋熱力圖 7。DOM 順序＝閱讀順序。1904×980 實測 19.2→2.02 屏，主因是保證金 342 列全攤開佔
+83%。第一列：≥1641 熱門 6＋保證金 6（表格框固定 300px、熱門卡片 `grid-auto-rows:1fr` 撐滿，
+第一屏才放得下熱門＋保證金＋K 棒）；1181–1640 熱門 5＋保證金 7（熱門 2×5 較高，保證金
+`flex:1 1 0; min-height:360px` 填滿；4＋8 會讓卡片擠成兩行、第一列高過一個螢幕）；≤1180 單欄。
+保證金表內距在 ≤1640 所有寬度縮 6px，名稱 `overflow-wrap:anywhere` 是全寬度規則（「群益ESG
+投等債20+ETF」＋代號沒有斷行點，最窄卡在 529px）。說明列 `#ssf-margin-note` 要能換行（全域
+`.pane-count` nowrap 在 1181～1435px 會撐出卡片，聲明被 `.content` 的 overflow-x:hidden 切掉，
+頁面級溢出檢查量不到）；內捲框 `tabindex="0" role="region"`（Safari 鍵盤）。熱門卡片欄數用**容器查詢**（`container: ssf-hot`，內寬 ≥620 才 5 欄否則
+2 欄，10 張永遠整除；auto-fit 會排出 9＋1 孤兒）；未平倉清單 ≥560px（具名容器 `ssf-oi`）
+折成兩欄，名次用 CSS 計數器畫（li 是 flex、`<ol>` 編號從沒顯示過，折欄後會讀錯順序）。
+三張 K 棒並排改用具名容器查詢 `ssf-charts` ≥790px（每張至少 254px；舊的視窗 760px 斷點讓
+761～1120px 名稱疊在一起）；三張圖共用同一個 grid.bottom（各自算的話繪圖區高度不同，同幅度
+不成立），tooltip 用 `financeTooltip`（confine）。價差＋熱力圖並排
+門檻 1641px，並排時熱力圖 `height:100%` 格子填滿同列。K 棒軸 `interval:0`（不設會悄悄藏一半名稱）
+＋直書＋`ssfShortName`（上限 6 讓「元大台灣50」完整）；漲幅／跌幅共用刻度 `ssfSharedRange`；
+三張圖掛 ResizeObserver（寬 0 不重畫）——**窗格隱藏時 RO/resize 都不發、量到舊畫布寬是測試環境
+假象**。`th.sc-sort{nowrap}` 權重同、要寫在後面才蓋得過。**`sed -i` 會把 CRLF 檔改成 LF**，
+改完用 bytes 確認。
 
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):

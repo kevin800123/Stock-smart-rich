@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260817-ui60" />
+  <link rel="stylesheet" href="styles.css?v=20260817-ui61" />
   <script src="/vendor/echarts.min.js"></script>
   <!-- 只有個股 K 線圖（#stock-chart）用這套，其餘圖表都還是上面的 echarts.min.js。
        見 CLAUDE.md「個股 K 線改 Lightweight Charts」那節。 -->
@@ -680,26 +680,94 @@
           <span class="freshness" id="ssf-fresh"></span>
         </div>
 
-        <div class="card-group">
+        <!-- 版面（2026-09 ui61）：本頁是 12 欄格線（styles.css `#view-ssf.active`），
+             區塊的 span 由 CSS 依 class 指定、同一列相加剛好 12。第一列是使用者指定的：
+             左邊熱門股期、右邊保證金試算。DOM 順序＝閱讀順序＝鍵盤順序：熱門 → 保證金
+             → 漲跌 K 棒 → 未平倉 → 價差＋歷史熱力圖。改動任一區塊的內容量時，同列的
+             高度要重新量（見 CLAUDE.md 股期概況版面）。 -->
+        <div class="card-group ssf-b-hot">
           <div class="group-title">熱門股期　<span class="muted small">依官方成交口數；口數含小型合約，規模不同</span></div>
           <div class="cards" id="ssf-hot"></div>
         </div>
 
-        <!-- 各圖旁邊一顆獨立的「尚無資料」提示（.muted small，同 renderSsfHot 的慣例），
-             不寫進 .chart 容器本身——那個容器是 ECharts 的 canvas，寫 innerHTML 會把
-             canvas 從 DOM 移除，讓 ssfCharts[key] 之後指到一個已經不在畫面上的實例
-             （見 app.js renderSsfRanks 的註解）。預設 .hidden，資料為空時才顯示。 -->
-        <div class="card-group span-full">
-          <div class="group-title">成交量／漲幅／跌幅前 20　<span class="muted small">K 棒為相對前一日結算價的 %</span></div>
-          <div class="chart" id="ssf-chart-volume" style="height:260px"></div>
-          <div class="muted small hidden" id="ssf-chart-volume-empty">尚無資料</div>
-          <div class="chart" id="ssf-chart-gainers" style="height:260px"></div>
-          <div class="muted small hidden" id="ssf-chart-gainers-empty">尚無資料</div>
-          <div class="chart" id="ssf-chart-losers" style="height:260px"></div>
-          <div class="muted small hidden" id="ssf-chart-losers-empty">尚無資料</div>
+        <!-- 原始保證金試算：口數／搜尋框用事件委派（CSP script-src 'self' 會靜默丟掉
+             inline on*= 屬性），監聽掛在 app.js 的 .ssf-margin-bar 委派上。
+             口數換算在前端乘整數就完全正確——後端 initial/maintenance 已經是
+             「單口四捨五入後」的金額，交易所自己的規則就是先四捨五入單口再乘 N。
+             表頭在靜態 HTML 裡就是完整的（final review #6）：renderSsfMargin() 只
+             更新既有 <th> 的 aria-sort／箭頭與「N 口合計」的口數文字，不再整列
+             重繪——這樣即使 loadSsfMargin() 還沒回來、或整支失敗，表頭仍看得到
+             欄名，不會是一片空白。標的／契約乘數／原始比例／1 口原始保證金／
+             維持保證金五欄可排序；「N 口合計」不開排序鍵（它是 1 口金額的單調倍數）。
+             表格外框是內捲容器（ui61）：340 列原本全部攤開佔整頁 83%，現在限高、
+             表內捲動，表頭靠全域 th 的 sticky 固定在容器頂端（高度規則見 styles.css
+             `#ssf-margin-wrap`）。 -->
+        <div class="card-group ssf-b-margin">
+          <div class="group-title">原始保證金試算</div>
+          <div class="ssf-margin-bar">
+            <label>口數 <input id="ssf-lots" type="number" min="1" max="999" value="1"></label>
+            <label>搜尋 <input id="ssf-margin-q" type="search" placeholder="代號或名稱"></label>
+            <span class="pane-count" id="ssf-margin-note"></span>
+          </div>
+          <!-- 限高內捲後框內沒有可聚焦元素（純文字列、表頭只有 click 委派），Safari 不會
+               讓這種捲動框取得鍵盤焦點——tabindex＋名稱讓只用鍵盤的人也捲得到第 9 列以後。 -->
+          <div class="table-wrap" id="ssf-margin-wrap" tabindex="0" role="region" aria-label="原始保證金試算表">
+            <table id="ssf-margin-table"><thead><tr id="ssf-margin-head">
+              <th class="sc-sort" scope="col" aria-sort="none" data-k="name"><span class="sc-h-label">標的</span></th>
+              <th class="sc-sort" scope="col" aria-sort="none" data-k="multiplier"><span class="sc-h-label">契約乘數</span></th>
+              <th class="sc-sort" scope="col" aria-sort="none" data-k="initial_pct"><span class="sc-h-label">原始比例</span></th>
+              <th class="sc-sort" scope="col" aria-sort="none" data-k="initial"><span class="sc-h-label">1 口原始保證金</span></th>
+              <th class="sc-sort" scope="col" aria-sort="none" data-k="maintenance"><span class="sc-h-label">維持保證金</span></th>
+              <th scope="col" id="ssf-margin-lots-head">1 口合計</th>
+            </tr></thead><tbody></tbody></table>
+          </div>
         </div>
 
-        <div class="card-group">
+        <!-- 三張圖是同一家族（同一組 K 棒、同一個 % 刻度定義），合成一個區塊、一個標題，
+             內層 3 欄並排。「尚無資料」疊在圖表框內（絕對定位），不寫進 .chart 容器本身
+             ——那個容器是 ECharts 的 canvas，寫 innerHTML 會把 canvas 從 DOM 移除，讓
+             ssfCharts[key] 之後指到一個已經不在畫面上的實例（見 app.js renderSsfRanks）。 -->
+        <div class="card-group ssf-b-charts">
+          <div class="group-title">成交量／漲幅／跌幅前 20　<span class="muted small">K 棒為相對前一日結算價的 %；漲幅與跌幅兩圖同一幅度，可直接比大小</span></div>
+          <div class="ssf-charts">
+            <div class="ssf-chart-cell">
+              <div class="ssf-sub">成交量前 20</div>
+              <div class="ssf-chart-box">
+                <div class="chart ssf-chart" id="ssf-chart-volume"></div>
+                <div class="muted small ssf-chart-empty hidden" id="ssf-chart-volume-empty">尚無資料</div>
+              </div>
+            </div>
+            <div class="ssf-chart-cell">
+              <div class="ssf-sub">漲幅前 20</div>
+              <div class="ssf-chart-box">
+                <div class="chart ssf-chart" id="ssf-chart-gainers"></div>
+                <div class="muted small ssf-chart-empty hidden" id="ssf-chart-gainers-empty">尚無資料</div>
+              </div>
+            </div>
+            <div class="ssf-chart-cell">
+              <div class="ssf-sub">跌幅前 20</div>
+              <div class="ssf-chart-box">
+                <div class="chart ssf-chart" id="ssf-chart-losers"></div>
+                <div class="muted small ssf-chart-empty hidden" id="ssf-chart-losers-empty">尚無資料</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 未平倉增減：OI 增減不是價格方向（是否有新倉/解倉），不是漲跌，所以全站
+             紅綠鎖給行情漲跌這條規矩在這裡完全不適用——一律中性色，方向改用全站既有
+             的 ▲▼ 字彙表達（不套 .up/.down）。前一日缺列的合約後端直接不列進 up/down
+             （見 market.py 註解：缺值當 0 會捏造一筆大增/大減），所以兩份清單本來就
+             可能偏短甚至掛零，空狀態要講出原因，不能只寫「尚無資料」。 -->
+        <div class="card-group ssf-b-oi">
+          <div class="group-title">未平倉增減　<span class="muted small">大量搭配 OI 大增是建倉，大量搭配 OI 大減是平倉</span></div>
+          <div class="ssf-oi-cols">
+            <div><div class="ssf-sub">增加最多</div><ol id="ssf-oi-up" class="ssf-oi-list"></ol></div>
+            <div><div class="ssf-sub">減少最多</div><ol id="ssf-oi-down" class="ssf-oi-list"></ol></div>
+          </div>
+        </div>
+
+        <div class="card-group ssf-b-basis">
           <div class="group-title">熱門股期對現貨價差　<span class="muted small">期貨 13:45 結算價 vs 現貨 13:30 收盤，兩者時間不同步</span></div>
           <div class="table-wrap" id="ssf-basis-wrap">
             <table id="ssf-basis-table"><thead><tr>
@@ -710,55 +778,12 @@
         </div>
 
         <!-- 近 10 交易日排行熱力圖：列＝名次 1–10、欄＝交易日，格子＝當日該名次的合約＋
-             漲跌%。第一欄用 th scope="row"（名次是列標題，語意上不是資料格）。 -->
-        <div class="card-group span-full">
+             漲跌%。第一欄用 th scope="row"（名次是列標題，語意上不是資料格）。
+             不可限高：全域 th 的 sticky 也作用在內文的名次欄。 -->
+        <div class="card-group ssf-b-hm">
           <div class="group-title">近期排行熱力圖　<span class="muted small">每日成交口數前 10，格子為當日漲跌%</span></div>
           <div class="table-wrap" id="ssf-hm-wrap">
             <table id="ssf-hm-table"><thead><tr id="ssf-hm-head"></tr></thead><tbody></tbody></table>
-          </div>
-        </div>
-
-        <!-- 未平倉增減：OI 增減不是價格方向（是否有新倉/解倉），不是漲跌，所以全站
-             紅綠鎖給行情漲跌這條規矩在這裡完全不適用——一律中性色，方向改用全站既有
-             的 ▲▼ 字彙表達（不套 .up/.down）。前一日缺列的合約後端直接不列進 up/down
-             （見 market.py 註解：缺值當 0 會捏造一筆大增/大減），所以兩份清單本來就
-             可能偏短甚至掛零，空狀態要講出原因，不能只寫「尚無資料」。 -->
-        <div class="card-group">
-          <div class="group-title">未平倉增減　<span class="muted small">大量搭配 OI 大增是建倉，大量搭配 OI 大減是平倉</span></div>
-          <div class="ssf-oi-cols">
-            <div><div class="ssf-oi-title">增加最多</div><ol id="ssf-oi-up" class="ssf-oi-list"></ol></div>
-            <div><div class="ssf-oi-title">減少最多</div><ol id="ssf-oi-down" class="ssf-oi-list"></ol></div>
-          </div>
-        </div>
-
-        <!-- 原始保證金試算：口數／搜尋框用事件委派（CSP script-src 'self' 會靜默丟掉
-             inline on*= 屬性），監聽掛在 app.js 的 .ssf-margin-bar 委派上。
-             口數換算在前端乘整數就完全正確——後端 initial/maintenance 已經是
-             「單口四捨五入後」的金額，交易所自己的規則就是先四捨五入單口再乘 N。
-             表頭在靜態 HTML 裡就是完整的（final review #6）：renderSsfMargin() 只
-             更新既有 <th> 的 aria-sort／箭頭與「N 口合計」的口數文字，不再整列
-             重繪——這樣即使 loadSsfMargin() 還沒回來、或整支失敗，表頭仍看得到
-             欄名，不會是一片空白（同 #ssf-hm-head「整列重繪、<tr> 留空」的舊寫法
-             不一樣：那張表只在資料回來後才顯示，沒有這個問題）。標的／契約乘數／
-             原始比例／1 口原始保證金／維持保證金五欄可排序（原始比例補於 final
-             review #7——它是抓「處置股保證金加成 1.5/2/3 倍」最直接的欄）；
-             「N 口合計」不開排序鍵，同 #ssf-hm-head 既有理由。 -->
-        <div class="card-group span-full">
-          <div class="group-title">原始保證金試算</div>
-          <div class="ssf-margin-bar">
-            <label>口數 <input id="ssf-lots" type="number" min="1" max="999" value="1"></label>
-            <label>搜尋 <input id="ssf-margin-q" type="search" placeholder="代號或名稱"></label>
-            <span class="pane-count" id="ssf-margin-note"></span>
-          </div>
-          <div class="table-wrap" id="ssf-margin-wrap">
-            <table id="ssf-margin-table"><thead><tr id="ssf-margin-head">
-              <th class="sc-sort" scope="col" aria-sort="none" data-k="name"><span class="sc-h-label">標的</span></th>
-              <th class="sc-sort" scope="col" aria-sort="none" data-k="multiplier"><span class="sc-h-label">契約乘數</span></th>
-              <th class="sc-sort" scope="col" aria-sort="none" data-k="initial_pct"><span class="sc-h-label">原始比例</span></th>
-              <th class="sc-sort" scope="col" aria-sort="none" data-k="initial"><span class="sc-h-label">1 口原始保證金</span></th>
-              <th class="sc-sort" scope="col" aria-sort="none" data-k="maintenance"><span class="sc-h-label">維持保證金</span></th>
-              <th scope="col" id="ssf-margin-lots-head">1 口合計</th>
-            </tr></thead><tbody></tbody></table>
           </div>
         </div>
       </section>
@@ -796,6 +821,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260817-ui60"></script>
+  <script src="app.js?v=20260817-ui61"></script>
 </body>
 </html>
