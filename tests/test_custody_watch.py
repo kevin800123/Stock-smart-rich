@@ -291,7 +291,7 @@ def test_weekly_push_sends_at_deadline_with_stale_note(conn, monkeypatch):
     monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 19, 21, 30))
     r = helpers.telegram_new_picks_job(conn, _tg(), "weekly")
     assert r["sent"] is True and len(sent) == 1
-    assert "集保仍為 09\-11 週" in sent[0]                   # MarkdownV2 跳脫後的樣子
+    assert "集保仍為 09\\-11 週" in sent[0]                   # MarkdownV2 跳脫後的樣子
 
 
 def test_weekly_push_failed_send_is_retried(conn, monkeypatch):
@@ -306,7 +306,7 @@ def test_compose_weekly_includes_custody_note_only_when_given():
     base = dict(day="2026-09-18", week_start="2026-09-14", total=0, n_week=0, items=[], basis=None,
                 top_sectors=[], ready_at=None)
     assert "集保仍為" not in pick_push.compose_weekly_new_picks(**base)
-    assert "集保仍為 09\-11 週" in pick_push.compose_weekly_new_picks(
+    assert "集保仍為 09\\-11 週" in pick_push.compose_weekly_new_picks(
         **base, custody_note="集保仍為 09-11 週（本週尚未公布）")
 
 
