@@ -1433,17 +1433,22 @@ def _cron_hours(hour: str) -> list[int]:
     return sorted(out)
 
 
+def _cron_minutes(minute: str) -> list[int]:
+    """分鐘欄：單一值或逗號列表（custody_watch／週報是 "0,30"）。"""
+    return sorted({int(p) for p in str(minute).split(",")})
+
+
 def slot_times(spec: dict, day: date) -> list[datetime]:
     """這個 spec 在指定日曆日的所有觸發時刻（依 dow 過濾，早到晚）。只給可補跑的 spec 用。"""
     if not spec.get("catchup", True) or not _dow_matches(spec.get("dow"), day.weekday()):
         return []
-    minute = int(spec["minute"])
-    return [datetime(day.year, day.month, day.day, h, minute) for h in _cron_hours(spec["hour"])]
+    return sorted(datetime(day.year, day.month, day.day, h, m)
+                  for h in _cron_hours(spec["hour"]) for m in _cron_minutes(spec["minute"]))
 
 
 def run_key_for(spec: dict, slot: datetime) -> str:
-    """一天只有一場 → 日期；一天多場（self_screen_early 三次）→ 日期:HH:MM，各場分開記。"""
-    multi = len(_cron_hours(spec["hour"])) > 1
+    """一天只有一場 → 日期；一天多場（self_screen_early 三次、custody_watch 與週報每 30 分）→ 日期:HH:MM，各場分開記。"""
+    multi = len(_cron_hours(spec["hour"])) * len(_cron_minutes(spec["minute"])) > 1
     return slot.strftime("%Y-%m-%d:%H:%M") if multi else slot.strftime("%Y-%m-%d")
 
 

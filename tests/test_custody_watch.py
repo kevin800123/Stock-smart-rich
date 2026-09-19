@@ -104,3 +104,14 @@ def test_peek_custody_week_stops_after_second_line_and_skips_tls_verify(monkeypa
     assert tdcc.peek_custody_week() == "2026-09-18"
     assert seen["verify"] is False and seen["params"] == {"id": "1-5"}
     assert calls.count("chunk") == 2 and calls[-1] == "closed"
+
+
+def test_slot_times_support_multiple_minutes():
+    spec = {"id": "x", "family": "x", "hour": "18-21", "minute": "0,30", "dow": "sat"}
+    sat = date(2026, 9, 19)
+    got = [t.strftime("%H:%M") for t in helpers.slot_times(spec, sat)]
+    assert got == ["18:00", "18:30", "19:00", "19:30", "20:00", "20:30", "21:00", "21:30"]
+    assert helpers.run_key_for(spec, datetime(2026, 9, 19, 20, 30)) == "2026-09-19:20:30"
+    assert helpers.scheduled_run_key(spec, datetime(2026, 9, 19, 20, 31, 5)) == "2026-09-19:20:30"
+    one = {"id": "y", "family": "y", "hour": "21", "minute": "0", "dow": None}
+    assert helpers.run_key_for(one, datetime(2026, 9, 19, 21, 0)) == "2026-09-19"   # 一天一場照舊
