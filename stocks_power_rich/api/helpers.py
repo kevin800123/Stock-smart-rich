@@ -1061,12 +1061,39 @@ def self_screen_thresholds(c) -> tuple:
 WEEKLY_PUSH_DEADLINE = (21, 30)   # 週六週報最晚這個時間照送（新集保還沒來也送，並註明）
 
 
-def custody_is_current(c) -> dict:
-    """本週集保進來了沒：最新**完整**集保週 ≥ 最新交易日所在 ISO 週的週一。
+def _cache_custody_week(pre) -> str | None:
+    """名單快取實際用了哪一週集保（`coverage.custody_weeks` 新到舊的第一個）。
+    舊快取沒有這個鍵＝不知道用了哪週＝None。"""
+    return (((pre or {}).get("coverage") or {}).get("custody_weeks") or [None])[0]
 
-    以週為單位、不寫死週五：週五放假時 TDCC 用當週最後一個營業日（週四），照樣成立。"""
-    from ..db import latest_complete_custody_week
-    week = latest_complete_custody_week(c)
+
+def _cache_custody_stale(c, pre) -> bool:
+    """名單快取用的集保週，是不是落後於「快取那一天現在應該用的週」。
+
+    用 `custody_compare_weeks(c, 快取日期)` 比，**不用資料庫最新週比**：快取若是週四的名單，
+    週四本來就用不到週五的集保，拿最新週比會讓 custody_watch 每 30 分鐘重算一次全市場。
+    compute_self_screen 用的是同一個呼叫，所以重算成功之後兩邊必然相等，不會無限重算。"""
+    from ..db import custody_compare_weeks
+    day = (pre or {}).get("date")
+    if not day:
+        return False
+    should = custody_compare_weeks(c, day)
+    return bool(should) and should[0] != _cache_custody_week(pre)
+
+
+def custody_is_current(c, pre: dict | None = None) -> dict:
+    """本週集保進來了沒：**名單快取實際用的**集保週 ≥ 最新交易日所在 ISO 週的週一。
+
+    看快取、不看集保資料表：推播內容來自名單快取（selfscreen:v1）。只看資料表的話，
+    `_accumulate_custody` 一寫入（已 commit）就判定「已是本週」，但名單重算失敗、被重啟打斷、
+    或回 skipped（data_not_ready／partial_universe）時快取仍是舊集保——週報會用舊集保的名單
+    送出、不附註記、標記本週已送，之後無從更正。
+    以週為單位、不寫死週五：週五放假時 TDCC 用當週最後一個營業日（週四），照樣成立。
+    `pre` 讓呼叫端傳入已讀的快取，判定與推播內容出自同一份；不給就自己讀。"""
+    from .. import selfcheck
+    if pre is None:
+        pre = selfcheck.load_latest_precomputed(c)
+    week = _cache_custody_week(pre)
     row = c.execute("SELECT MAX(date) FROM market_daily WHERE taiex IS NOT NULL").fetchone()
     last = row[0] if row else None
     if not week or not last:
@@ -1144,9 +1171,18 @@ def new_picks_push_payload(c, kind: str, force: bool = False) -> dict:
     else:
         tops = sorted((g for g in pre.get("heatmap") or [] if (g.get("buy_value") or 0) > 0),
                       key=lambda g: g["buy_value"], reverse=True)[:3]
-        cust = custody_is_current(c)
-        custody_note = None if cust["current"] else (
-            f"集保仍為 {cust['week'][5:]} 週（本週尚未公布）" if cust["week"] else "集保資料尚未取得")
+        # 週報**一律**附一行集保說明：大戶增比與大戶買進前三都是週資料，讀者要知道用的是哪兩週。
+        # 沒等到新集保時寫「尚未取得」而不是「尚未公布」——程式只知道名單還沒用上本週集保，
+        # 不知道 TDCC 到底有沒有公布。
+        cust = custody_is_current(c, pre)
+        cweeks = [w for w in ((pre.get("coverage") or {}).get("custody_weeks") or []) if w]
+        if cust["current"]:
+            custody_note = (f"集保 {cweeks[1][5:]}→{cweeks[0][5:]}" if len(cweeks) >= 2
+                            else f"集保 {cweeks[0][5:]}")
+        elif cust["week"]:
+            custody_note = f"集保仍為 {cust['week'][5:]} 週（本週集保尚未取得）"
+        else:
+            custody_note = "本週集保尚未取得"
         text = pick_push.compose_weekly_new_picks(
             day=day, week_start=week_start.isoformat(), total=counts["total"], n_week=counts["week"],
             items=[_item(r) for r in rows if r["is_week_new"]], basis=result["week_new_vs"],
@@ -1155,15 +1191,23 @@ def new_picks_push_payload(c, kind: str, force: bool = False) -> dict:
     return {"kind": kind, "date": day, "counts": counts, "text": text}
 
 
+# 週報「同一週只送一次」的鎖。run_job 的去重擋不住：週報一天 8 個 run_key（18:00–21:30 每 30 分鐘），
+# 它只擋「同一個 run_key」；啟動補跑執行緒與 APScheduler 執行緒可能各拿不同 run_key 同時跑到這裡，
+# 兩邊都讀到「本週未送」就各送一次。本站單一程序、單 worker（多 worker 會重複排程，見 CLAUDE.md
+#「Cloud deploy」），程序內的鎖就夠，不必動 DB。
+_WEEKLY_PUSH_LOCK = threading.Lock()
+
+
 def telegram_new_picks_job(c, cfg, kind: str) -> dict:
     """排程 job 本體（main.py 只呼叫）。回傳值存進 job_runs.note：略過原因或送出結果都看得見。
 
     weekly（週六 18:00–21:30 每 30 分鐘）：本週已送過就略過；本週集保還沒進來、且還沒到
     WEEKLY_PUSH_DEADLINE 就先等（下一場再試）；到了截止時間照送，內文註明集保仍是上一週。
-    送出成功才標記本週已送，失敗讓下一場重試。"""
-    from .. import telegram_push
-    sent_key = None
-    if kind == "weekly":
+    送出成功才標記本週已送，失敗讓下一場重試。「讀標記 → 送出 → 寫標記」整段在
+    `_WEEKLY_PUSH_LOCK` 裡（理由見鎖的註解）；daily 一天一場，run_job 的去重就夠。"""
+    if kind != "weekly":
+        return _send_new_picks(c, cfg, kind, None)
+    with _WEEKLY_PUSH_LOCK:
         now = _now()
         iso = now.isocalendar()
         sent_key = f"picks_weekly_sent:{iso[0]}-W{iso[1]:02d}"
@@ -1172,6 +1216,12 @@ def telegram_new_picks_job(c, cfg, kind: str) -> dict:
         cust = custody_is_current(c)
         if not cust["current"] and (now.hour, now.minute) < WEEKLY_PUSH_DEADLINE:
             return {"kind": kind, "skipped": "waiting_custody", "custody_week": cust["week"]}
+        return _send_new_picks(c, cfg, kind, sent_key)
+
+
+def _send_new_picks(c, cfg, kind: str, sent_key: str | None) -> dict:
+    """組好內容送出；sent_key 有給（週報）且送出成功才寫標記。"""
+    from .. import telegram_push
     payload = new_picks_push_payload(c, kind)
     if payload.get("skipped"):
         return {"kind": kind, "date": payload.get("date"), "skipped": payload["skipped"]}
@@ -1253,7 +1303,15 @@ def custody_watch(c) -> dict:
     重算**不寫前瞻紀錄**（record_signals=False）：新集保是收盤後才公布的，不可改寫任何訊號日。
     重算的是**快取裡那一天**（畫面上的名單），不是 market_daily 最新一列：週五 21:00 前
     market_daily 還沒有週五，拿它重算會算成週四、蓋掉 17:30 算好的週五名單。沒有快取才退回最新交易日。
-    例外往上拋給 run_job 記成 failed，下一個 30 分鐘再試；21:00 的每日更新仍會照舊抓，漏不掉。
+
+    TDCC 沒有更新的週時，若**集保已入庫但名單快取還沒用上**（寫入後重算失敗、被重啟打斷、或回
+    data_not_ready／partial_universe）也會補算一次，回 `retried: True`。少了這一步，
+    `_accumulate_custody` 一寫入（已 commit）之後每一場都只看到「沒有新週」，名單會一直停在舊集保。
+    比的是「快取那一天現在應該用的週」（`_cache_custody_stale`），快取是週四名單時不會每 30 分鐘
+    重算全市場。
+    TDCC 檔頭已是新週、完整下載卻沒寫入是**故障**不是略過（下載 5xx、維護頁被解析成空、週別對不上），
+    丟 RuntimeError。例外一律往上拋給 run_job 記成 failed（/api/health 看得到），下一個 30 分鐘再試；
+    21:00 的每日更新仍會照舊抓，漏不掉。
     """
     from .. import selfcheck, updater
     from ..db import latest_complete_custody_week
@@ -1263,13 +1321,18 @@ def custody_watch(c) -> dict:
     if not remote:
         raise RuntimeError("TDCC 集保檔頭讀不到資料日期（格式可能改版）")
     local = latest_complete_custody_week(c)
+    pre = selfcheck.load_latest_precomputed(c)   # 同一次呼叫只讀一次快取
+    listed = (pre or {}).get("date")
     if local and remote <= local:
-        return {"skipped": "no_new_week", "tdcc": remote, "local": local}
+        if not _cache_custody_stale(c, pre):
+            return {"skipped": "no_new_week", "tdcc": remote, "local": local}
+        ss = refresh_self_screen_cache(c, day=listed, record_signals=False)
+        return {"retried": True, "week": local,
+                "self_screen": {k: ss.get(k) for k in ("cached", "date", "skipped")}}
     week = updater._accumulate_custody(c)
     if not week:
-        return {"skipped": "not_stored", "tdcc": remote, "local": local}
+        raise RuntimeError(f"TDCC 檔頭是 {remote} 週，但完整下載沒有寫入（本機最新完整週 {local}）")
     fetched = (get_ai_cache(c, f"custody_fetched:{week}") or {}).get("at")
-    listed = (selfcheck.load_latest_precomputed(c) or {}).get("date")
     ss = refresh_self_screen_cache(c, day=listed, record_signals=False)
     return {"week": week, "fetched_at": fetched,
             "self_screen": {k: ss.get(k) for k in ("cached", "date", "skipped")}}
@@ -1473,7 +1536,8 @@ def job_schedule(cfg, schedule_time: str) -> list[dict]:
             {"id": "news_midday", "family": "news", "hour": "12", "minute": "0", "dow": None},
             {"id": "news_afternoon", "family": "news", "hour": "17", "minute": "0", "dow": "mon-fri"},
             {"id": "news_evening", "family": "news", "hour": "21", "minute": "10", "dow": None},
-            # 自算選股新進榜（使用者規格）：平日 21:40 今日新進、週六 18:00 本週新進＋大戶買進前三。
+            # 自算選股新進榜（使用者規格）：平日 21:40 今日新進、週六 18:00–21:30（等本週集保，
+            # 最晚 21:30）本週新進＋大戶買進前三。
             # 21:40 在 21:00 每日更新與 21:10 新聞之後；名單 20:00 前就算好，21:00 只是補融資。
             {"id": "picks_new_daily", "family": "picks_new_daily", "hour": "21", "minute": "40",
              "dow": "mon-fri"},
