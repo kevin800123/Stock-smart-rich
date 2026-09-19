@@ -12,10 +12,12 @@ from .db import (
     bulk_upsert_financials,
     bulk_upsert_ohlc,
     bulk_upsert_revenue,
-    custody_week_exists,
+    custody_week_complete,
+    get_ai_cache,
     get_setting,
-    latest_custody_week,
+    latest_complete_custody_week,
     ohlc_dates,
+    set_ai_cache,
     set_setting,
     upsert_market_daily,
     upsert_tx_history,
@@ -27,9 +29,12 @@ from .sources import financials, fred, intl, nasdaq, revenue, taifex, tdcc, tpex
 def _accumulate_custody(conn) -> str | None:
     """偵測到新的一週才抓 TDCC 全市場集保大戶比並批次入庫（趨勢逐週累積）。
 
-    若資料庫最近一週在 6 天內（同一週）即略過，連抓都免；跨到新一週才下載並 bulk 寫入。
+    若資料庫最近一個**完整**週在 6 天內（同一週）即略過，連抓都免；跨到新一週才下載並 bulk 寫入。
+    「完整週」而不是 MAX：個股頁「補歷史」會把單一檔寫進全市場還沒公布的那一週，用 MAX 或
+    「該週有任何一列」判斷，全市場那一批會被擋一整週（見 db.latest_complete_custody_week）。
+    第一次寫入某週時記下時間（ai_cache `custody_fetched:{week}`），用來量 TDCC 實際幾點公布。
     """
-    last = latest_custody_week(conn)
+    last = latest_complete_custody_week(conn)
     if last:
         try:
             if (_date.today() - _date.fromisoformat(last)).days < 6:
@@ -38,9 +43,12 @@ def _accumulate_custody(conn) -> str | None:
             pass
     cur = tdcc.fetch_custody_distribution()
     week, data = cur.get("week_date"), cur.get("data") or {}
-    if not week or not data or custody_week_exists(conn, week):
+    if not week or not data or custody_week_complete(conn, week):
         return None
     bulk_upsert_custody(conn, week, data)
+    key = f"custody_fetched:{week}"
+    if not get_ai_cache(conn, key):
+        set_ai_cache(conn, key, {"at": datetime.now().isoformat(timespec="seconds")})
     return week
 
 

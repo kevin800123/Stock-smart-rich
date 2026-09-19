@@ -412,6 +412,31 @@ def custody_compare_weeks(conn: sqlite3.Connection, as_of: str | None = None) ->
     return [w for w, c in counts if c >= mx * CUSTODY_WEEK_MIN_FRAC][:2]
 
 
+def latest_complete_custody_week(conn: sqlite3.Connection) -> str | None:
+    """最新的**完整**集保週（ISO 日期），略過逐檔回補造成的殘缺週。
+
+    不可用 `latest_custody_week`（MAX）：個股頁「補歷史」會把單一檔寫進全市場還沒公布的
+    那一週，MAX 會指到那個只有一檔的週，讓 `_accumulate_custody` 的節流與「已存在」判斷
+    把全市場那一批擋一整週。判定門檻與 `custody_compare_weeks` 同一個。"""
+    weeks = custody_compare_weeks(conn)
+    return weeks[0] if weeks else None
+
+
+def custody_week_complete(conn: sqlite3.Connection, week: str) -> bool:
+    """這一週是不是完整的全市場批次（檔數達到近 10 週最大週的 CUSTODY_WEEK_MIN_FRAC）。"""
+    counts = conn.execute(
+        "SELECT week, COUNT(*) FROM custody_dist WHERE big400_pct IS NOT NULL "
+        "GROUP BY week ORDER BY week DESC LIMIT 10").fetchall()
+    if not counts:
+        return False
+    mx = max(n for _, n in counts)
+    n = dict(counts).get(week)
+    if n is None:
+        n = conn.execute("SELECT COUNT(*) FROM custody_dist WHERE week=? AND big400_pct IS NOT NULL",
+                         (week,)).fetchone()[0]
+    return n > 0 and n >= mx * CUSTODY_WEEK_MIN_FRAC
+
+
 def custody_change_map(conn: sqlite3.Connection, as_of: str | None = None) -> dict:
     """全市場 {代號: {big_holder_ratio, holder_drop_ratio}}——公式見 analysis.custody_change()。
 
