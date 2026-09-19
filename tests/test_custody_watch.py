@@ -60,3 +60,47 @@ def test_accumulate_custody_records_first_fetch_time_once(conn, monkeypatch):
     db.set_ai_cache(conn, f"custody_fetched:{new}", {"at": "2000-01-01T00:00:00"})
     assert updater._accumulate_custody(conn) is None                    # 同一週：節流擋下
     assert db.get_ai_cache(conn, f"custody_fetched:{new}")["at"] == "2000-01-01T00:00:00"
+
+
+HEAD = "﻿資料日期,證券代號,持股分級,人數,股數,占集保庫存數比例%\n20260918,000218,1,0,0,0.00\n20260918,0002".encode("utf-8")
+
+
+def test_parse_custody_week_head_reads_date_from_second_line():
+    assert tdcc.parse_custody_week_head(HEAD) == "2026-09-18"
+
+
+def test_parse_custody_week_head_rejects_unexpected_format():
+    assert tdcc.parse_custody_week_head(b"") is None
+    assert tdcc.parse_custody_week_head("資料日期,證券代號\n".encode("utf-8")) is None      # 只有表頭
+    assert tdcc.parse_custody_week_head("<html>維護中</html>\n\n".encode("utf-8")) is None
+
+
+class _FakeStream:
+    def __init__(self, chunks, calls):
+        self.chunks, self.calls = chunks, calls
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        self.calls.append("closed")
+
+    def raise_for_status(self):
+        pass
+
+    def iter_bytes(self):
+        for ch in self.chunks:
+            self.calls.append("chunk")
+            yield ch
+
+
+def test_peek_custody_week_stops_after_second_line_and_skips_tls_verify(monkeypatch):
+    calls, seen = [], {}
+    rest = [b"x" * 100] * 50                                     # 後面還有很多塊，不應該讀到
+    def fake_stream(method, url, **kw):
+        seen.update(kw)
+        return _FakeStream([HEAD[:20], HEAD[20:]] + rest, calls)
+    monkeypatch.setattr(tdcc.httpx, "stream", fake_stream)
+    assert tdcc.peek_custody_week() == "2026-09-18"
+    assert seen["verify"] is False and seen["params"] == {"id": "1-5"}
+    assert calls.count("chunk") == 2 and calls[-1] == "closed"

@@ -152,3 +152,27 @@ def fetch_custody_distribution() -> dict:
     # 即使遭竄改頂多造成分析數字失準，非機敏資料外洩。故維持現狀，僅窄範圍套用於此主機。
     r = httpx.get(TDCC_URL, params={"id": "1-5"}, timeout=90, follow_redirects=True, verify=False)
     return parse_custody_distribution(r.content.decode("utf-8-sig", errors="replace"))
+
+
+def parse_custody_week_head(raw: bytes) -> str | None:
+    """opendata CSV 的開頭幾個位元組 → 資料日期（ISO）。第一列必須是「資料日期」開頭的表頭、
+    第二列第一格是 YYYYMMDD；格式不符回 None（呼叫端當成改版處理，不可當成「沒有新週」）。"""
+    text = raw.decode("utf-8-sig", errors="replace")
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if len(lines) < 2 or not lines[0].startswith("資料日期"):
+        return None
+    return _ymd(lines[1].split(",")[0])
+
+
+def peek_custody_week(timeout: float = 30) -> str | None:
+    """只讀 TDCC 集保檔的頭兩列就關閉連線，回傳資料日期——輪詢「新一週出來了沒」用，
+    不必每 30 分鐘下載整份（數 MB）。verify=False 理由同 fetch_custody_distribution。"""
+    buf = b""
+    with httpx.stream("GET", TDCC_URL, params={"id": "1-5"}, timeout=timeout,
+                      follow_redirects=True, verify=False) as r:
+        r.raise_for_status()
+        for chunk in r.iter_bytes():
+            buf += chunk
+            if buf.count(b"\n") >= 2 or len(buf) > 65536:
+                break
+    return parse_custody_week_head(buf)
