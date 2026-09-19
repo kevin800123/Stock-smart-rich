@@ -97,6 +97,34 @@ def _footer(ready_at: str | None) -> list:
     return [""] + ([ready] if ready else []) + [_e(_DISCLAIMER)]
 
 
+# ── 內文「實際列出」哪些股：compose 與「使用者看過的代號」共用同一段切片 ──
+# 送出成功後，只有內文真的列出來的代號才算使用者看過（api/helpers._send_new_picks →
+# ledger.record_shown_self_screen）。週報沒列的「重新進榜」股、超過上限寫成「另 N 檔未列出」的股，
+# 沒有出現在任何一則訊息裡；若記成看過，下一個交易日不再是新進、推播永遠不會播出它們。
+# 所以列出規則**只能有一份**：compose 用它排版、listed_codes_* 用它算代號，兩份切片會漂移。
+
+def daily_listed(star_items: list, renew_items: list, limit: int = DEFAULT_LIMIT) -> tuple[list, list]:
+    """平日推播實際列出的兩段：✦ 優先，合計最多 `limit` 檔（其餘寫「另 N 檔未列出」）。"""
+    stars = star_items[:limit]
+    return stars, renew_items[:max(0, limit - len(stars))]
+
+
+def weekly_listed(items: list, limit: int = DEFAULT_LIMIT) -> list:
+    """週報實際列出的本週新進：依 items 順序前 `limit` 檔（其餘寫「另 N 檔未列出」）。"""
+    return items[:limit]
+
+
+def listed_codes_daily(star_items: list, renew_items: list, limit: int = DEFAULT_LIMIT) -> list:
+    """平日推播內文列出的代號（✦ 在前、NEW 在後），與 compose_daily_new_picks 同一個 limit 才會一致。"""
+    stars, renews = daily_listed(star_items, renew_items, limit)
+    return [it["code"] for it in stars + renews]
+
+
+def listed_codes_weekly(items: list, limit: int = DEFAULT_LIMIT) -> list:
+    """週報內文列出的代號，與 compose_weekly_new_picks 同一個 limit 才會一致。"""
+    return [it["code"] for it in weekly_listed(items, limit)]
+
+
 def compose_daily_new_picks(day: str, total: int, n_day: int, n_week: int, prev_date: str | None,
                             star_items: list, renew_items: list, ready_at: str | None,
                             limit: int = DEFAULT_LIMIT) -> str:
@@ -104,8 +132,7 @@ def compose_daily_new_picks(day: str, total: int, n_day: int, n_week: int, prev_
              _e(f"入選 {total}｜今日新進 {n_day}｜本週新進 {n_week}")]
     if prev_date:
         parts.append(_e(f"（相較前一份名單 {_md(prev_date)}）"))
-    stars = star_items[:limit]
-    renews = renew_items[:max(0, limit - len(stars))]
+    stars, renews = daily_listed(star_items, renew_items, limit)
     hidden = len(star_items) + len(renew_items) - len(stars) - len(renews)
     if not stars and not renews:
         parts += ["", _e("今日無新進榜")]
@@ -137,7 +164,7 @@ def compose_weekly_new_picks(day: str, week_start: str, total: int, n_week: int,
         # 週報一律附集保說明：用了哪兩週；等到 21:30 仍沒有新集保時照送，講清楚大戶增比還是上一週的
         # （文字由 helpers.new_picks_push_payload 決定）
         parts.append(_e(custody_note))
-    shown = items[:limit]
+    shown = weekly_listed(items, limit)
     if shown:
         conc = concentration_line(items)
         if conc:

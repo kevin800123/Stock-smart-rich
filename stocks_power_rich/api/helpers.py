@@ -1125,6 +1125,11 @@ def new_picks_push_payload(c, kind: str, force: bool = False) -> dict:
 
     漲跌% 用交易日曆（market_daily 有加權指數的日子）找基準日，再查該檔**那一天**的收盤；
     基準日缺價就顯示「—」，不拿更早的價格頂替（stock_ohlc 稀疏是常態，拿更早的會量成多日累計）。
+
+    回傳的 `listed_codes`＝**這則訊息內文實際列出的代號**（不是整份名單）：送出成功後由
+    `_send_new_picks` 記成「使用者看過的代號」。使用者看到的是內文——週報只列本週新進、平日只列 ✦／NEW，
+    兩者都有上限（超過寫「另 N 檔未列出」）；沒列出的股若記成看過，下一個交易日不再是新進、永遠不會
+    被播出。列出規則由 `pick_push.listed_codes_*` 決定，與排版共用同一段切片，這裡不另寫一份。
     """
     import bisect
     from datetime import date as _date, timedelta
@@ -1170,22 +1175,28 @@ def new_picks_push_payload(c, kind: str, force: bool = False) -> dict:
                 "mu_value": r["vals"].get("mu_value"), "mu_score": r["vals"].get("mu_score")}
 
     counts = {"total": len(rows), "day": result["new_count"], "week": result["week_new_count"]}
+    # 排版與「列出了哪些代號」必須用同一個上限（在呼叫時讀，測試才調得動），否則兩邊對不上
+    limit = pick_push.DEFAULT_LIMIT
     if kind == "daily":
+        star_items = [_item(r) for r in rows if r["is_new"] and r["is_week_new"]]
+        renew_items = [_item(r) for r in rows if r["is_new"] and not r["is_week_new"]]
         text = pick_push.compose_daily_new_picks(
             day=day, total=counts["total"], n_day=counts["day"], n_week=counts["week"],
-            prev_date=result["new_vs"],
-            star_items=[_item(r) for r in rows if r["is_new"] and r["is_week_new"]],
-            renew_items=[_item(r) for r in rows if r["is_new"] and not r["is_week_new"]],
-            ready_at=pre.get("ready_at"))
+            prev_date=result["new_vs"], star_items=star_items, renew_items=renew_items,
+            ready_at=pre.get("ready_at"), limit=limit)
+        listed = pick_push.listed_codes_daily(star_items, renew_items, limit)
     else:
         tops = sorted((g for g in pre.get("heatmap") or [] if (g.get("buy_value") or 0) > 0),
                       key=lambda g: g["buy_value"], reverse=True)[:3]
         # 週報**一律**附一行集保說明：大戶增比與大戶買進前三都是週資料，讀者要知道用的是哪兩週。
         # 沒等到新集保時寫「尚未取得」而不是「尚未公布」——程式只知道名單還沒用上本週集保，
         # 不知道 TDCC 到底有沒有公布。
-        # 名單沒用上本週集保時再分兩種：**資料表**已經有本週的完整集保（寫入後重算失敗／被重啟打斷／
-        # 回 skipped，到了 21:30 截止照送）寫「本週集保已取得，名單尚未重算」；資料表也還沒有才是
-        # 「本週集保尚未取得」。兩者要處理的事不同（前者要查重算為什麼沒成功），混成一句會讓人去等 TDCC。
+        # 名單沒用上本週集保時再分兩種：**資料表**已經有本週的完整集保寫「本週集保已取得，名單尚未用上」；
+        # 資料表也還沒有才是「本週集保尚未取得」。兩者要處理的事不同，混成一句會讓人去等 TDCC。
+        # 前者**不寫「尚未重算」**：名單快取可能是更早一天的名單（例如週五名單從沒算出來、快取停在週四），
+        # 週四本來就用不到週五那週的集保、custody_watch 也不會為它重算——說「尚未重算」會讓人去查錯方向。
+        # 看到「已取得，名單尚未用上」時要查兩件事：最新名單的日期是否已到本週集保那一天（週五名單有沒有
+        # 算出來），以及重算是否失敗（job_runs 的 custody_watch：寫入後重算失敗／被重啟打斷／回 skipped）。
         # 門檻用「≥ 本週週一」而不是「比名單用的週新」：名單落後兩週、資料表只補到上週時，本週集保
         # 其實還沒取得，說「已取得」是錯的。
         from ..db import latest_complete_custody_week
@@ -1196,18 +1207,19 @@ def new_picks_push_payload(c, kind: str, force: bool = False) -> dict:
                             else f"集保 {cweeks[0][5:]}")
         else:
             stored, monday = latest_complete_custody_week(c), _latest_trading_week_monday(c)
-            got = ("本週集保已取得，名單尚未重算" if stored and monday and stored >= monday
+            got = ("本週集保已取得，名單尚未用上" if stored and monday and stored >= monday
                    else "本週集保尚未取得")
             custody_note = f"集保仍為 {cust['week'][5:]} 週（{got}）" if cust["week"] else got
+        items = [_item(r) for r in rows if r["is_week_new"]]
         text = pick_push.compose_weekly_new_picks(
             day=day, week_start=week_start.isoformat(), total=counts["total"], n_week=counts["week"],
-            items=[_item(r) for r in rows if r["is_week_new"]], basis=result["week_new_vs"],
+            items=items, basis=result["week_new_vs"],
             top_sectors=[(g["sector"], g["buy_value"]) for g in tops], ready_at=pre.get("ready_at"),
-            custody_note=custody_note)
-    # codes＝這份名單的**全部**入選代號（不只新進的那幾檔）：送出成功後記成「使用者看過的名單」，
-    # 下一份名單要比的是整份（見 _send_new_picks）。
-    return {"kind": kind, "date": day, "counts": counts, "text": text,
-            "codes": [r["code"] for r in rows]}
+            custody_note=custody_note, limit=limit)
+        listed = pick_push.listed_codes_weekly(items, limit)
+    # listed_codes＝內文**實際列出**的代號（不是整份名單，理由見 docstring）：送出成功後記成
+    # 「使用者看過的代號」（見 _send_new_picks）。沒列出任何一檔（「無新進榜」）就是空的，不記。
+    return {"kind": kind, "date": day, "counts": counts, "text": text, "listed_codes": listed}
 
 
 # 週報「同一週只送一次」的鎖。run_job 的去重擋不住：週報一天 8 個 run_key（18:00–21:30 每 30 分鐘），
@@ -1225,12 +1237,14 @@ def telegram_new_picks_job(c, cfg, kind: str) -> dict:
     送出成功才標記本週已送，失敗讓下一場重試。「讀標記 → 送出 → 寫標記」整段在
     `_WEEKLY_PUSH_LOCK` 裡（理由見鎖的註解）；daily 一天一場，run_job 的去重就夠。
 
-    daily 與 weekly 送出**成功**後，都把這份名單的全部入選代號記成「使用者看過的名單」
-    （`ledger.record_shown_self_screen`，鍵是名單日期；weekly 在鎖裡記）——新進榜的比對基準＝
-    帳本 ∪ 推播實際送出過的名單。**只在這裡記、不在重算時記**：推播頻道才是使用者實際收到的東西；
-    週報送出之後的週末重算帶進來的新進股沒有人收到過，重算時就記的話週一不再是新進、永遠不會被播出。
-    送出失敗不記（沒有人收到）。沒設定 Telegram 時這個 job 不註冊、也就沒有看過的名單，比對基準
-    退回只看帳本（同改動前）。預覽端點只呼叫 new_picks_push_payload，不會記。"""
+    daily 與 weekly 送出**成功**後，都把**內文實際列出的代號**（payload 的 `listed_codes`）記成
+    「使用者看過的代號」（`ledger.record_shown_self_screen`，鍵是名單日期；weekly 在鎖裡記）——
+    新進榜的比對基準＝帳本 ∪ 推播內文列出過的代號。**只記列出的、不記整份名單**：使用者看到的是訊息
+    內文，週報沒列的重新進榜股、超過上限「另 N 檔未列出」的股沒有出現在任何一則訊息裡，記成看過的話
+    下一個交易日不再是新進、永遠不會被播出。**只在這裡記、不在重算時記**：週報送出之後的週末重算帶進來
+    的新進股同樣沒有人收到過。送出失敗不記（沒有人收到）。沒設定 Telegram 時這個 job 不註冊、也就沒有
+    看過的代號，比對基準退回只看帳本（同改動前）。預覽端點只呼叫 new_picks_push_payload，不會記。
+    記錄看過的代號失敗時不讓整支 job 失敗（見 _send_new_picks）。"""
     if kind != "weekly":
         return _send_new_picks(c, cfg, kind, None)
     with _WEEKLY_PUSH_LOCK:
@@ -1246,22 +1260,31 @@ def telegram_new_picks_job(c, cfg, kind: str) -> dict:
 
 
 def _send_new_picks(c, cfg, kind: str, sent_key: str | None) -> dict:
-    """組好內容送出；sent_key 有給（週報）且送出成功才寫標記。送出成功（daily 與 weekly）也把整份
-    名單記成「使用者看過的名單」（理由見 telegram_new_picks_job）；送出失敗兩者都不寫。"""
+    """組好內容送出；sent_key 有給（週報）且送出成功才寫標記。送出成功（daily 與 weekly）也把內文
+    實際列出的代號記成「使用者看過的代號」（理由見 telegram_new_picks_job）；送出失敗兩者都不寫。"""
     from .. import telegram_push
     from ..ledger import record_shown_self_screen
     payload = new_picks_push_payload(c, kind)
     if payload.get("skipped"):
         return {"kind": kind, "date": payload.get("date"), "skipped": payload["skipped"]}
     r = telegram_push.send_message(cfg.telegram_token, cfg.telegram_chat_id, payload["text"])
+    out = {"kind": kind, "date": payload["date"], "counts": payload["counts"],
+           "sent": bool(r.get("ok")), "parse_mode": r.get("parse_mode_used")}
     if r.get("ok"):
-        # 先寫「本週已送」再記看過的名單：萬一後者寫入失敗（例外照常往上拋給 run_job），代價是週一的
-        # 新進判定少了這份基準；反過來的話週報標記沒寫，下一場會把同一份週報再送一次給訂閱者。
+        # 先寫「本週已送」再記看過的代號：反過來的話萬一記錄失敗、週報標記沒寫，下一場會把同一份
+        # 週報再送一次給訂閱者。
         if sent_key:
             set_ai_cache(c, sent_key, {"at": _now().isoformat(timespec="seconds"), "date": payload["date"]})
-        record_shown_self_screen(c, payload["date"], payload["codes"])
-    return {"kind": kind, "date": payload["date"], "counts": payload["counts"],
-            "sent": bool(r.get("ok")), "parse_mode": r.get("parse_mode_used")}
+        # 訊息**已經送出**：記錄失敗不可讓例外往上拋。run_job 會把整支 job 記成 failed，而平日推播的
+        # run_key 是日期、failed 不算跑過——啟動補跑會把同一則再送一次給訂閱者（代價不只是「週一少一份
+        # 基準」）。改收進 failed_steps：run_job 記 partial（算跑過、不補跑），錯誤仍寫進 job_runs 的 error
+        # 欄與 /api/health，並 log 出 traceback——不是無聲吞掉。
+        try:
+            record_shown_self_screen(c, payload["date"], payload["listed_codes"])
+        except Exception as e:  # noqa: BLE001 — 已送出，理由見上；收進 failed_steps 並 log
+            log.exception("[picks_new_%s] 推播已送出，但記錄看過的代號失敗（%s）", kind, payload["date"])
+            out["failed_steps"] = [f"record_shown: {type(e).__name__}: {e}"]
+    return out
 
 
 def refresh_self_screen_cache(c, day: str | None = None, record_signals: bool = True) -> dict:
@@ -1283,10 +1306,10 @@ def refresh_self_screen_cache(c, day: str | None = None, record_signals: bool = 
     用的是收盤後才公布的集保，拿它補寫那天的訊號等於用未來資料回測。代價是週五排程整晚失敗時，
     週六補算不會補記那一天——少一天樣本可以接受，偏一天會讓結論失真（同 partial_universe 的取捨）。
 
-    **這裡不記「使用者看過的名單」**（`selfscreen_shown:{date}`）。那一份只在 Telegram 新進榜推播
-    **實際送出成功**時記（`_send_new_picks`）：重算不等於有人看到——週報一週只送一次、平日推播週末
-    不跑，週報送出之後的週末重算（週六／週日 21:00 的每日更新、custody_watch）帶進來的新進股，若在這裡
-    就記成「看過」，週一不再是新進、推播也就永遠不會播出它。
+    **這裡不記「使用者看過的代號」**（`selfscreen_shown:{date}`）。那一份只在 Telegram 新進榜推播
+    **實際送出成功**時記、而且只記內文列出的代號（`_send_new_picks`）：重算不等於有人看到——週報一週
+    只送一次、平日推播週末不跑，週報送出之後的週末重算（週六／週日 21:00 的每日更新、custody_watch）
+    帶進來的新進股，若在這裡就記成「看過」，週一不再是新進、推播也就永遠不會播出它。
     """
     from ..ledger import record_self_screen_signals
     from .. import analysis, selfcheck

@@ -414,10 +414,12 @@ _TABLE_LACKS_THIS_WEEK = ["2026-09-04", "2026-09-11"]
 @pytest.mark.parametrize("table_weeks,cache_weeks,expect,absent", [
     (_TABLE_HAS_THIS_WEEK, ["2026-09-18", "2026-09-11"], "集保 09\\-11→09\\-18", ("尚未取得", "已取得")),
     (_TABLE_HAS_THIS_WEEK, ["2026-09-18"], "集保 09\\-18", ("→",)),   # 只有一週：不畫懸空的箭頭
-    # 資料表已有本週、名單還是上一週（寫入後重算失敗等）：說「已取得、名單尚未重算」，不叫人去等 TDCC
+    # 資料表已有本週、名單還是上一週（寫入後重算失敗，或名單本來就是更早一天的）：說「已取得、名單
+    # 尚未用上」，不叫人去等 TDCC；也不說「尚未重算」——週四名單本來就用不到週五的集保（fix wave 3 #D）
     (_TABLE_HAS_THIS_WEEK, ["2026-09-11", "2026-09-04"],
-     "集保仍為 09\\-11 週（本週集保已取得，名單尚未重算）", ("尚未公布", "尚未取得")),
-    (_TABLE_HAS_THIS_WEEK, [], "本週集保已取得，名單尚未重算", ("集保仍為", "尚未取得")),   # 舊快取不知道用了哪週
+     "集保仍為 09\\-11 週（本週集保已取得，名單尚未用上）", ("尚未公布", "尚未取得", "尚未重算")),
+    (_TABLE_HAS_THIS_WEEK, [], "本週集保已取得，名單尚未用上",
+     ("集保仍為", "尚未取得", "尚未重算")),                        # 舊快取不知道用了哪週
     # 資料表也還沒有本週：維持「尚未取得」
     (_TABLE_LACKS_THIS_WEEK, ["2026-09-11", "2026-09-04"],
      "集保仍為 09\\-11 週（本週集保尚未取得）", ("尚未公布", "已取得")),
@@ -442,8 +444,8 @@ def test_weekly_payload_says_not_obtained_when_table_is_newer_but_not_this_week(
 
 
 def test_weekly_push_at_deadline_says_custody_obtained_but_list_not_recomputed(conn, monkeypatch):
-    """21:30 截止：新集保已寫進資料表、名單卻沒重算（重算失敗／被重啟打斷／回 skipped）。照送，
-    註記要講「本週集保已取得，名單尚未重算」——要查的是重算，不是等 TDCC。"""
+    """21:30 截止：新集保已寫進資料表、名單卻沒用上（重算失敗／被重啟打斷／回 skipped，或名單本來就是
+    更早一天的）。照送，註記要講「本週集保已取得，名單尚未用上」——要查的是名單日期與重算，不是等 TDCC。"""
     sent = []
     monkeypatch.setattr(telegram_push, "send_message",
                         lambda tok, chat, text: sent.append(text) or {"ok": True, "parse_mode_used": "MarkdownV2"})
@@ -451,8 +453,8 @@ def test_weekly_push_at_deadline_says_custody_obtained_but_list_not_recomputed(c
     monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 19, 21, 30))
     r = helpers.telegram_new_picks_job(conn, _tg(), "weekly")
     assert r["sent"] is True and len(sent) == 1
-    assert "集保仍為 09\\-11 週（本週集保已取得，名單尚未重算）" in sent[0]
-    assert "本週集保尚未取得" not in sent[0]
+    assert "集保仍為 09\\-11 週（本週集保已取得，名單尚未用上）" in sent[0]
+    assert "本週集保尚未取得" not in sent[0] and "尚未重算" not in sent[0]
 
 
 def test_weekly_push_sends_once_when_two_threads_race(conn, tmp_path, monkeypatch):
@@ -616,7 +618,7 @@ def test_refresh_does_not_record_the_shown_list(conn, monkeypatch):
     assert conn.execute("SELECT COUNT(*) FROM signal_ledger").fetchone()[0] == 0
 
 
-# ── 「看過的名單」＝推播實際送出成功的整份名單（fix wave 2 #A）──
+# ── 「看過的」＝推播實際送出成功、且內文實際列出的代號（fix wave 2 #A → fix wave 3 #A）──
 
 _PASS = {"rev_yoy": 10.0, "w55": 1, "big_holder_ratio": 1.0, "holder_drop_ratio": -1.0,
          "trust_3d": 0, "foreign_3d": 0, "lan_score": 12, "est_profit": 2.0, "mu_score": 15,
@@ -649,20 +651,114 @@ _SEND_CASES = [
 ]
 
 
-@pytest.mark.parametrize("kind,now,cache_weeks", _SEND_CASES)
-def test_successful_push_records_the_whole_list_as_shown(conn, monkeypatch, kind, now, cache_weeks):
-    """送出成功後記的是**整份**入選名單（1000 不是新進也要記），鍵是名單日期；daily 與 weekly 都記。"""
-    _cal(conn, _WEEKDAYS)
+def _listing_setup(c, cache_weeks, codes):
+    """名單日 09-18。前一份名單（帳本 09-17）只有 1000；上一個集保週期（09-04 後～09-11）的帳本有
+    1000／1003／1004。所以 09-18 的名單裡：1001、1002＝✦（今天才進、上一週期也沒有）；
+    1003、1004＝NEW（重新進榜：上一週期出現過）；1000 不是新進。"""
+    _cal(c, _WEEKDAYS)
     for wk in ("2026-09-04", "2026-09-11", "2026-09-18"):
-        _week(conn, wk, FULL)
-    _ledger(conn, "2026-09-17", ["1000"])
-    _cache_list(conn, "2026-09-18", cache_weeks, ["1000", "1001", "1002"])
+        _week(c, wk, FULL)
+    _ledger(c, "2026-09-11", ["1000", "1003", "1004"])
+    _ledger(c, "2026-09-17", ["1000"])
+    _cache_list(c, "2026-09-18", cache_weeks, codes)
+
+
+@pytest.mark.parametrize("kind,now,cache_weeks,listed", [
+    # 平日：✦ 與 NEW 兩段都列出 → 兩段都記；1000 不是新進、內文沒列 → 不記
+    ("daily", datetime(2026, 9, 18, 21, 40), ["2026-09-11", "2026-09-04"], ["1001", "1002", "1003", "1004"]),
+    # 週報只列本週新進：重新進榜的 1003／1004 內文沒有 → 不記
+    ("weekly", datetime(2026, 9, 19, 19, 0), ["2026-09-18", "2026-09-11"], ["1001", "1002"]),
+])
+def test_successful_push_records_only_the_listed_codes_as_shown(conn, monkeypatch, kind, now, cache_weeks, listed):
+    """送出成功後記的是**內文實際列出的代號**，不是整份名單（fix wave 3 #A）。
+    契約刻意改變：fix wave 2 時這條（原名 test_successful_push_records_the_whole_list_as_shown）斷言的是
+    整份名單都記——但使用者看到的是內文，沒列出的股記成看過，下一個交易日就不會再被播出。"""
+    _listing_setup(conn, cache_weeks, ["1000", "1001", "1002", "1003", "1004"])
     sent = []
     monkeypatch.setattr(telegram_push, "send_message", _ok_send(sent))
     monkeypatch.setattr(helpers, "_now", lambda: now)
     r = helpers.telegram_new_picks_job(conn, _tg(), kind)
     assert r["sent"] is True and len(sent) == 1
-    assert db.get_ai_cache(conn, "selfscreen_shown:2026-09-18") == {"codes": ["1000", "1001", "1002"]}
+    assert db.get_ai_cache(conn, "selfscreen_shown:2026-09-18") == {"codes": listed}
+    for code in ["1000", "1001", "1002", "1003", "1004"]:
+        assert (code in sent[0]) is (code in listed)          # 記下的＝內文列出的，一檔不多一檔不少
+
+
+def test_daily_push_does_not_record_codes_beyond_the_limit(conn, monkeypatch):
+    """平日推播超過上限的股寫成「另 N 檔未列出」，內文沒有它們 → 不記成看過。上限用同一個值：
+    payload 在呼叫時讀 pick_push.DEFAULT_LIMIT，排版與列出的代號一起變。"""
+    _listing_setup(conn, ["2026-09-11", "2026-09-04"], ["1000", "1001", "1002", "1003", "1004"])
+    monkeypatch.setattr(pick_push, "DEFAULT_LIMIT", 3)          # ✦ 2 檔全列、NEW 只剩 1 格
+    sent = []
+    monkeypatch.setattr(telegram_push, "send_message", _ok_send(sent))
+    monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 18, 21, 40))
+    assert helpers.telegram_new_picks_job(conn, _tg(), "daily")["sent"] is True
+    assert "另 1 檔未列出" in sent[0] and "1004" not in sent[0]
+    assert db.get_ai_cache(conn, "selfscreen_shown:2026-09-18") == {"codes": ["1001", "1002", "1003"]}
+
+
+def test_weekly_push_codes_beyond_the_limit_are_still_new_on_monday(conn, monkeypatch):
+    """週報有 limit+1 檔本週新進：只有前 limit 檔出現在內文、記成看過；第 limit+1 檔寫成「另 1 檔未列出」，
+    沒有人看過它的代號，週一仍是 NEW 與 WEEK NEW（會被播出）。帳本 09-18 是週五 17:30 用舊集保記的 [1000]，
+    週報送出的是用新集保重算後的名單。"""
+    _cal(conn, _WEEKDAYS)
+    for d in _WEEKDAYS:
+        _ledger(conn, d, ["1000"])
+    for wk in ("2026-09-04", "2026-09-11", "2026-09-18"):
+        _week(conn, wk, FULL)
+    # 同木率時維持快取順序（sort 穩定）：本週新進依序是 1001、1002、1003
+    _cache_list(conn, "2026-09-18", ["2026-09-18", "2026-09-11"], ["1000", "1001", "1002", "1003"])
+    monkeypatch.setattr(pick_push, "DEFAULT_LIMIT", 2)
+    sent = []
+    monkeypatch.setattr(telegram_push, "send_message", _ok_send(sent))
+    monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 19, 19, 0))
+    assert helpers.telegram_new_picks_job(conn, _tg(), "weekly")["sent"] is True
+    assert "另 1 檔未列出" in sent[0] and "1003" not in sent[0]
+    assert db.get_ai_cache(conn, "selfscreen_shown:2026-09-18") == {"codes": ["1001", "1002"]}
+
+    mon = ledger.annotate_new_entries(
+        conn, {"rows": [{"code": c} for c in ("1000", "1001", "1002", "1003")]}, "2026-09-21")
+    by = _by_code(mon)
+    assert by["1003"]["is_new"] is True and by["1003"]["is_week_new"] is True   # 沒列出 → 週一照常播出
+    for code in ("1001", "1002"):                                               # 週報列出過 → 不再重報
+        assert by[code]["is_new"] is False and by[code]["is_week_new"] is False
+
+
+def test_codes_the_weekly_push_did_not_list_are_still_new_on_monday(conn, monkeypatch):
+    """審查者的情境（fix wave 3 #A）：帳本 09-07～09-11 是 [1000, 1003]、09-14～09-18 是 [1000]。週五 21:40
+    平日推播以 [1000] 送出；週六用新集保重算後名單變成 [1000, 1003]——1003 是「重新進榜」（上一個集保週期
+    出現過），不是本週新進，所以週報內文是「本週無新進榜」、完全沒提到它。fix wave 2 把整份名單記成看過，
+    1003 週一 NEW／WEEK NEW 都掉了、Telegram 永遠不會播出（對改動前是迴歸）。"""
+    _cal(conn, _WEEKDAYS)
+    for d in _WEEKDAYS[:5]:
+        _ledger(conn, d, ["1000", "1003"])
+    for d in _WEEKDAYS[5:]:
+        _ledger(conn, d, ["1000"])
+    for wk in ("2026-09-04", "2026-09-11"):
+        _week(conn, wk, FULL)
+    sent = []
+    monkeypatch.setattr(telegram_push, "send_message", _ok_send(sent))
+
+    # 週五 21:40：名單 [1000]（舊集保），沒有新進
+    _cache_list(conn, "2026-09-18", ["2026-09-11", "2026-09-04"], ["1000"])
+    monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 18, 21, 40))
+    assert helpers.telegram_new_picks_job(conn, _tg(), "daily")["sent"] is True
+    assert "今日無新進榜" in sent[-1]
+
+    # 週六：新集保進來、重算後名單 [1000, 1003]，週報照送
+    _week(conn, "2026-09-18", FULL)
+    _cache_list(conn, "2026-09-18", ["2026-09-18", "2026-09-11"], ["1000", "1003"])
+    monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 19, 19, 0))
+    assert helpers.telegram_new_picks_job(conn, _tg(), "weekly")["sent"] is True
+    assert "本週無新進榜" in sent[-1] and "1003" not in sent[-1]
+    assert "1003" not in ((db.get_ai_cache(conn, "selfscreen_shown:2026-09-18") or {}).get("codes") or [])
+
+    mon = ledger.annotate_new_entries(conn, {"rows": [{"code": "1000"}, {"code": "1003"}]}, "2026-09-21")
+    by = _by_code(mon)
+    assert mon["new_vs"] == "2026-09-18"
+    assert by["1003"]["is_new"] is True                        # 週五名單沒有它、訊息裡也沒講過
+    assert by["1003"]["is_week_new"] is True                   # 09-14～09-18 的帳本沒有、訊息裡也沒講過
+    assert by["1000"]["is_new"] is False and by["1000"]["is_week_new"] is False
 
 
 @pytest.mark.parametrize("kind,now,cache_weeks", _SEND_CASES)
@@ -679,19 +775,22 @@ def test_failed_push_does_not_record_the_list_as_shown(conn, monkeypatch, kind, 
 
 
 def test_preview_endpoint_does_not_record_the_list_as_shown(conn, monkeypatch):
-    """預覽端點只組內容、不送，也就不記看過的名單（否則開一次預覽，週一的新進就少掉了）。"""
+    """預覽端點只組內容、不送，也就不記看過的代號（否則開一次預覽，週一的新進就少掉了）。
+    列出的代號非空（1001 是 ✦／本週新進），所以不是「空的不寫」那條規則擋掉的。"""
     from fastapi.testclient import TestClient
     from stocks_power_rich.main import create_app
     _cal(conn, _WEEKDAYS)
     for wk in ("2026-09-04", "2026-09-11", "2026-09-18"):
         _week(conn, wk, FULL)
+    _ledger(conn, "2026-09-11", ["1000"])
+    _ledger(conn, "2026-09-17", ["1000"])
     _cache_list(conn, "2026-09-18", ["2026-09-18", "2026-09-11"], ["1000", "1001"])
     boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("預覽不應該送出"))
     monkeypatch.setattr(telegram_push, "send_message", boom)
     client = TestClient(create_app())
     for kind in ("daily", "weekly"):
         body = client.get(f"/api/picks/new-push-preview?kind={kind}&force=1").json()
-        assert body["ok"] is True and body["text"] and body["codes"] == ["1000", "1001"]
+        assert body["ok"] is True and body["text"] and body["listed_codes"] == ["1001"]
     assert db.get_ai_cache(conn, "selfscreen_shown:2026-09-18") is None
 
 
@@ -710,7 +809,10 @@ def test_list_recomputed_after_the_weekly_push_is_still_new_on_monday(conn, monk
     monkeypatch.setattr(telegram_push, "send_message", _ok_send(sent))
     monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 19, 21, 30))
     assert helpers.telegram_new_picks_job(conn, _tg(), "weekly")["sent"] is True
-    assert db.get_ai_cache(conn, "selfscreen_shown:2026-09-18") == {"codes": ["1000"]}
+    # 內文是「本週無新進榜」（1000 在上一個集保週期就有）→ 沒有列出任何代號、不記。
+    # 契約刻意改變（fix wave 3 #A）：fix wave 2 記的是整份名單 {"codes": ["1000"]}。
+    assert "本週無新進榜" in sent[0]
+    assert db.get_ai_cache(conn, "selfscreen_shown:2026-09-18") is None
 
     # 週日 21:00：每日更新抓到 09-18 週集保，重算週五名單，1001 入選（走真的 refresh_self_screen_cache）
     _week(conn, "2026-09-18", FULL)
@@ -763,3 +865,67 @@ def test_same_day_shown_list_is_not_its_own_baseline(conn):
     assert res["new_vs"] == "2026-09-17"
     assert _by_code(res)["1001"]["is_new"] is True
     assert _by_code(res)["1000"]["is_new"] is False
+
+
+# ── 推播已送出、記錄看過的代號失敗：不可讓補跑重送（fix wave 3 #B）──
+
+def _record_fails(monkeypatch):
+    import sqlite3
+
+    def boom(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(ledger, "record_shown_self_screen", boom)
+
+
+def test_daily_push_sent_but_record_failed_is_partial_and_not_caught_up(conn, monkeypatch, caplog):
+    """送出成功後記 shown 丟例外：原本例外往上拋、run_job 記 failed，平日推播 run_key 是日期、failed 不算
+    跑過——重啟補跑會把同一則再送一次給訂閱者。現在收進 failed_steps → partial（算跑過、補跑不列），
+    錯誤仍寫進 job_runs 的 error 欄並 log 出 traceback，不是無聲吞掉。"""
+    _listing_setup(conn, ["2026-09-11", "2026-09-04"], ["1000", "1001"])
+    _record_fails(monkeypatch)
+    sent = []
+    monkeypatch.setattr(telegram_push, "send_message", _ok_send(sent))
+    now = datetime(2026, 9, 18, 21, 40)
+    monkeypatch.setattr(helpers, "_now", lambda: now)
+    specs = helpers.job_schedule(_tg(), "21:00")
+    spec = {s["id"]: s for s in specs}["picks_new_daily"]
+    key = helpers.scheduled_run_key(spec, now)
+    with caplog.at_level("ERROR", logger="spr.jobs"):
+        r = helpers.run_job("picks_new_daily", key, lambda: helpers.telegram_new_picks_job(conn, _tg(), "daily"))
+    assert r["status"] == "partial" and len(sent) == 1
+    assert "record_shown: OperationalError: database is locked" in r["error"]
+    assert db.job_run_status(conn, "picks_new_daily", key) == "partial"
+    assert "'sent': True" in db.latest_job_runs(conn)["picks_new_daily"]["note"]   # 回傳仍帶 sent
+    assert any("記錄看過的代號失敗" in rec.getMessage() and rec.exc_info for rec in caplog.records)
+    # 22:00 重啟：補跑計畫不列這一場（partial 算跑過），不會再送一次
+    plan = helpers.catchup_plan(conn, specs, datetime(2026, 9, 18, 22, 0))
+    assert "picks_new_daily" not in {p["job_id"] for p in plan}
+    assert len(sent) == 1
+
+
+def test_weekly_push_sent_but_record_failed_is_partial_and_marked_sent(conn, monkeypatch):
+    """週報同樣處理：本週已送標記在記錄之前就寫了，所以不會重送；記錄失敗一樣看得見（partial＋error）。"""
+    _listing_setup(conn, ["2026-09-18", "2026-09-11"], ["1000", "1001"])
+    _record_fails(monkeypatch)
+    sent = []
+    monkeypatch.setattr(telegram_push, "send_message", _ok_send(sent))
+    monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 19, 19, 0))
+    r = helpers.run_job("picks_new_weekly", "2026-09-19:19:00",
+                        lambda: helpers.telegram_new_picks_job(conn, _tg(), "weekly"))
+    assert r["status"] == "partial" and "record_shown: OperationalError" in r["error"] and len(sent) == 1
+    assert db.get_ai_cache(conn, "picks_weekly_sent:2026-W38")["date"] == "2026-09-18"
+    monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 19, 19, 30))
+    assert helpers.telegram_new_picks_job(conn, _tg(), "weekly") == {"kind": "weekly", "skipped": "already_sent"}
+    assert len(sent) == 1
+
+
+def test_weekly_note_does_not_say_not_recomputed_for_an_earlier_list(conn, monkeypatch):
+    """fix wave 3 #D：週五名單從沒算出來、快取停在週四的名單。週四本來就用不到週五那週的集保，
+    custody_watch 也不會為它重算——註記不可說「名單尚未重算」（會讓人去查重算），改說「名單尚未用上」。"""
+    _cal(conn, ["2026-09-11", "2026-09-14", "2026-09-17", "2026-09-18"])
+    for wk in _TABLE_HAS_THIS_WEEK:
+        _week(conn, wk, FULL)
+    _cache(conn, "2026-09-17", ["2026-09-11", "2026-09-04"])
+    monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 19, 21, 30))
+    text = helpers.new_picks_push_payload(conn, "weekly")["text"]
+    assert "集保仍為 09\\-11 週（本週集保已取得，名單尚未用上）" in text and "尚未重算" not in text

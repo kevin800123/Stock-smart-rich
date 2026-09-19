@@ -124,6 +124,29 @@ def test_daily_message_caps_rows_at_the_limit_star_first():
     assert "另 5 檔未列出" in msg and "網頁" not in msg
 
 
+def _row_codes(msg):
+    return [ln[1:].split()[0] for ln in _rows(msg)]
+
+
+def test_listed_codes_are_exactly_the_rows_in_the_message():
+    """「使用者看過的代號」＝內文列出的代號（fix wave 3 #A）：listed_codes_* 與 compose 共用同一段切片，
+    ✦ 優先、上限內才算；超過上限寫「另 N 檔未列出」的不算。"""
+    stars = [_item(f"{1000 + i}", f"股{i}") for i in range(3)]
+    renews = [_item(f"{2000 + i}", f"再{i}") for i in range(3)]
+    for limit in (2, 4, 20):
+        msg = pp.compose_daily_new_picks(
+            day="2026-09-16", total=10, n_day=6, n_week=3, prev_date="2026-09-15",
+            star_items=stars, renew_items=renews, ready_at=None, limit=limit)
+        assert pp.listed_codes_daily(stars, renews, limit) == _row_codes(msg)
+        wmsg = pp.compose_weekly_new_picks(
+            day="2026-09-18", week_start="2026-09-14", total=10, n_week=6, items=stars + renews,
+            basis=None, top_sectors=[], ready_at=None, limit=limit)
+        assert pp.listed_codes_weekly(stars + renews, limit) == _row_codes(wmsg)
+    assert pp.listed_codes_daily(stars, renews, 4) == ["1000", "1001", "1002", "2000"]
+    assert pp.listed_codes_weekly(stars + renews, 2) == ["1000", "1001"]
+    assert pp.listed_codes_daily([], [], 20) == [] and pp.listed_codes_weekly([], 20) == []
+
+
 def test_weekly_message_lists_week_change_and_top_sectors():
     msg = pp.compose_weekly_new_picks(
         day="2026-09-18", week_start="2026-09-14", total=55, n_week=2,

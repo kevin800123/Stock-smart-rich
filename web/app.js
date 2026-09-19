@@ -1487,7 +1487,7 @@ function ssSortVal(r, k) {
   if (k === "ssf_margin") return r.ssf ? r.ssf_margin : null;
   return r.vals[k];
 }
-// 新進榜標籤。判定在後端（比對基準＝帳本 ∪ 推播實際送出過的名單 selfscreen_shown:{date}，
+// 新進榜標籤。判定在後端（比對基準＝帳本 ∪ 推播內文實際列出過的代號 selfscreen_shown:{date}，
 // 見 ledger.previous_self_screen_codes），這裡只畫：
 //   Week NEW   ＝上一個集保週期的名單都沒有 → 大戶籌碼換週後才進來
 //   Week NEW ✦＝同上，而且是今天才進來（前一份名單也沒有）
