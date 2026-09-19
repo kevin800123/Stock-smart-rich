@@ -229,14 +229,35 @@ def test_catchup_runs_missed_jobs_once_and_not_again_on_restart(c, monkeypatch):
     assert calls["ssf_daily"] == 1 and calls["custody_watch_fri"] == 1
     assert calls["intraday_watch"] == 0 and calls["weekly_line"] == 0
     assert db.latest_job_runs(c)["daily_update"]["trigger"] == "catchup"
-    # 第二次啟動（一小時後）：一次性的家族全部已 ok → 不跑；但 custody_watch_fri 每 30 分鐘
-    # 一場，23:00 那場尚未有紀錄，仍要補（這是設計如此，不是回歸——真的停機一小時，
-    # 中間錯過的那個半點本來就該補）。
-    r2 = helpers.catchup_missed_jobs(c, specs, jobs, now=FRI_22.replace(hour=23))
-    assert [x["job_id"] for x in r2["plan"]] == ["custody_watch_fri"]
-    assert [x["job_id"] for x in r2["ran"]] == ["custody_watch_fri"]
+    # 第二次啟動（同一個半點內，22:15）：一次性的家族全部已 ok → 不跑；custody_watch_fri
+    # 也已在 22:00 那一場補跑過，同一個半點內不再補（由 run_key 去重）。
+    
+    r2 = helpers.catchup_missed_jobs(c, specs, jobs, now=FRI_22.replace(minute=15))
+    assert r2["plan"] == []
+    assert r2["ran"] == []
     assert calls["daily_update"] == 1
-    assert calls["custody_watch_fri"] == 2
+    assert calls["custody_watch_fri"] == 1
+
+
+@pytest.mark.real_catchup
+def test_catchup_runs_the_next_due_half_hour_slot_of_custody_watch(c, monkeypatch):
+    """驗證半點時段邊界交叉：同一個時段不重跑，跨到下一個半點才補。"""
+    _clock(monkeypatch, FRI_22)
+    specs = helpers.job_schedule(_cfg(telegram_token=""), "21:00")
+    calls, jobs = _stub_jobs("custody_watch_fri")
+
+    # 第一次：22:00 時段
+    r1 = helpers.catchup_missed_jobs(c, specs, jobs, now=FRI_22)
+    assert calls["custody_watch_fri"] == 1  # 補跑一次
+
+    # 同一時段內（22:15）
+    r2 = helpers.catchup_missed_jobs(c, specs, jobs, now=FRI_22.replace(minute=15))
+    assert calls["custody_watch_fri"] == 1  # 不重跑
+
+    # 跨到下一個半點（22:30）
+    _clock(monkeypatch, FRI_22.replace(minute=30))
+    r3 = helpers.catchup_missed_jobs(c, specs, jobs, now=FRI_22.replace(minute=30))
+    assert calls["custody_watch_fri"] == 2  # 補跑第二次
 
 
 @pytest.mark.real_catchup

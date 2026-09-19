@@ -196,3 +196,35 @@ def test_custody_watch_is_scheduled_friday_evening_and_saturday():
     assert (s[0], s[-1], len(s)) == ("08:00", "21:30", 28)
     assert helpers.slot_times(by_id["custody_watch_fri"], sat) == []
     assert by_id["custody_watch_fri"]["family"] == by_id["custody_watch_sat"]["family"] == "custody_watch"
+
+
+def test_custody_watch_when_accumulate_custody_returns_none(conn, monkeypatch):
+    """集保一週都沒更新時：記下 TDCC 與本地日期、標 not_stored、不呼叫自算選股。"""
+    _week(conn, "2026-09-11", FULL)
+    monkeypatch.setattr(tdcc, "peek_custody_week", lambda: "2026-09-18")
+    monkeypatch.setattr(updater, "_accumulate_custody", lambda c: None)
+    boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("不應該被呼叫"))
+    monkeypatch.setattr(helpers, "refresh_self_screen_cache", boom)
+    assert helpers.custody_watch(conn) == {"skipped": "not_stored", "tdcc": "2026-09-18",
+                                           "local": "2026-09-11"}
+
+
+def test_custody_watch_without_cache_calls_refresh_with_day_and_no_signals(conn, monkeypatch):
+    """無既存自算快取時：重算的是集保新週所對應的交易日，不寫前瞻紀錄。"""
+    _week(conn, "2026-09-11", FULL)
+    _week(conn, "2026-09-18", ["2330"])                       # 逐檔回補的殘缺週
+    db.upsert_market_daily(conn, {"date": "2026-09-17", "taiex": 20000.0})
+    conn.commit()
+    monkeypatch.setattr(tdcc, "peek_custody_week", lambda: "2026-09-18")
+    monkeypatch.setattr(updater, "_accumulate_custody", lambda c: "2026-09-18")
+    db.set_ai_cache(conn, "custody_fetched:2026-09-18", {"at": "2026-09-19T09:30:00"})
+    # 不設 selfscreen_cache，空快取
+    seen = {}
+    def fake_refresh(c, day=None, record_signals=True):
+        seen.update(day=day, record_signals=record_signals)
+        return {"cached": False, "date": day}
+    monkeypatch.setattr(helpers, "refresh_self_screen_cache", fake_refresh)
+    r = helpers.custody_watch(conn)
+    assert r["week"] == "2026-09-18" and r["fetched_at"] == "2026-09-19T09:30:00"
+    assert seen == {"day": None, "record_signals": False}
+    assert r["self_screen"] == {"cached": False, "date": None, "skipped": None}
