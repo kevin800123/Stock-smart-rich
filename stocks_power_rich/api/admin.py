@@ -501,7 +501,8 @@ def picks_self_screen(date: str | None = None, conds: str | None = None,
     # 新進榜：上一份名單沒有這檔。名單＝帳本 ∪ 推播內文實際列出過的代號（selfscreen_shown:{date}，
     # 見 ledger.previous_self_screen_codes）。沒有上一份就一檔都不標。
     # 交叉檢視（關掉某些條件）時仍對照這兩份——它們都是排程用預設條件算的，才是「昨天真的送出去的」。
-    # Week NEW：上一個集保週期內的名單（同上兩個來源）都沒有這檔（見 ledger.previous_custody_week_codes）。
+    # Week NEW：上一個集保週期內的名單（同上兩個來源，期間內要有帳本列才算）都沒有這檔
+    # （見 ledger.previous_custody_week_codes）。
     # 判定與 Telegram 新進榜推播共用 ledger.annotate_new_entries，兩邊定義不會分岔。
     from ..ledger import annotate_new_entries
     annotate_new_entries(c, result, chosen)

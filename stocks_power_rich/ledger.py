@@ -170,8 +170,9 @@ def previous_self_screen_codes(conn: sqlite3.Connection, before: str) -> tuple[s
     「看過的」＝signal_ledger 裡當天記下的正式名單 ∪ Telegram 推播**內文實際列出**的代號
     （`selfscreen_shown:{date}`，見 record_shown_self_screen）。為什麼要併：週報若以新集保重算後的
     週五名單送出，只因新集保才進榜的股已在週六被列成新進；只拿帳本比的話，週一會把它再報一次
-    「今天才進榜」。只記內文列出的、不記整份名單也不記重算過的：週報沒列的重新進榜股、超過上限的股、
-    週報送出之後的週末重算帶進來的新進股，都沒有出現在任何一則訊息裡，週一仍要當新進播出。
+    「今天才進榜」。只記內文列出的、不記整份名單也不記重算過的——沒出現在任何訊息的股，不會「因為
+    週報」被消掉；但週一是否算新進仍以帳本為準：**訊號日當天已記入帳本的股**（例如平日超過上限沒
+    列出的）之後不會再播出（改動前就是如此），只有帳本沒有的（訊號日之後重算才進榜的）週一才會播出。
     沒設定 Telegram 時沒有推播記錄，等同只看帳本。
     前瞻紀錄（帳本）本身不受影響，仍只有訊號日當天記的那份。
 
@@ -201,7 +202,7 @@ def previous_self_screen_codes(conn: sqlite3.Connection, before: str) -> tuple[s
 
 
 def previous_custody_week_codes(conn: sqlite3.Connection, before: str) -> tuple[dict | None, set]:
-    """自算選股「Week NEW」的比對基準：**上一個集保週期**內使用者看過的所有自算名單的代號聯集。
+    """自算選股「Week NEW」的比對基準：**上一個集保週期**內帳本名單 ∪ 推播內文列出過的代號（日期只看帳本）。
 
     大戶增比／人數降比一週才變一次，所以「集保換週後才進榜」要對照的是上一整個集保週期，
     不是前一天。週期以 custody_dist 的週日期（週五）為界，**從該週五隔天起算**：週五那份名單

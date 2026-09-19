@@ -443,7 +443,7 @@ def test_weekly_payload_says_not_obtained_when_table_is_newer_but_not_this_week(
     assert "集保仍為 09\\-04 週（本週集保尚未取得）" in text and "已取得" not in text
 
 
-def test_weekly_push_at_deadline_says_custody_obtained_but_list_not_recomputed(conn, monkeypatch):
+def test_weekly_push_at_deadline_says_custody_obtained_but_list_not_yet_used(conn, monkeypatch):
     """21:30 截止：新集保已寫進資料表、名單卻沒用上（重算失敗／被重啟打斷／回 skipped，或名單本來就是
     更早一天的）。照送，註記要講「本週集保已取得，名單尚未用上」——要查的是名單日期與重算，不是等 TDCC。"""
     sent = []
@@ -538,7 +538,7 @@ def test_self_screen_coverage_before_new_week_uses_previous_pair(conn):
     assert cov["custody_weeks"] == ["2026-09-11", "2026-09-04"] and cov["custody_fetched_at"] is None
 
 
-# ── 新進榜的比對基準＝帳本 ∪ 使用者看過的名單（finding #4，使用者 2026-09-20 決定）──
+# ── 新進榜的比對基準＝帳本 ∪ 推播內文列出的代號（finding #4，使用者 2026-09-20 決定）──
 
 def _ledger(c, day, codes):
     for code in codes:
@@ -560,7 +560,7 @@ def test_new_entry_seen_on_saturday_is_not_reported_again_on_monday(conn):
         _ledger(conn, d, ["1000"])
     for wk in ("2026-09-04", "2026-09-11", "2026-09-18"):
         _week(conn, wk, FULL)
-    ledger.record_shown_self_screen(conn, "2026-09-18", ["1000", "1001"])   # 週報以新集保重算後的名單送出，1001 入選
+    ledger.record_shown_self_screen(conn, "2026-09-18", ["1001"])   # 週報以新集保重算後的名單送出，內文只列出 1001
 
     sat = ledger.annotate_new_entries(conn, {"rows": [{"code": "1000"}, {"code": "1001"}]}, "2026-09-18")
     assert _by_code(sat)["1001"]["is_week_new"] is True                      # 週六週報照樣列本週新進
@@ -806,13 +806,19 @@ def test_codes_the_weekly_push_did_not_list_are_still_new_on_monday(conn, monkey
 
 @pytest.mark.parametrize("kind,now,cache_weeks", _SEND_CASES)
 def test_failed_push_does_not_record_the_list_as_shown(conn, monkeypatch, kind, now, cache_weeks):
-    """送出失敗＝沒有人收到，不算看過（名單非空，所以不是「空名單不寫」那條規則擋掉的）。"""
+    """送出失敗＝沒有人收到，不算看過。先補帳本（1000）讓 1001 成為新進，確認 `listed_codes` 真的
+    非空——setup 沒有帳本列的話 listed_codes 會是空集合，「空名單不寫」本身就會讓 shown 不寫，跟
+    `_send_new_picks` 的 `ok` 判斷無關，這條測試就測不到它（拿掉 `ok` 判斷也照樣通過，見 fix wave 4
+    報告的反證）。"""
     _cal(conn, _WEEKDAYS)
+    _ledger(conn, "2026-09-11", ["1000"])
+    _ledger(conn, "2026-09-17", ["1000"])
     for wk in ("2026-09-04", "2026-09-11", "2026-09-18"):
         _week(conn, wk, FULL)
     _cache_list(conn, "2026-09-18", cache_weeks, ["1000", "1001"])
-    monkeypatch.setattr(telegram_push, "send_message", lambda *a: {"ok": False})
     monkeypatch.setattr(helpers, "_now", lambda: now)
+    assert helpers.new_picks_push_payload(conn, kind)["listed_codes"]
+    monkeypatch.setattr(telegram_push, "send_message", lambda *a: {"ok": False})
     assert helpers.telegram_new_picks_job(conn, _tg(), kind)["sent"] is False
     assert db.get_ai_cache(conn, "selfscreen_shown:2026-09-18") is None
 
