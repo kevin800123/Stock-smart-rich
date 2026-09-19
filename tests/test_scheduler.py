@@ -121,7 +121,7 @@ def test_create_app_with_line_token_registers_all_jobs(tmp_path, monkeypatch):
 
 
 def test_new_picks_telegram_jobs_register_with_real_trigger_fields(tmp_path, monkeypatch):
-    """自算選股新進榜推播：平日 21:40（今日新進）、週六 18:00（本週新進）。用真的 APScheduler 驗
+    """自算選股新進榜推播：平日 21:40（今日新進）、週六 18:00–21:30 每 30 分鐘（本週新進，等本週集保）。用真的 APScheduler 驗
     觸發條件——只比對 job id 證明不了 day_of_week／時間真的被接受。Telegram 缺一就不註冊。"""
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "dummy")

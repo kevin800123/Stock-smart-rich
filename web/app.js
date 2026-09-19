@@ -1845,9 +1845,10 @@ async function loadSettings() {
       : "未設定";
     ln.className = "set-badge " + (s.line_configured && !s.line_quota_paused ? "ok" : "no");
     const tg = $("set-telegram");
-    // 時間與 api/helpers.job_schedule 一致：新聞平日四場、週末只留兩場；選股新進榜平日 21:40、週六 18:00
+    // 時間與 api/helpers.job_schedule 一致：新聞平日四場、週末只留兩場；選股新進榜平日 21:40、
+    // 週六 18:00–21:30 每 30 分鐘（等本週集保進來就送，最晚 21:30 照送）
     tg.textContent = s.telegram_configured
-      ? "已設定 ✓（新聞 平日 07:00／12:00／17:00／21:10・週末 12:00／21:10；選股新進榜 平日 21:40・週六 18:00）"
+      ? "已設定 ✓（新聞 平日 07:00／12:00／17:00／21:10・週末 12:00／21:10；選股新進榜 平日 21:40・週六 18:00–21:30（等本週集保，最晚 21:30））"
       : "未設定";
     tg.className = "set-badge " + (s.telegram_configured ? "ok" : "no");
     $("set-picks-only").checked = !!s.intraday_picks_only;

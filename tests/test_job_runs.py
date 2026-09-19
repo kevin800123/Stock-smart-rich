@@ -162,7 +162,7 @@ def test_catchup_plan_on_saturday(c):
     assert "weekly_line" in plan and "daily_update" in plan
     assert "self_screen_early" not in plan and "news_morning" not in plan
     assert "news_evening" in plan   # 週末新聞只留 12:00／21:10，21:10 是最近一場
-    assert "picks_new_weekly" in plan and "picks_new_daily" not in plan   # 週六 18:00 週報、平日那則不補
+    assert "picks_new_weekly" in plan and "picks_new_daily" not in plan   # 週六 18:00–21:30 週報、平日那則不補
 
 
 # ---------------------------------------------------------------- run_job

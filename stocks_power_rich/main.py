@@ -227,7 +227,8 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         return _run
 
     def picks_new_job(kind: str):
-        """自算選股新進榜推播（平日 21:40 daily／週六 18:00 weekly）。邏輯在 api/helpers。"""
+        """自算選股新進榜推播（平日 21:40 daily／週六 18:00–21:30 weekly，等本週集保、最晚 21:30）。
+        邏輯在 api/helpers。"""
         def _run():
             return _helpers.telegram_new_picks_job(conn(), cfg, kind)
         return _run

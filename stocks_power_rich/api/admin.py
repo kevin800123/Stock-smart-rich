@@ -517,8 +517,8 @@ def picks_self_screen(date: str | None = None, conds: str | None = None,
 @router.get("/picks/new-push-preview")
 def picks_new_push_preview(kind: str = "daily", force: int = 0):
     """自算選股新進榜 Telegram 推播的**預覽**：回傳會送出的文字（MarkdownV2），**不送**。
-    kind＝daily（平日 21:40）／weekly（週六 18:00）；force=1 略過「名單必須是今天／本週」的
-    日期守衛，方便非推播時間檢查內容。"""
+    kind＝daily（平日 21:40）／weekly（週六 18:00–21:30，等本週集保、最晚 21:30）；
+    force=1 略過「名單必須是今天／本週」的日期守衛，方便非推播時間檢查內容。"""
     from .helpers import new_picks_push_payload
     if kind not in ("daily", "weekly"):
         return {"ok": False, "error": "kind 只能是 daily 或 weekly"}
