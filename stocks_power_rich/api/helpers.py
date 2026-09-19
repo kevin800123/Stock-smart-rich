@@ -1250,8 +1250,12 @@ def refresh_self_screen_cache(c, day: str | None = None, record_signals: bool = 
     訊號日當天**（`_now()` 的日期＝day）才寫前瞻紀錄：進場價是訊號日收盤，週末重算週五名單時
     用的是收盤後才公布的集保，拿它補寫那天的訊號等於用未來資料回測。代價是週五排程整晚失敗時，
     週六補算不會補記那一天——少一天樣本可以接受，偏一天會讓結論失真（同 partial_universe 的取捨）。
+
+    前瞻紀錄以外，每次寫入快取都把這次的入選代號記成「使用者看過的名單」
+    （`ledger.record_shown_self_screen`，**不論 record_signals**）：新進榜的比對基準＝帳本 ∪ 看過的
+    名單，週六用新集保重算的週五名單才不會在週一被再報一次「今天才進榜」。
     """
-    from ..ledger import record_self_screen_signals
+    from ..ledger import record_self_screen_signals, record_shown_self_screen
     from .. import analysis, selfcheck
 
     day = day or _latest_date(c)
@@ -1288,8 +1292,11 @@ def refresh_self_screen_cache(c, day: str | None = None, record_signals: bool = 
     recorded = bool(record_signals and _now().date().isoformat() == day)
     if recorded:
         record_self_screen_signals(c, universe, vmin, smin, precomputed=pre, signal_date=day)
-    picked = len(selfcheck.build_self_screen(
-        c, day, universe, vmin, smin, precomputed=pre)["rows"])
+    rows = selfcheck.build_self_screen(c, day, universe, vmin, smin, precomputed=pre)["rows"]
+    # 使用者看過的名單：週五 21:00 用新集保重算、週六 21:00 重算週五、custody_watch 補算都會改變畫面上
+    # 的名單，但都不寫帳本——所以這一行不看 recorded，每次寫入快取都記（重用上面算好的 rows，不多算一次）。
+    record_shown_self_screen(c, day, [r["code"] for r in rows])
+    picked = len(rows)
     return {"cached": True, "date": day, "universe": len(universe),
             "listed": len(listed), "otc": len(otc),
             "rows": len(pre["rows"]), "sectors": len(pre["heatmap"]), "picked": picked,

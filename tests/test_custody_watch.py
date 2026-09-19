@@ -473,3 +473,82 @@ def test_self_screen_coverage_before_new_week_uses_previous_pair(conn):
     cov = selfcheck.compute_self_screen(conn, "2026-09-18", {})["coverage"]
     assert "2026-09-25" not in cov["custody_weeks"]
     assert cov["custody_weeks"] == ["2026-09-11", "2026-09-04"] and cov["custody_fetched_at"] is None
+
+
+# ── 新進榜的比對基準＝帳本 ∪ 使用者看過的名單（finding #4，使用者 2026-09-20 決定）──
+
+def _ledger(c, day, codes):
+    for code in codes:
+        c.execute("INSERT INTO signal_ledger (signal_date, code, name, source, entry_ref_price) VALUES (?,?,?,?,1)",
+                  (day, code, code, "self_screen"))
+    c.commit()
+
+
+def _by_code(result):
+    return {r["code"]: r for r in result["rows"]}
+
+
+def test_new_entry_seen_on_saturday_is_not_reported_again_on_monday(conn):
+    """帳本只有訊號日當天（週五 17:30、舊集保）記的名單；週六用新集保重算後 1001 才入選，週六週報
+    已把它列成「本週新進」。週一若只拿帳本比，1001 會被標成「✦ 今天才進榜、上一個集保週期也沒有」，
+    與週六的說法矛盾。基準改成「使用者看過的名單」之後，週一兩個標籤都不再掛。"""
+    for d in ("2026-09-07", "2026-09-08", "2026-09-09", "2026-09-10", "2026-09-11",
+              "2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17", "2026-09-18"):
+        _ledger(conn, d, ["1000"])
+    for wk in ("2026-09-04", "2026-09-11", "2026-09-18"):
+        _week(conn, wk, FULL)
+    ledger.record_shown_self_screen(conn, "2026-09-18", ["1000", "1001"])   # 週六用新集保重算，1001 入選
+
+    sat = ledger.annotate_new_entries(conn, {"rows": [{"code": "1000"}, {"code": "1001"}]}, "2026-09-18")
+    assert _by_code(sat)["1001"]["is_week_new"] is True                      # 週六週報照樣列本週新進
+    assert sat["week_new_vs"] == {"from": "2026-09-07", "to": "2026-09-11"}
+
+    mon = ledger.annotate_new_entries(conn, {"rows": [{"code": "1000"}, {"code": "1001"}]}, "2026-09-21")
+    by = _by_code(mon)
+    assert mon["new_vs"] == "2026-09-18"
+    assert by["1001"]["is_new"] is False                                     # 週一不再說今天才進
+    assert by["1001"]["is_week_new"] is False                                # 週六看過的週五名單在上一週期裡
+    assert by["1000"]["is_new"] is False and by["1000"]["is_week_new"] is False
+    assert mon["week_new_vs"] == {"from": "2026-09-14", "to": "2026-09-18"}
+
+
+def test_record_shown_self_screen_unions_and_strips_suffix(conn):
+    ledger.record_shown_self_screen(conn, "2026-09-18", ["1000"])
+    ledger.record_shown_self_screen(conn, "2026-09-18", ["1001", "1002.TW"])   # 同一天再重算：只要出現過就算看過
+    assert db.get_ai_cache(conn, "selfscreen_shown:2026-09-18") == {"codes": ["1000", "1001", "1002"]}
+    ledger.record_shown_self_screen(conn, "2026-09-19", [])                    # 空名單不寫：帳本 0 檔那天也沒有列
+    assert db.get_ai_cache(conn, "selfscreen_shown:2026-09-19") is None
+
+
+def test_shown_list_without_ledger_rows_counts_as_the_previous_list(conn):
+    _ledger(conn, "2026-09-16", ["1000"])
+    # LIKE 'selfscreen_shown:%' 的 `_` 是萬用字元，會把這把長得像的鍵也算進來；實作用字典序範圍才擋得住。
+    # 先單獨檢查它（後面真的那把鍵同一天，放一起會把它蓋掉、看不出來）。
+    db.set_ai_cache(conn, "selfscreenXshown:2026-09-17", {"codes": ["9999"]})
+    assert ledger.previous_self_screen_codes(conn, "2026-09-18") == ("2026-09-16", {"1000"})
+    ledger.record_shown_self_screen(conn, "2026-09-17", ["2000"])
+    assert ledger.previous_self_screen_codes(conn, "2026-09-18") == ("2026-09-17", {"2000"})
+
+
+def test_refresh_records_the_shown_list_even_when_the_ledger_is_not_written(conn, monkeypatch):
+    """custody_watch／週六重算都是 record_signals=False（或不在訊號日），帳本不寫，但畫面上的名單變了，
+    所以「看過的名單」仍要記。樁 build_self_screen 讓入選代號確定是 2330，並確認它只被呼叫一次
+    （重用回傳 picked 那一份 rows，不為了記名單多算一次）。"""
+    db.upsert_market_daily(conn, {"date": "2026-09-18", "taiex": 20000.0})
+    conn.commit()
+    _ready(conn, "2026-09-18")
+    _universe(monkeypatch)
+    boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("record_signals=False 不該碰帳本"))
+    monkeypatch.setattr(ledger, "record_self_screen_signals", boom)
+    calls = []
+
+    def fake_build(*a, **k):
+        calls.append(1)
+        return {"rows": [{"code": "2330"}]}
+    monkeypatch.setattr(selfcheck, "build_self_screen", fake_build)
+    monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 19, 10, 0))   # 週六重算週五名單
+    res = helpers.refresh_self_screen_cache(conn, day="2026-09-18", record_signals=False)
+    assert res["cached"] is True and res["recorded"] is False and res["picked"] == 1
+    assert db.get_ai_cache(conn, "selfscreen_shown:2026-09-18") == {"codes": ["2330"]}
+    assert len(calls) == 1
+    assert conn.execute("SELECT COUNT(*) FROM signal_ledger").fetchone()[0] == 0

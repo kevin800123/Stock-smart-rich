@@ -1,5 +1,6 @@
+import json
 import sqlite3
-from .db import get_snapshot, get_all_ohlc
+from .db import get_snapshot, get_all_ohlc, get_ai_cache, set_ai_cache
 from . import analysis, patterns, selfcheck
 
 def record_daily_signals(conn: sqlite3.Connection) -> None:
@@ -102,26 +103,79 @@ def record_self_screen_signals(conn: sqlite3.Connection, universe: dict,
     conn.commit()
 
 
-def previous_self_screen_codes(conn: sqlite3.Connection, before: str) -> tuple[str | None, set]:
-    """自算選股「新進榜」的比對基準：`before` 之前最近一個有記錄的訊號日，及那天入選的代號。
+# 使用者看過的自算名單（每次重算快取後記一次，見 record_shown_self_screen）。鍵帶 ISO 日期，
+# 字典序＝時間序。ai_cache 每日更新會清掉 120 天前的列，新進榜只往回看一兩週，不會無限累積。
+SHOWN_PREFIX = "selfscreen_shown:"
 
-    來源是 signal_ledger（每日排程記下的正式名單），不是現算——前一天的全市場自算很貴，
-    而且記下來的那份才是當天真正送出去的名單。取「有記錄的最近一天」而不是日曆上的前一天：
-    週末、假日、排程漏跑的那天本來就沒有名單，跳過它們才是「上一份名單」。
-    沒有更早的記錄回 (None, set())，呼叫端據此一檔都不標（分不出新舊時標滿 new 等於沒標）。"""
+
+def record_shown_self_screen(conn: sqlite3.Connection, day: str, codes) -> None:
+    """把 `day` 這份名單「使用者看過的入選代號」記進 ai_cache `selfscreen_shown:{day}`。
+
+    **為什麼要有這份、而不是只看 signal_ledger**：前瞻紀錄刻意只保留訊號日當天記下的名單
+    （週五 17:30、用舊集保），不會被週六用新集保重算的名單改寫——那是前瞻報酬不可被事後
+    改寫的規矩。但週六網頁與「本週新進榜」週報顯示的，是**重算過**的週五名單：只因新集保
+    才進榜的股 X，週六已經被列成本週新進；若新進榜只拿帳本比，週一 X 會再被標成「✦ 今天
+    才進榜」，跟週六的說法矛盾。所以新進榜的比對基準改成「使用者看過的名單」＝帳本 ∪ 這一份，
+    帳本本身完全不動。
+
+    **與既有值取聯集**：同一天會重算好幾次（17:30 提早算、21:00 補融資、週六用新集保），只要
+    出現過就算看過。代號一律去掉 `.TW`/`.TWO` 後綴，與帳本裡 self_screen 的代號同一種寫法。
+
+    **聯集是空的就不寫**：帳本裡 0 檔入選的那天本來就沒有列、會被當成「沒有名單」跳過；
+    這裡若寫一份空名單，同一天在帳本被跳過、在這裡卻變成比對基準，隔天整份名單都會被標 NEW。
+    兩個來源對「空名單」的處理要一致。"""
+    key = SHOWN_PREFIX + day
+    have = set((get_ai_cache(conn, key) or {}).get("codes") or [])
+    merged = have | {str(c).split(".")[0] for c in codes}
+    if not merged or merged == have:   # 空名單不寫（理由見上）；沒有新代號就不必重寫
+        return
+    set_ai_cache(conn, key, {"codes": sorted(merged)})
+
+
+def _shown_lists_before(conn: sqlite3.Connection, before: str) -> dict:
+    """`before` 之前（不含）每一天記下的「看過的名單」：{日期: 代號集合}。
+
+    **不用 `LIKE 'selfscreen_shown:%'`**：SQL LIKE 把 `_` 當單一字元萬用字元，而這個前綴字面上
+    就帶 `_`（同 db.latest_ai_cache_with_prefix 記過的坑）。改用字典序範圍：鍵是前綴＋ISO 日期，
+    `< 前綴+before` 正好就是「日期 < before」，一次查詢連內容一起帶回。"""
+    rows = conn.execute(
+        "SELECT cache_key, payload FROM ai_cache WHERE cache_key >= ? AND cache_key < ?",
+        (SHOWN_PREFIX, SHOWN_PREFIX + before)).fetchall()
+    out = {}
+    for key, payload in rows:
+        codes = set((json.loads(payload) or {}).get("codes") or [])
+        if codes:
+            out[key[len(SHOWN_PREFIX):]] = codes
+    return out
+
+
+def previous_self_screen_codes(conn: sqlite3.Connection, before: str) -> tuple[str | None, set]:
+    """自算選股「新進榜」的比對基準：`before` 之前最近一份**使用者看過的**名單，及那天入選的代號。
+
+    「看過的名單」＝signal_ledger 裡當天記下的正式名單 ∪ 之後重算顯示過的名單
+    （`selfscreen_shown:{date}`，見 record_shown_self_screen）。為什麼要併：週六用新集保重算
+    週五名單後，只因新集保才進榜的股已在週六的網頁與週報被列成新進；只拿帳本比的話，週一會
+    把它再報一次「今天才進榜」。前瞻紀錄（帳本）本身不受影響，仍只有訊號日當天記的那份。
+
+    不是現算——前一天的全市場自算很貴。取「有名單的最近一天」而不是日曆上的前一天：
+    週末、假日、排程漏跑的那天本來就沒有名單，跳過它們才是「上一份名單」。日期取兩個來源
+    裡 < before 的最大者，代號取那一天兩個來源的聯集。
+    沒有更早的名單回 (None, set())，呼叫端據此一檔都不標（分不出新舊時標滿 new 等於沒標）。"""
     row = conn.execute(
         "SELECT MAX(signal_date) FROM signal_ledger WHERE source='self_screen' AND signal_date < ?",
         (before,)).fetchone()
-    prev = row[0] if row else None
-    if not prev:
+    shown = _shown_lists_before(conn, before)
+    candidates = [d for d in ((row[0] if row else None), max(shown, default=None)) if d]
+    if not candidates:
         return None, set()
+    prev = max(candidates)
     codes = {r[0] for r in conn.execute(
         "SELECT code FROM signal_ledger WHERE source='self_screen' AND signal_date=?", (prev,))}
-    return prev, codes
+    return prev, codes | shown.get(prev, set())
 
 
 def previous_custody_week_codes(conn: sqlite3.Connection, before: str) -> tuple[dict | None, set]:
-    """自算選股「Week NEW」的比對基準：**上一個集保週期**內記下的所有自算名單的代號聯集。
+    """自算選股「Week NEW」的比對基準：**上一個集保週期**內使用者看過的所有自算名單的代號聯集。
 
     大戶增比／人數降比一週才變一次，所以「集保換週後才進榜」要對照的是上一整個集保週期，
     不是前一天。週期以 custody_dist 的週日期（週五）為界，**從該週五隔天起算**：週五那份名單
@@ -129,8 +183,12 @@ def previous_custody_week_codes(conn: sqlite3.Connection, before: str) -> tuple[
     才對。週日期沿用 custody_compare_weeks（會略過逐檔回補造成的殘缺週），並且只看 `before`
     前一天以前的週——`before` 當天若剛好是週五，那一週的資料還不算數。
 
-    回傳 ({"from": 期間內最早的名單日, "to": 最晚的名單日}, 代號集合)。沒有兩個可用的集保週、
-    或前一週期內一份名單都沒有時回 (None, set())，呼叫端據此一檔都不標。"""
+    期間內的名單＝帳本（signal_ledger）∪ 期間內各日看過的名單（`selfscreen_shown:{date}`）。
+    週六用新集保重算的週五名單就落在這個期間的最後一天：它在週六週報已被列成本週新進，
+    只拿帳本比的話，下週一會再被標成「上一個集保週期也沒有」。帳本本身不受影響。
+
+    回傳 ({"from": 期間內最早的名單日, "to": 最晚的名單日}, 代號集合)，日期取兩個來源合併後的
+    範圍。沒有兩個可用的集保週、或前一週期內一份名單都沒有時回 (None, set())，呼叫端據此一檔都不標。"""
     from datetime import date as _date, timedelta
     from .db import custody_compare_weeks
     as_of = (_date.fromisoformat(before) - timedelta(days=1)).isoformat()
@@ -141,6 +199,9 @@ def previous_custody_week_codes(conn: sqlite3.Connection, before: str) -> tuple[
     rows = conn.execute(
         "SELECT signal_date, code FROM signal_ledger WHERE source='self_screen' "
         "AND signal_date > ? AND signal_date <= ?", (last_week, this_week)).fetchall()
+    # this_week ≤ before 前一天，所以期間內的日期都 < before，用同一支查詢即可
+    rows += [(d, code) for d, codes in _shown_lists_before(conn, before).items()
+             if last_week < d <= this_week for code in codes]
     if not rows:
         return None, set()
     dates = sorted({r[0] for r in rows})
