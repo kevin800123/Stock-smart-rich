@@ -901,7 +901,9 @@ function renderSsfFreshness(date, lagTradingDays) {
 }
 
 // 成交量前 30 股期（2026-09 使用者要求：卡片太大、資訊量太少）。一列一檔，欄位固定：
-// 名次／股期（名稱＋代號）／成交量（底下墊長度條＝相對榜首的口數）／量較前 3 日／漲跌%。
+// 名次／股期（名稱＋代號）／股價／漲跌%／成交量（底下墊長度條＝相對榜首的口數）／量較前 3 日。
+// 股價與漲跌緊接在名稱右邊是使用者指定的順序（ui64）。「股價」是股期主力月收盤價——
+// 同一檔的期貨價，不是現貨收盤（期現價差表才放現貨），表頭 title 寫明。
 // - 30 列切成兩張表（1–15、16–30）。區塊夠寬時 CSS 讓兩張並排，窄時上下疊；兩張都是
 //   table-layout:fixed、欄寬相同，所以疊起來時欄位也對得齊。
 // - 「較前 3 日」是量的變化，不是價格方向：全站紅綠只保留給行情漲跌，這欄用 ▲▼ ＋中性色，
@@ -925,16 +927,19 @@ function ssfTopTable(rows, start, maxVol) {
       <td class="ssf-rk">${start + i + 1}</td>
       <td class="ssf-nm" title="${esc(r.name)}${r.code ? " " + esc(r.code) : ""}"><span class="ssf-nm-t">${esc(r.name)}</span>${
         r.code ? `<span class="ssf-code">${esc(r.code)}</span>` : ""}</td>
+      <td class="ssf-px">${r.close == null ? "—" : fmt(r.close)}</td>
+      <td class="ssf-chg ${dir}">${pct(r.chg_pct)}</td>
       <td class="ssf-vol" style="--w:${w}%">${r.volume == null ? "—" : fmt(r.volume, 0)}</td>
-      <td class="ssf-vchg ${vcCls}">${vcTxt}</td>
-      <td class="ssf-chg ${dir}">${pct(r.chg_pct)}</td></tr>`;
+      <td class="ssf-vchg ${vcCls}">${vcTxt}</td></tr>`;
   }).join("");
-  return `<table class="ssf-top-t"><colgroup><col class="c-rk"><col class="c-nm"><col class="c-vol">`
-    + `<col class="c-vchg"><col class="c-chg"></colgroup><thead><tr>`
+  return `<table class="ssf-top-t"><colgroup><col class="c-rk"><col class="c-nm"><col class="c-px">`
+    + `<col class="c-chg"><col class="c-vol"><col class="c-vchg"></colgroup><thead><tr>`
     + `<th scope="col" class="ssf-rk">#</th><th scope="col">股期</th>`
+    + `<th scope="col" class="ssf-px" title="股期主力月收盤價（期貨價，不是現貨收盤）">股價</th>`
+    + `<th scope="col" class="ssf-chg">漲跌</th>`
     + `<th scope="col" class="ssf-vol">成交量</th>`
     + `<th scope="col" class="ssf-vchg" title="今日口數 ÷ 前 3 個交易日平均口數 − 1">較前3日</th>`
-    + `<th scope="col" class="ssf-chg">漲跌</th></tr></thead><tbody>${body}</tbody></table>`;
+    + `</tr></thead><tbody>${body}</tbody></table>`;
 }
 
 function renderSsfHot(rows) {

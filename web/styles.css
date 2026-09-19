@@ -1258,6 +1258,12 @@ button.file-label { font: inherit; }
   #view-ssf.active > .ssf-b-hot { grid-column: span 5; }
   #view-ssf.active > .ssf-b-margin { grid-column: span 7; }
 }
+/* 1181–1260：成交量前 30 加了股價欄（ui64）之後每張表至少要 363px（固定欄 280＋名稱 83），
+   5 欄在 1260px 以下給不到，名稱會被截。這段改成第一列上下排（成交量前 30 在上、整列寬、
+   可以切兩欄），1261px 起才回到左右並排。 */
+@media (max-width: 1260px) {
+  #view-ssf.active > .ssf-b-hot, #view-ssf.active > .ssf-b-margin { grid-column: 1 / -1; }
+}
 @media (max-width: 1180px) {
   #view-ssf.active > * { grid-column: 1 / -1 !important; }
 }
@@ -1284,30 +1290,35 @@ button.file-label { font: inherit; }
 /* 「尚無資料」疊在圖表框裡、不放在圖表下方：放下方會讓這一格比同列另外兩張圖高。 */
 .ssf-chart-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
 /* 成交量前 30 股期（2026-09 取代 10 張大卡片——使用者：「格子放這麼大，資訊看的量就很少」）。
-   兩張表（1–15、16–30），區塊內寬 ≥660px（具名容器 ssf-hot）時並排，否則上下疊。
+   兩張表（1–15、16–30），區塊內寬 ≥744px（具名容器 ssf-hot）時並排，否則上下疊。
+   744＝兩張表各 363px（固定欄 280＋名稱 83）＋欄距 16；ui64 加股價欄前是 660。
    並排或疊起來都要欄位對齊，所以 table-layout:fixed ＋ colgroup 固定數字欄寬、名稱吃剩下的。
    一列 26px（3px 上下內距）：30 檔在 1904px 只要 15 列高，三張 K 棒仍留在第一屏。 */
 #view-ssf .ssf-b-hot { container: ssf-hot / inline-size; }
 .ssf-top { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 16px; align-items: start; }
-@container ssf-hot (min-width: 660px) {
+@container ssf-hot (min-width: 744px) {
   .ssf-top { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .ssf-top-t { table-layout: fixed; width: 100%; font-size: var(--fs-sm); }
-/* 欄寬是量出來的：最寬內容＋左右內距 12px。內容 14px 字：成交量「888,888」55px、
-   較前 3 日「▲888%」52px、漲跌「+10.00%」60px、名次「30」17px；表頭是 11px 字
-   （「較前3日」約 42px），比內容窄，不是瓶頸。em 以表格的 14px 計。名稱吃剩下的，
-   最長「小型環球晶」75px，放不下時先把後面的代號截成「…」。 */
-.ssf-top-t col.c-rk { width: 2.1em; }
-.ssf-top-t col.c-vol { width: 4.8em; }
-.ssf-top-t col.c-vchg { width: 4.6em; }
-.ssf-top-t col.c-chg { width: 5.2em; }
-#view-ssf .ssf-top-t th, #view-ssf .ssf-top-t td { padding: 3px 6px; }
+/* 欄寬是量出來的：最寬內容＋左右內距 8px（ui64 加股價欄時內距 6→4px）。內容 14px 字：
+   股價「8,888.5」51px（實際最高 7,160）、漲跌「+10.00%」60px、成交量「888,888」55px、
+   較前 3 日「▲888%」52px、名次「30」17px；表頭是 11px 字，比內容窄，不是瓶頸。em 以
+   表格的 14px 計，固定欄合計 280px。名稱吃剩下的，最長「小型台積電」75px（＋內距 83），
+   放不下時先把後面的代號截成「…」。 */
+.ssf-top-t col.c-rk { width: 1.8em; }
+.ssf-top-t col.c-px { width: 4.5em; }
+.ssf-top-t col.c-chg { width: 4.9em; }
+.ssf-top-t col.c-vol { width: 4.5em; }
+.ssf-top-t col.c-vchg { width: 4.3em; }
+#view-ssf .ssf-top-t th, #view-ssf .ssf-top-t td { padding: 3px 4px; }
 #view-ssf .ssf-top-t th { font-size: var(--fs-xs); }
 .ssf-top-t .ssf-rk { text-align: right; font-variant-numeric: tabular-nums; }
 /* 顏色只給內容格（td）：寫成 .ssf-top-t .ssf-rk 會連表頭 th 一起染（權重 0,2,0 高過全域
    th 的 0,0,1），五個表頭變成三種顏色。 */
 .ssf-top-t td.ssf-rk { color: var(--muted); }
-.ssf-top-t .ssf-vol, .ssf-top-t .ssf-vchg, .ssf-top-t .ssf-chg { text-align: right; font-variant-numeric: tabular-nums; }
+.ssf-top-t .ssf-px, .ssf-top-t .ssf-vol, .ssf-top-t .ssf-vchg, .ssf-top-t .ssf-chg { text-align: right; font-variant-numeric: tabular-nums; }
+/* 股價不著色：它是水準不是方向，方向交給緊鄰右邊的漲跌欄（紅綠只給那一欄）。 */
+.ssf-top-t td.ssf-px { color: var(--text-primary); }
 .ssf-top-t td.ssf-nm { overflow: hidden; text-overflow: ellipsis; }
 .ssf-top-t .ssf-nm-t { color: var(--text-primary); }
 .ssf-top-t .ssf-code { color: var(--muted); font-size: var(--fs-xs); margin-left: 5px; }
@@ -1330,6 +1341,12 @@ button.file-label { font: inherit; }
    0,2,4）。只能寫在手機段：寫在外面會連桌機的滑過高亮條（box-shadow）一起拿掉，名次格
    就少了那條起頭的藍線。表頭第一格同理拿掉凍結用的右側分隔線，免得只有表頭有、內容沒有。 */
 @media (max-width: 600px) {
+  /* 手機表格只有約 325px，六欄放不下名稱（只剩 45px）。比照高價股的手機做法拿掉名次欄
+     （順序本身就是名次）、字級降到 13px（em 欄寬跟著縮），名稱回到約 88px。名次格留在
+     DOM 裡（寬度 0、字 0），讀螢幕的人仍聽得到名次。 */
+  .ssf-top-t { font-size: 13px; }
+  .ssf-top-t col.c-rk { width: 0; }
+  #view-ssf .ssf-top-t .ssf-rk { padding: 0; font-size: 0; }
   #view-ssf .ssf-top-t tbody td:first-child { position: static; box-shadow: none; }
   #view-ssf .ssf-top-t tbody td:first-child::after { content: none; }
   #view-ssf .ssf-top-t thead th:first-child {
