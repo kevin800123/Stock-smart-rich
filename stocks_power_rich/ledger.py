@@ -134,9 +134,8 @@ def record_shown_self_screen(conn: sqlite3.Connection, day: str, codes) -> None:
     **與既有值取聯集**：同一天可能送兩次（週五 21:40 平日推播、週六週報都用週五的名單），只要
     在任何一則訊息裡列出過就算看過。代號一律去掉 `.TW`/`.TWO` 後綴，與帳本裡 self_screen 的代號同一種寫法。
 
-    **聯集是空的就不寫**：內文沒列出任何一檔（「今日／本週無新進榜」）就沒有東西被看過；帳本裡
-    0 檔入選的那天本來也沒有列、會被當成「沒有名單」跳過，這裡若寫一份空的，同一天在帳本被跳過、
-    在這裡卻變成比對基準，隔天整份名單都會被標 NEW。兩個來源對「空」的處理要一致。"""
+    **聯集是空的就不寫**：內文沒列出任何一檔（「今日／本週無新進榜」）就沒有東西被看過，寫一份空的
+    只是多一把鍵。（這一份本來就不會自己當比對基準——日期只看帳本，見 previous_self_screen_codes。）"""
     key = SHOWN_PREFIX + day
     have = set((get_ai_cache(conn, key) or {}).get("codes") or [])
     merged = have | {str(c).split(".")[0] for c in codes}
@@ -166,7 +165,7 @@ def _shown_lists_before(conn: sqlite3.Connection, before: str) -> dict:
 
 
 def previous_self_screen_codes(conn: sqlite3.Connection, before: str) -> tuple[str | None, set]:
-    """自算選股「新進榜」的比對基準：`before` 之前最近一份**使用者看過的**名單，及那天入選的代號。
+    """自算選股「新進榜」的比對基準：`before` 之前最近一份名單的日期，及使用者看過的代號。
 
     「看過的」＝signal_ledger 裡當天記下的正式名單 ∪ Telegram 推播**內文實際列出**的代號
     （`selfscreen_shown:{date}`，見 record_shown_self_screen）。為什麼要併：週報若以新集保重算後的
@@ -177,20 +176,28 @@ def previous_self_screen_codes(conn: sqlite3.Connection, before: str) -> tuple[s
     前瞻紀錄（帳本）本身不受影響，仍只有訊號日當天記的那份。
 
     不是現算——前一天的全市場自算很貴。取「有名單的最近一天」而不是日曆上的前一天：
-    週末、假日、排程漏跑的那天本來就沒有名單，跳過它們才是「上一份名單」。日期取兩個來源
-    裡 < before 的最大者，代號取那一天兩個來源的聯集。
-    沒有更早的名單回 (None, set())，呼叫端據此一檔都不標（分不出新舊時標滿 new 等於沒標）。"""
+    週末、假日、排程漏跑的那天本來就沒有名單，跳過它們才是「上一份名單」。
+
+    **日期只看帳本、推播記錄只併代號**：日期＝帳本裡 < before 的最後一天（那是一份完整名單），代號＝
+    那天的帳本 ∪ 那天起（到 before 之前）推播內文列出過的代號。推播記錄只是訊息裡講過的幾檔、不是一份
+    完整名單，不能自己當「前一份名單」：週五排程整晚沒到齊、名單週六才算出來時，帳本沒有週五（前瞻紀錄
+    只在訊號日當天寫），週報卻以週五名單送出、只列出幾檔本週新進；若拿「只有推播記錄的週五」當前一份
+    名單，週一天天都在的股會被整批標成「今天才進」。帳本那一天之後講過的代號仍要併進來——它們是在最後
+    一份完整名單之後才對使用者說過的新進，不可再報一次。
+    帳本沒有更早的名單回 (None, set())（只有推播記錄也一樣），呼叫端據此一檔都不標（分不出新舊時標滿
+    new 等於沒標）。"""
     row = conn.execute(
         "SELECT MAX(signal_date) FROM signal_ledger WHERE source='self_screen' AND signal_date < ?",
         (before,)).fetchone()
-    shown = _shown_lists_before(conn, before)
-    candidates = [d for d in ((row[0] if row else None), max(shown, default=None)) if d]
-    if not candidates:
+    prev = row[0] if row else None
+    if not prev:
         return None, set()
-    prev = max(candidates)
     codes = {r[0] for r in conn.execute(
         "SELECT code FROM signal_ledger WHERE source='self_screen' AND signal_date=?", (prev,))}
-    return prev, codes | shown.get(prev, set())
+    for d, listed in _shown_lists_before(conn, before).items():
+        if d >= prev:      # 最後一份完整名單當天與之後講過的；更早講過的已被這份名單取代
+            codes |= listed
+    return prev, codes
 
 
 def previous_custody_week_codes(conn: sqlite3.Connection, before: str) -> tuple[dict | None, set]:
@@ -209,7 +216,9 @@ def previous_custody_week_codes(conn: sqlite3.Connection, before: str) -> tuple[
     沒有人收到過，不算看過——下週一是不是 Week NEW 只看帳本，不會因為週報而被消掉。帳本本身不受影響。
 
     回傳 ({"from": 期間內最早的名單日, "to": 最晚的名單日}, 代號集合)，日期取兩個來源合併後的
-    範圍。沒有兩個可用的集保週、或前一週期內一份名單都沒有時回 (None, set())，呼叫端據此一檔都不標。"""
+    範圍。沒有兩個可用的集保週、或前一週期內**帳本**一份名單都沒有時回 (None, set())，呼叫端據此一檔
+    都不標——推播記錄只是訊息裡講過的幾檔、不是完整名單，期間內只有它時分不出新舊（同
+    previous_self_screen_codes）。"""
     from datetime import date as _date, timedelta
     from .db import custody_compare_weeks
     as_of = (_date.fromisoformat(before) - timedelta(days=1)).isoformat()
@@ -220,11 +229,11 @@ def previous_custody_week_codes(conn: sqlite3.Connection, before: str) -> tuple[
     rows = conn.execute(
         "SELECT signal_date, code FROM signal_ledger WHERE source='self_screen' "
         "AND signal_date > ? AND signal_date <= ?", (last_week, this_week)).fetchall()
+    if not rows:           # 帳本沒有：只有推播記錄分不出新舊（理由見 docstring）
+        return None, set()
     # this_week ≤ before 前一天，所以期間內的日期都 < before，用同一支查詢即可
     rows += [(d, code) for d, codes in _shown_lists_before(conn, before).items()
              if last_week < d <= this_week for code in codes]
-    if not rows:
-        return None, set()
     dates = sorted({r[0] for r in rows})
     return {"from": dates[0], "to": dates[-1]}, {r[1] for r in rows}
 

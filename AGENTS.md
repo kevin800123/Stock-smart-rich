@@ -213,7 +213,9 @@ payload 的 `listed_codes`；finding #4＋fix wave 2／3）：否則週報已列
 **送出後記錄失敗不讓 job 失敗**：否則 run_job 記 failed、平日推播被啟動補跑重送一次；改收進 `failed_steps`
 → partial（算跑過），錯誤仍進 job_runs／`/api/health` 並 log.exception。前瞻紀錄不受影響。查鍵用字典序
 範圍不用 LIKE（`_` 是萬用字元），且嚴格小於當天（含當天的話當晚一檔新進都沒有）；空的不寫（沒列出就沒
-看過；帳本 0 檔那天也沒有列，兩邊要一致）。
+看過）。**比對基準的日期只看帳本**：推播記錄只是列出的幾檔、不是完整名單——`previous_self_screen_codes`
+取帳本 < 當天的最後一天、代號併上那天起講過的；`previous_custody_week_codes` 期間內帳本沒有名單就回 None。
+否則週五名單週六才算出來（帳本沒有週五）、週報以它送出時，週一整份名單會被當成新進。
 `slot_times` 支援 `minute="0,30"`（`_cron_minutes`）。頁面覆蓋率列標「集保 前週→本週・取得時間」，只有
 一週完整時標「尚無前一週可比」。已知、刻意不修：TDCC 若在週五名單第一次記入前瞻紀錄之前就公布並被抓到
 （custody_watch_fri 17:00 就開始抓；第一次記入是 17:30／18:30／19:30 裡第一個資料到齊的那次，三次都沒到齊
@@ -276,7 +278,7 @@ bug，已改）；(2) 「第 N 日」原本數該檔日線筆數，缺一天就�
 
 ### 自算選股新進榜標籤（ui54，2026-09）
 
-`is_new`＝前一份使用者看過的自算名單（`signal_ledger` ∪ 推播內文實際列出過的代號 `selfscreen_shown:{date}`，見 custody_watch 段）沒有這檔；`is_week_new`＝**上一個集保週期**
+`is_new`＝前一份使用者看過的自算名單（帳本最後一份 `signal_ledger` ∪ 那天起推播內文實際列出過的代號 `selfscreen_shown:{date}`，日期只看帳本，見 custody_watch 段）沒有這檔；`is_week_new`＝**上一個集保週期**
 （以 `custody_compare_weeks` 的週五為界、從週五隔天起算，因為週五名單用的是舊集保）所有名單都
 沒有。沒有比對基準就一檔都不標。顯示：兩者皆是＝`WEEK NEW ✦`、只有週＝`WEEK NEW`、只有日＝`NEW`
 （第一版「同時符合只掛 Week NEW」讓今天的新進榜全被蓋掉，使用者回報後改）。視覺是半透明 HUD

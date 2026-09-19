@@ -579,18 +579,61 @@ def test_record_shown_self_screen_unions_and_strips_suffix(conn):
     ledger.record_shown_self_screen(conn, "2026-09-18", ["1000"])
     ledger.record_shown_self_screen(conn, "2026-09-18", ["1001", "1002.TW"])   # 同一天再送一次（週五平日、週六週報）：送出過就算看過
     assert db.get_ai_cache(conn, "selfscreen_shown:2026-09-18") == {"codes": ["1000", "1001", "1002"]}
-    ledger.record_shown_self_screen(conn, "2026-09-19", [])                    # 空名單不寫：帳本 0 檔那天也沒有列
+    ledger.record_shown_self_screen(conn, "2026-09-19", [])                    # 沒列出任何代號（無新進榜）不寫
     assert db.get_ai_cache(conn, "selfscreen_shown:2026-09-19") is None
 
 
-def test_shown_list_without_ledger_rows_counts_as_the_previous_list(conn):
+def test_shown_codes_without_ledger_rows_add_to_the_previous_ledger_list(conn):
+    """推播記錄只是「內文列出過的代號」、不是一份完整名單：某天只有推播記錄、帳本沒有列時，它不能自己
+    當「前一份名單」，只能併進帳本最近那一份（fix wave 3，連帶 #A）。
+    契約刻意改變：原名 test_shown_list_without_ledger_rows_counts_as_the_previous_list，斷言的是
+    ("2026-09-17", {"2000"})——那是 shown＝整份名單時的語意。"""
     _ledger(conn, "2026-09-16", ["1000"])
     # LIKE 'selfscreen_shown:%' 的 `_` 是萬用字元，會把這把長得像的鍵也算進來；實作用字典序範圍才擋得住。
     # 先單獨檢查它（後面真的那把鍵同一天，放一起會把它蓋掉、看不出來）。
     db.set_ai_cache(conn, "selfscreenXshown:2026-09-17", {"codes": ["9999"]})
     assert ledger.previous_self_screen_codes(conn, "2026-09-18") == ("2026-09-16", {"1000"})
     ledger.record_shown_self_screen(conn, "2026-09-17", ["2000"])
-    assert ledger.previous_self_screen_codes(conn, "2026-09-18") == ("2026-09-17", {"2000"})
+    assert ledger.previous_self_screen_codes(conn, "2026-09-18") == ("2026-09-16", {"1000", "2000"})
+    ledger.record_shown_self_screen(conn, "2026-09-15", ["3000"])     # 帳本那份之前講過的：已被更新的名單取代
+    assert ledger.previous_self_screen_codes(conn, "2026-09-18") == ("2026-09-16", {"1000", "2000"})
+
+
+def test_shown_codes_alone_are_not_a_baseline(conn):
+    """帳本一份名單都沒有、只有推播記錄：分不出新舊，一檔都不標（不可拿列出過的幾檔當整份名單）。"""
+    ledger.record_shown_self_screen(conn, "2026-09-17", ["2000"])
+    assert ledger.previous_self_screen_codes(conn, "2026-09-18") == (None, set())
+    for wk in ("2026-09-04", "2026-09-11", "2026-09-18"):
+        _week(conn, wk, FULL)
+    ledger.record_shown_self_screen(conn, "2026-09-15", ["2000"])     # 上一個集保週期裡只有推播記錄
+    assert ledger.previous_custody_week_codes(conn, "2026-09-21") == (None, set())
+    _ledger(conn, "2026-09-14", ["1000"])                              # 有帳本之後，推播記錄照常併進去
+    assert ledger.previous_custody_week_codes(conn, "2026-09-21") == (
+        {"from": "2026-09-14", "to": "2026-09-17"}, {"1000", "2000"})
+
+
+def test_monday_is_not_all_new_when_the_friday_list_was_never_recorded(conn, monkeypatch):
+    """週五排程整晚 data_not_ready、名單週六才算出來（前瞻紀錄只在訊號日當天寫，所以帳本沒有 09-18），
+    週報以這份週五名單送出、只列出本週新進 1002。週一的比對基準若拿「只有推播記錄的 09-18」當整份名單，
+    1000／1001 這兩檔天天都在的股會被整批標成「今天才進」；要拿帳本最近那一份（09-17）併上之後講過的。"""
+    _cal(conn, _WEEKDAYS)
+    for d in _WEEKDAYS[:-1]:                                  # 09-18 沒有記進帳本
+        _ledger(conn, d, ["1000", "1001"])
+    for wk in ("2026-09-04", "2026-09-11", "2026-09-18"):
+        _week(conn, wk, FULL)
+    _cache_list(conn, "2026-09-18", ["2026-09-18", "2026-09-11"], ["1000", "1001", "1002"])
+    sent = []
+    monkeypatch.setattr(telegram_push, "send_message", _ok_send(sent))
+    monkeypatch.setattr(helpers, "_now", lambda: datetime(2026, 9, 19, 21, 0))
+    assert helpers.telegram_new_picks_job(conn, _tg(), "weekly")["sent"] is True
+    assert db.get_ai_cache(conn, "selfscreen_shown:2026-09-18") == {"codes": ["1002"]}
+
+    mon = ledger.annotate_new_entries(
+        conn, {"rows": [{"code": c} for c in ("1000", "1001", "1002")]}, "2026-09-21")
+    by = _by_code(mon)
+    assert mon["new_vs"] == "2026-09-17"                       # 最近一份完整名單
+    for code in ("1000", "1001", "1002"):
+        assert by[code]["is_new"] is False and by[code]["is_week_new"] is False
 
 
 def test_refresh_does_not_record_the_shown_list(conn, monkeypatch):
