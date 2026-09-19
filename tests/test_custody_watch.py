@@ -147,3 +147,52 @@ def test_refresh_records_signals_only_on_the_signal_day(conn, monkeypatch, now, 
     assert res["cached"] is True and res["date"] == "2026-09-18"
     assert res["recorded"] is expect
     assert calls == (["2026-09-18"] if expect else [])
+
+
+def test_custody_watch_does_nothing_when_tdcc_has_no_new_week(conn, monkeypatch):
+    _week(conn, "2026-09-18", FULL)
+    monkeypatch.setattr(tdcc, "peek_custody_week", lambda: "2026-09-18")
+    boom = lambda *a, **k: (_ for _ in ()).throw(AssertionError("不應該被呼叫"))
+    monkeypatch.setattr(updater, "_accumulate_custody", boom)
+    monkeypatch.setattr(helpers, "refresh_self_screen_cache", boom)
+    assert helpers.custody_watch(conn) == {"skipped": "no_new_week", "tdcc": "2026-09-18",
+                                           "local": "2026-09-18"}
+
+
+def test_custody_watch_stores_new_week_and_recomputes_the_listed_day_without_ledger(conn, monkeypatch):
+    _week(conn, "2026-09-11", FULL)
+    _week(conn, "2026-09-18", ["2330"])                       # 逐檔回補的殘缺週不算
+    selfcheck.save_precomputed(conn, {"date": "2026-09-18", "rows": [], "heatmap": [], "coverage": {}})
+    db.upsert_market_daily(conn, {"date": "2026-09-17", "taiex": 20000.0})   # 21:00 前 market_daily 只到週四
+    conn.commit()
+    monkeypatch.setattr(tdcc, "peek_custody_week", lambda: "2026-09-18")
+    monkeypatch.setattr(updater, "_accumulate_custody", lambda c: "2026-09-18")
+    db.set_ai_cache(conn, "custody_fetched:2026-09-18", {"at": "2026-09-19T09:30:00"})
+    seen = {}
+
+    def fake_refresh(c, day=None, record_signals=True):
+        seen.update(day=day, record_signals=record_signals)
+        return {"cached": True, "date": day}
+    monkeypatch.setattr(helpers, "refresh_self_screen_cache", fake_refresh)
+    r = helpers.custody_watch(conn)
+    assert r["week"] == "2026-09-18" and r["fetched_at"] == "2026-09-19T09:30:00"
+    assert r["self_screen"] == {"cached": True, "date": "2026-09-18", "skipped": None}
+    assert seen == {"day": "2026-09-18", "record_signals": False}   # 重算畫面上那一天，不是 09-17
+
+
+def test_custody_watch_raises_when_the_head_cannot_be_read(conn, monkeypatch):
+    monkeypatch.setattr(tdcc, "peek_custody_week", lambda: None)
+    with pytest.raises(RuntimeError):
+        helpers.custody_watch(conn)
+
+
+def test_custody_watch_is_scheduled_friday_evening_and_saturday():
+    cfg = Config()                                            # 不綁任何推播設定
+    by_id = {s["id"]: s for s in helpers.job_schedule(cfg, "21:00")}
+    fri, sat = date(2026, 9, 18), date(2026, 9, 19)
+    f = [t.strftime("%H:%M") for t in helpers.slot_times(by_id["custody_watch_fri"], fri)]
+    s = [t.strftime("%H:%M") for t in helpers.slot_times(by_id["custody_watch_sat"], sat)]
+    assert (f[0], f[-1], len(f)) == ("17:00", "23:30", 14)
+    assert (s[0], s[-1], len(s)) == ("08:00", "21:30", 28)
+    assert helpers.slot_times(by_id["custody_watch_fri"], sat) == []
+    assert by_id["custody_watch_fri"]["family"] == by_id["custody_watch_sat"]["family"] == "custody_watch"

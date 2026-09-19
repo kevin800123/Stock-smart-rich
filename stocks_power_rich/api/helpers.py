@@ -1209,6 +1209,35 @@ def refresh_self_screen_cache(c, day: str | None = None, record_signals: bool = 
             "recorded": recorded}
 
 
+def custody_watch(c) -> dict:
+    """週集保輪詢（排程 custody_watch：週五 17:00–23:30、週六 08:00–21:30，每 30 分鐘）。
+
+    只讀 TDCC 檔頭的資料日期；比資料庫最新**完整**週新，才完整下載寫入並重算自算選股快取。
+    重算**不寫前瞻紀錄**（record_signals=False）：新集保是收盤後才公布的，不可改寫任何訊號日。
+    重算的是**快取裡那一天**（畫面上的名單），不是 market_daily 最新一列：週五 21:00 前
+    market_daily 還沒有週五，拿它重算會算成週四、蓋掉 17:30 算好的週五名單。沒有快取才退回最新交易日。
+    例外往上拋給 run_job 記成 failed，下一個 30 分鐘再試；21:00 的每日更新仍會照舊抓，漏不掉。
+    """
+    from .. import selfcheck, updater
+    from ..db import latest_complete_custody_week
+    from ..sources import tdcc
+
+    remote = tdcc.peek_custody_week()
+    if not remote:
+        raise RuntimeError("TDCC 集保檔頭讀不到資料日期（格式可能改版）")
+    local = latest_complete_custody_week(c)
+    if local and remote <= local:
+        return {"skipped": "no_new_week", "tdcc": remote, "local": local}
+    week = updater._accumulate_custody(c)
+    if not week:
+        return {"skipped": "not_stored", "tdcc": remote, "local": local}
+    fetched = (get_ai_cache(c, f"custody_fetched:{week}") or {}).get("at")
+    listed = (selfcheck.load_latest_precomputed(c) or {}).get("date")
+    ss = refresh_self_screen_cache(c, day=listed, record_signals=False)
+    return {"week": week, "fetched_at": fetched,
+            "self_screen": {k: ss.get(k) for k in ("cached", "date", "skipped")}}
+
+
 def _intraday_scan(c, push: bool = True) -> dict:
     cfg = load_config()
     # 每 5 分鐘一次的排程最容易在額度用盡當天反覆撞 429——已知本月用盡就直接不送，
@@ -1390,6 +1419,13 @@ def job_schedule(cfg, schedule_time: str) -> list[dict]:
         # 交易日過後查 `/api/health` 的 `jobs.ssf_daily`，看哪個時段最先成功即可。
         {"id": "ssf_daily", "family": "ssf_daily",
          "hour": "17,18,20", "minute": "15", "dow": "mon-fri"},
+        # 週集保：TDCC 每週公布一次、確切時間未量到（2026-09-19 週六 13:23 實測已是 09-18 週；
+        # 週五 21:00 那次還沒有）。每 30 分鐘只讀檔頭，新週一到就寫入並重算自算選股，
+        # 第一次取得的時間記在 ai_cache custody_fetched:{week}，累積幾週後可收窄時段。
+        {"id": "custody_watch_fri", "family": "custody_watch",
+         "hour": "17-23", "minute": "0,30", "dow": "fri"},
+        {"id": "custody_watch_sat", "family": "custody_watch",
+         "hour": "8-21", "minute": "0,30", "dow": "sat"},
     ]
     # Telegram 新聞：token 與 chat id 缺一不可（只檢查 token 會註冊永遠送不出去的工作）。
     # 平日四場、週末只留 12:00／21:10（盤前／收盤快訊在沒開盤的日子是在報舊事）。

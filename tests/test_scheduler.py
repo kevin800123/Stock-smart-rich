@@ -97,7 +97,8 @@ def test_create_app_with_line_token_registers_all_jobs(tmp_path, monkeypatch):
     try:
         ids = {j.id for j in app.state.scheduler.get_jobs()}
         assert ids == {"daily_update", "osfut_morning", "osfut_evening",
-                       "intraday_watch", "weekly_line", "self_screen_early", "ssf_daily"}
+                       "intraday_watch", "weekly_line", "self_screen_early", "ssf_daily",
+                       "custody_watch_fri", "custody_watch_sat"}
         # 自算選股提早算（使用者要求 20:00 前）：用真的 APScheduler 驗觸發條件，
         # 假排程器只記得參數、證明不了 hour="17,18,19" 真的被接受成三個時段
         ss = app.state.scheduler.get_job("self_screen_early")

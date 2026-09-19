@@ -232,6 +232,10 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
             return _helpers.telegram_new_picks_job(conn(), cfg, kind)
         return _run
 
+    def custody_watch_job():
+        """週集保輪詢。邏輯在 api/helpers.custody_watch；失敗由 run_job 記成 failed。"""
+        return _helpers.custody_watch(conn())
+
     # job id → 原始函式。補跑走這份（自己算 run_key），排程走包了 run_job 的版本。
     raw_jobs = {
         "daily_update": scheduled_job,
@@ -244,6 +248,8 @@ def create_app(enable_scheduler: bool = False) -> FastAPI:
         **{f"news_{slot}": news_job(slot) for slot in ("morning", "midday", "afternoon", "evening")},
         "picks_new_daily": picks_new_job("daily"),
         "picks_new_weekly": picks_new_job("weekly"),
+        "custody_watch_fri": custody_watch_job,
+        "custody_watch_sat": custody_watch_job,
     }
     app.state.jobs = raw_jobs
 
