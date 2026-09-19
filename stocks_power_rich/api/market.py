@@ -788,7 +788,11 @@ def ssf_margin():
     return ssf_margin_index(conn(), fetch=True)
 
 
-SSF_HOT_N = 10
+# 成交量前 N 股期（2026-09 使用者要求改 30，且只列股期、不列 ETF 期貨）。未平倉增減榜
+# 原本也共用 SSF_HOT_N，拆成 SSF_OI_N 維持 10——兩個榜的長度是各自的決定。
+SSF_HOT_N = 30
+SSF_OI_N = 10
+SSF_VOL_BASE_DAYS = 3        # 「量較前 3 日」＝今日口數 ÷ 前 3 個交易日平均 − 1
 SSF_RANK_N = 20
 SSF_HEATMAP_DAYS = 10
 SSF_HEATMAP_ROWS = 10
@@ -845,13 +849,42 @@ def ssf_overview(date: str | None = None):
                             "no_spot": 0, "no_std_contract": 0, "lag_trading_days": 0}}
     day = date if date in dates else dates[0]
     contracts = _ssf_contracts(c)
-    rows_all = get_ssf_rows(c, dates)
+    # 「量較前 3 日」的基期要往前多抓 SSF_VOL_BASE_DAYS 天：dates 只有熱力圖的 10 天，
+    # ?date= 指到窗口最舊的 3 天時，基期會被窗口截斷、整欄變 None（明明資料庫裡有）。
+    # 熱力圖與回傳的 dates 仍只用最新 10 天；多抓的幾天只給基期用。
+    ext_dates = get_ssf_dates(c, limit=SSF_HEATMAP_DAYS + SSF_VOL_BASE_DAYS)
+    rows_all = get_ssf_rows(c, ext_dates)
     by_day: dict[str, list] = {}
     for r in rows_all:
         by_day.setdefault(r["date"], []).append(r)
     today_rows = sorted(by_day.get(day, []), key=lambda r: r.get("volume") or 0, reverse=True)
 
-    hot = [_ssf_cell(r, contracts.get(r["root"])) for r in today_rows[:SSF_HOT_N]]
+    # 成交量前 30：只列股期（排除 ETF 期貨；合約表查不到的 root 無從判斷，照列）。
+    # 量較前 3 日：前 SSF_VOL_BASE_DAYS 個「存了資料的交易日」平均。湊不齊（存的天數不夠、
+    # 中間某天這個 root 沒有列或缺量、平均為 0）就回 None——不拿更早的日子頂替，否則
+    # 同一欄裡混著「前 3 日」與「前 4、5 日」兩種口徑，而讀者分不出來。
+    idx_day = ext_dates.index(day)
+    base_days = ext_dates[idx_day + 1: idx_day + 1 + SSF_VOL_BASE_DAYS]
+    base_vol = {d: {r["root"]: r.get("volume") for r in by_day.get(d, [])} for d in base_days}
+
+    def _vol_chg3(r):
+        v = r.get("volume")
+        if v is None or len(base_days) < SSF_VOL_BASE_DAYS:
+            return None
+        prior = [base_vol[d].get(r["root"]) for d in base_days]
+        if any(x is None for x in prior):
+            return None
+        avg = sum(prior) / len(prior)
+        return round((v / avg - 1) * 100, 1) if avg > 0 else None
+
+    hot = []
+    for r in today_rows:
+        info = contracts.get(r["root"])
+        if (info or {}).get("is_etf"):
+            continue
+        hot.append({**_ssf_cell(r, info), "vol_chg3": _vol_chg3(r)})
+        if len(hot) >= SSF_HOT_N:
+            break
     vol_rank = [_ssf_candle(r, contracts.get(r["root"])) for r in today_rows[:SSF_RANK_N]]
     with_pct = [r for r in today_rows if r.get("chg_pct") is not None]
     gainers = [_ssf_candle(r, contracts.get(r["root"]))
@@ -912,8 +945,9 @@ def ssf_overview(date: str | None = None):
     # 未平倉增減：前一日缺列就整檔不列（缺值當 0 會捏造一筆大增）。用 oi_total 而非
     # 主力月自己的 oi——換月當天兩者差很大（見 _ssf_cell 的說明），用主力月相減會把
     # 移倉誤讀成大減/大增，副標「減少最多」會直接誤導讀者。
-    idx = dates.index(day)
-    prev = {r["root"]: r for r in by_day.get(dates[idx + 1], [])} if idx + 1 < len(dates) else {}
+    # 前一日也從多抓的 ext_dates 取：?date= 指到 10 天窗口最舊那天時，前一日在窗口外。
+    idx = ext_dates.index(day)
+    prev = {r["root"]: r for r in by_day.get(ext_dates[idx + 1], [])} if idx + 1 < len(ext_dates) else {}
     changes = []
     for r in today_rows:
         p = prev.get(r["root"])
@@ -924,9 +958,9 @@ def ssf_overview(date: str | None = None):
             changes.append({**_ssf_cell(r, contracts.get(r["root"])), "oi_change": d,
                             "oi_prev": p["oi_total"]})
     ups = sorted([x for x in changes if x["oi_change"] > 0],
-                 key=lambda x: x["oi_change"], reverse=True)[:SSF_HOT_N]
+                 key=lambda x: x["oi_change"], reverse=True)[:SSF_OI_N]
     downs = sorted([x for x in changes if x["oi_change"] < 0],
-                   key=lambda x: x["oi_change"])[:SSF_HOT_N]
+                   key=lambda x: x["oi_change"])[:SSF_OI_N]
 
     # 熱力圖：名次 × 交易日（舊到新）。缺的交易日是空欄，不拿別天頂替。
     hm_dates = sorted(dates)

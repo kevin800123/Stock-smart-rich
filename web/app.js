@@ -900,25 +900,49 @@ function renderSsfFreshness(date, lagTradingDays) {
   if (days >= SSF_STALE_DAYS) { el.textContent = `落後 ${days} 個交易日`; el.classList.add("stale"); }
 }
 
-// card-label／muted small 沿用既有卡片與 group-title 慣例（見 #view-hiprice／#view-self-screen），
-// 不新造 .card-title／.empty——一個是卡片標題的既有類別，一個是「空狀態」既有寫法。
+// 成交量前 30 股期（2026-09 使用者要求：卡片太大、資訊量太少）。一列一檔，欄位固定：
+// 名次／股期（名稱＋代號）／成交量（底下墊長度條＝相對榜首的口數）／量較前 3 日／漲跌%。
+// - 30 列切成兩張表（1–15、16–30）。區塊夠寬時 CSS 讓兩張並排，窄時上下疊；兩張都是
+//   table-layout:fixed、欄寬相同，所以疊起來時欄位也對得齊。
+// - 「較前 3 日」是量的變化，不是價格方向：全站紅綠只保留給行情漲跌，這欄用 ▲▼ ＋中性色，
+//   放大 100% 以上的加粗提亮（.hi），縮量的降一階（.lo）。後端算不出（湊不齊前 3 個交易日）
+//   就是 null，顯示「—」。
+// - 漲跌% 才是價格方向，沿用 chgClass 三態（平盤不上色、不加「+」）。
+const SSF_TOP_SPLIT = 15;
+
+function ssfTopTable(rows, start, maxVol) {
+  const pct = (v) => v == null ? "—" : (v > 0 ? "+" : "") + v.toFixed(2) + "%";
+  const body = rows.map((r, i) => {
+    const w = maxVol && r.volume != null ? Math.max(2, Math.round(r.volume / maxVol * 100)) : 0;
+    // 先四捨五入到整數再決定箭頭與強調：後端是 0.1% 精度，直接用原值會出現「▼0%」（−0.4）
+    // 與「兩列都顯示 ▲100%、只有一列加粗」（99.6 vs 100.0）。四捨五入後是 0 就不畫箭頭，
+    // 同漲跌% 平盤不加「+」的規矩（review #5）。
+    const vr = r.vol_chg3 == null ? null : Math.round(r.vol_chg3);
+    const vcCls = vr == null ? "na" : vr >= 100 ? "hi" : vr < 0 ? "lo" : "";
+    const vcTxt = vr == null ? "—" : vr === 0 ? "0%" : (vr > 0 ? "▲" : "▼") + Math.abs(vr) + "%";
+    const dir = r.chg_pct == null ? "" : chgClass(r.chg_pct);
+    return `<tr>
+      <td class="ssf-rk">${start + i + 1}</td>
+      <td class="ssf-nm" title="${esc(r.name)}${r.code ? " " + esc(r.code) : ""}"><span class="ssf-nm-t">${esc(r.name)}</span>${
+        r.code ? `<span class="ssf-code">${esc(r.code)}</span>` : ""}</td>
+      <td class="ssf-vol" style="--w:${w}%">${r.volume == null ? "—" : fmt(r.volume, 0)}</td>
+      <td class="ssf-vchg ${vcCls}">${vcTxt}</td>
+      <td class="ssf-chg ${dir}">${pct(r.chg_pct)}</td></tr>`;
+  }).join("");
+  return `<table class="ssf-top-t"><colgroup><col class="c-rk"><col class="c-nm"><col class="c-vol">`
+    + `<col class="c-vchg"><col class="c-chg"></colgroup><thead><tr>`
+    + `<th scope="col" class="ssf-rk">#</th><th scope="col">股期</th>`
+    + `<th scope="col" class="ssf-vol">成交量</th>`
+    + `<th scope="col" class="ssf-vchg" title="今日口數 ÷ 前 3 個交易日平均口數 − 1">較前3日</th>`
+    + `<th scope="col" class="ssf-chg">漲跌</th></tr></thead><tbody>${body}</tbody></table>`;
+}
+
 function renderSsfHot(rows) {
   const el = $("ssf-hot"); if (!el) return;
   if (!rows.length) { el.innerHTML = '<div class="muted small">尚無資料</div>'; return; }
-  el.innerHTML = rows.map(r => {
-    // 用全站共用的 chgClass（三態：漲/跌/平），不要自己寫二元判斷——原本
-    // `>= 0 ? "up" : "down"` 會把「剛好收平盤」也上紅（誤讀成上漲）。
-    const dir = r.chg_pct == null ? "" : chgClass(r.chg_pct);
-    // >0 而非 >=0：剛好收平盤（chg_pct 精確等於 0）不能加「+」，「+0.00%」的正號
-    // 讀起來像上漲（review #5）。負值本來就會由 toFixed 自己帶出負號，不受影響。
-    // 代號放在標籤列、量與 OI 各自一個 span：原本三段擠在一行 nowrap 的 .card-note，
-    // 148px 寬的卡片放不下，10 張全被截掉（ui61）。兩個 span 各自不斷行、彼此可換行。
-    return `<div class="card"><div class="card-label">${esc(r.name)}`
-      + (r.code ? `<span class="ssf-code">${esc(r.code)}</span>` : "") + `</div>`
-      + `<div class="card-val">${fmt(r.close)}</div>`
-      + `<div class="card-chg ${dir}">${r.chg_pct == null ? "—" : (r.chg_pct > 0 ? "+" : "") + r.chg_pct.toFixed(2) + "%"}</div>`
-      + `<div class="card-note"><span>量 ${fmt(r.volume, 0)} 口</span><span>OI ${fmt(r.oi, 0)}</span></div></div>`;
-  }).join("");
+  const maxVol = Math.max(...rows.map(r => r.volume || 0));
+  const parts = [rows.slice(0, SSF_TOP_SPLIT), rows.slice(SSF_TOP_SPLIT)].filter(p => p.length);
+  el.innerHTML = parts.map((p, k) => ssfTopTable(p, k * SSF_TOP_SPLIT, maxVol)).join("");
 }
 
 let ssfCharts = {};
@@ -1144,6 +1168,16 @@ function ssfLotsValue() {
 // 慣例：換欄預設股票升冪、其餘降冪；空值永遠沉底，不受升降冪影響。排序作用在**搜尋
 // 後**的列表，換口數只改總欄顯示、不影響排序鍵，順序自然維持不變。
 let ssfMarginSort = { key: null, dir: -1 };   // key=null 時維持後端原序（TAIFEX 代碼序）
+// 合約類別切換（2026-09）：每一列恰好落在一類。ETF 期貨不分標準／小型都歸 ETF（使用者
+// 找的是「ETF 的」），小型只收小型的個股期貨，指數是臺股／小型臺指／微型臺指等。
+// 不持久化：同自算選股的條件勾選，換頁回來回到「全部」，免得忘了自己篩過而以為少資料。
+let ssfMarginKind = "all";
+const SSF_KIND_LABEL = { all: "全部", stock: "個股", mini: "小型", etf: "ETF", index: "指數" };
+function ssfKindOf(r) {
+  if (r.kind === "index") return "index";
+  if (r.kind === "etf") return "etf";
+  return r.is_mini ? "mini" : "stock";
+}
 
 function ssfMarginSortVal(r, k) {
   return k === "name" ? (r.name || "") : r[k];
@@ -1192,7 +1226,18 @@ function renderSsfMargin() {
   const q = normTW(($("ssf-margin-q").value || "").trim().toLowerCase());
 
   const alias = ssfAliasTarget(q);
-  let rows = ssfMarginRows().filter((r) => ssfMarginMatches(r, q, alias));
+  const all = ssfMarginRows();
+  // 各類檔數算在搜尋之前：按鈕上的數字說的是「這一類有幾檔」，不隨打字跳動。
+  const counts = { all: all.length, stock: 0, mini: 0, etf: 0, index: 0 };
+  all.forEach((r) => { counts[ssfKindOf(r)]++; });
+  document.querySelectorAll("#ssf-kind [data-kind]").forEach((b) => {
+    const k = b.dataset.kind, on = k === ssfMarginKind;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    const n = b.querySelector(".ssf-kind-n"); if (n) n.textContent = ssfMargin ? String(counts[k]) : "";
+  });
+  let rows = all.filter((r) => (ssfMarginKind === "all" || ssfKindOf(r) === ssfMarginKind)
+    && ssfMarginMatches(r, q, alias));
   if (ssfMarginSort.key) {                    // 空值永遠沉底，不受升降冪影響
     const k = ssfMarginSort.key, dir = ssfMarginSort.dir;
     rows = rows.slice().sort((ra, rb) => {
@@ -1244,7 +1289,16 @@ function renderSsfMargin() {
     <td>${r.initial == null ? "—" : fmt(r.initial, 0)}</td>
     <td>${r.maintenance == null ? "—" : fmt(r.maintenance, 0)}</td>
     <td class="ssf-total">${r.initial == null ? "—" : fmt(r.initial * lots, 0)}</td>
-  </tr>`).join("") || '<tr><td colspan="6" class="muted small">查無符合的合約</td></tr>';
+  </tr>`).join("") || `<tr><td colspan="6" class="muted small">${ssfMarginEmptyText(all, q, alias)}</td></tr>`;
+}
+
+// 空結果要講出真正的原因：資料還沒回來（或抓失敗）、這個類別剛好沒有、還是整份都查無。
+// 只有「切回全部真的會有結果」時才建議切回全部——否則那句提示會指向一個不存在的解法。
+function ssfMarginEmptyText(all, q, alias) {
+  if (!all.length) return "保證金資料尚未載入";
+  if (ssfMarginKind !== "all" && all.some((r) => ssfMarginMatches(r, q, alias)))
+    return `「${SSF_KIND_LABEL[ssfMarginKind]}」類別中查無符合的合約，切回「全部」可以看到`;
+  return "查無符合的合約";
 }
 
 // ========== 自算籌碼/基本選股（全市場自算池，零 CSV） ==========
@@ -4154,10 +4208,12 @@ document.querySelectorAll(".rkp-tab").forEach((b) => b.addEventListener("click",
   document.querySelectorAll(".rkp-tab").forEach((x) => x.classList.toggle("active", x === b));
   loadRankPrice();
 }));
-document.querySelectorAll(".hm-tab").forEach((b) => b.addEventListener("click", () => {
+// 只認帶 data-market 的熱力圖分頁：.hm-tab 這個 class 若被別處沿用（股期類別鈕曾經這樣
+// 做），沒有 data-market 的按鈕會把 heatmapMarket 設成 undefined、熱力圖整片變空。
+document.querySelectorAll(".hm-tab[data-market]").forEach((b) => b.addEventListener("click", () => {
   if (b.dataset.market === heatmapMarket) return;
   heatmapMarket = b.dataset.market;
-  document.querySelectorAll(".hm-tab").forEach((x) => x.classList.toggle("active", x === b));
+  document.querySelectorAll(".hm-tab[data-market]").forEach((x) => x.classList.toggle("active", x === b));
   loadSectors();
 }));
 document.querySelectorAll(".hm-top").forEach((b) => b.addEventListener("click", () => {
@@ -4475,6 +4531,12 @@ document.querySelectorAll(".rku").forEach((b) => b.addEventListener("click", () 
 const ssfMarginBar = document.querySelector(".ssf-margin-bar");
 if (ssfMarginBar) ssfMarginBar.addEventListener("input", (e) => {
   if (e.target.closest("#ssf-lots, #ssf-margin-q")) renderSsfMargin();
+});
+if (ssfMarginBar) ssfMarginBar.addEventListener("click", (e) => {
+  const b = e.target.closest("#ssf-kind [data-kind]"); if (!b) return;
+  ssfMarginKind = b.dataset.kind;
+  renderSsfMargin();
+  const w = $("ssf-margin-wrap"); if (w) w.scrollTop = 0;   // 換類別從表頭開始看
 });
 // 表頭排序：委派在 <table> 本身（靜態 HTML 就有這個 id，監聽只需掛一次）。表頭格子也是
 // 靜態的（資料載入前就要看得到），JS 只依 data-k 更新各格的 aria-sort 與箭頭、不重建整列，

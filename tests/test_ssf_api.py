@@ -1135,3 +1135,132 @@ def test_ssf_missing_spans_respects_custom_max_days():
     days = ["2026-09-18", "2026-09-17", "2026-09-16", "2026-09-15"]
     assert _ssf_missing_spans(days, max_days=2) == [
         ("2026-09-17", "2026-09-18"), ("2026-09-15", "2026-09-16")]
+
+
+# ── 成交量前 30 股期（hot）：只列股期、附「量較前 3 日均量」（2026-09 使用者要求）─────
+def _seed_hot_days(monkeypatch, tmp_path, cd_vols, qf_vols=None, ny_vols=None, contracts=None):
+    """依序（舊→新）寫入每天的量；vols 裡的 None 代表那天那個 root 沒有列。"""
+    from stocks_power_rich.api import market as M
+    from stocks_power_rich.db import bulk_upsert_ssf_daily
+    monkeypatch.setattr(M, "_ssf_contracts", lambda c: contracts or _CONTRACTS)
+    monkeypatch.setattr(M, "_quotes_for", lambda c, d: {})
+    monkeypatch.setattr(M, "_otc_quotes_for", lambda c, d: {})
+    conn = get_connection(str(tmp_path / "api.sqlite"))
+    init_db(conn)
+    days = ["2026-09-11", "2026-09-14", "2026-09-15", "2026-09-16", "2026-09-17"][-len(cd_vols):]
+    rows = []
+    for i, day in enumerate(days):
+        for root, vols in (("CD", cd_vols), ("QF", qf_vols), ("NY", ny_vols)):
+            if vols is None or vols[i] is None:
+                continue
+            rows.append({"date": day, "root": root, "main_month": "202610", "close": 100.0,
+                         "chg_pct": 1.0, "volume": vols[i], "oi": 1000, "oi_total": 1000})
+    bulk_upsert_ssf_daily(conn, rows)
+
+
+def test_overview_hot_excludes_etf_futures(monkeypatch, tmp_path):
+    """「股期就好」：ETF 期貨不列入成交量前 30（NY 量最大也不列）。"""
+    _seed_hot_days(monkeypatch, tmp_path, cd_vols=[100], qf_vols=[50], ny_vols=[999999])
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert [x["root"] for x in d["hot"]] == ["CD", "QF"]
+
+
+def test_overview_hot_volume_change_vs_prior_three_day_average(monkeypatch, tmp_path):
+    """量較前 3 日＝今日口數 ÷ 前 3 個交易日平均 − 1，四捨五入到 0.1%。"""
+    # CD：前三天 100/200/300 平均 200，今天 500 → +150.0%
+    # QF：前三天 300/300/300，今天 200 → −33.3%
+    _seed_hot_days(monkeypatch, tmp_path, cd_vols=[100, 200, 300, 500],
+                   qf_vols=[300, 300, 300, 200])
+    by_root = {x["root"]: x for x in _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()["hot"]}
+    assert by_root["CD"]["vol_chg3"] == 150.0
+    assert by_root["QF"]["vol_chg3"] == -33.3
+
+
+def test_overview_hot_volume_change_uses_only_the_three_days_right_before(monkeypatch, tmp_path):
+    """只看緊鄰的前 3 個交易日，更早的日子不算（5 天資料：第 1 天的 10000 不能進平均）。"""
+    _seed_hot_days(monkeypatch, tmp_path, cd_vols=[10000, 100, 100, 100, 150])
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert d["hot"][0]["vol_chg3"] == 50.0
+
+
+def test_overview_hot_volume_change_is_none_without_three_full_prior_days(monkeypatch, tmp_path):
+    """前 3 日湊不齊（存的天數不夠、中間某天缺列、平均是 0）就回 None，不拿別天頂替。"""
+    # 只有 2 天資料
+    _seed_hot_days(monkeypatch, tmp_path, cd_vols=[100, 200])
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert d["hot"][0]["vol_chg3"] is None
+
+
+def test_overview_hot_volume_change_is_none_when_a_prior_day_row_is_missing(monkeypatch, tmp_path):
+    # QF 在前 3 日的中間那天沒有列 → 湊不齊 → None；CD 完整 → 有值
+    _seed_hot_days(monkeypatch, tmp_path, cd_vols=[100, 100, 100, 200],
+                   qf_vols=[100, None, 100, 200])
+    by_root = {x["root"]: x for x in _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()["hot"]}
+    assert by_root["CD"]["vol_chg3"] == 100.0
+    assert by_root["QF"]["vol_chg3"] is None
+
+
+def test_overview_hot_volume_change_is_none_when_prior_average_is_zero(monkeypatch, tmp_path):
+    _seed_hot_days(monkeypatch, tmp_path, cd_vols=[0, 0, 0, 50])
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert d["hot"][0]["vol_chg3"] is None
+
+
+def test_overview_hot_caps_at_thirty_but_oi_lists_stay_at_ten(monkeypatch, tmp_path):
+    """成交量榜放寬到 30，未平倉增減榜仍是 10（兩者原本共用同一個常數）。"""
+    from stocks_power_rich.api import market as M
+    from stocks_power_rich.db import bulk_upsert_ssf_daily
+    roots = [a + b for a in "ABCDEFG" for b in "XYZWV"][:35]      # 35 個 root、無合約資訊
+    monkeypatch.setattr(M, "_ssf_contracts", lambda c: {})
+    monkeypatch.setattr(M, "_quotes_for", lambda c, d: {})
+    monkeypatch.setattr(M, "_otc_quotes_for", lambda c, d: {})
+    conn = get_connection(str(tmp_path / "api.sqlite"))
+    init_db(conn)
+    rows = []
+    for i, root in enumerate(roots):
+        rows.append({"date": "2026-09-16", "root": root, "volume": 1000 + i, "oi_total": 100})
+        rows.append({"date": "2026-09-17", "root": root, "volume": 1000 + i, "oi_total": 200 + i})
+    bulk_upsert_ssf_daily(conn, rows)
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()
+    assert len(d["hot"]) == 30
+    assert d["hot"][0]["root"] == roots[-1]                       # 量最大的在最前
+    assert len(d["oi_change"]["up"]) == 10
+
+
+def test_overview_hot_keeps_scanning_past_etf_futures_to_fill_thirty(monkeypatch, tmp_path):
+    """前 30 名裡混著 ETF 期貨時，要跳過它們往後補滿 30 檔（先切 30 再濾會只剩 25）。"""
+    from stocks_power_rich.api import market as M
+    from stocks_power_rich.db import bulk_upsert_ssf_daily
+    roots = [a + b for a in "ABCDEFGH" for b in "XYZWV"][:36]
+    etfs = set(roots[:5])                                   # 量最大的前 5 檔是 ETF
+    contracts = {r: {"code": "", "name": r, "is_etf": r in etfs, "is_mini": False} for r in roots}
+    monkeypatch.setattr(M, "_ssf_contracts", lambda c: contracts)
+    monkeypatch.setattr(M, "_quotes_for", lambda c, d: {})
+    monkeypatch.setattr(M, "_otc_quotes_for", lambda c, d: {})
+    conn = get_connection(str(tmp_path / "api.sqlite"))
+    init_db(conn)
+    bulk_upsert_ssf_daily(conn, [{"date": "2026-09-17", "root": r, "volume": 10000 - i}
+                                 for i, r in enumerate(roots)])
+    hot = _client(monkeypatch, tmp_path).get("/api/ssf/overview").json()["hot"]
+    assert len(hot) == 30
+    assert not ({x["root"] for x in hot} & etfs)
+    assert hot[-1]["root"] == roots[34]                     # 第 35 名（非 ETF 的第 30 名）有列進來
+
+
+def test_overview_hot_volume_change_for_an_older_requested_date(monkeypatch, tmp_path):
+    """?date= 指到 10 天窗口最舊那幾天時，前 3 日在窗口外但資料庫裡有——仍要算得出來。"""
+    from stocks_power_rich.api import market as M
+    from stocks_power_rich.db import bulk_upsert_ssf_daily
+    monkeypatch.setattr(M, "_ssf_contracts", lambda c: _CONTRACTS)
+    monkeypatch.setattr(M, "_quotes_for", lambda c, d: {})
+    monkeypatch.setattr(M, "_otc_quotes_for", lambda c, d: {})
+    conn = get_connection(str(tmp_path / "api.sqlite"))
+    init_db(conn)
+    days = [f"2026-08-{d:02d}" for d in (3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 17, 18, 19, 20)]  # 14 天
+    bulk_upsert_ssf_daily(conn, [{"date": d, "root": "CD", "volume": 100, "oi_total": 1000 + i}
+                                 for i, d in enumerate(days)])
+    oldest_in_window = days[-10]                            # 08-07：10 天窗口的最舊一天
+    d = _client(monkeypatch, tmp_path).get(f"/api/ssf/overview?date={oldest_in_window}").json()
+    assert d["date"] == oldest_in_window
+    assert d["hot"][0]["vol_chg3"] == 0.0                   # 前 3 日 08-04/05/06 皆 100
+    assert [x["root"] for x in d["oi_change"]["up"]] == ["CD"]   # 前一日 08-06 在窗口外也要找得到

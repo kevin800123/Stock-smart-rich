@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>STOCKS POWER RICH</title>
-  <link rel="stylesheet" href="styles.css?v=20260817-ui62" />
+  <link rel="stylesheet" href="styles.css?v=20260817-ui63" />
   <script src="/vendor/echarts.min.js"></script>
   <!-- 只有個股 K 線圖（#stock-chart）用這套，其餘圖表都還是上面的 echarts.min.js。
        見 CLAUDE.md「個股 K 線改 Lightweight Charts」那節。 -->
@@ -682,12 +682,16 @@
 
         <!-- 版面（2026-09 ui61）：本頁是 12 欄格線（styles.css `#view-ssf.active`），
              區塊的 span 由 CSS 依 class 指定、同一列相加剛好 12。第一列是使用者指定的：
-             左邊熱門股期、右邊保證金試算。DOM 順序＝閱讀順序＝鍵盤順序：熱門 → 保證金
-             → 漲跌 K 棒 → 未平倉 → 價差＋歷史熱力圖。改動任一區塊的內容量時，同列的
+             左邊成交量前 30 股期、右邊保證金試算。DOM 順序＝閱讀順序＝鍵盤順序：成交量前 30
+             → 保證金 → 漲跌 K 棒 → 未平倉 → 價差＋歷史熱力圖。改動任一區塊的內容量時，同列的
              高度要重新量（見 CLAUDE.md 股期概況版面）。 -->
+        <!-- 成交量前 30 股期（2026-09 使用者要求）：原本是 10 張大卡片，一張卡只放一檔、
+             資訊量太少。改成緊湊排行表：名次／股期／成交量（底下墊長度條）／量較前 3 日／
+             漲跌。區塊夠寬時由 CSS 切成 1–15、16–30 兩欄（兩張表共用 table-layout:fixed
+             的欄寬，窄版上下疊時欄位也對得齊）。只列股期、不列 ETF 期貨（後端過濾）。 -->
         <div class="card-group ssf-b-hot">
-          <div class="group-title">熱門股期　<span class="muted small">依官方成交口數；口數含小型合約，規模不同</span></div>
-          <div class="cards" id="ssf-hot"></div>
+          <div class="group-title">成交量前 30 股期　<span class="muted small">依官方成交口數，不含 ETF 期貨；小型合約另列，規模不同</span></div>
+          <div class="ssf-top" id="ssf-hot"></div>
         </div>
 
         <!-- 原始保證金試算：口數／搜尋框用事件委派（CSP script-src 'self' 會靜默丟掉
@@ -705,12 +709,24 @@
         <div class="card-group ssf-b-margin">
           <div class="group-title">原始保證金試算</div>
           <div class="ssf-margin-bar">
+            <!-- 類別切換（2026-09 使用者要求：340 多列太難找）。與搜尋同時生效（AND）。
+                 按鈕沿用站內 .tf 分段鈕（選中＝琥珀底，全站「目前選擇」的語彙），檔數由
+                 renderSsfMargin 填進 .ssf-kind-n。事件委派在 .ssf-margin-bar 上。
+                 **不可加 .hm-tab**：總覽熱力圖用 .hm-tab 掛點擊，加了會讓這裡一按就把
+                 熱力圖的市場切成 undefined、整片變空（review 抓到）。尺寸另寫在 .ssf-kind-btn。 -->
+            <div class="ssf-kind" id="ssf-kind" role="group" aria-label="合約類別">
+              <button type="button" class="tf ssf-kind-btn active" data-kind="all" aria-pressed="true">全部<span class="ssf-kind-n"></span></button>
+              <button type="button" class="tf ssf-kind-btn" data-kind="stock" aria-pressed="false">個股<span class="ssf-kind-n"></span></button>
+              <button type="button" class="tf ssf-kind-btn" data-kind="mini" aria-pressed="false">小型<span class="ssf-kind-n"></span></button>
+              <button type="button" class="tf ssf-kind-btn" data-kind="etf" aria-pressed="false">ETF<span class="ssf-kind-n"></span></button>
+              <button type="button" class="tf ssf-kind-btn" data-kind="index" aria-pressed="false">指數<span class="ssf-kind-n"></span></button>
+            </div>
             <label>口數 <input id="ssf-lots" type="number" min="1" max="999" value="1"></label>
             <label>搜尋 <input id="ssf-margin-q" type="search" placeholder="代號或名稱"></label>
             <span class="pane-count" id="ssf-margin-note"></span>
           </div>
           <!-- 限高內捲後框內沒有可聚焦元素（純文字列、表頭只有 click 委派），Safari 不會
-               讓這種捲動框取得鍵盤焦點——tabindex＋名稱讓只用鍵盤的人也捲得到第 9 列以後。 -->
+               讓這種捲動框取得鍵盤焦點——tabindex＋名稱讓只用鍵盤的人也捲得到框外的列。 -->
           <div class="table-wrap" id="ssf-margin-wrap" tabindex="0" role="region" aria-label="原始保證金試算表">
             <table id="ssf-margin-table"><thead><tr id="ssf-margin-head">
               <th class="sc-sort" scope="col" aria-sort="none" data-k="name"><span class="sc-h-label">標的</span></th>
@@ -821,6 +837,6 @@
     </main>
   </div>
 
-  <script src="app.js?v=20260817-ui62"></script>
+  <script src="app.js?v=20260817-ui63"></script>
 </body>
 </html>

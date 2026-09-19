@@ -1221,11 +1221,12 @@ button.file-label { font: inherit; }
    整頁 17,693px＝19.2 個螢幕，其中保證金試算 342 列全部攤開就佔 14,634px（83%），
    其餘區塊全部單欄堆疊（三張各 1566px 寬只放 20 根 K 棒、6 個短欄的價差表佔滿整列）。
    改成總覽那套 12 欄格線（見 #view-overview.active 的說明：auto-fit 只能「1 欄或整列」、
-   區塊沒辦法佔 2 欄），每列 span 相加剛好 12。**第一列是使用者指定的：左邊熱門股期、
+   區塊沒辦法佔 2 欄），每列 span 相加剛好 12。**第一列是使用者指定的：左邊成交量前 30 股期、
    右邊保證金試算**，之後是三張 K 棒／未平倉／價差＋熱力圖：
-     ≥1641px     熱門 6（卡片 5×2）＋保證金 6（表格框固定 300px 高，熱門卡片撐滿同列）
-     1181–1640   熱門 5（卡片 2×5）＋保證金 7（熱門比較高，保證金表格填滿到同一條底線）
-     ≤1180       全部單欄，熱門在上、保證金在下
+     ≥1641px     成交量前 30 佔 7（兩欄 1–15／16–30）＋保證金 5
+     1181–1640   成交量前 30 佔 5（單欄 30 列）＋保證金 7
+     ≤1180       全部單欄，成交量前 30 在上、保證金在下
+   第一列的高度由成交量前 30 決定，保證金表格框填滿到同一條底線（見 #ssf-margin-wrap）。
    - 一定要掛在 `.active` 上：只寫 `#view-ssf { display:grid }` 的話 ID 會壓過
      `.view { display:none }`，這一頁會出現在每一頁底下。
    - 列距大於欄距（20／12）：同一列並排的兩塊要讀成一對，列與列之間才是段落。
@@ -1237,8 +1238,11 @@ button.file-label { font: inherit; }
   gap: 20px 12px;
 }
 #view-ssf.active > * { grid-column: 1 / -1; min-width: 0; }
-#view-ssf.active > .ssf-b-hot { grid-column: span 6; }
-#view-ssf.active > .ssf-b-margin { grid-column: span 6; }
+/* 7＋5 不是 6＋6：成交量前 30 要切兩欄，每欄至少約 320px（數字欄 233＋名稱 87），6 欄在
+   1641px 只有 633px、切不成兩欄，第一列會變成 30 列單欄 878px 高；7 欄 745px 起就夠。
+   保證金 5 欄最窄 521px，放得下整張表（內距 6px、名稱可折，見 #ssf-margin-table）。 */
+#view-ssf.active > .ssf-b-hot { grid-column: span 7; }
+#view-ssf.active > .ssf-b-margin { grid-column: span 5; }
 #view-ssf.active > .ssf-b-basis { grid-column: span 5; }
 #view-ssf.active > .ssf-b-hm { grid-column: span 7; }
 /* 熱力圖 11 欄（名次＋10 日）約需 730px 才不必橫捲（格子最小 68px，見 .ssf-hm-cell；
@@ -1247,10 +1251,10 @@ button.file-label { font: inherit; }
    改成價差與熱力圖各佔一整列（第一列仍維持並排）。 */
 @media (max-width: 1640px) {
   #view-ssf.active > .ssf-b-basis, #view-ssf.active > .ssf-b-hm { grid-column: 1 / -1; }
-  /* 第一列改 5＋7：span 6 在這個寬度只剩 450～640px，5 欄卡片會窄到 82px。卡片改 2 欄
-     （由下面的容器查詢自動切換）。試過 4＋8：熱門只有 315px 寬、卡片 140px，量與 OI
-     被擠成兩行，1280px 時第一列 746px（比一個螢幕還高）；5＋7 卡片 180px、第一列 649px。
-     保證金表因此只剩 477～744px，要靠下面 #ssf-margin-table 的窄版規則才放得下。 */
+  /* 第一列改 5＋7：成交量前 30 在這個寬度切不成兩欄（區塊 330～520px），改單欄 30 列；
+     保證金反過來拿 7 欄（內寬 477～744px），靠 #ssf-margin-table 的 6px 內距與名稱可折
+     才放得下「N 口合計」。這一列因此約 900px 高——使用者要的是一眼看到 30 檔，保證金表
+     順勢拉長、可見列數也跟著變多。 */
   #view-ssf.active > .ssf-b-hot { grid-column: span 5; }
   #view-ssf.active > .ssf-b-margin { grid-column: span 7; }
 }
@@ -1279,25 +1283,65 @@ button.file-label { font: inherit; }
 }
 /* 「尚無資料」疊在圖表框裡、不放在圖表下方：放下方會讓這一格比同列另外兩張圖高。 */
 .ssf-chart-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
-/* 熱門卡片：代號移進標籤列、量與 OI 各自不斷行但彼此可換行——原本三段擠在一行
-   nowrap，10 張卡全部被切掉（實測 scrollWidth 143 > 可視 122）。 */
-/* 欄數只用 5 或 2（永遠整除 10 張）：auto-fit 在 1721px 時排出 9＋1，第二排剩一張孤兒。
-   用容器查詢而不是視窗斷點：同一個寬度的視窗，熱門區塊在第一列可能分到 6 欄、4 欄或
-   整列，只有區塊自己的內寬說得準（同 .cards 當初從視窗斷點改 auto-fit 的理由）。
-   內寬 ≥620px 才排 5 欄（卡片 ≥116px，量過不截字）。區塊在第一列與保證金並排時要
-   撐滿同一列：卡片列用 1fr 平分高度，卡片內的 .card-val 本來就是上下 auto margin。 */
-#view-ssf .ssf-b-hot { display: flex; flex-direction: column; container: ssf-hot / inline-size; }
-#ssf-hot { flex: 1 1 auto; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: 1fr; }
-@container ssf-hot (min-width: 620px) {
-  #ssf-hot { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+/* 成交量前 30 股期（2026-09 取代 10 張大卡片——使用者：「格子放這麼大，資訊看的量就很少」）。
+   兩張表（1–15、16–30），區塊內寬 ≥660px（具名容器 ssf-hot）時並排，否則上下疊。
+   並排或疊起來都要欄位對齊，所以 table-layout:fixed ＋ colgroup 固定數字欄寬、名稱吃剩下的。
+   一列 26px（3px 上下內距）：30 檔在 1904px 只要 15 列高，三張 K 棒仍留在第一屏。 */
+#view-ssf .ssf-b-hot { container: ssf-hot / inline-size; }
+.ssf-top { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 16px; align-items: start; }
+@container ssf-hot (min-width: 660px) {
+  .ssf-top { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-#ssf-hot .card-note { white-space: normal; display: flex; flex-wrap: wrap; column-gap: 8px; }
-#ssf-hot .card-note > span { white-space: nowrap; }
+.ssf-top-t { table-layout: fixed; width: 100%; font-size: var(--fs-sm); }
+/* 欄寬是量出來的：最寬內容＋左右內距 12px。內容 14px 字：成交量「888,888」55px、
+   較前 3 日「▲888%」52px、漲跌「+10.00%」60px、名次「30」17px；表頭是 11px 字
+   （「較前3日」約 42px），比內容窄，不是瓶頸。em 以表格的 14px 計。名稱吃剩下的，
+   最長「小型環球晶」75px，放不下時先把後面的代號截成「…」。 */
+.ssf-top-t col.c-rk { width: 2.1em; }
+.ssf-top-t col.c-vol { width: 4.8em; }
+.ssf-top-t col.c-vchg { width: 4.6em; }
+.ssf-top-t col.c-chg { width: 5.2em; }
+#view-ssf .ssf-top-t th, #view-ssf .ssf-top-t td { padding: 3px 6px; }
+#view-ssf .ssf-top-t th { font-size: var(--fs-xs); }
+.ssf-top-t .ssf-rk { text-align: right; font-variant-numeric: tabular-nums; }
+/* 顏色只給內容格（td）：寫成 .ssf-top-t .ssf-rk 會連表頭 th 一起染（權重 0,2,0 高過全域
+   th 的 0,0,1），五個表頭變成三種顏色。 */
+.ssf-top-t td.ssf-rk { color: var(--muted); }
+.ssf-top-t .ssf-vol, .ssf-top-t .ssf-vchg, .ssf-top-t .ssf-chg { text-align: right; font-variant-numeric: tabular-nums; }
+.ssf-top-t td.ssf-nm { overflow: hidden; text-overflow: ellipsis; }
+.ssf-top-t .ssf-nm-t { color: var(--text-primary); }
+.ssf-top-t .ssf-code { color: var(--muted); font-size: var(--fs-xs); margin-left: 5px; }
+/* 成交量長度條＝相對榜首的口數（--w 由 JS 寫進 style）。只寫 background-image 等分項，
+   不寫 background 簡寫：全站斑馬紋與滑過高亮用的是 background 簡寫（權重較低），
+   簡寫會把那兩者的底色一起蓋掉，分項只疊一層圖、底色照舊。色用中性藍：量不是漲跌。 */
+#view-ssf .ssf-top-t td.ssf-vol {
+  background-image: linear-gradient(90deg, color-mix(in srgb, var(--info) 22%, transparent) var(--w, 0%), transparent var(--w, 0%));
+  background-repeat: no-repeat; background-position: 0 50%; background-size: 100% 64%;
+}
+/* 量較前 3 日：▲▼＋中性色（量不是價格方向，紅綠只給漲跌那欄）。三階亮度：一般是
+   --text-secondary，放大一倍以上提到 --text-primary 並加粗，縮量與算不出（前 3 日湊不齊，
+   顯示「—」）降到 --muted。一般狀態不能用 --text：它就是 --text-primary 的別名，
+   那樣「提亮」就只剩加粗。 */
+.ssf-top-t td.ssf-vchg { color: var(--text-secondary); }
+.ssf-top-t td.ssf-vchg.hi { color: var(--text-primary); font-weight: 650; }
+.ssf-top-t td.ssf-vchg.lo, .ssf-top-t td.ssf-vchg.na { color: var(--muted); }
+/* 這張表不會橫捲，手機的「凍結第一欄」（sticky＋不透明 ::after 底）套上來只會把名次格
+   墊成一塊比較暗的底，所以在手機段排除（權重 1,2,2／::after 1,2,3，高過那條的 0,2,3／
+   0,2,4）。只能寫在手機段：寫在外面會連桌機的滑過高亮條（box-shadow）一起拿掉，名次格
+   就少了那條起頭的藍線。表頭第一格同理拿掉凍結用的右側分隔線，免得只有表頭有、內容沒有。 */
+@media (max-width: 600px) {
+  #view-ssf .ssf-top-t tbody td:first-child { position: static; box-shadow: none; }
+  #view-ssf .ssf-top-t tbody td:first-child::after { content: none; }
+  #view-ssf .ssf-top-t thead th:first-child {
+    position: sticky; left: auto;
+    box-shadow: inset 0 -1px 0 var(--border-strong), 0 4px 9px rgba(0, 0, 0, 0.16);
+  }
+}
 /* 期現價差表：正負是「期貨相對現貨的位置」，不是漲跌方向——全站紅綠鎖給行情漲跌，
    這裡一律中性色，方向改由文字「正價差／逆價差」表達，不套 .up/.down。
    第一欄凍結／斑馬紋／hover 都吃既有的全域 table 規則，不必在此另寫一份。 */
 #ssf-basis-table .ssf-basis-dir { color: var(--muted); }
-#ssf-basis-table .ssf-code, #ssf-hot .ssf-code { color: var(--muted); font-size: var(--fs-xs); margin-left: 6px; }
+#ssf-basis-table .ssf-code { color: var(--muted); font-size: var(--fs-xs); margin-left: 6px; }
 #ssf-basis-table .ssf-late { margin-left: 4px; color: var(--muted); cursor: help; }
 /* 排行熱力圖：格子帶白字疊在色塊上，色塊來自 sectorColor 既有的 upFill/downFill
    （不是給小字調亮過的 --up/--down），這裡只管文字排版，不重複調色邏輯。 */
@@ -1340,8 +1384,19 @@ button.file-label { font: inherit; }
    自動套用，不必再寫一條 #ssf-margin-table 專屬選擇器）。 */
 .ssf-margin-bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 8px; }
 .ssf-margin-bar label { display: flex; align-items: center; gap: 6px; }
+/* 類別切換：沿用站內 .tf.hm-tab 分段鈕（選中＝琥珀底），這裡只管排列與檔數的字重。 */
+.ssf-kind { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+/* 尺寸自己寫，不借 .hm-tab：總覽熱力圖用 .hm-tab 掛點擊，借了會互相誤觸。
+   min-height 24px＝WCAG 2.2 SC 2.5.8 的最小可點尺寸。只在桌機生效：手機另有全站 .tf
+   40px 的觸控尺寸（≤600px 段），這條權重 0,2,0 較高，不限寬度的話會把手機壓回 26px。 */
+@media (min-width: 601px) {
+  .ssf-kind .ssf-kind-btn { padding: 4px 11px; min-height: 24px; font-size: var(--fs-xs); }
+}
+.ssf-kind .ssf-kind-n { margin-left: 5px; font-variant-numeric: tabular-nums; opacity: .72; }
+.ssf-kind .ssf-kind-n:empty { display: none; }
 /* 說明列要能換行：它是 .pane-count（全域 nowrap），在 flex 列裡 min-content＝整行
-   約 625px。與熱門並排時保證金只有 477～765px，1181～1435px 會撐出卡片右框、結尾的
+   約 625px。與成交量前 30 並排時保證金只有 477～744px（span 7）或 521～631px（span 5），
+   1181～1435px 與 1641～約 1890px 都會撐出卡片右框、結尾的
    「實際以期貨商收取為準　N 檔」被 .content 的 overflow-x:hidden 切掉——那正是畫面上
    必須出現的聲明。放得下時仍跟輸入框同一行。 */
 #ssf-margin-note { white-space: normal; min-width: 0; flex: 1 1 260px; }
@@ -1356,10 +1411,9 @@ button.file-label { font: inherit; }
 #ssf-margin-table .ssf-total { font-weight: 650; }
 #ssf-margin-table .ssf-code { color: var(--muted); font-size: var(--fs-xs); margin-left: 6px; }
 /* 保證金表內捲：區塊是直向 flex，表格框限高、表內捲動——限高之後全域 th 的 sticky
-   才真的有作用（原本外框從不捲動，表頭其實不會固定）。高度依版面分三種：
-     ≥1641px   固定 300px（表頭＋約 8 列）：這一列的高度由保證金決定、熱門卡片撐滿，第一屏
-               （1904×980）才放得下「熱門＋保證金＋三張 K 棒」。
-     1181–1640 填滿同一列（flex:1 1 0）：熱門卡片 2×5 比較高，由它決定這一列的高度。
+   才真的有作用（原本外框從不捲動，表頭其實不會固定）。
+     ≥1181px   填滿同一列（flex:1 1 0; min-height:300px）：這一列的高度由左邊的成交量前 30
+               決定（實測 1904px 兩欄 15 列 467px、1181–1640 單欄 30 列約 900px）。
      ≤1180     單欄，min(60vh, 560px)。 */
 #view-ssf .ssf-b-margin { display: flex; flex-direction: column; }
 /* 熱力圖與價差表並排時，價差表 20 列比熱力圖 10 列高約 240px；讓熱力圖的格子長高填滿
@@ -1367,11 +1421,8 @@ button.file-label { font: inherit; }
 #view-ssf .ssf-b-hm { display: flex; flex-direction: column; }
 #ssf-hm-wrap { flex: 1 1 auto; }
 #ssf-hm-table { height: 100%; }
-#ssf-margin-wrap { flex: none; height: 300px; }
-@media (max-width: 1640px) {
-  #ssf-margin-wrap { flex: 1 1 0; height: auto; min-height: 360px; }
-}
-/* 保證金與熱門並排時，保證金只分到 6 或 7 欄（內寬 477～765px），但名稱欄被最長的
+#ssf-margin-wrap { flex: 1 1 0; min-height: 300px; }
+/* 保證金與成交量前 30 並排時，保證金只分到 5 或 7 欄（內寬 477～744px），但名稱欄被最長的
    「小型元大台灣50ETF」撐到 215px、表頭又全部不換行，整張表要 684px，最右邊的
    「N 口合計」（這個工具真正要看的欄）會被推出框外。讓名稱與表頭在空間不夠時換行，
    寬螢幕上照樣單行（表格自動版面只在放不下時才折）。 */
@@ -1382,12 +1433,9 @@ button.file-label { font: inherit; }
 /* 名稱欄最窄只能縮到 127px：「群益ESG投等債20+ETF」後面緊接代號「00937B」、中間沒有
    斷行點，整段 107px 不能折。anywhere 只影響最窄寬度（min-content），寬螢幕照樣單行。 */
 #ssf-margin-table td.ssf-name { min-width: 4.5em; overflow-wrap: anywhere; }
-/* ≤1640px 的所有寬度（含單欄與手機）左右內距縮到 6px。目的是 1181–1640 保證金只分到
-   7 欄（內寬 477～744px）：整張表最窄 529→約 440px，1181px 也放得下「N 口合計」；
-   單欄與手機順帶也變密。 */
-@media (max-width: 1640px) {
-  #ssf-margin-table th, #ssf-margin-table td { padding-left: 6px; padding-right: 6px; }
-}
+/* 所有寬度左右內距都是 6px：與成交量前 30 並排時保證金只分到 5 或 7 欄（內寬 477～744px），
+   整張表最窄 529→約 440px 才放得下「N 口合計」；單欄與手機順帶也變密。 */
+#ssf-margin-table th, #ssf-margin-table td { padding-left: 6px; padding-right: 6px; }
 @media (max-width: 1180px) {
   #ssf-margin-wrap { flex: none; height: min(60vh, 560px); min-height: 320px; }
 }
