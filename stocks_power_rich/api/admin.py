@@ -23,7 +23,7 @@ from datetime import date
 from ..db import (get_setting, set_setting, get_snapshot_dates, get_tx_history, get_ai_cache,
                   backup_db, get_connection, bulk_upsert_financials, bulk_upsert_ohlc,
                   latest_financial_quarter, latest_revenue_month,
-                  bulk_upsert_ssf_daily, get_ssf_dates)
+                  bulk_upsert_ssf_daily, count_ssf_dates)
 from ..config import load_config
 from .. import updater, gemini, analysis, selfcheck, patterns
 from ..sources import taifex_ssf
@@ -89,37 +89,79 @@ def chips_backfill(days: int = 90, max_fetch: int = 15):
     finally:
         _backfill_lock.release()
 
-@router.get("/ssf/backfill")
-def ssf_backfill(days: int = 30):
-    """一次性回補股期歷史（熱力圖要近 10 個交易日）。
+SSF_BACKFILL_SPAN_DAYS = 14   # 一次請求最多涵蓋幾個日曆天（頭尾含在內）
 
-    官方限制查詢區間不可超過一個月，所以逐段切；每段 span=13（含頭尾共 14 天），
-    實測 14 天一段在 Zeabur 是 1.65MB／2.7 秒，離代理逾時很遠，維持同步即可（設計 §8.1）。
+
+def _ssf_missing_spans(missing_desc: list[str], max_days: int = SSF_BACKFILL_SPAN_DAYS) -> list:
+    """缺的交易日（新到舊，ISO 字串）→ [(最舊, 最新)] 的請求區間，每段頭尾含在內不超過
+    `max_days` 個日曆天。只圍著真的缺的日子開區間，不會為了已存的日子多打一次。"""
+    spans: list[list[str]] = []
+    for d in missing_desc:
+        if spans and (date.fromisoformat(spans[-1][1]) - date.fromisoformat(d)).days < max_days:
+            spans[-1][0] = d
+        else:
+            spans.append([d, d])
+    return [(s, e) for s, e in spans]
+
+
+@router.get("/ssf/backfill")
+def ssf_backfill(days: int = 30, max_fetch: int = 3):
+    """回補股期歷史——**只補缺的交易日**；重複呼叫直到 `remaining` 不再下降
+    （同 `chips/backfill`、`margin-maintenance/heal` 的既有契約）。
+
+    交易日曆＝`market_daily` 有收盤指數（`taiex` 非 NULL）的日子，與
+    `coverage.lag_trading_days` 同一個定義。窗口內「在日曆上、但 `ssf_daily` 還沒有」的
+    日子就是缺口；依新到舊切成每段不超過 14 個日曆天的請求（官方不接受超過一個月的區間，
+    超過只回 HTTP 200 的 HTML 警告頁；實測 14 天一段在 Zeabur 是 1.65MB／2.7 秒），
+    每次最多打 `max_fetch` 段。舊版每次都從今天往回走同一段、已存的也重抓，
+    重打不會前進，也說不出還差幾天。
+
+    **今天不算**：白天打的時候今天的日盤資料還沒發佈，算進缺口的話 `remaining` 會整天
+    卡在 1、看起來永遠補不完。今天交給每日排程（平日 17:15／18:15／20:15）。
 
     **days 上限 90**：`prune_ssf_daily` 只保留最新 60 個**交易日**，換算日曆天（本站
     慣例交易日/日曆天約 0.67，見「自算選股改成每日排程預算」一節）約落在 90 天——
-    再往前補的資料，下一次排程 prune 就會被砍掉，是白做工也是白打一輪 TAIFEX 請求
-    （股期日檔來源同 CLAUDE.md 記載的期交所/TWSE 端點，已知不穩、需要節制呼叫次數）。
-    不設上限的話，一個過大的 days 會驅動一長串同步的 TAIFEX 來回，正是這個專案在
-    `stock-flow/research` 與 `financials/backfill-report` 兩處都撞過的反向代理 502 形狀。
+    再往前補的資料，下一次排程 prune 就會被砍掉，是白做工也是白打一輪 TAIFEX 請求。
+    **max_fetch 上限 7**：90 個日曆天以 14 天一段最多 7 段；一段約 2.7 秒，一次呼叫最多
+    約 19 秒，離反向代理逾時很遠（本專案在 `stock-flow/research` 與
+    `financials/backfill-report` 兩處撞過的 502，都是同步做太久）。
+
+    `market_daily` 在窗口內沒有交易日（例如新部署還沒跑 `/api/backfill`）時什麼都不會抓；
+    回應會附 `note` 講出來，免得 `remaining=0` 被讀成「已經補齊」。
     """
     if not _backfill_lock.acquire(blocking=False):
         return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
     try:
-        from datetime import date as _d, timedelta as _td
+        from datetime import timedelta as _td
+        from . import helpers as _helpers      # 呼叫時才取 _now，測試才樁得到
         c = conn()
         days = max(5, min(days, 90))
-        end = _d.today()
-        total, wrote = 0, 0
-        while total < days:
-            span = min(13, days - total)
-            start = end - _td(days=span)
-            rows = taifex_ssf.fetch_ssf_daily(start.strftime("%Y/%m/%d"), end.strftime("%Y/%m/%d"))
-            summary = taifex_ssf.summarize_ssf_days(rows)
-            wrote += bulk_upsert_ssf_daily(c, summary)
-            total += span + 1
-            end = start - _td(days=1)
-        return {"wrote": wrote, "dates": len(get_ssf_dates(c, limit=90))}
+        max_fetch = max(1, min(max_fetch, 7))
+        today = _helpers._now().date()
+        cutoff = (today - _td(days=days)).isoformat()
+        trading = [r[0] for r in c.execute(
+            "SELECT date FROM market_daily WHERE taiex IS NOT NULL AND date >= ? AND date < ? "
+            "ORDER BY date DESC", (cutoff, today.isoformat()))]
+
+        def _stored() -> set:
+            return {r[0] for r in c.execute(
+                "SELECT DISTINCT date FROM ssf_daily WHERE date >= ?", (cutoff,))}
+
+        have = _stored()
+        spans = _ssf_missing_spans([d for d in trading if d not in have])
+        wrote = fetched = 0
+        for start, end in spans[:max_fetch]:
+            rows = taifex_ssf.fetch_ssf_daily(start.replace("-", "/"), end.replace("-", "/"))
+            wrote += bulk_upsert_ssf_daily(c, taifex_ssf.summarize_ssf_days(rows))
+            fetched += 1
+        have = _stored()
+        out = {"wrote": wrote, "fetched": fetched,
+               "remaining": sum(1 for d in trading if d not in have),
+               "window_trading_days": len(trading), "dates": count_ssf_dates(c)}
+        if not trading:
+            out["note"] = ("market_daily 在這個窗口內沒有交易日可對照，所以沒有抓任何資料"
+                           "（新部署請先跑 /api/backfill 建立交易日曆）")
+        return out
     finally:
         _backfill_lock.release()
 

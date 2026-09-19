@@ -164,22 +164,59 @@ def test_job_schedule_registers_ssf_on_weekday_evenings():
     assert ("17,18,20", "15") not in taken     # 不與既有時段同分鐘
 
 
+def _seed_trading_days(conn, dates):
+    """交易日曆＝`market_daily` 有收盤指數的日子（與 `coverage.lag_trading_days` 同一個定義）。"""
+    from stocks_power_rich.db import upsert_market_daily
+    for d in dates:
+        upsert_market_daily(conn, {"date": d, "taiex": 20000.0})
+
+
+def _weekdays(start, end):
+    out, d = [], start
+    while d <= end:
+        if d.weekday() < 5:
+            out.append(d.isoformat())
+        d += _dt.timedelta(days=1)
+    return out
+
+
+def _fake_fetch_for(trading, calls, n=30):
+    """依真實介面塑形：`fetch_ssf_daily(start, end)` 回傳區間內**每個有資料的交易日**的
+    列，其餘日期不出現（真實擷取器的逐日守衛會丟掉沒有日盤資料的日子）。"""
+    trading = set(trading)
+
+    def fake(s, e):
+        calls.append((s, e))
+        sd = _dt.datetime.strptime(s, "%Y/%m/%d").date()
+        ed = _dt.datetime.strptime(e, "%Y/%m/%d").date()
+        rows = []
+        for d in _weekdays(sd, ed):
+            if d in trading:
+                rows += _fake_rows(d, n=n)
+        return rows
+    return fake
+
+
 def test_ssf_backfill_endpoint_writes_rows_and_stays_within_a_month(tmp_path, monkeypatch):
     """`/api/ssf/backfill`：驗證真的寫進資料並回報筆數，且每一次實際打給
     `fetch_ssf_daily` 的區間都要在官方硬性限制（不可超過一個月，超過只會拿到 200
-    的 HTML 警告頁而非資料）之內。刻意帶一個遠超合理範圍的 days，確認迴圈不會失控——
-    這正是 clamp（Fix 2）要擋下的形狀。"""
-    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    的 HTML 警告頁而非資料）之內。刻意帶一個遠超合理範圍的 days 與 max_fetch，確認
+    迴圈不會失控——這正是 clamp 要擋下的形狀。
+
+    （2026-09 起回補改成「只補缺的交易日」、交易日曆取自 market_daily，所以這裡先種好
+    交易日；沒有交易日曆時端點什麼都不抓，那是另一條測試的主題。斷言一條都沒放寬。）"""
+    db = str(tmp_path / "t.sqlite")
+    monkeypatch.setenv("SPR_DB_PATH", db)
+    conn = get_connection(db)
+    init_db(conn)
+    trading = _weekdays(_dt.date(2026, 3, 1), _dt.date(2026, 9, 18))   # 遠多於 days 上限
+    _seed_trading_days(conn, trading)
+    monkeypatch.setattr(H, "_now", lambda: _dt.datetime(2026, 9, 19, 10, 0))
     calls = []
-
-    def fake_fetch(s, e):
-        calls.append((s, e))
-        return _fake_rows(e.replace("/", "-"))
-
-    monkeypatch.setattr(ssf, "fetch_ssf_daily", fake_fetch)
+    monkeypatch.setattr(ssf, "fetch_ssf_daily", _fake_fetch_for(trading, calls))
     app = create_app()
     client = TestClient(app)
-    resp = client.get("/api/ssf/backfill?days=999999")
+    resp = client.get("/api/ssf/backfill?days=999999&max_fetch=999999")
     assert resp.status_code == 200
     body = resp.json()
     assert body["wrote"] > 0
@@ -190,6 +227,76 @@ def test_ssf_backfill_endpoint_writes_rows_and_stays_within_a_month(tmp_path, mo
         sd = _dt.datetime.strptime(s, "%Y/%m/%d").date()
         ed = _dt.datetime.strptime(e, "%Y/%m/%d").date()
         assert (ed - sd).days <= 30
+
+
+def _backfill_client(tmp_path, monkeypatch, today, trading, stored=(), n=30):
+    db = str(tmp_path / "t.sqlite")
+    monkeypatch.setenv("SPR_DB_PATH", db)
+    conn = get_connection(db)
+    init_db(conn)
+    _seed_trading_days(conn, trading)
+    if stored:
+        from stocks_power_rich.db import bulk_upsert_ssf_daily
+        rows = []
+        for d in stored:
+            rows += _fake_rows(d, n=n)
+        bulk_upsert_ssf_daily(conn, ssf.summarize_ssf_days(rows))
+    monkeypatch.setattr(H, "_now", lambda: today)
+    calls = []
+    monkeypatch.setattr(ssf, "fetch_ssf_daily", _fake_fetch_for(trading, calls, n=n))
+    return TestClient(create_app()), calls
+
+
+def test_ssf_backfill_only_fetches_missing_trading_days_and_converges(tmp_path, monkeypatch):
+    """回補要像同類端點（chips/backfill、margin-maintenance/heal）一樣「重複呼叫直到
+    remaining 不再下降」：只抓**缺的交易日**、新的先抓、每段不超過 14 個日曆天、已存的
+    不重抓、每次最多 max_fetch 段。舊版每次都從今天往回走同一段，重打只會重抓同樣的
+    資料，也沒有 remaining 可以告訴呼叫端還差多少。
+
+    今天 2026-09-19（週六）；交易日 08-24～09-18 共 20 天；已存 09-14～09-18 → 缺 15 天。
+    以 14 日曆天分段、新的先：第一段 08-31～09-11（10 天）、第二段 08-24～08-28（5 天）。"""
+    trading = _weekdays(_dt.date(2026, 8, 24), _dt.date(2026, 9, 18))
+    assert len(trading) == 20
+    stored = [d for d in trading if d >= "2026-09-14"]
+    client, calls = _backfill_client(tmp_path, monkeypatch, _dt.datetime(2026, 9, 19, 10, 0),
+                                     trading, stored)
+
+    first = client.get("/api/ssf/backfill?days=30&max_fetch=1").json()
+    assert calls == [("2026/08/31", "2026/09/11")]
+    assert first["fetched"] == 1
+    assert first["remaining"] == 5
+
+    second = client.get("/api/ssf/backfill?days=30&max_fetch=1").json()
+    assert calls[1] == ("2026/08/24", "2026/08/28")
+    assert second["remaining"] == 0
+    assert second["dates"] == 20
+
+    third = client.get("/api/ssf/backfill?days=30&max_fetch=1").json()
+    assert len(calls) == 2                    # 補齊之後不再打期交所
+    assert third["fetched"] == 0 and third["remaining"] == 0
+
+
+def test_ssf_backfill_leaves_today_to_the_daily_job(tmp_path, monkeypatch):
+    """今天交給每日排程（平日 17:15／18:15／20:15）。白天打回補時今天的日盤資料還沒
+    發佈，把今天算進缺口的話 remaining 會整天卡在 1、看起來永遠「補不完」。"""
+    trading = _weekdays(_dt.date(2026, 9, 14), _dt.date(2026, 9, 18))
+    client, calls = _backfill_client(tmp_path, monkeypatch, _dt.datetime(2026, 9, 18, 10, 0),
+                                     trading)
+    body = client.get("/api/ssf/backfill?days=30").json()
+    assert calls == [("2026/09/14", "2026/09/17")]
+    assert body["remaining"] == 0
+
+
+def test_ssf_backfill_says_so_when_there_is_no_trading_calendar(tmp_path, monkeypatch):
+    """交易日曆來自 market_daily；它是空的（例如新部署還沒跑過 /api/backfill）時什麼都
+    不會抓。要把原因講出來——只回 remaining=0 會讓人以為已經補齊。"""
+    client, calls = _backfill_client(tmp_path, monkeypatch, _dt.datetime(2026, 9, 19, 10, 0),
+                                     trading=[])
+    body = client.get("/api/ssf/backfill?days=30").json()
+    assert calls == []
+    assert body["window_trading_days"] == 0
+    assert body["fetched"] == 0
+    assert "market_daily" in body["note"]
 
 
 def test_refresh_groups_multi_date_response_by_date_before_summarizing(tmp_path, monkeypatch):
@@ -579,6 +686,21 @@ def test_margin_endpoint_includes_tmf(monkeypatch, tmp_path):
     assert tmf and tmf[0]["initial"] == 35050
     # 指數期貨的維持保證金來自公布的固定金額
     assert tmf[0]["maintenance"] == 26900
+
+
+def test_margin_endpoint_excludes_option_rows_from_the_index_list(monkeypatch, tmp_path):
+    """指數保證金 CSV 裡混著選擇權列（實檔就有「臺指選擇權風險保證金(A)值」，
+    `parse_index_margining_csv` 不會預先濾掉它）。選擇權不是期貨、沒有「1 口原始
+    保證金」可言，不可出現在試算表的指數列裡。"""
+    _seed_margin(monkeypatch, tmp_path)
+    with_option = {**_MARGIN, "index": {
+        **_MARGIN["index"],
+        "臺指選擇權風險保證金(A)值": {"clearing": 138000, "maintenance": 143000, "initial": 187000}}}
+    monkeypatch.setattr(H, "_ssf_margin_table", lambda c, fetch=True: with_option)
+    d = _client(monkeypatch, tmp_path).get("/api/ssf/margin").json()
+    names = [x["name"] for x in d["index"]]
+    assert not any("選擇權" in n for n in names)
+    assert any("微型" in n for n in names)          # 期貨列照常在
 
 
 def test_margin_endpoint_builds_the_by_stock_index_on_the_server(monkeypatch, tmp_path):

@@ -80,6 +80,9 @@ def fetch_ssf_daily(start: str, end: str) -> list[dict]:
     # （見上方 docstring）——非交易日「只有表頭」的回應表頭本身沒變，會正常解析
     # 出 0 列，不會觸發這個例外。
     rows = parse_ssf_daily_csv(r.content.decode("ms950", errors="replace"))
+    # 這個早退不是多餘的：回傳值上它和下面的逐日判定一樣是 []，但少了它，非交易日
+    # 「只有表頭、0 列」的回應會**完全不留 log**——逐日判定是按回應裡出現的日期分組，
+    # 0 列就沒有任何日期可以寫進「剔除清單」。刪掉它，這種情況就從告警裡安靜地消失。
     if not rows:
         log.warning("[ssf] %s~%s 一般列只有 0 列（<%d），視為資料未發佈",
                     start, end, MIN_GENERAL_ROWS)

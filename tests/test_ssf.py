@@ -96,6 +96,22 @@ def test_summary_skips_an_expiring_leg_whose_settlement_is_zero():
     assert cd["volume"] == 9999 + 50     # 量仍含到期腳（官方口徑）
 
 
+def test_summary_keeps_a_root_whose_every_leg_lacks_a_settlement():
+    """退化分支（`usable = [...] or cands`）：某 root 的正常合約每一腳結算價都是 0。
+    這時要退回全部候選，而不是讓這檔整個從摘要消失——它的量已經算進官方口徑了，
+    價格欄就照實取成交量最大那一腳。拿掉 `or cands` 的話 usable 變空，
+    後面取主力月會對空序列呼叫 min() 而直接炸掉。"""
+    text = SSF_HEADER_LINE + "\n" + "\n".join([
+        "2026/09/17,CDF,202609  ,100,100,100,100,1,1.00%,500,0,10,100,100,100,100,,一般,,",
+        "2026/09/17,CDF,202610  ,200,200,200,200,2,1.00%,50,0,20,200,200,200,200,,一般,,",
+    ]) + "\n"
+    summary = ssf.summarize_ssf_day(ssf.parse_ssf_daily_csv(text))
+    assert [r["root"] for r in summary] == ["CD"]
+    cd = summary[0]
+    assert cd["main_month"] == "202609"      # 退回全部候選後，仍取成交量最大那一腳
+    assert cd["volume"] == 500 + 50
+
+
 def test_summary_oi_total_sums_every_general_month_of_the_F_contract():
     """oi_total 是「這個 root 的 F 合約、一般時段、非價差」全部月份 OI 加總——
     不是主力月自己的 OI。SAMPLE 的 CD 有 202610（一般，oi=25045）與 202611
