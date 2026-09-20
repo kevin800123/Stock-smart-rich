@@ -187,7 +187,7 @@ Security (`docs/SECURITY.md`, P0+P1+P2 done): `SPR_BASIC_USER`+`SPR_BASIC_PASS` 
 週五 17:00–23:30、週六 08:00–21:30 每 30 分鐘只讀 TDCC 檔頭（`tdcc.peek_custody_week`），比最新**完整**
 週新才抓（`_accumulate_custody`）並重算快取裡那一天的自算選股（不寫前瞻紀錄）；完整週判定
 （`db._recent_custody_week_counts`，`custody_compare_weeks`／`custody_week_complete` 共用同一支查詢）
-避開個股「補歷史」寫進的殘缺週（舊碼會被它擋一整週）。TDCC 沒有新週時，若**集保已入庫但名單快取沒用上**
+避開個股集保回補（背景自動補或手動 `/custody/backfill`）寫進的殘缺週（舊碼會被它擋一整週）。TDCC 沒有新週時，若**集保已入庫但名單快取沒用上**
 （`_cache_custody_stale`：快取 `coverage.custody_weeks[0]` ≠ `custody_compare_weeks(c, 快取日期)[0]`，
 即寫入後重算失敗／被重啟打斷／回 skipped）就補算一次、回 `retried: True`；比「那一天應該用的週」不比
 資料庫最新週，快取是週四名單時不會每 30 分鐘重算全市場。檔頭已是新週、完整下載卻沒寫入是故障，丟
@@ -223,7 +223,8 @@ payload 的 `listed_codes`；finding #4＋fix wave 2／3）：否則週報已列
 （custody_watch_fri 17:00 就開始抓；第一次記入是 17:30／18:30／19:30 裡第一個資料到齊的那次，三次都沒到齊
 延到 21:00；平常 17:30 就已記入，之後公布的不會
 用到），週五前瞻紀錄會用到收盤後的新集保（實測週六才有，且原本 21:00 路徑同樣依賴時序）；全新空庫只有
-「補歷史」單檔週時完整週判定是相對的、單檔週會被當完整（正式站已有全市場週）。細節見 CLAUDE.md 同名段落。
+個股集保回補（背景自動補或手動 `/custody/backfill`）寫進的單檔週時完整週判定是相對的、單檔週會被當完整
+（正式站已有全市場週）。細節見 CLAUDE.md 同名段落。
 **⚠ 部署時間：這個分支第一次推上 main 不要落在週六 18:00～24:00**——舊版週報 run_key 是 `<日期>`、不寫
 `picks_weekly_sent` 標記，新版 run_key 是 `<日期>:HH:MM`、靠標記去重；那段時間部署，重啟後的啟動補跑看到
 新 run_key 沒有紀錄、也沒有本週已送標記，會把週報再送一次給訂閱者。
@@ -332,6 +333,24 @@ flex 再分給容器更多高度，形成迴圈（實測每 400ms 長 ~35px）�
 **月線假缺口警示已修（ui52）**：`stock-note` 缺口門檻原本寫死 14 天，月K 相鄰就差 28~31 天、
 每查必誤報。改成依週期查表 `KLINE_GAP_DAYS`（日 14／週 21／月 45），實測正常資料不警示、
 挖掉一段仍會亮（反證三種週期都做過）。提示改指向 `scripts/sync_ohlc.bat`。
+
+**個股頁三張圖合成一張（2026-09）**：K 線／量能／三大法人／集保四個窗格在同一張 Lightweight
+Charts，共用時間軸與十字線。容器整體固定高度（桌機 560／手機 460px），四格相對比例由
+`setStretchFactor(0.23/0.32/0.32)` 決定、隨容器等比縮放（實測桌機約 368/42.67/59.33/60px、
+手機約 297.5/34/47.5/48.5px，不是兩組獨立常數）。籌碼一律貼到 K 棒（`snapToBars`／
+`sumToBars`；週K/月K 的聚合就是貼齊時相加，整根沒資料是 null 不是 0）。法人堆疊柱是自訂
+series（LWC 沒有內建）。每格左上角一行讀數取代 tooltip，y 位置逐格累加
+`chart.panes()[i].getHeight()`（不是拿 stretch factor 比例反推，理由見 CLAUDE.md 同名段落），
+`disposeStockChart` 要清 `.lw-readout`。**Task 10 另外抓到一個 ResizeObserver 失效案例**：
+切頁再切回個股頁之後若視窗縮放跨過 600px 斷點，LWC 的 autoSize 仍會正確縮放容器，但讀數列
+專用的 `lwReadoutObserver` 從此不再觸發，讀數卡在切頁當下的座標（用 git stash 對照修前修後
+版本排除測試環境假象）；修法是在既有 window resize 的圖表清單裡補一個 60ms debounce timer
+呼叫 `lwPaintReadouts(null)`（不能同步呼叫，resize 當下 LWC 自己的 autoSize 多半還沒處理完，
+量到的是舊高度）。集保加 `total_shares` 算人均數（後端算）；箭頭**一根 K 棒最多一個**（月K＝
+該月最後一週 vs 上個月最後一週，不是逐週各標一個）：比上週高＝白上、低＝黃下，標記圖層只建
+一次、之後 `setMarkers`。集保歷史改背景自動補（每檔每天一次、同時只一個），端點回
+`backfilling`，前端每 5 秒輪詢、最多 2 分鐘；手動端點 `/custody/backfill` 保留除錯用，
+個股頁本身已無手動連結。
 
 ### 股期概況（`view-ssf`）＋ 原始保證金試算（2026-09）
 

@@ -43,6 +43,11 @@ let lwPaintReadouts = null;
 // disconnect，每跑一次 dispose→reinit 就多累積一個 observer，之後任何一次容器尺寸變化
 // （視窗縮放／側欄收合／手機轉向）都會讓已經 remove() 的舊 chart 被呼叫 panes()。
 let lwReadoutObserver = null;
+// window resize 事件裡重算讀數列位置要延後一小段再做（Task 10 review 修正，見該處
+// window.addEventListener("resize", ...) 的註解）——事件觸發當下 LWC 自己的 autoSize
+// 多半還沒處理完這次尺寸變化，量到的是舊高度。用 timer 而非直接呼叫，也讓連續縮放
+// （拖曳視窗邊框每個影格都會觸發）只在停下來後算最後一次，不必每個影格都重算一次。
+let lwReadoutResizeTimer = null;
 let stockCode = "", stockInterval = "1d", stockWaves = false;
 let wavePct = 0.05;
 let lastStockData = null;
@@ -470,6 +475,9 @@ function disposeStockChart() {
   // 沒有這行的話每跑一次 dispose→reinit 就多累積一個 observer，之後任何一次容器尺寸
   // 變化都會讓舊 observer 對著已經 remove() 的 chart 呼叫 panes()（見上方宣告處的說明）。
   if (lwReadoutObserver) { lwReadoutObserver.disconnect(); lwReadoutObserver = null; }
+  // window resize 的 debounce timer（見該處註解）也要清掉：dispose 之後若剛好還有一個
+  // timer 在等，觸發時 lwPaintReadouts 已是 null，`&&` 短路不會報錯，但留著就是白跑一次。
+  clearTimeout(lwReadoutResizeTimer); lwReadoutResizeTimer = null;
   stockChart = null; lwCandleSeries = null; lwVolumeSeries = null; lwMaSeries = []; lwMarkersApi = null;
   lwInstSeries = null; lwCustodySeries = null; lwCustodyMarkers = null; lwPaintReadouts = null;
   // chart.remove() 只清掉 LWC 自己建立的 canvas，不會動我們手動塞進容器的圖例／讀數列
@@ -4821,15 +4829,35 @@ $("ssf-margin-table").addEventListener("click", (e) => {
 // ——轉個方向就會走到，而 375↔812 的寬度差足以讓漏網的圖整張畫錯位。
 // pulseChart 原本就漏了；stockChipsChart／stockCustodyChart 兩張圖已在 Task 8 隨籌碼窗格
 // 一起併入個股 K 線那張 Lightweight Charts，這份清單不再需要它們。
-// **stockChart 刻意不在這份清單裡**：它是 Lightweight Charts（autoSize:true），靠
-// ResizeObserver 自己處理容器尺寸變化，手動呼叫 .resize() 反而不是它的 API 形狀
-// （LWC 的 resize() 要傳明確寬高，autoSize 開著時再呼叫只會被忽略並印警告）。
+// **stockChart 本身刻意不在這份清單裡**：它是 Lightweight Charts（autoSize:true），
+// K線／量能／法人／集保四格畫布交給函式庫自己的 ResizeObserver 處理，手動呼叫 .resize()
+// 反而不是它的 API 形狀（LWC 的 resize() 要傳明確寬高，autoSize 開著時再呼叫只會被
+// 忽略並印警告）。**但疊在畫布上的四行讀數列（.lw-readout）不一樣**——那是我們自己塞
+// 進 DOM 的覆蓋層，位置由 initStockChart 內另一個 `lwReadoutObserver`（同樣觀察
+// #stock-chart）算出來，理論上跨 breakpoint 縮放時會自己重算。Task 10 驗證時實測到一個
+// 真的會發生的順序：切到別頁再切回個股頁（showView 對 stockChart 做過一次確定性 resize，
+// 見該處註解）之後，若使用者接著又把視窗縮放跨過 600px 這個 CSS 斷點，LWC 的 autoSize
+// 仍會把容器／四格畫布正確縮到 460px，但 `lwReadoutObserver` 從此不再送出通知——
+// `chart.panes()[i].getHeight()` 本身讀得到新高度（手動呼叫 lwPaintReadouts(null) 會
+// 立刻算對），純粹是這個獨立的 ResizeObserver 停止觸發；症狀是量／法人／集保三行讀數
+// 停在切頁當下的桌機座標，最下面那行甚至會超出 460px 容器、疊到底下內容上。
+// 與其猜兩個 ResizeObserver 誰先誰後這種瀏覽器實作細節，改在這裡（已確定任何尺寸變化
+// 都會觸發的 window resize）也補呼叫一次 lwPaintReadouts(null)。**但不能同步呼叫**——
+// 實測 resize 事件觸發的當下，LWC 自己的 autoSize（走它自己的 ResizeObserver）多半還
+// 沒處理完這次尺寸變化，這時讀 chart.panes()[i].getHeight() 量到的是舊高度，會把讀數列
+// 釘死在錯的位置，比完全不呼叫更糟（不呼叫至少停在「切頁當下」曾經正確過的座標；同步呼叫
+// 則可能疊上一組全新的錯誤座標，例如量到「圖表剛建立、資料還沒灌入」那個瞬間的極端值）。
+// 改用 60ms 的 debounce timer，等瀏覽器與 LWC 的縮放都定案後再算一次；60ms 沒有理論
+// 依據，是黑盒子測試量出來的安全邊際，也順便讓拖曳視窗邊框時的連續 resize 事件只在
+// 停下來後重算一次。
 window.addEventListener("resize", () => {
   [chipChart, pulseChart, cupChart, distChart,
     instBreadthChart, instAlphaChart]
     .forEach((c) => c && c.resize());
   Object.values(ssfCharts).forEach(ch => ch && ch.resize());
   if (sectorChart) { sectorChart.resize(); if (lastHeatmapData) fitHeatmapFonts(lastHeatmapData); }
+  clearTimeout(lwReadoutResizeTimer);
+  lwReadoutResizeTimer = setTimeout(() => lwPaintReadouts && lwPaintReadouts(null), 60);
   // DOM treemap 的切割方向取決於容器長寬；跨 breakpoint／手機轉向時重新排一次。
   if (ssData && $("view-self-screen").classList.contains("active")) {
     renderSelfScreenBubbles(ssData.heatmap || []);
