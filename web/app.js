@@ -4210,16 +4210,40 @@ async function loadStockChips(code) {
   }
 }
 
-async function loadStockCustody(code) {
+// 集保歷史不足時（新查的股票、或欄位剛加不久舊資料缺 total_shares）後端會在背景逐週補
+// TDCC 智能網（約半分到一分鐘），端點立刻回現有資料＋backfilling 旗標，不會卡住這支請求。
+// 這裡在旗標為真時每 5 秒重問一次，補完後 trend 變長、backfilling 轉 false，下面既有的
+// renderStockPanes() 就會自動把那一格畫長，不必使用者重新整理。計時器只能有一條：換股票
+// 或重查時要先清掉，否則會疊出多條輪詢（同法人研究頁 irPollTimer 的既有作法）。
+let custodyPollTimer = null;
+async function loadStockCustody(code, tries = 0) {
+  // tries===0＝這是全新的一輪查詢（不是輪詢的接續呼叫）。loadStock 換股票時已經直接清過
+  // 一次（見那邊的註解），這裡是第二道防線——萬一之後有別的地方直接呼叫
+  // loadStockCustody(code) 重查同一檔，也不會疊出第二條輪詢。
+  if (tries === 0 && custodyPollTimer) { clearTimeout(custodyPollTimer); custodyPollTimer = null; }
   try {
     const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/custody`);
     // 身分守衛：理由同 loadStockChips 那段——custody 同樣可能比 K 線先回來，過期回應
-    // 一律整段放棄，不存進 lastStockCustody。
+    // 一律整段放棄，不存進 lastStockCustody。輪詢的接續呼叫一樣要過這關：使用者若在
+    // 等待補歷史時切到別檔，這裡會直接丟掉、不會再排下一輪，等於自然停掉舊檔的輪詢。
     if (stockCode !== code) return;
     // 存下原始回應並重畫集保窗格＋讀數列；放在任何 early return 之前，理由同上。
     lastStockCustody = d; renderStockPanes();
     stockNoteCustody = (!d.trend || !d.trend.length) ? "（查無集保資料；上市櫃個股適用）" : "";
     renderStockNoteLine();
+    // 這裡到上面 return 之間全是同步程式碼、沒有任何 await，stockCode 不可能在中途變動，
+    // 不必像上面那樣再檢查一次身分。
+    if (d.backfilling && tries < 24) {
+      custodyPollTimer = setTimeout(() => loadStockCustody(code, tries + 1), 5000);
+    } else if (d.backfilling) {
+      // 輪詢滿 24 次（2 分鐘）仍在補、就不再繼續排下一輪——多半是 TDCC 逐週抓取本身較慢，
+      // 或排在全站唯一一把回補鎖之後（見後端 _custody_lock）。安靜地停在這裡會讓使用者
+      // 以為這格壞了，所以講一句；但只在這次查詢顯示一次、不是永遠亮著的裝飾——下次
+      // 重新查詢（loadStock 會把 tries 歸零重來）就會消失或換成新的狀態。
+      stockNoteCustody = (stockNoteCustody ? stockNoteCustody + "　" : "")
+        + "（集保歷史背景回補時間較長，尚未補完，稍後可重新查詢）";
+      renderStockNoteLine();
+    }
   } catch (e) {
     if (stockCode === code) { stockNoteCustody = "（集保資料載入失敗）"; renderStockNoteLine(); }
   }
@@ -4303,6 +4327,11 @@ async function loadStock(code, name) {
   // 查新股票時先清空，否則法人／集保還沒回來前，renderStockPanes 會用上一檔的資料重畫，
   // 使用者會短暫看到「這檔股票」配著「上一檔」的籌碼。
   lastStockChips = null; lastStockCustody = null;
+  // 集保輪詢計時器也在這裡先清掉：下面到呼叫 loadStockCustody 之間還有一次 await
+  // （抓 profile），若上一檔的輪詢恰好在那個空檔到期，雖然 loadStockCustody 內部的身分
+  // 守衛會讓那次回應被丟掉、不會疊出第二條輪詢，但沒必要讓它多打一次已經不需要的 API。
+  // 在這裡先清，換股票的當下就乾淨。
+  if (custodyPollTimer) { clearTimeout(custodyPollTimer); custodyPollTimer = null; }
   // 讓位給圖表容器。LightweightCharts 建立時會立刻讀容器當下尺寸，容器仍是
   // display:none 一樣會量到 0——所以這行還是要排在 initStockChart 之前，同 ECharts
   // 那條既有規矩，換函式庫沒有改變這個順序要求。
