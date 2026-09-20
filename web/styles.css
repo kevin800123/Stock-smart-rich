@@ -965,9 +965,24 @@ body[data-public] .status-bar { display: none; }
    min-height:100%）裡的 flex:1 項目；個股頁內容超過一個螢幕時 .view 改由內容撐高，而 LWC
    的 autoSize 會把畫布設成容器高度 → 畫布又撐高 .view → flex:1 分到更多 → ResizeObserver
    再放大畫布，實測每 400ms 長 ~35px、停不下來（4,295→4,469px）。ECharts 版本沒有這個迴圈
-   只是因為 echarts.init 不監聽尺寸變化。contain:size 讓容器的尺寸不看自己的內容，實測穩定在
-   378px；拿掉立刻恢復長大（反證）。只加在 #stock-chart，#cup-chart 仍是 ECharts 不受影響。 */
-#stock-chart { contain: size; }
+   只是因為 echarts.init 不監聽尺寸變化。contain:size 讓容器的尺寸不看自己的內容，之前只靠
+   min-height 撐開時實測穩定在 378px；只加在 #stock-chart，#cup-chart 仍是 ECharts 不受影響。
+   Task 6 加了法人／集保兩個窗格後，總高改成 560px（主圖 300／量能 70／法人 95／集保 95，
+   見 initStockChart 的 setStretchFactor 註解）。
+   **光寫 height:560px 不夠——實測仍然是 380px。** .chart-big 的 `flex: 1` 是 `flex: 1 1 0%`
+   的縮寫，flex-basis 明確是 0%（不是 auto），而 flex 版面配置的規則是：main-size 屬性
+   （這裡是 height，因為 .view 是 flex-direction:column）只有在 flex-basis:auto 時才會被
+   拿來當 basis 用；flex-basis 一旦是明確的長度／百分比，height 屬性本身完全不參與 main
+   size 計算，容器最終大小改由「flex-basis 夾在 min/max 之間」＋ flex-grow 分配剩餘空間
+   決定。個股頁內容（籌碼／集保／保證金…）幾乎必然超過一屏，.view 因此改由內容撐高、沒有
+   多餘空間可分配給 flex-grow，於是這格的高度會被夾在 flex-basis(0) 與 min-height(380px)
+   之間、floor 在 380px——這正是「之前只靠 min-height 撐開時穩定在 378px」的真正原因，
+   不是巧合。用瀏覽器 devtools 實測過：只加 height:560px 時 getComputedStyle(...).height
+   仍是 "380px"；改成 `flex: 0 0 560px`（grow:0、shrink:0、basis:560px）後才變成
+   "560px"——`#stock-chart` 是 ID 選擇器，specificity 高於 `.chart-big` 的 class 選擇器，
+   足以覆寫 flex-grow/shrink/basis 三個子屬性，不必動 .chart-big 本身（#cup-chart 等其他
+   沿用 .chart-big 的地方不受影響）。 */
+#stock-chart { contain: size; flex: 0 0 560px; height: 560px; }
 /* 個股 K 線（Lightweight Charts）的 MA 圖例：函式庫沒有內建圖例元件，週期與顏色是
    固定的（MA_DEFS），JS 只畫一次靜態列。pointer-events:none 讓它不擋十字線游標。 */
 .lw-legend { position: absolute; top: 6px; left: 12px; z-index: 2; display: flex; gap: 10px; font-size: var(--fs-xs); font-weight: 700; pointer-events: none; }
@@ -2109,6 +2124,12 @@ a.stock:hover { text-decoration: underline; }
   .stat-board .card-metric .card-chg { align-self: flex-end; }
   .rank-split { flex-direction: column; gap: 4px; }
   .chart-side { gap: 12px; }
+
+  /* 個股 K 線圖（四窗格）手機段整體縮到 460px（同比例縮小），避免在小螢幕佔掉過多首屏高度。
+     同上面桌機規則的理由，必須連 flex-basis 一起覆寫（`flex: 0 0 460px`），否則個股頁在
+     手機上內容一樣超過一屏、.chart-big 的 flex-basis:0% 會讓這條 height 被忽略、floor 回
+     min-height:380px。 */
+  #stock-chart { flex: 0 0 460px; height: 460px; }
 
   /* 輸入框滿版、按鈕加大好點（44px 是 iOS 建議的最小可點高度） */
   .stock-input { width: 100%; }

@@ -28,9 +28,18 @@ async function getJSON(url) {
 // 的 API，改資料要對個別 series 呼叫 setData()。
 let stockChart = null;
 let lwCandleSeries = null, lwVolumeSeries = null, lwMaSeries = [], lwMarkersApi = null;
+// 法人窗格（自訂堆疊柱）與集保窗格（兩條階梯線）：與價格、量能共用同一張圖、同一條時間軸
+// （Task 6，見 CLAUDE.md「個股 K 線改 Lightweight Charts」那節的後續工作）。lwCustodySeries
+// 是 {big1000, big400} 兩個 LineSeries，renderStockPanes／renderCustodyMarkers 都吃這個
+// 形狀。lwCustodyMarkers（人均數箭頭圖層）留給 Task 7 實作，這裡先宣告變數。
+let lwInstSeries = null, lwCustodySeries = null, lwCustodyMarkers = null;
 let stockCode = "", stockInterval = "1d", stockWaves = false;
 let wavePct = 0.05;
 let lastStockData = null;
+// 法人／集保兩支 API 的原始回應，供 renderStockPanes 重算兩個窗格，之後的讀數列（Task 7）
+// 也直接讀這裡，不必重打 API。換股票時（loadStock）要清空，否則切股票的瞬間會短暫看到
+// 上一檔的籌碼資料。
+let lastStockChips = null, lastStockCustody = null;
 let chipChart = null, lastHistory = [];
 // 大盤×籌碼對照圖：勾選了哪些籌碼窗格（與 index.html 的 .cpn checkbox 同步）。
 // comboKline 是這張圖自己抓的日K，刻意不共用 lastIndexData——後者會隨 K 線區塊的
@@ -332,8 +341,27 @@ function initStockChart(el) {
   const volume = chart.addSeries(LightweightCharts.HistogramSeries, {
     priceFormat: { type: "volume" }, priceLineVisible: false, lastValueVisible: false,
   }, 1);
+  // 法人窗格（自訂堆疊柱）與集保窗格（兩條階梯線）：與價格、量能共用時間軸與十字線，
+  // 這就是「合成一張」的重點——滑到哪一天，四格同時顯示那天的價格、法人、大戶。
+  const inst = chart.addCustomSeries(new StackedBarsSeries(), {
+    colors: [SER.foreign, SER.trust, SER.dealer], priceLineVisible: false, lastValueVisible: false,
+  }, 2);
+  // 集保兩條線沿用今天那張圖的顏色（千張大戶＝SER.foreign 冰藍、400張↑＝SER.trust 紫）。
+  // 與法人窗格的外資／投信同色是刻意的取捨：兩者在不同窗格、各自的讀數列已標明名稱，
+  // 使用者現在看到的就是這兩色，換色只會製造「顏色怎麼變了」的困惑。
+  const cust1000 = chart.addSeries(LightweightCharts.LineSeries, {
+    color: SER.foreign, lineWidth: 2, lineType: LightweightCharts.LineType.WithSteps,
+    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+  }, 3);
+  const cust400 = chart.addSeries(LightweightCharts.LineSeries, {
+    color: SER.trust, lineWidth: 2, lineType: LightweightCharts.LineType.WithSteps,
+    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+  }, 3);
   const panes = chart.panes();
-  if (panes[1]) panes[1].setStretchFactor(0.28);
+  // 比例＝各窗格高度佔比（主圖 300、量能 70、法人 95、集保 95，總高 560px）
+  if (panes[1]) panes[1].setStretchFactor(0.23);
+  if (panes[2]) panes[2].setStretchFactor(0.32);
+  if (panes[3]) panes[3].setStretchFactor(0.32);
   const maSeriesArr = MA_DEFS.map((m) => chart.addSeries(LightweightCharts.LineSeries, {
     color: m.color, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
   }));
@@ -386,12 +414,14 @@ function initStockChart(el) {
   };
 
   lwCandleSeries = candle; lwVolumeSeries = volume; lwMaSeries = maSeriesArr;
+  lwInstSeries = inst; lwCustodySeries = { big1000: cust1000, big400: cust400 };
   return chart;
 }
 
 function disposeStockChart() {
   if (stockChart) { try { stockChart.remove(); } catch (e) { /* ignore */ } }
   stockChart = null; lwCandleSeries = null; lwVolumeSeries = null; lwMaSeries = []; lwMarkersApi = null;
+  lwInstSeries = null; lwCustodySeries = null; lwCustodyMarkers = null;
   // chart.remove() 只清掉 LWC 自己建立的 canvas，不會動我們手動塞進容器的圖例／tooltip
   // 覆蓋層——實測踩到：反覆「查無資料的代號 → 有資料的代號」幾次後，容器裡會疊出
   // 好幾份重複的 .lw-legend/.lw-tooltip（DOM 節點洩漏，且視覺上圖例會重疊變粗）。
@@ -430,21 +460,47 @@ function renderStockChart(data, showW, pct) {
   const last = candles[candles.length - 1];
   if (last) lwCandleSeries.applyOptions({ priceLineColor: last[1] >= last[0] ? C.up : C.down });
   renderStockWaves(data, showW, pct);
-  // 初始可視範圍：資料多時只看最近 ~40%（同 ECharts dataZoom 的 startPct=60 用意），
-  // 否則顯示全部——LWC 沒有「一次設定完就不用管」的 dataZoom 物件，改用 timeScale API。
-  // **用日期字串（setVisibleRange）不用邏輯索引（setVisibleLogicalRange）**：實測後者
-  // 會被 LWC 自己的最小柱寬限制悄悄改動起訖值（同一份 243 根的資料，要求 [146,242]
-  // 實際卻拿到 [128.3,246]，且容器每 resize 一次還會再漂移一次）；改用實際日期字串，
-  // 結果穩定得多（只有極少數的最小柱寬微調，不會整段偏移），語意也更直白：「顯示最近
-  // 這一段日期」而非「顯示這幾根的索引」。
+  // 預設落在三格都有資料的區間：法人只有近 60 日（端點上限），所以預設就看近 60 根。
+  // **用日期字串（setVisibleRange）不用邏輯索引**——邏輯索引會被 LWC 的最小柱寬悄悄改動
+  // （既有教訓，見 CLAUDE.md「個股 K 線改 Lightweight Charts」那節：同一份 243 根的資料，
+  // 要求索引 [146,242] 實際卻拿到 [128.3,246]，且容器每 resize 一次還會再漂移）。
   const n = candles.length;
-  if (n > 120) {
-    const visible = Math.round(n * 0.4);
-    stockChart.timeScale().setVisibleRange({ from: dates[n - visible], to: dates[n - 1] });
+  if (n > 60) {
+    stockChart.timeScale().setVisibleRange({ from: dates[n - 60], to: dates[n - 1] });
   } else {
     stockChart.timeScale().fitContent();
   }
+  // 切週期／重新查詢都會重灌 K 線，法人／集保兩格要跟著用新的 K 棒重新貼齊。
+  renderStockPanes();
 }
+
+// 用目前的三份資料（K 線／法人／集保）重算兩個籌碼窗格。K 線是主軸：籌碼一律貼到
+// K 棒上（見 snapToBars/sumToBars 的註解）。時 K 沒有逐小時的籌碼資料，兩格清空。
+function renderStockPanes() {
+  if (!lwInstSeries || !lastStockData) return;
+  const bars = lastStockData.dates || [];
+  const hourly = stockInterval === "1h";   // 時K 的 data-iv 就是 "1h"（見 index.html 的 .ktf 按鈕）
+  const chips = (!hourly && lastStockChips) || null;
+  const cust = (!hourly && lastStockCustody) || null;
+  if (chips && chips.dates && chips.dates.length) {
+    const [f, t, dl] = sumToBars(bars, chips.dates, [chips.foreign, chips.trust, chips.dealer]);
+    lwInstSeries.setData(bars.map((d, i) => ({ time: d, values: [f[i], t[i], dl[i]] })));
+  } else lwInstSeries.setData([]);
+  const trend = (cust && cust.trend) || [];
+  if (trend.length) {
+    const weeks = trend.map((x) => x.week);
+    const b1000 = snapToBars(bars, weeks, trend.map((x) => x.big1000_pct)).byBar;
+    const b400 = snapToBars(bars, weeks, trend.map((x) => x.big400_pct)).byBar;
+    lwCustodySeries.big1000.setData([...b1000].map(([time, value]) => ({ time, value })));
+    lwCustodySeries.big400.setData([...b400].map(([time, value]) => ({ time, value })));
+    renderCustodyMarkers(bars, trend);
+  } else {
+    lwCustodySeries.big1000.setData([]); lwCustodySeries.big400.setData([]);
+    if (lwCustodyMarkers) lwCustodyMarkers.setMarkers([]);
+  }
+}
+// 集保人均股數箭頭：Task 7 實作，這裡先放空殼讓 renderStockPanes 可以呼叫。
+function renderCustodyMarkers() { /* Task 7 實作人均數箭頭 */ }
 
 // ========== 視圖切換 ==========
 function showView(name) {
@@ -4030,6 +4086,9 @@ async function loadStockChips(code) {
   const note = $("stock-chips-note");
   try {
     const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/chips?days=60`);
+    // 存下原始回應並重畫 LWC 法人窗格（Task 6）；放在任何 early return 之前，查無資料時
+    // 該存的就是這份空回應本身，讓 renderStockPanes 走到清空那格的分支，不留上一檔的資料。
+    lastStockChips = d; renderStockPanes();
     stockChipsChart.hideLoading();
     if (!d.total || !d.total.some((v) => v != null)) { stockChipsChart.clear(); if (note) note.textContent = "（查無此股三大法人資料）"; return; }
     const last = [...d.total].reverse().find((v) => v != null);
@@ -4059,6 +4118,8 @@ async function loadStockCustody(code) {
   const note = $("stock-custody-note");
   try {
     const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/custody`);
+    // 存下原始回應並重畫 LWC 集保窗格（Task 6）；放在任何 early return 之前，理由同上。
+    lastStockCustody = d; renderStockPanes();
     stockCustodyChart.hideLoading();
     if (!d.trend || !d.trend.length) { stockCustodyChart.clear(); if (note) note.textContent = "（查無集保資料；上市櫃個股適用）"; return; }
     const cur = d.current;
@@ -4160,6 +4221,9 @@ async function loadStock(code, name) {
   if (!code) return;
   if (!/\./.test(code)) code += ".TW";
   stockCode = code;
+  // 查新股票時先清空，否則法人／集保還沒回來前，renderStockPanes 會用上一檔的資料重畫，
+  // 使用者會短暫看到「這檔股票」配著「上一檔」的籌碼。
+  lastStockChips = null; lastStockCustody = null;
   // 讓位給圖表容器。LightweightCharts 建立時會立刻讀容器當下尺寸，容器仍是
   // display:none 一樣會量到 0——所以這行還是要排在 initStockChart 之前，同 ECharts
   // 那條既有規矩，換函式庫沒有改變這個順序要求。
