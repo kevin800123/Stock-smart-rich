@@ -232,3 +232,63 @@ def test_start_custody_autofill_is_atomic_under_concurrent_calls(tmp_path, monke
 
     assert sorted(results) == [False, True]
     assert len(started) == 1
+
+
+def test_custody_autofill_job_refetches_weeks_missing_total_shares(conn, monkeypatch):
+    """final review I1：_should_autofill 的第二個條件是「有股數的週數 < 已存週數的一半」，
+    但舊版 `want` 只濾掉 `have_weeks`（已存在的週），已有列但缺 total_shares 的週永遠
+    不會被排進 want——這條件因此是永久 no-op，avg_shares 永遠算不出來。
+
+    反證：把 want 的算法改回舊版（只濾 have_weeks，拿掉「或缺股數」那個條件），這條測試
+    會轉紅——`captured["weeks"]` 會是空list（2026-09-11 已經 have，被濾掉），
+    avg_shares 也補不到 9000。
+    """
+    from stocks_power_rich.api import stock as S
+    from stocks_power_rich.sources import tdcc as T
+
+    # 種一週「已有列但缺股數」——模擬舊資料，或 total_shares 欄位剛加不久還沒補到。
+    db.upsert_custody(conn, "2026-09-11", "2330", {"big1000_pct": 70.0, "big400_pct": 80.0,
+                                                    "big_holders": 100, "total_holders": 1000})
+    monkeypatch.setattr(T, "fetch_custody_weeks", lambda: ["20260911"])
+
+    captured = {}
+
+    def _fake_history(code, weeks=None, max_weeks=60):
+        captured["weeks"] = weeks
+        return {"2026-09-11": {"big1000_pct": 71.0, "big400_pct": 81.0, "big_holders": 101,
+                                "total_holders": 1000, "total_shares": 9000000}}
+
+    monkeypatch.setattr(T, "fetch_custody_history", _fake_history)
+    monkeypatch.setattr(S, "get_connection", lambda path: conn)
+    monkeypatch.setattr(S, "_custody_autofill", set())
+
+    S._custody_autofill_job("2330")
+
+    assert captured["weeks"] == ["20260911"]      # 缺股數的既有週被排進 want，真的重抓了
+    trend = db.get_custody_trend(conn, "2330")
+    assert trend[0]["total_shares"] == 9000000 and trend[0]["avg_shares"] == 9000
+
+
+def test_autofill_job_clears_the_daily_mark_when_lock_is_busy(conn, monkeypatch):
+    """final review I2：`_start_custody_autofill` 在**還沒確認搶得到鎖**之前就把
+    `custodyauto:{code}:{date}` 節流鍵寫進 ai_cache；若背景執行緒搶不到鎖（`_custody_lock`
+    被另一檔佔用），舊版直接 log 後 return，那把節流鍵留著不動——這檔股票當天再也不會被
+    排進佇列，即使它其實從沒真的補到任何資料。
+
+    反證：拿掉 `_custody_autofill_job` 裡「搶不到鎖時刪除節流鍵」那段 DELETE，這條測試
+    會轉紅——鍵仍然存在，`db.get_ai_cache(conn, key)` 不會是 None。
+    """
+    from stocks_power_rich.api import stock as S
+
+    monkeypatch.setattr(S, "get_connection", lambda path: conn)
+    monkeypatch.setattr(S, "_custody_autofill", set())
+    key = S._autofill_cache_key("2330")
+    db.set_ai_cache(conn, key, {"at": "2026-09-20T12:00:00"})   # 模擬 _start_custody_autofill 已標記過
+
+    assert S._custody_lock.acquire(blocking=False)   # 模擬另一檔正握著鎖在跑
+    try:
+        S._custody_autofill_job("2330")              # 這裡應該搶不到鎖、提早 return
+    finally:
+        S._custody_lock.release()
+
+    assert db.get_ai_cache(conn, key) is None

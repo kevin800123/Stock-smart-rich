@@ -52,6 +52,13 @@ def _should_autofill(trend: list) -> bool:
     return sum(1 for t in trend if t.get("total_shares")) < len(trend) / 2
 
 
+def _autofill_cache_key(pure: str) -> str:
+    """節流鍵 `custodyauto:{code}:{date}` 的唯一組裝處——`_start_custody_autofill` 用它
+    標記「今天已經真的試過」，`_custody_autofill_job` 搶不到鎖時用它撤銷同一把標記
+    （見下方 final review I2 的說明）。抽成函式避免兩處字串各自拼、日後改格式漏改一處。"""
+    return f"custodyauto:{pure}:{datetime.now().date().isoformat()}"
+
+
 def _start_custody_autofill(code: str) -> bool:
     """背景補這一檔的集保歷史；回傳這次有沒有真的起跑。
 
@@ -62,9 +69,13 @@ def _start_custody_autofill(code: str) -> bool:
     「同一天只補一次」是 check-then-act（先讀 ai_cache／集合成員，再寫入、起執行緒）——
     `_custody_lock` 只擋得住兩個背景執行緒同時刮智能網，擋不住「兩個幾乎同時的請求都通過
     檢查、各自起一條執行緒」這件事本身。所以整段檢查＋標記＋起執行緒要用 `_autofill_guard`
-    包成一個原子區塊；單程序單 worker，一把普通鎖就夠。"""
+    包成一個原子區塊；單程序單 worker，一把普通鎖就夠。
+
+    **這把節流鍵只代表「排進去了」，不代表「真的補到了」**（final review I2）：這裡只負責
+    原子地檢查＋標記＋起執行緒，鎖真正搶不搶得到是背景執行緒的事，所以「搶不到鎖時要不要
+    撤銷這把標記」的判斷放在 `_custody_autofill_job` 裡（它才知道結果），不是這裡。"""
     pure = code.split(".")[0]
-    key = f"custodyauto:{pure}:{datetime.now().date().isoformat()}"
+    key = _autofill_cache_key(pure)
     c = conn()
     with _autofill_guard:
         if get_ai_cache(c, key) or pure in _custody_autofill:
@@ -80,15 +91,37 @@ def _custody_autofill_job(pure: str) -> None:
     """背景執行緒本體：自己開一條 sqlite 連線（sqlite 預設不跨執行緒共用）。
     失敗只記 log，不重試——下一天使用者再查同一檔會再補一次。"""
     try:
+        c = get_connection(load_config().db_path)   # 自己開一條：請求那條屬於別的執行緒
+        c.execute("PRAGMA busy_timeout=30000")       # 與同時進行的寫入短暫相撞時等待（同 api/stock_flow.py）
         if not _custody_lock.acquire(blocking=False):
             _log.info("custody autofill skipped (another backfill running): %s", pure)
+            # 搶不到鎖時要把「今天已補過」這把節流鍵撤掉（final review I2）：
+            # `_start_custody_autofill` 在還沒確認搶得到鎖之前就已經寫入這把鍵，若這裡不
+            # 撤掉，這檔股票今天就再也不會有機會真的補到——連續查好幾檔時，握著鎖的那檔在
+            # 跑，其餘幾檔全部在這裡放棄，卻各自已經把「今天補過了」寫進 ai_cache，之後
+            # 同一天重查也不會再試。節流鍵的用意是「今天已經真的試過」，不是「今天曾經被
+            # 排過隊」，兩者不同（實測：連續對 5 個代號呼叫，只有握到鎖的那檔真的補到，
+            # 另外 4 檔同一天再查全部回 False；撤鍵之後這 4 檔下次查詢會重新排隊）。
+            c.execute("DELETE FROM ai_cache WHERE cache_key=?", (_autofill_cache_key(pure),))
+            c.commit()
             return
         try:
-            c = get_connection(load_config().db_path)   # 自己開一條：請求那條屬於別的執行緒
-            c.execute("PRAGMA busy_timeout=30000")       # 與同時進行的寫入短暫相撞時等待（同 api/stock_flow.py）
-            have = {t["week"] for t in get_custody_trend(c, pure)}
+            have = get_custody_trend(c, pure)
+            have_weeks = {t["week"] for t in have}
+            # 已有列但缺股數（total_shares）的週——舊資料沒有這欄，或欄位剛加不久還沒補到。
+            weak_weeks = {t["week"] for t in have if not t.get("total_shares")}
             avail = tdcc.fetch_custody_weeks()
-            want = [w for w in avail if f"{w[:4]}-{w[4:6]}-{w[6:8]}" not in have][:52]
+            # `want` 同時收「全新的週」與「已有列但缺股數的週」兩種（final review I1）：
+            # 舊版只濾掉 have_weeks，於是「有列但缺股數」的週永遠不會被列進 want——這正是
+            # `_should_autofill` 第二個條件存在的理由，舊版對這種股票是永久 no-op：條件
+            # 天天為真、天天白跑一次智能網，avg_shares 卻永遠是 None（實測本機真實 DB：
+            # 2330 有 60 週集保，只有 2 週有股數，ai_cache 顯示今天已經跑過自動補、什麼也
+            # 沒補到）。avail 本身是「新到舊」排序，直接濾掉不需要的週即可維持「新的優先」
+            # ——新查的股票缺的是「有沒有資料」，舊資料缺的只是「有沒有股數」，兩者搶 52
+            # 筆上限時讓較新的週優先補，補不到的等下一次（明天）再補。
+            want = [w for w in avail
+                    if f"{w[:4]}-{w[4:6]}-{w[6:8]}" not in have_weeks
+                    or f"{w[:4]}-{w[4:6]}-{w[6:8]}" in weak_weeks][:52]
             hist = tdcc.fetch_custody_history(pure, weeks=want, max_weeks=52) if want else {}
             for wk_iso, rec in hist.items():
                 upsert_custody(c, wk_iso, pure, rec)

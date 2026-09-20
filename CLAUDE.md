@@ -1680,18 +1680,49 @@ stretch factor 2，未動過）。這組數字換算出來的絕對高度**隨�
   `bulk_upsert_custody` 有），逐檔路徑因此永遠算不出人均數，一併補上、並用 `COALESCE`
   不讓沒帶欄位的來源洗掉既有值。人均數在後端算，前端不得再算一份。
 - **人均數箭頭：一根 K 棒最多一個，不是一週一個**——月K 一根棒子對到 4~5 個集保週，逐週
-  標會在同一根疊出好幾個箭頭、同側疊在一起看不出方向（日K 也偶爾因假日撞在同一根）。改用
-  折線同一份 `snapToBars` 貼齊表（同一根被貼到多筆時取來源日期最新那筆，即該月最後一週）
-  比相鄰兩根**有值**的棒子，才會跟折線講的是同一件事（月K＝該月最後一週 vs 上個月最後
-  一週；日K／週K 每根本來就對到不同週，行為不變）。比上一根高＝白色向上（集中）、低＝
-  黃色（`--accent`）向下（分散）；相等、缺值、找不到可比的前一根（含第一根）都不標。
-  標記圖層只建一次、之後 `setMarkers` 換內容（艾略特波浪踩過的 primitive 累積坑）。
+  標會在同一根疊出好幾個箭頭、同側疊在一起看不出方向（日K 也偶爾因假日撞在同一根）。
+  比相鄰兩根**有值**的棒子，比上一根高＝白色向上（集中）、低＝黃色（`--accent`）向下
+  （分散）；相等、缺值、找不到可比的前一根（含第一根）都不標。標記圖層只建一次、之後
+  `setMarkers` 換內容（艾略特波浪踩過的 primitive 累積坑）。
+  **箭頭與讀數列必須貼齊到同一份 `snapToBars` 結果，不能各自跑一次**（final review I4，
+  2026-09 修正；本段原本就寫著這句話，但實際程式碼不是這樣，是文件說了不成立的事——
+  本專案明文：文件不可與實際行為不符）。`renderCustodyMarkers` 原本自己另外呼叫一次
+  `snapToBars(bars, weeks, avg_shares)`，只餵 `avg_shares` 陣列，`snapToBars` 會把該
+  陣列裡值為 null 的來源週整個濾掉，於是「這根棒子貼到哪一週」在箭頭與讀數列可能算出
+  不同答案。實測月K：讀數列印「人均 — 股（09-18）」（09-18 那週沒有股數），箭頭卻拿
+  更早 09-04 的 8478 去跟 8 月比，畫出一支不存在的黃色向下箭頭。修法是讓
+  `renderStockPanes` 先算好 `lwCustByBar`（`snapToBars(bars, weeks, trend)`，值是整筆
+  trend 物件、永不為 null）再呼叫 `renderCustodyMarkers(bars, lwCustByBar)`，箭頭改在
+  同一個 Map 裡取 `.avg_shares`、為 null 才略過該根（不重置比較鏈）——貼齊的答案真的
+  只算一次。
 - **集保歷史改成背景自動補**（`_should_autofill`／`_start_custody_autofill`）：週數 < 30、
   或有股數的週數不到一半（舊資料沒有股數欄）就補；同一檔同一天只補一次（`custodyauto:{code}:{date}`）、
   同時只允許一個補歷史在跑（`_custody_lock`）。端點立刻回現有資料並帶 `backfilling`，
   前端每 5 秒問一次、最多 2 分鐘（24 次）。**個股頁本身已無手動觸發的入口**——原本的
   「補歷史」連結已移除，改成查詢時自動判斷、背景補齊；`GET /api/stock/{code}/custody/backfill`
   端點仍保留，只是改成除錯用（重複呼叫直到 `filled` 為空）。
+  **`_custody_autofill_job` 的 `want` 原本只濾掉已存在的週（`have_weeks`），第二個觸發
+  條件因此是永久 no-op**（final review I1，2026-09 修正）：已有列但缺 `total_shares`
+  的週從來不會被排進 `want`，`_should_autofill` 的第二個條件於是天天為真、天天白跑一次
+  智能網，人均數永遠算不出來（實測本機真實 DB：2330 有 60 週集保，只有 2 週有股數）。
+  修法是 `want` 同時收「全新的週」與「已有列但缺股數的週」，`avail`（新到舊）本身的順序
+  決定優先序，不必另外排序。
+  **節流鍵在確認搶得到鎖之前就寫入，搶不到鎖的代號當天永遠不會再排隊**（final review I2，
+  2026-09 修正）：`_start_custody_autofill` 的 check-then-act 原子區塊裡就把
+  `custodyauto:{code}:{date}` 寫成「今天補過了」，但鎖是背景執行緒才去搶的——連續查
+  好幾檔時，握到鎖的那檔在跑，其餘幾檔全部在背景執行緒裡放棄，卻已經標記成「補過了」，
+  同一天重查也不會再試（實測：連續對 5 個代號呼叫，只有 1 檔真的補到）。修法是
+  `_custody_autofill_job` 搶不到鎖時刪掉那把節流鍵，讓下次查詢能重新排隊。
+- **新股票的籌碼／集保可能比它自己的 K 線先回來，`lastStockData` 沒清就會把新集保畫在
+  上一檔的 K 棒上**（final review I3，2026-09 修正）：`loadStock` 換股票時原本只清
+  `lastStockChips`／`lastStockCustody`，沒清 `lastStockData`（K 線）。`renderStockPanes`
+  沒有身分守衛，只認「`lastStockData` 存不存在」，於是等待期間（或 K 線請求失敗、
+  `lastStockData` 永遠不會更新）畫面會是「新股票的法人／集保配舊股票的 K 線」這種混合
+  狀態——K 線 500 時尤其嚴重，因為這個混合狀態是永久的，直到下次成功查詢才會修正。
+  修法是 `loadStock` 開頭把 `lastStockData` 一起清成 `null`（空窗期畫面維持舊圖表、舊
+  讀數原封不動，不會被新資料半更新），K 線的 catch 區塊改呼叫 `disposeStockChart()`
+  （同「查無 K 線資料」既有分支的處理方式），另外在 K 線 await 前後補上與 chips／
+  custody 一致的 `stockCode !== code` 身分守衛，擋住快速切換股票時較慢抵達的舊回應。
 - 預設視窗是最近 60 根（法人端點上限 60 日，這樣打開就三格都有東西），用 `setVisibleRange`
   給日期字串、不用邏輯索引（既有教訓）。
 

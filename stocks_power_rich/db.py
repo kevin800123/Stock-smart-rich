@@ -359,6 +359,13 @@ def upsert_tx_history(conn: sqlite3.Connection, rows: list[dict]) -> None:
 
 
 def upsert_custody(conn: sqlite3.Connection, week: str, code: str, rec: dict) -> None:
+    # total_holders／total_shares 用 COALESCE、其餘欄位直接覆寫——這兩欄是後加的
+    # （`total_shares` 見上方 lazy migration），呼叫端不一定每次都帶得出來：
+    # `GET /api/stock/{code}/custody` 每次查詢都會用 `tdcc:current`（全市場週快照，
+    # 無 TTL）重寫當週這一列，部署後在新格式上線前仍會持有舊格式（沒有 total_shares）
+    # 的 payload，若這兩欄也直接覆寫，每次查詢都會把已經補進來的股數／人數洗回 None。
+    # `bulk_upsert_custody`（整批寫入官方當週快照，來源本身一定帶這兩欄）刻意不用
+    # COALESCE，兩邊行為不同是因為呼叫端對「這欄有沒有帶值」的保證不同，不是疏漏。
     conn.execute(
         "INSERT INTO custody_dist (week, code, big1000_pct, big400_pct, big_holders, "
         "total_holders, total_shares) VALUES (?,?,?,?,?,?,?) "

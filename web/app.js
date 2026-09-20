@@ -582,10 +582,16 @@ function renderStockPanes() {
     const b400 = snapToBars(bars, weeks, trend.map((x) => x.big400_pct)).byBar;
     lwCustodySeries.big1000.setData([...b1000].map(([time, value]) => ({ time, value })));
     lwCustodySeries.big400.setData([...b400].map(([time, value]) => ({ time, value })));
-    renderCustodyMarkers(bars, trend);
     // 值直接放整筆 trend 物件（snapToBars 的 values 可以是任意型別），讀數列一次就能拿到
     // big1000_pct／big400_pct／avg_shares／week 四個欄位，不必另外查表。
+    // 箭頭改吃這個算好的 Map（final review I4）：renderCustodyMarkers 原本自己另外呼叫
+    // 一次 snapToBars(bars, weeks, avg_shares)，只餵 avg_shares 陣列會把缺值的來源週
+    // 整個濾掉，於是「這根棒子貼到哪一週」在箭頭與讀數列可能算出不同答案——實測月K
+    // 讀數列印「人均 — 股（09-18）」（09-18 那週沒有股數），箭頭卻拿更早 09-04 的值
+    // 去比，畫出一支不存在的向下箭頭。改吃同一份 lwCustByBar 再取 .avg_shares，
+    // 貼齊的答案只算一次。
     lwCustByBar = snapToBars(bars, weeks, trend).byBar;
+    renderCustodyMarkers(bars, lwCustByBar);
   } else {
     lwCustodySeries.big1000.setData([]); lwCustodySeries.big400.setData([]);
     if (lwCustodyMarkers) lwCustodyMarkers.setMarkers([]);
@@ -603,13 +609,14 @@ function renderStockPanes() {
 // 各自對到不同棒子，相鄰有值棒子就是相鄰兩週，行為不變。
 // **標記圖層只建一次、之後一律 setMarkers 換內容**——createSeriesMarkers 每呼叫一次就在
 // series 上掛一個新的 primitive，丟掉舊參照並不會卸下它（艾略特波浪踩過的既有教訓）。
-function renderCustodyMarkers(bars, trend) {
-  const byBar = snapToBars(bars, trend.map((x) => x.week), trend.map((x) => x.avg_shares)).byBar;
+function renderCustodyMarkers(bars, byBar) {
   const marks = [];
   let prev = null;
   for (const barDate of bars) {
     if (!byBar.has(barDate)) continue;
-    const cur = byBar.get(barDate);
+    const cur = byBar.get(barDate).avg_shares;
+    if (cur == null) continue;   // 這根有集保資料但沒有股數（舊資料／算不出人均數）——
+                                  // 不列入比較鏈，與讀數列顯示「—」的判斷一致（final review I4）。
     if (prev != null && cur !== prev) {
       marks.push({
         time: barDate, position: cur > prev ? "aboveBar" : "belowBar",
@@ -4334,7 +4341,14 @@ async function loadStock(code, name) {
   stockCode = code;
   // 查新股票時先清空，否則法人／集保還沒回來前，renderStockPanes 會用上一檔的資料重畫，
   // 使用者會短暫看到「這檔股票」配著「上一檔」的籌碼。
-  lastStockChips = null; lastStockCustody = null;
+  // lastStockData（K 線）也要一起清（final review I3）：renderStockPanes 沒有身分守衛，
+  // 只認「lastStockData 存不存在」，若只清 chips/custody 兩個，K 線還是上一檔的、
+  // 法人／集保卻已經是新一檔——新股票的集保會被畫在上一檔的 K 棒上（實測：t=515ms 時
+  // stockCode=1101.TW、集保是 1101 的，lastStockData.code 卻還是 2330.TW，台泥集保線
+  // 畫在台積電 K 棒上，t=567ms 才自我修正）。清成 null 讓 renderStockPanes 在 K 線抵達
+  // 前直接 return——空窗期畫面維持「舊圖表、舊讀數」原封不動（一致的舊狀態），不會出現
+  // 「新集保配舊K線」的混合狀態。
+  lastStockData = null; lastStockChips = null; lastStockCustody = null;
   // 集保輪詢計時器也在這裡先清掉：下面到呼叫 loadStockCustody 之間還有一次 await
   // （抓 profile），若上一檔的輪詢恰好在那個空檔到期，雖然 loadStockCustody 內部的身分
   // 守衛會讓那次回應被丟掉、不會疊出第二條輪詢，但沒必要讓它多打一次已經不需要的 API。
@@ -4359,6 +4373,10 @@ async function loadStock(code, name) {
   renderStockSsfMargin(code);
   try {
     const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/kline?interval=${stockInterval}`);
+    // 身分守衛（final review I3）：理由同 loadStockChips／loadStockCustody 既有的守衛——
+    // 這次 await 期間使用者可能已經切到別檔，過期的 K 線不能拿來畫目前的圖表，否則快速
+    // 切換股票時，較慢抵達的舊回應可能蓋掉較快抵達的新資料。
+    if (stockCode !== code) return;
     if (!d.candles || !d.candles.length) {
       // 查無資料：整個丟掉圖表而不是畫一張空的（LWC 沒有 ECharts .clear() 那種
       // 「清空但保留實例」的動作，直接 remove()，下次查詢再重建）。
@@ -4386,7 +4404,17 @@ async function loadStock(code, name) {
     }
     if (!stockChart) stockChart = initStockChart($("stock-chart"));
     renderStockChart(d, stockWaves, wavePct);
-  } catch (e) { stockNoteKline = "載入失敗：" + e.message; renderStockNoteLine(); }
+  } catch (e) {
+    if (stockCode !== code) return;   // 過期例外：使用者已切到別檔，不能覆寫目前畫面的說明列
+    // K 線請求失敗（final review I3）：只清 lastStockData 不夠——視覺上的 K 線／量能／均線
+    // series 資料還留在圖表裡，使用者會看到「上一檔的 K 線＋這一檔的法人／集保／基本面」
+    // 這種永久的混合狀態（500 不會自己恢復，下次成功查詢前都是這樣；實測：K 線 500 時
+    // 讀數列仍顯示台積電 2,460/2,705/2,435/2,460，集保窗格卻已經是亞泥的 51 個點）。
+    // 整個丟掉圖表，之後 renderStockPanes 也會因 !lastStockData 略過，法人／集保窗格
+    // 同步清空，畫面回到乾淨的空狀態而不是半新半舊。
+    disposeStockChart(); lastStockData = null;
+    stockNoteKline = "載入失敗：" + e.message; renderStockNoteLine();
+  }
 }
 
 // ========== 上傳 / 匯入 ==========
