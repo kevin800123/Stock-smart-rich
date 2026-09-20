@@ -124,10 +124,16 @@ def test_custody_endpoint_returns_avg_shares_and_week_count(monkeypatch, tmp_pat
     assert d["trend"][-1]["avg_shares"] == round(9000000 / d["trend"][-1]["total_holders"])
 
 
+@pytest.mark.real_custody_autofill
 def test_custody_endpoint_returns_200_even_if_autofill_decision_raises(monkeypatch, tmp_path):
     """補歷史的判斷本身失敗，不能讓端點跟著死掉——trend 早就算好了，這是這個功能的承諾
     （「端點立刻回現有資料」）。反證：拿掉 stock.py 裡包住 _start_custody_autofill 呼叫的
-    try/except，這條測試會變成 500。"""
+    try/except，這條測試會變成 500。
+
+    標 `real_custody_autofill` 是為了保險而非必要：這條測試自己把 `S._start_custody_autofill`
+    換成 `_boom`，那個 setattr 發生在 conftest 的 `_no_custody_autofill` 之後、蓋過它的
+    no-op 樁，所以拿掉這個標記結果不變——但標上去可以避免日後有人動這條測試時，
+    不小心刪掉 `_boom` 那行卻沒發現其實一直是靠 conftest 的樁頂著。"""
     from stocks_power_rich.api import stock as S
     from stocks_power_rich.sources import tdcc as T
     monkeypatch.setattr(T, "fetch_custody_distribution", lambda: {"week_date": None, "data": {}})
@@ -157,8 +163,15 @@ def test_autofill_decision(conn, weeks, with_shares, expect):
     assert S._should_autofill(db.get_custody_trend(conn, "2330")) is expect
 
 
+@pytest.mark.real_custody_autofill
 def test_autofill_runs_once_per_code_per_day(conn, monkeypatch):
-    """同一天同一檔只補一次——手動連查很多檔時不可以連打 TDCC 智能網。"""
+    """同一天同一檔只補一次——手動連查很多檔時不可以連打 TDCC 智能網。
+
+    標 `real_custody_autofill`：這條測試呼叫的是真正的 `S._start_custody_autofill`
+    （驗證節流邏輯本身），conftest 的 `_no_custody_autofill` 預設會把它樁成永遠
+    回傳 `False` 的 no-op——不退出的話這裡的斷言（第一次 True、第二次 False、
+    `started` 長度 1）就失去意義。`S.threading.Thread` 另外被樁掉讓背景工作本體
+    （會呼叫 tdcc）不會真的執行，所以退出這一層不會連外。"""
     from stocks_power_rich.api import stock as S
     monkeypatch.setattr(S, "_custody_autofill", set())   # 給乾淨的集合，不留到下一條測試
     started = []
@@ -172,12 +185,17 @@ def test_autofill_runs_once_per_code_per_day(conn, monkeypatch):
     assert len(started) == 1
 
 
+@pytest.mark.real_custody_autofill
 def test_start_custody_autofill_is_atomic_under_concurrent_calls(tmp_path, monkeypatch):
     """check-then-act 節流必須是原子的：兩個幾乎同時呼叫 _start_custody_autofill("2330")
     的執行緒，只能有一個真的起跑（_autofill_guard 包住整段檢查＋標記＋起執行緒）。
 
     反證（拿掉 _autofill_guard 後手動驗證，見任務報告）：兩個真執行緒同時通過
     「還沒補過」的檢查，各自把 started 加一筆，這條測試會變紅（started 長度 2）。
+
+    標 `real_custody_autofill`：這條測試呼叫真正的 `S._start_custody_autofill`
+    驗證原子性，退出 conftest 的 `_no_custody_autofill` no-op 樁才能測到實際邏輯。
+    `S.threading.Thread` 同樣被樁掉，背景工作本體不會真的執行，退出這一層不會連外。
     """
     import threading as real_threading
 

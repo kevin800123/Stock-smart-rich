@@ -138,6 +138,49 @@ def _no_ssf_network(request, monkeypatch):
     monkeypatch.setattr(_ssf, "fetch_ssf_margin_table", lambda *a, **kw: {}, raising=True)
 
 
+@pytest.fixture(autouse=True)
+def _no_custody_autofill(request, monkeypatch):
+    """`GET /api/stock/{code}/custody` 在集保歷史太短時會呼叫
+    `stocks_power_rich.api.stock._start_custody_autofill` 起一條背景執行緒，
+    該執行緒轉而呼叫 `tdcc.fetch_custody_weeks`／`fetch_custody_history` 去刮
+    TDCC 智能網股權分散表（逐週抓、每次要帶上一次回應輪替的 CSRF token，52 週約
+    半分到一分鐘）。任何 seed 較短集保歷史（< `CUSTODY_MIN_WEEKS`）又沒有樁掉這
+    條路徑的測試（例如只 seed 一週的 `test_stock_custody_accumulates`），都會意外
+    起這條背景執行緒、真的連外——這正是全站「測試不可以連網路」的規矩，也會拖慢
+    並弄亂測試順序（一條真執行緒握著 `_custody_lock` 可能讓另一條依賴這把鎖的
+    測試在某些選取順序下失敗）。
+
+    預設把 `_start_custody_autofill` 樁成回傳 `False` 的 no-op，讓大多數測試連
+    背景執行緒都不會起。同時把 `tdcc.fetch_custody_weeks`／`fetch_custody_history`
+    樁成丟 `AssertionError` 的絆線——不只是讓測試安靜地不連網路，而是「如果還有
+    別的路徑（例如以後新增的呼叫端）會刮智能網，讓它大聲炸掉」，同 `_no_ssf_network`
+    與 CLAUDE.md 記過的「寧可大聲壞掉，也不要安靜地錯」。
+
+    要測**這幾支函式本身**的測試標 `@pytest.mark.real_custody_autofill` 退出這一層：
+    `test_custody_shares.py` 的節流測試（`test_autofill_runs_once_per_code_per_day`）
+    與並發測試（`test_start_custody_autofill_is_atomic_under_concurrent_calls`）都
+    直接呼叫真正的 `_start_custody_autofill`（自己樁掉 `threading.Thread` 讓背景
+    工作本體不會真的執行，所以不會連外，但需要真正的節流／原子性邏輯，樁成 no-op
+    會讓斷言失去意義）。其餘會呼叫 `tdcc.fetch_custody_weeks`／`fetch_custody_history`
+    或 `_start_custody_autofill` 的測試（`test_custody_endpoint_returns_avg_shares_and_week_count`、
+    `test_custody_endpoint_returns_200_even_if_autofill_decision_raises`、
+    `test_custody_backfill_pulls_history_into_custody_dist`）都在測試本體裡重新
+    `monkeypatch.setattr` 這三支函式中的一支或多支，那個 setattr 發生在這支 fixture
+    之後、蓋過這裡的樁，不受影響、不必額外標記。"""
+    if request.node.get_closest_marker("real_custody_autofill"):
+        return
+    from stocks_power_rich.api import stock as _stock
+    from stocks_power_rich.sources import tdcc as _tdcc
+
+    monkeypatch.setattr(_stock, "_start_custody_autofill", lambda *a, **kw: False, raising=True)
+
+    def _tripwire(*a, **kw):
+        raise AssertionError("test hit TDCC 智能網")
+
+    monkeypatch.setattr(_tdcc, "fetch_custody_weeks", _tripwire, raising=True)
+    monkeypatch.setattr(_tdcc, "fetch_custody_history", _tripwire, raising=True)
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers", "real_calendar: 不套用 _no_calendar_network 的樁（測試自行樁掉 fetcher）")
@@ -145,3 +188,5 @@ def pytest_configure(config):
         "markers", "real_catchup: 不套用 _no_startup_catchup 的樁（測試自行樁掉 job 函式）")
     config.addinivalue_line(
         "markers", "real_ssf_fetch: 不套用 _no_ssf_network 的樁（測試自行樁掉 ssf.httpx.Client）")
+    config.addinivalue_line(
+        "markers", "real_custody_autofill: 不套用 _no_custody_autofill 的樁（測試自行樁掉集保自動補歷史／TDCC 智能網抓取）")
