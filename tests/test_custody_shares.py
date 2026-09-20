@@ -90,3 +90,58 @@ def test_custody_total_shares_column_migrates_on_an_old_table(tmp_path, monkeypa
     cols = {r[1] for r in c.execute("PRAGMA table_info(custody_dist)")}
     assert "total_shares" in cols and "total_holders" in cols
     assert db.get_custody_trend(c, "2330")[0]["big1000_pct"] == 77.0   # 既有列還在
+
+
+def _client(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "api.sqlite"))
+    from stocks_power_rich.main import create_app
+    return TestClient(create_app(enable_scheduler=False))
+
+
+def _seed_weeks(c, code, n, with_shares=True, end="2026-09-18"):
+    db.init_db(c)  # 端點測試直接開連線寫入，早於任何請求觸發 deps.conn() 的 lazy init_db
+    d = date.fromisoformat(end)
+    for i in range(n):
+        wk = (d - timedelta(days=7 * i)).isoformat()
+        rec = {"big1000_pct": 70.0 + i * 0.1, "big400_pct": 80.0, "big_holders": 100,
+               "total_holders": 1000 + i}
+        if with_shares:
+            rec["total_shares"] = 9000000
+        db.upsert_custody(c, wk, code, rec)
+
+
+def test_custody_endpoint_returns_avg_shares_and_week_count(monkeypatch, tmp_path):
+    from stocks_power_rich.api import stock as S
+    from stocks_power_rich.sources import tdcc as T
+    monkeypatch.setattr(T, "fetch_custody_distribution", lambda: {"week_date": None, "data": {}})
+    monkeypatch.setattr(S, "_start_custody_autofill", lambda code: False)
+    client = _client(monkeypatch, tmp_path)
+    c = db.get_connection(str(tmp_path / "api.sqlite"))
+    _seed_weeks(c, "2330", 40)
+    d = client.get("/api/stock/2330.TW/custody").json()
+    assert d["weeks"] == 40 and d["backfilling"] is False
+    assert d["trend"][-1]["avg_shares"] == round(9000000 / d["trend"][-1]["total_holders"])
+
+
+@pytest.mark.parametrize("weeks,with_shares,expect", [
+    (40, True, False),    # 夠長又有股數 → 不補
+    (5, True, True),      # 太短 → 補
+    (40, False, True),    # 夠長但整片沒有股數（舊資料）→ 補，否則人均數永遠算不出來
+])
+def test_autofill_decision(conn, weeks, with_shares, expect):
+    from stocks_power_rich.api import stock as S
+    _seed_weeks(conn, "2330", weeks, with_shares=with_shares)
+    assert S._should_autofill(db.get_custody_trend(conn, "2330")) is expect
+
+
+def test_autofill_runs_once_per_code_per_day(conn, monkeypatch):
+    """同一天同一檔只補一次——手動連查很多檔時不可以連打 TDCC 智能網。"""
+    from stocks_power_rich.api import stock as S
+    started = []
+    monkeypatch.setattr(S.threading, "Thread",
+                        lambda target, daemon=None, name=None: type("T", (), {"start": lambda self: started.append(name)})())
+    monkeypatch.setattr(S, "conn", lambda: conn)
+    assert S._start_custody_autofill("2330") is True
+    assert S._start_custody_autofill("2330") is False
+    assert len(started) == 1

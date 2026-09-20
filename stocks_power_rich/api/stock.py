@@ -24,13 +24,73 @@ from ..db import (
     get_tx_history,
     upsert_tx_history,
     ohlc_dates,
-    get_all_ohlc
+    get_all_ohlc,
+    get_connection
 )
+from ..config import load_config
 from ..sources import kline, tdcc, twse, tpex, taifex
 from .. import analysis, patterns, backtest
 
 router = APIRouter(prefix="/api")
 _custody_lock = threading.Lock()
+
+CUSTODY_MIN_WEEKS = 30          # 少於這個週數就自動補歷史（集保一年約 52 週）
+_custody_autofill = set()        # 本程序正在補的代號，避免同一檔重複起執行緒
+
+
+def _should_autofill(trend: list) -> bool:
+    """這檔的集保歷史夠不夠畫趨勢與人均數。
+
+    兩種都要補：週數太少（新查的股票只有排程累積的那幾週），以及**有股數的週數不到一半**
+    ——total_shares 是後加的欄位，既有部署的舊列全是空的，人均數會整片算不出來。"""
+    if len(trend) < CUSTODY_MIN_WEEKS:
+        return True
+    return sum(1 for t in trend if t.get("total_shares")) < len(trend) / 2
+
+
+def _start_custody_autofill(code: str) -> bool:
+    """背景補這一檔的集保歷史；回傳這次有沒有真的起跑。
+
+    節流：同一檔同一天只補一次（ai_cache `custodyauto:{code}:{date}`），同時間只允許一個
+    補歷史在跑（`_custody_lock`，由執行緒內取得）。智能網是逐週抓、每次要帶上一次回應輪替的
+    CSRF token，52 週約半分到一分鐘，所以只能背景做，絕不能卡住請求。"""
+    pure = code.split(".")[0]
+    key = f"custodyauto:{pure}:{datetime.now().date().isoformat()}"
+    c = conn()
+    if get_ai_cache(c, key) or pure in _custody_autofill:
+        return False
+    set_ai_cache(c, key, {"at": datetime.now().isoformat(timespec="seconds")})
+    _custody_autofill.add(pure)
+    threading.Thread(target=lambda: _custody_autofill_job(pure), daemon=True,
+                     name=f"spr-custody-{pure}").start()
+    return True
+
+
+def _custody_autofill_job(pure: str) -> None:
+    """背景執行緒本體：自己開一條 sqlite 連線（sqlite 預設不跨執行緒共用）。
+    失敗只記 log，不重試——下一天使用者再查同一檔會再補一次。"""
+    import logging
+    log = logging.getLogger("spr")
+    try:
+        if not _custody_lock.acquire(blocking=False):
+            log.info("custody autofill skipped (another backfill running): %s", pure)
+            return
+        try:
+            c = get_connection(load_config().db_path)   # 自己開一條：請求那條屬於別的執行緒
+            c.execute("PRAGMA busy_timeout=30000")       # 與同時進行的寫入短暫相撞時等待（同 api/stock_flow.py）
+            have = {t["week"] for t in get_custody_trend(c, pure)}
+            avail = tdcc.fetch_custody_weeks()
+            want = [w for w in avail if f"{w[:4]}-{w[4:6]}-{w[6:8]}" not in have][:52]
+            hist = tdcc.fetch_custody_history(pure, weeks=want, max_weeks=52) if want else {}
+            for wk_iso, rec in hist.items():
+                upsert_custody(c, wk_iso, pure, rec)
+            log.info("custody autofill %s: +%d weeks", pure, len(hist))
+        finally:
+            _custody_lock.release()
+    except Exception:  # noqa: BLE001  背景執行緒的例外沒有人接，記下來才看得見
+        log.exception("custody autofill failed: %s", pure)
+    finally:
+        _custody_autofill.discard(pure)
 
 
 # **這條路由必須排在 `/stock/{code}/...` 之前**——FastAPI 依註冊順序比對，
@@ -193,8 +253,12 @@ def stock_custody(code: str):
     rec = (cur or {}).get("data", {}).get(pure)
     if rec and (cur or {}).get("week_date"):
         upsert_custody(c, cur["week_date"], pure, rec)
-    return {"code": pure, "week": (cur or {}).get("week_date"),
-            "current": rec, "trend": get_custody_trend(c, pure)}
+    trend = get_custody_trend(c, pure)
+    filling = pure in _custody_autofill
+    if not filling and _should_autofill(trend):
+        filling = _start_custody_autofill(code)
+    return {"code": pure, "week": (cur or {}).get("week_date"), "current": rec,
+            "trend": trend, "weeks": len(trend), "backfilling": filling}
 
 
 @router.get("/stock/{code}/custody/backfill")
