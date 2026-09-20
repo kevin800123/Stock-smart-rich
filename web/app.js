@@ -248,6 +248,53 @@ function sumToBars(barDates, dates, valueArrays) {
   return out;
 }
 
+// ===== 三大法人堆疊柱（Lightweight Charts 自訂 series）=====
+// LWC 沒有內建堆疊柱，v5 的自訂 series 介面讓我們自己畫一層：正值由 0 往上依序疊、
+// 負值由 0 往下依序疊（外資→投信→自營），與原本 ECharts 堆疊柱的外觀一致。
+// 資料點是 { time, values:[外資, 投信, 自營] }，null 當 0 畫、三個都 null 的那根不畫。
+class StackedBarsRenderer {
+  constructor() { this._data = null; this._options = null; }
+  update(data, options) { this._data = data; this._options = options; }
+  draw(target, priceConverter) {
+    target.useBitmapCoordinateSpace((scope) => {
+      if (!this._data || !this._data.bars.length) return;
+      const ctx = scope.context;
+      const ratio = scope.horizontalPixelRatio;
+      // 柱寬：用 LWC 給的 barSpacing，留 30% 間隙，最少 1px（縮到很小時仍看得見）
+      const width = Math.max(1, Math.floor(this._data.barSpacing * 0.7 * ratio));
+      for (const bar of this._data.bars) {
+        const vals = bar.originalData.values || [];
+        const x = Math.round(bar.x * ratio) - Math.floor(width / 2);
+        let up = 0, down = 0;    // 已經疊到哪（正、負各自累積）
+        vals.forEach((v, i) => {
+          if (v == null || v === 0) return;
+          const from = v > 0 ? up : down;
+          const to = from + v;
+          const y1 = priceConverter(from) * scope.verticalPixelRatio;
+          const y2 = priceConverter(to) * scope.verticalPixelRatio;
+          ctx.fillStyle = this._options.colors[i];
+          ctx.fillRect(x, Math.min(y1, y2), width, Math.max(1, Math.abs(y2 - y1)));
+          if (v > 0) up = to; else down = to;
+        });
+      }
+    });
+  }
+}
+class StackedBarsSeries {
+  constructor() { this._renderer = new StackedBarsRenderer(); }
+  priceValueBuilder(d) {
+    // 回傳 [最高, 最低, 收]：價格軸用前兩個自動縮放，十字線標籤用最後一個（合計）。
+    const vals = (d.values || []).filter((v) => v != null);
+    let up = 0, down = 0;
+    vals.forEach((v) => { if (v > 0) up += v; else down += v; });
+    return [up, down, vals.reduce((a, b) => a + b, 0)];
+  }
+  isWhitespace(d) { return !d.values || d.values.every((v) => v == null); }
+  renderer() { return this._renderer; }
+  update(data, options) { this._renderer.update(data, options); }
+  defaultOptions() { return { colors: ["#4f9cf9", "#a07cff", "#f5b544"], lastValueVisible: false, priceLineVisible: false }; }
+}
+
 // 建立個股 K 線圖，只呼叫一次（loadStock 用 `if (!stockChart)` 判斷）。授權要求保留
 // TradingView 標誌（layout.attributionLogo），不可關閉；紅漲綠跌讀既有 C.up/C.down，
 // 不寫死色碼；字型與 body 堆疊同步用既有 HM_FONT。滾輪縮放／拖曳平移／十字線／右側
