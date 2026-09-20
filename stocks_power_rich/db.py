@@ -256,6 +256,8 @@ def init_db(conn: sqlite3.Connection) -> None:
     custody_existing = {r[1] for r in conn.execute("PRAGMA table_info(custody_dist)").fetchall()}
     if "total_holders" not in custody_existing:
         conn.execute("ALTER TABLE custody_dist ADD COLUMN total_holders REAL")
+    if "total_shares" not in custody_existing:
+        conn.execute("ALTER TABLE custody_dist ADD COLUMN total_shares REAL")
     ssf_existing = {r[1] for r in conn.execute("PRAGMA table_info(ssf_daily)").fetchall()}
     if "oi_total" not in ssf_existing:
         conn.execute("ALTER TABLE ssf_daily ADD COLUMN oi_total INTEGER")
@@ -358,10 +360,14 @@ def upsert_tx_history(conn: sqlite3.Connection, rows: list[dict]) -> None:
 
 def upsert_custody(conn: sqlite3.Connection, week: str, code: str, rec: dict) -> None:
     conn.execute(
-        "INSERT INTO custody_dist (week, code, big1000_pct, big400_pct, big_holders) VALUES (?,?,?,?,?) "
+        "INSERT INTO custody_dist (week, code, big1000_pct, big400_pct, big_holders, "
+        "total_holders, total_shares) VALUES (?,?,?,?,?,?,?) "
         "ON CONFLICT(week, code) DO UPDATE SET big1000_pct=excluded.big1000_pct, "
-        "big400_pct=excluded.big400_pct, big_holders=excluded.big_holders",
-        (week, code, rec.get("big1000_pct"), rec.get("big400_pct"), rec.get("big_holders")),
+        "big400_pct=excluded.big400_pct, big_holders=excluded.big_holders, "
+        "total_holders=COALESCE(excluded.total_holders, custody_dist.total_holders), "
+        "total_shares=COALESCE(excluded.total_shares, custody_dist.total_shares)",
+        (week, code, rec.get("big1000_pct"), rec.get("big400_pct"), rec.get("big_holders"),
+         rec.get("total_holders"), rec.get("total_shares")),
     )
     conn.commit()
 
@@ -377,13 +383,15 @@ def latest_custody_week(conn: sqlite3.Connection):
 
 def bulk_upsert_custody(conn: sqlite3.Connection, week: str, data: dict) -> int:
     rows = [(week, code, v.get("big1000_pct"), v.get("big400_pct"), v.get("big_holders"),
-             v.get("total_holders"))
+             v.get("total_holders"), v.get("total_shares"))
             for code, v in data.items()]
     conn.executemany(
-        "INSERT INTO custody_dist (week, code, big1000_pct, big400_pct, big_holders, total_holders) "
-        "VALUES (?,?,?,?,?,?) ON CONFLICT(week, code) DO UPDATE SET "
+        "INSERT INTO custody_dist (week, code, big1000_pct, big400_pct, big_holders, "
+        "total_holders, total_shares) "
+        "VALUES (?,?,?,?,?,?,?) ON CONFLICT(week, code) DO UPDATE SET "
         "big1000_pct=excluded.big1000_pct, big400_pct=excluded.big400_pct, "
-        "big_holders=excluded.big_holders, total_holders=excluded.total_holders",
+        "big_holders=excluded.big_holders, total_holders=excluded.total_holders, "
+        "total_shares=excluded.total_shares",
         rows,
     )
     conn.commit()
@@ -945,9 +953,17 @@ def get_ohlc_history(conn: sqlite3.Connection, code: str) -> list[dict]:
 
 
 def get_custody_trend(conn: sqlite3.Connection, code: str) -> list[dict]:
-    return [dict(r) for r in conn.execute(
-        "SELECT week, big1000_pct, big400_pct, big_holders FROM custody_dist WHERE code=? ORDER BY week",
-        (code,)).fetchall()]
+    """該股逐週集保。avg_shares＝人均持股（總股數÷總持股人數，股）——在這裡算，
+    前端不得再算一份（同全站「算式只有一份權威版本」）。任一輸入缺或人數為 0 回 None。"""
+    out = []
+    for r in conn.execute(
+            "SELECT week, big1000_pct, big400_pct, big_holders, total_holders, total_shares "
+            "FROM custody_dist WHERE code=? ORDER BY week", (code,)):
+        d = dict(r)
+        h, s = d.get("total_holders"), d.get("total_shares")
+        d["avg_shares"] = round(s / h) if h and s else None
+        out.append(d)
+    return out
 
 
 def list_watch(conn: sqlite3.Connection) -> list[dict]:

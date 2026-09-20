@@ -43,3 +43,50 @@ def test_aggregate_levels_without_shares_degrades_to_zero():
     """股數欄解析不出來（來源改版）時不可整筆炸掉，總股數算 0、其餘照常。"""
     rec = tdcc._aggregate_levels([("1", 100, None, 1.0), ("15", 2, None, 80.0)])
     assert rec["total_shares"] == 0 and rec["total_holders"] == 102 and rec["big1000_pct"] == 80.0
+
+
+@pytest.fixture
+def conn(tmp_path, monkeypatch):
+    path = str(tmp_path / "t.sqlite")
+    monkeypatch.setenv("SPR_DB_PATH", path)
+    c = db.get_connection(path)
+    db.init_db(c)
+    return c
+
+
+def test_upsert_custody_stores_holders_and_shares_and_trend_returns_avg(conn):
+    db.upsert_custody(conn, "2026-09-11", "2330", {"big1000_pct": 77.0, "big400_pct": 82.0,
+                                                   "big_holders": 200, "total_holders": 1000,
+                                                   "total_shares": 9000000})
+    db.upsert_custody(conn, "2026-09-18", "2330", {"big1000_pct": 77.9, "big400_pct": 83.0,
+                                                   "big_holders": 205, "total_holders": 1250,
+                                                   "total_shares": 10000000})
+    trend = db.get_custody_trend(conn, "2330")
+    assert [t["week"] for t in trend] == ["2026-09-11", "2026-09-18"]
+    assert trend[0]["total_holders"] == 1000 and trend[0]["total_shares"] == 9000000
+    assert trend[0]["avg_shares"] == 9000 and trend[1]["avg_shares"] == 8000   # 人均數下降＝籌碼分散
+
+
+def test_custody_trend_avg_is_none_when_inputs_are_missing(conn):
+    """算不出來就回 None，不要拿 0 或舊值頂替（同全站『算不出回 None』的慣例）。"""
+    db.upsert_custody(conn, "2026-09-04", "1101", {"big1000_pct": 50.0, "big400_pct": 60.0,
+                                                   "big_holders": 10})          # 舊資料：沒有人數與股數
+    db.upsert_custody(conn, "2026-09-11", "1101", {"big1000_pct": 50.0, "big400_pct": 60.0,
+                                                   "big_holders": 10, "total_holders": 0,
+                                                   "total_shares": 500})        # 人數 0 不可除
+    assert [t["avg_shares"] for t in db.get_custody_trend(conn, "1101")] == [None, None]
+
+
+def test_custody_total_shares_column_migrates_on_an_old_table(tmp_path, monkeypatch):
+    """既有部署的 custody_dist 沒有 total_shares 欄，init_db 要能就地補上且不動既有資料。"""
+    path = str(tmp_path / "old.sqlite")
+    monkeypatch.setenv("SPR_DB_PATH", path)
+    c = db.get_connection(path)
+    c.execute("CREATE TABLE custody_dist (week TEXT, code TEXT, big1000_pct REAL, "
+              "big400_pct REAL, big_holders REAL, PRIMARY KEY(week, code))")
+    c.execute("INSERT INTO custody_dist VALUES ('2026-09-11','2330',77.0,82.0,200)")
+    c.commit()
+    db.init_db(c)
+    cols = {r[1] for r in c.execute("PRAGMA table_info(custody_dist)")}
+    assert "total_shares" in cols and "total_holders" in cols
+    assert db.get_custody_trend(c, "2330")[0]["big1000_pct"] == 77.0   # 既有列還在
