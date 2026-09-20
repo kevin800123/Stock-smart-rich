@@ -8,6 +8,9 @@ const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => (
 const fmt = (v, d = 2) => (v === null || v === undefined || v === "" ? "—" : Number(v).toLocaleString("en-US", { maximumFractionDigits: d }));
 const chgClass = (v) => (v > 0 ? "up" : v < 0 ? "down" : "flat");
 const chgText = (v) => (v === null || v === undefined ? "" : (v > 0 ? "▲" : v < 0 ? "▼" : "") + fmt(Math.abs(v)));
+// 帶正負號格式化（個股 K 線窗格讀數列專用）：正值補「+」、null 顯示「—」。與 chgText 的差異
+// 是這裡要保留完整數字（含負號本身），chgText 是拆成箭頭符號＋絕對值兩件事。
+const fmtSigned = (v, dp) => (v == null ? "—" : (v > 0 ? "+" : "") + fmt(v, dp));
 
 // 公開模式（/public/overview 注入 data-public）：與站內共用同一份前端，只換資料來源與可見範圍。
 // API 前綴集中在 apiUrl() 轉換，各呼叫點照舊寫 "/api/..."，一處改完全部生效。
@@ -31,14 +34,16 @@ let lwCandleSeries = null, lwVolumeSeries = null, lwMaSeries = [], lwMarkersApi 
 // 法人窗格（自訂堆疊柱）與集保窗格（兩條階梯線）：與價格、量能共用同一張圖、同一條時間軸
 // （Task 6，見 CLAUDE.md「個股 K 線改 Lightweight Charts」那節的後續工作）。lwCustodySeries
 // 是 {big1000, big400} 兩個 LineSeries，renderStockPanes／renderCustodyMarkers 都吃這個
-// 形狀。lwCustodyMarkers（人均數箭頭圖層）留給 Task 7 實作，這裡先宣告變數。
+// 形狀。lwCustodyMarkers 是人均數箭頭圖層（Task 7 已實作，見 renderCustodyMarkers）。
 let lwInstSeries = null, lwCustodySeries = null, lwCustodyMarkers = null;
+// 四格讀數列（Task 8）：內容更新函式，灌完資料／十字線移動時呼叫；null＝圖表尚未建立。
+let lwPaintReadouts = null;
 let stockCode = "", stockInterval = "1d", stockWaves = false;
 let wavePct = 0.05;
 let lastStockData = null;
-// 法人／集保兩支 API 的原始回應，供 renderStockPanes 重算兩個窗格，之後的讀數列（Task 7）
-// 也直接讀這裡，不必重打 API。換股票時（loadStock）要清空，否則切股票的瞬間會短暫看到
-// 上一檔的籌碼資料。
+// 法人／集保兩支 API 的原始回應，供 renderStockPanes 重算兩個窗格（貼齊到 K 棒的結果另外
+// 存進 lwInstByBar／lwCustByBar，讀數列讀的是那兩個 Map，不是這裡的原始回應）。換股票時
+// （loadStock）要清空，否則切股票的瞬間會短暫看到上一檔的籌碼資料。
 let lastStockChips = null, lastStockCustody = null;
 let chipChart = null, lastHistory = [];
 // 大盤×籌碼對照圖：勾選了哪些籌碼窗格（與 index.html 的 .cpn checkbox 同步）。
@@ -50,7 +55,6 @@ let chipPanes = new Set(["margin", "inst"]), comboKline = null;
 let lastLatest = null, lastBands = {};
 let distChart = null;
 let pulseChart = null, lastPulse = null, pulseExpanded = false;
-let stockChipsChart = null, stockCustodyChart = null;
 // heatmapTop 預設 5：實測 1267px 寬下，5 檔比 6 檔「顯示更多可讀標籤」(110 vs 108) 且字更大、
 // 留白更少——格數少 → 格子大 → 過得了 11px 中文可讀下限的格子反而變多。
 let sectorChart = null, heatmapMarket = "tse", heatmapTop = 5, lastHeatmapData = null;
@@ -378,45 +382,55 @@ function initStockChart(el) {
   legend.innerHTML = MA_DEFS.map((m) => `<span style="color:${m.color}">— MA${m.n}</span>`).join("");
   el.appendChild(legend);
 
-  // 十字線 tooltip：沿用既有 .ec-tip-* 樣式（原本是給 ECharts 用的通用 class，非
-  // ECharts 專屬命名，換函式庫不必新增 CSS）。
-  const tip = document.createElement("div");
-  tip.className = "lw-tooltip hidden";
-  el.appendChild(tip);
-  // 十字線在同一根 K 棒上移動時（滑鼠每動 1px 都會觸發）內容完全一樣，只需重新定位，
-  // 不必每次重組 innerHTML。快取鍵要連資料物件本身一起比：換股票、換週期（日K 與週K 可能
-  // 同一個日期標籤）、重新查詢都會換成新的 lastStockData，只比日期會顯示舊數字。
-  let tipKey = "", tipData = null;
-  chart.subscribeCrosshairMove((param) => {
-    if (!param || !param.time || !param.point) { tip.classList.add("hidden"); return; }
-    const c = param.seriesData.get(candle);
-    if (!c) { tip.classList.add("hidden"); return; }
-    const key = lwTimeLabel(param.time);
-    if (key !== tipKey || tipData !== lastStockData) {
-      tip.innerHTML = stockTipHtml(param, c); tipKey = key; tipData = lastStockData;
-    }
-    tip.classList.remove("hidden");
-    const boxW = tip.offsetWidth || 210, boxH = tip.offsetHeight || 250;
-    let x = param.point.x + 16;
-    if (x + boxW > el.clientWidth) x = param.point.x - boxW - 16;   // 靠右緣時翻到游標左側，避免溢出容器
-    tip.style.left = Math.max(4, x) + "px";
-    // 垂直方向也要夾住：tooltip 約 250px、圖只有 ~380px，只寫 y-10 的話游標在下半部時
-    // 會溢出容器、蓋到下面的三大法人圖（實測下緣最多超出 ~230px）。
-    tip.style.top = Math.max(4, Math.min(param.point.y - 10, el.clientHeight - boxH - 4)) + "px";
+  // 每個窗格左上角一行讀數（取代浮動 tooltip）：十字線移到哪根就顯示那根，滑鼠離開時
+  // 顯示最新一根。位置用 IPaneApi.getHeight() 即時量——**沒有沿用「拿 stretch factor
+  // 比例反推」的寫法**：那需要另外扣掉時間軸高度（實測固定約 28~29px，不隨容器
+  // 560px／460px 而變，是字型量出來的常數，不是比例），等於同一組數字要在這裡與
+  // setStretchFactor 那邊各寫一份、遲早漂移（同 bands/Elliott「算式只能有一份權威版本」
+  // 的規矩）。getHeight() 直接讀函式庫當下真正算出來的每格高度，兩邊不會有第二份「應該是
+  // 多少」的猜測需要對齊。實測：4 個窗格用這個算法量到的 top 與各窗格 <tr> 的
+  // getBoundingClientRect() 逐一比對，誤差在 1px 內（見交付報告）。
+  const readouts = ["price", "vol", "inst", "cust"].map((k) => {
+    const n = document.createElement("div");
+    n.className = "lw-readout"; n.dataset.pane = k;
+    el.appendChild(n); return n;
   });
-  const stockTipHtml = (param, c) => {
-    const v = param.seriesData.get(volume);
-    const unit = ["taiex", "tx"].includes(lastStockData?.symbol) ? "點" : "元";
-    const cell = (label, value) => `<span class="ec-tip-cell"><i>${label}</i><b>${fmt(value, 2)}<em>${unit}</em></b></span>`;
-    let html = `<div class="ec-tip-date">${esc(lwTimeLabel(param.time))}</div><div class="ec-tip-grid">`;
-    html += `<span class="ec-tip-series">K線</span><span class="ec-tip-ohlc">${cell("開", c.open)}${cell("高", c.high)}${cell("低", c.low)}${cell("收", c.close)}</span>`;
-    if (v && v.value != null) html += `<span class="ec-tip-series">成交量</span><b class="ec-tip-v">${fmt(v.value, 0)}</b>`;
-    MA_DEFS.forEach((m, i) => {
-      const mv = param.seriesData.get(maSeriesArr[i]);
-      if (mv && mv.value != null) html += `<span class="ec-tip-series" style="color:${m.color}">MA${m.n}</span><b class="ec-tip-v">${fmt(mv.value, 2)}<i>${unit}</i></b>`;
+  // pane 0（價格）左上角同時是 MA 圖例（.lw-legend）的位置——兩者都是 top:6px 起、
+  // left 只差 4px，實測會疊字看不清楚（手機截圖上出現「09-MA5 開 2,460高2,705…」這種
+  // 圖例與讀數交錯的亂碼）。圖例實測高度 15.3px（top 6.7px→bottom 22px），價格讀數
+  // 因此讓到 24px 起，其餘三格沒有圖例可擋，維持 6px。
+  const TOP_PAD = [24, 6, 6, 6];
+  const layoutReadouts = () => {
+    let y = 0;
+    chart.panes().forEach((p, i) => {
+      if (readouts[i]) readouts[i].style.top = Math.round(y) + TOP_PAD[i] + "px";
+      y += p.getHeight() + 1;   // +1：相鄰窗格之間的分隔線，實測固定 1px
     });
-    return html + "</div>";
   };
+  layoutReadouts();
+  new ResizeObserver(layoutReadouts).observe(el);
+
+  const paintReadouts = (param) => {
+    // 內容更新時順便重新量一次位置：換股票／換週期都會重灌資料，讀數列不能卡在
+    // 舊尺寸（見上面 getHeight() 的理由——這裡沒有額外成本，四個窗格的高度查詢很輕）。
+    layoutReadouts();
+    const dates = (lastStockData && lastStockData.dates) || [];
+    const i = param && param.time
+      ? dates.indexOf(lwTimeLabel(param.time))
+      : dates.length - 1;                                  // 滑鼠離開＝顯示最新一根
+    if (i < 0 || !lastStockData) { readouts.forEach((n) => (n.innerHTML = "")); return; }
+    const c = lastStockData.candles[i] || [];
+    const prev = i > 0 ? lastStockData.candles[i - 1][1] : null;
+    const chg = prev != null ? c[1] - prev : null;
+    const cls = chg == null ? "" : chg >= 0 ? "up" : "down";
+    readouts[0].innerHTML = `${esc(dates[i].slice(5))}　開 <b>${fmt(c[0], 2)}</b> 高 <b>${fmt(c[3], 2)}</b> 低 <b>${fmt(c[2], 2)}</b> 收 <b class="${cls}">${fmt(c[1], 2)}</b>`
+      + (chg == null ? "" : ` <span class="${cls}">${fmtSigned(chg, 2)}（${fmtSigned((chg / prev) * 100, 2)}%）</span>`);
+    readouts[1].innerHTML = `量 <b>${fmt((lastStockData.volumes || [])[i] || 0, 0)}</b> 張`;
+    readouts[2].innerHTML = stockInstReadout(dates[i]);
+    readouts[3].innerHTML = stockCustodyReadout(dates[i]);
+  };
+  chart.subscribeCrosshairMove((param) => paintReadouts(param && param.point ? param : null));
+  lwPaintReadouts = paintReadouts;   // 灌完資料後也要刷一次（顯示最新一根）
 
   lwCandleSeries = candle; lwVolumeSeries = volume; lwMaSeries = maSeriesArr;
   lwInstSeries = inst; lwCustodySeries = { big1000: cust1000, big400: cust400 };
@@ -426,12 +440,13 @@ function initStockChart(el) {
 function disposeStockChart() {
   if (stockChart) { try { stockChart.remove(); } catch (e) { /* ignore */ } }
   stockChart = null; lwCandleSeries = null; lwVolumeSeries = null; lwMaSeries = []; lwMarkersApi = null;
-  lwInstSeries = null; lwCustodySeries = null; lwCustodyMarkers = null;
-  // chart.remove() 只清掉 LWC 自己建立的 canvas，不會動我們手動塞進容器的圖例／tooltip
+  lwInstSeries = null; lwCustodySeries = null; lwCustodyMarkers = null; lwPaintReadouts = null;
+  // chart.remove() 只清掉 LWC 自己建立的 canvas，不會動我們手動塞進容器的圖例／讀數列
   // 覆蓋層——實測踩到：反覆「查無資料的代號 → 有資料的代號」幾次後，容器裡會疊出
-  // 好幾份重複的 .lw-legend/.lw-tooltip（DOM 節點洩漏，且視覺上圖例會重疊變粗）。
+  // 好幾份重複的 .lw-legend/.lw-readout（DOM 節點洩漏，且視覺上圖例會重疊變粗）。
+  // 浮動 tooltip（.lw-tooltip）已在 Task 8 移除，這裡的選擇器一併拿掉。
   const el = $("stock-chart");
-  if (el) el.querySelectorAll(".lw-legend, .lw-tooltip").forEach((n) => n.remove());
+  if (el) el.querySelectorAll(".lw-legend, .lw-readout").forEach((n) => n.remove());
 }
 
 // 艾略特波浪：aboveBar 標記（LWC 沒有 ECharts markPoint 那種「任意座標＋置中文字圓圈」
@@ -479,6 +494,24 @@ function renderStockChart(data, showW, pct) {
   renderStockPanes();
 }
 
+// 法人／集保讀數（四行讀數列的第 3、4 行）：值取自貼齊到 K 棒後的資料，與畫出來的柱、線
+// 同一份——不另外算一次（同一份資料只能有一份權威版本）。renderStockPanes() 每次重畫都會
+// 重新填這兩個 Map；查無資料時清成空 Map，讀數自然落到下面的「—」分支。
+let lwInstByBar = new Map(), lwCustByBar = new Map();
+function stockInstReadout(bar) {
+  const v = lwInstByBar.get(bar);
+  if (!v) return `法人 <b>—</b>`;
+  const [f, t, d] = v, sum = [f, t, d].reduce((a, b) => a + (b || 0), 0);
+  const cell = (label, x) => `${label} <b class="${x > 0 ? "up" : x < 0 ? "down" : ""}">${x == null ? "—" : fmtSigned(x, 0)}</b>`;
+  return `${cell("外資", f)}　${cell("投信", t)}　${cell("自營", d)}　${cell("合計", sum)} 張`;
+}
+function stockCustodyReadout(bar) {
+  const v = lwCustByBar.get(bar);
+  if (!v) return `集保 <b>—</b>`;
+  return `千張大戶 <b>${fmt(v.big1000_pct, 2)}%</b>　400張↑ <b>${fmt(v.big400_pct, 2)}%</b>`
+    + `　人均 <b>${v.avg_shares == null ? "—" : fmt(v.avg_shares, 0)}</b> 股（${esc(v.week.slice(5))}）`;
+}
+
 // 用目前的三份資料（K 線／法人／集保）重算兩個籌碼窗格。K 線是主軸：籌碼一律貼到
 // K 棒上（見 snapToBars/sumToBars 的註解）。時 K 沒有逐小時的籌碼資料，兩格清空。
 function renderStockPanes() {
@@ -487,9 +520,13 @@ function renderStockPanes() {
   const hourly = stockInterval === "1h";   // 時K 的 data-iv 就是 "1h"（見 index.html 的 .ktf 按鈕）
   const chips = (!hourly && lastStockChips) || null;
   const cust = (!hourly && lastStockCustody) || null;
+  lwInstByBar = new Map();
   if (chips && chips.dates && chips.dates.length) {
     const [f, t, dl] = sumToBars(bars, chips.dates, [chips.foreign, chips.trust, chips.dealer]);
     lwInstSeries.setData(bars.map((d, i) => ({ time: d, values: [f[i], t[i], dl[i]] })));
+    // 三者皆 null（該根完全沒有法人資料）才不塞——「沒資料」與「讀數顯示 0」是兩件事，
+    // 混在一起會讓讀數列在沒資料的日子秀出一堆假的 0 張。
+    bars.forEach((d, i) => { if (f[i] != null || t[i] != null || dl[i] != null) lwInstByBar.set(d, [f[i], t[i], dl[i]]); });
   } else lwInstSeries.setData([]);
   const trend = (cust && cust.trend) || [];
   if (trend.length) {
@@ -499,10 +536,15 @@ function renderStockPanes() {
     lwCustodySeries.big1000.setData([...b1000].map(([time, value]) => ({ time, value })));
     lwCustodySeries.big400.setData([...b400].map(([time, value]) => ({ time, value })));
     renderCustodyMarkers(bars, trend);
+    // 值直接放整筆 trend 物件（snapToBars 的 values 可以是任意型別），讀數列一次就能拿到
+    // big1000_pct／big400_pct／avg_shares／week 四個欄位，不必另外查表。
+    lwCustByBar = snapToBars(bars, weeks, trend).byBar;
   } else {
     lwCustodySeries.big1000.setData([]); lwCustodySeries.big400.setData([]);
     if (lwCustodyMarkers) lwCustodyMarkers.setMarkers([]);
+    lwCustByBar = new Map();
   }
+  lwPaintReadouts && lwPaintReadouts(null);   // 資料變了，讀數列（顯示最新一根）要跟著刷新
 }
 // 人均數（總股數÷總持股人數）箭頭：比上一根「有值」的棒子高＝白色向上（籌碼往少數人集中）、
 // 比上低＝黃色向下（分散）。相等、任一邊缺值、找不到前一根有值的棒子可比（含第一根）都不標。
@@ -563,7 +605,6 @@ function showView(name) {
       stockChart.resize(el.clientWidth, el.clientHeight);
       stockChart.applyOptions({ autoSize: true });
     }
-    stockChipsChart && stockChipsChart.resize(); stockCustodyChart && stockCustodyChart.resize();
   }
   if (name === "rotation") { loadRotation(); loadCross(); }
   // 高價股監控輪詢：進入才啟動、切走即停——控制請求量。海期監控 2026-07 起改排程
@@ -4099,23 +4140,16 @@ function renderProfile(p) {
     : `<span class="muted small">TWSE估值僅上市股提供</span>`;
   el.innerHTML = html + twseHtml;
 }
-// 首尾整段無資料的日期修掉（法人冷門股常見）：只留「有資料」的區段，避免版面被空白軸吃掉，
-// 讓「沒資料」和「有資料但沒買賣超（0/null 混雜於中段）」不會長得一樣空
-function trimEdges(dates, series) {
-  const has = (i) => series.some((arr) => arr[i] != null);
-  let s = 0, e = dates.length - 1;
-  while (s <= e && !has(s)) s++;
-  while (e >= s && !has(e)) e--;
-  const idx = dates.slice(s, e + 1).map((_, k) => k + s);
-  return { dates: idx.map((i) => dates[i]), series: series.map((arr) => idx.map((i) => arr[i])), total: dates.length, kept: idx.length };
+// #stock-note 是三個 loader（K 線本身、法人 chips、集保 custody）共用的一行說明列，三者
+// fire-and-forget、各打各的 API，回應順序不定。若各自直接對 `$("stock-note")` 做
+// `textContent = ...` 整段覆寫，晚到的那個會把先到的說明蓋掉——症狀是「說明文字忽有忽無」
+// （同一元素三個寫入者互相覆寫的競態）。改成三個 loader 各自只更新自己那一段的變數，
+// 統一由 renderStockNoteLine() 組成整行文字寫回 DOM，彼此不會互相蓋掉。
+let stockNoteKline = "", stockNoteChips = "", stockNoteCustody = "";
+function renderStockNoteLine() {
+  $("stock-note").textContent = [stockNoteKline, stockNoteChips, stockNoteCustody].filter(Boolean).join("　");
 }
 async function loadStockChips(code) {
-  const wrap = $("stock-chips-wrap");
-  if (!wrap) return;
-  wrap.classList.remove("hidden");
-  if (!stockChipsChart) stockChipsChart = initChart($("stock-chips"));
-  stockChipsChart.showLoading();
-  const note = $("stock-chips-note");
   try {
     const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/chips?days=60`);
     // 身分守衛：chips 是本地表查詢、常常比 K 線（可能要算波浪甚至走 yfinance）先回來，
@@ -4123,70 +4157,33 @@ async function loadStockChips(code) {
     // lastStockChips——renderStockPanes 是拿 lastStockData（K 線，主軸）逐棒去貼
     // lastStockChips，一旦被舊回應蓋掉，之後任何一次重畫（包括新股票 K 線抵達時那次）
     // 都會把「上一檔的籌碼」畫在「這一檔的 K 棒」上，直到下一次 chips 回來才會自我修正。
-    // 連 loading/note 這些 UI 副作用也一併放棄——新的那次呼叫會自己接手，這裡動了反而
-    // 可能蓋掉新請求剛設好的「載入中」狀態。
     if (stockCode !== code) return;
-    // 存下原始回應並重畫 LWC 法人窗格（Task 6）；放在任何 early return 之前，查無資料時
-    // 該存的就是這份空回應本身，讓 renderStockPanes 走到清空那格的分支，不留上一檔的資料。
+    // 存下原始回應並重畫法人窗格＋讀數列（renderStockPanes 結尾會刷新讀數）；放在任何
+    // early return 之前，查無資料時該存的就是這份空回應本身，讓 renderStockPanes 走到
+    // 清空那格的分支，不留上一檔的資料——窗格本身留著，讀數列自然顯示「—」。
     lastStockChips = d; renderStockPanes();
-    stockChipsChart.hideLoading();
-    if (!d.total || !d.total.some((v) => v != null)) { stockChipsChart.clear(); if (note) note.textContent = "（查無此股三大法人資料）"; return; }
-    const last = [...d.total].reverse().find((v) => v != null);
-    const mk = d.market === "tpex" ? "上櫃" : "上市";
-    const { dates, series, total, kept } = trimEdges(d.dates, [d.foreign, d.trust, d.dealer]);
-    const span = kept < total ? `　共 ${kept}/${total} 日有資料` : "";
-    if (note) note.textContent = `（${mk}・最新合計 ${last > 0 ? "+" : ""}${fmt(last, 0)} 張${span}）`;
-    const bar = (name, arr, color) => ({ name, type: "bar", stack: "三大法人", data: arr, itemStyle: { color } });
-    stockChipsChart.setOption({
-      textStyle: { fontFamily: HM_FONT },
-      tooltip: { trigger: "axis", axisPointer: { type: "shadow" } },
-      legend: { textStyle: { color: C.label }, top: 0 },
-      grid: { left: 58, right: 16, top: 26, bottom: 24 },
-      xAxis: { type: "category", data: dates.map((x) => x.slice(5)), axisLabel: { color: C.muted } },
-      yAxis: { type: "value", name: "張", axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.border } } },
-      series: [bar("外資", series[0], SER.foreign), bar("投信", series[1], SER.trust), bar("自營", series[2], SER.dealer)],
-    }, true);
-  } catch (e) { stockChipsChart.hideLoading(); if (note) note.textContent = "（載入失敗）"; }
+    stockNoteChips = (!d.total || !d.total.some((v) => v != null)) ? "（查無此股三大法人資料）" : "";
+    renderStockNoteLine();
+  } catch (e) {
+    // 身分守衛也要覆蓋失敗路徑：過期的請求若最後才失敗，不能把已經正確的說明文字
+    // 覆寫成「載入失敗」（K 線那邊可能早就顯示了正確的資料範圍）。
+    if (stockCode === code) { stockNoteChips = "（三大法人資料載入失敗）"; renderStockNoteLine(); }
+  }
 }
 
 async function loadStockCustody(code) {
-  const wrap = $("stock-custody-wrap");
-  if (!wrap) return;
-  wrap.classList.remove("hidden");
-  if (!stockCustodyChart) stockCustodyChart = initChart($("stock-custody"));
-  stockCustodyChart.showLoading();
-  const note = $("stock-custody-note");
   try {
     const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/custody`);
     // 身分守衛：理由同 loadStockChips 那段——custody 同樣可能比 K 線先回來，過期回應
-    // 一律整段放棄，不存進 lastStockCustody、也不動 loading/note。
+    // 一律整段放棄，不存進 lastStockCustody。
     if (stockCode !== code) return;
-    // 存下原始回應並重畫 LWC 集保窗格（Task 6）；放在任何 early return 之前，理由同上。
+    // 存下原始回應並重畫集保窗格＋讀數列；放在任何 early return 之前，理由同上。
     lastStockCustody = d; renderStockPanes();
-    stockCustodyChart.hideLoading();
-    if (!d.trend || !d.trend.length) { stockCustodyChart.clear(); if (note) note.textContent = "（查無集保資料；上市櫃個股適用）"; return; }
-    const cur = d.current;
-    if (note) note.textContent = cur ? `（${d.week}　千張大戶 ${fmt(cur.big1000_pct, 2)}%・400張↑ ${fmt(cur.big400_pct, 2)}%・千張大戶 ${fmt(cur.big_holders, 0)} 人；趨勢逐週累積）` : "";
-    const wk = d.trend.map((t) => (t.week ? t.week.slice(5) : ""));
-    // 逐點圓圈在 51 週的密度下蓋過線形，改收掉；改在線尾標最新值（各自線色），
-    // 一眼看現在水位不必回頭讀上面 note 那行小字
-    const line = (name, key, color) => ({
-      name, type: "line", smooth: 0.2, showSymbol: false, data: d.trend.map((t) => t[key]),
-      lineStyle: { color }, itemStyle: { color },
-      endLabel: { show: true, formatter: (p) => fmt(p.value, 1) + "%", color, fontWeight: 700, distance: 6 },
-    });
-    stockCustodyChart.setOption({
-      textStyle: { fontFamily: HM_FONT },
-      tooltip: { trigger: "axis" }, legend: { textStyle: { color: C.label }, top: 0 },
-      grid: { left: 48, right: 44, top: 26, bottom: 24 },
-      xAxis: { type: "category", data: wk, boundaryGap: false, axisLabel: { color: C.muted } },
-      // 大戶比常年落在 80~90%，若軸從 0 起會壓成貼頂扁線看不出週變化 → scale 放大到資料區間＋留白
-      yAxis: { type: "value", name: "%", scale: true,
-               min: (v) => Math.floor(v.min - 0.5), max: (v) => Math.ceil(v.max + 0.5),
-               axisLabel: { color: C.muted }, splitLine: { lineStyle: { color: C.border } } },
-      series: [line("千張大戶%", "big1000_pct", SER.foreign), line("400張↑大戶%", "big400_pct", SER.trust)],
-    }, true);
-  } catch (e) { stockCustodyChart.hideLoading(); if (note) note.textContent = "（載入失敗）"; }
+    stockNoteCustody = (!d.trend || !d.trend.length) ? "（查無集保資料；上市櫃個股適用）" : "";
+    renderStockNoteLine();
+  } catch (e) {
+    if (stockCode === code) { stockNoteCustody = "（集保資料載入失敗）"; renderStockNoteLine(); }
+  }
 }
 
 // ===== 個股空狀態：把空白畫布換成可以直接點的目的地 =====
@@ -4273,7 +4270,10 @@ async function loadStock(code, name) {
   $("stock-empty").classList.add("hidden");
   $("stock-chart").classList.remove("hidden");
   pushRecent(code, name);
-  $("stock-note").textContent = "載入中…";
+  // 三段說明各自歸零（見 renderStockNoteLine 的理由）：上一檔的法人／集保錯誤訊息不能
+  // 跟著新股票的「載入中…」一起殘留在畫面上。
+  stockNoteKline = "載入中…"; stockNoteChips = ""; stockNoteCustody = "";
+  renderStockNoteLine();
   try { renderProfile(await getJSON(`/api/stock/${encodeURIComponent(code)}/profile`)); } catch (e) { $("stock-profile").innerHTML = ""; }
   loadStockChips(code);
   loadStockCustody(code);
@@ -4287,7 +4287,7 @@ async function loadStock(code, name) {
       // 查無資料：整個丟掉圖表而不是畫一張空的（LWC 沒有 ECharts .clear() 那種
       // 「清空但保留實例」的動作，直接 remove()，下次查詢再重建）。
       disposeStockChart(); lastStockData = null;
-      $("stock-note").textContent = `${code} 無 K 線資料`;
+      stockNoteKline = `${code} 無 K 線資料`; renderStockNoteLine();
       return;
     }
     lastStockData = d;
@@ -4306,11 +4306,11 @@ async function loadStock(code, name) {
         }
         if (gap > klineGapDays(stockInterval)) t += `　⚠ 資料有缺口 ${at[0]} → ${at[1]}（${Math.round(gap)} 天），請在本機跑 scripts/sync_ohlc.bat 補齊`;
       }
-      $("stock-note").textContent = t;
+      stockNoteKline = t; renderStockNoteLine();
     }
     if (!stockChart) stockChart = initStockChart($("stock-chart"));
     renderStockChart(d, stockWaves, wavePct);
-  } catch (e) { $("stock-note").textContent = "載入失敗：" + e.message; }
+  } catch (e) { stockNoteKline = "載入失敗：" + e.message; renderStockNoteLine(); }
 }
 
 // ========== 上傳 / 匯入 ==========
@@ -4706,22 +4706,6 @@ document.querySelectorAll(".ktf").forEach((btn) => btn.addEventListener("click",
   btn.classList.add("active"); stockInterval = btn.dataset.iv; if (stockCode) loadStock(stockCode);
 }));
 $("stock-wave-chk").addEventListener("change", (e) => { stockWaves = e.target.checked; if (stockChart && lastStockData) renderStockWaves(lastStockData, stockWaves, wavePct); });
-// 集保「補歷史」：從 TDCC 智能網逐週回補該股歷史（opendata 只給當週）；單次回補整段、可能較久
-$("custody-backfill").addEventListener("click", async (e) => {
-  e.preventDefault();
-  if (!stockCode) return;
-  const link = $("custody-backfill");
-  link.style.pointerEvents = "none"; link.textContent = "補齊中…";
-  try {
-    for (let guard = 0; guard < 20; guard++) {
-      const r = await (await fetch(`/api/stock/${encodeURIComponent(stockCode)}/custody/backfill?weeks=52`)).json();
-      if (r.busy) { await new Promise((s) => setTimeout(s, 1500)); continue; }
-      break;
-    }
-    await loadStockCustody(stockCode);
-  } catch (err) { /* 顯示於下方 note */ }
-  finally { link.style.pointerEvents = ""; link.textContent = "補歷史"; }
-});
 
 // 點股號 → 跳到個股查詢頁
 document.addEventListener("click", (e) => {
@@ -4767,12 +4751,13 @@ $("ssf-margin-table").addEventListener("click", (e) => {
 // **這裡要列出「每一張」ECharts 圖**，漏掉的那張在視窗變動後就永遠停在舊尺寸
 // （echarts.init 凍住容器尺寸，見上面各載入函式的註解）。手機上這條路徑不是罕見情境
 // ——轉個方向就會走到，而 375↔812 的寬度差足以讓漏網的圖整張畫錯位。
-// pulseChart／stockCustodyChart 原本就漏了。
+// pulseChart 原本就漏了；stockChipsChart／stockCustodyChart 兩張圖已在 Task 8 隨籌碼窗格
+// 一起併入個股 K 線那張 Lightweight Charts，這份清單不再需要它們。
 // **stockChart 刻意不在這份清單裡**：它是 Lightweight Charts（autoSize:true），靠
 // ResizeObserver 自己處理容器尺寸變化，手動呼叫 .resize() 反而不是它的 API 形狀
 // （LWC 的 resize() 要傳明確寬高，autoSize 開著時再呼叫只會被忽略並印警告）。
 window.addEventListener("resize", () => {
-  [chipChart, stockChipsChart, stockCustodyChart, pulseChart, cupChart, distChart,
+  [chipChart, pulseChart, cupChart, distChart,
     instBreadthChart, instAlphaChart]
     .forEach((c) => c && c.resize());
   Object.values(ssfCharts).forEach(ch => ch && ch.resize());

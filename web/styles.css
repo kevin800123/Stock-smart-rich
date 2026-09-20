@@ -957,7 +957,7 @@ body[data-public] .status-bar { display: none; }
 .se-chip span { color: var(--muted); }
 .wave-pct input[type=range] { width: 90px; accent-color: var(--accent); }
 .chart { width: 100%; height: 340px; background: linear-gradient(180deg, rgba(24, 38, 58, 0.55), rgba(11, 18, 29, 0.35)); border: 1px solid rgba(58, 82, 112, 0.62); border-radius: var(--r); }
-/* position:relative 讓 #stock-chart 裡的 .lw-legend/.lw-tooltip（Lightweight Charts
+/* position:relative 讓 #stock-chart 裡的 .lw-legend/.lw-readout（Lightweight Charts
    個股 K 線的疊加層，JS 動態插入）能絕對定位在圖表畫布之上；#cup-chart 仍是 ECharts，
    這個屬性對它無影響（ECharts 本來就自己管內部圖層定位）。 */
 .chart-big { width: 100%; flex: 1; min-height: 380px; position: relative; background: linear-gradient(180deg, rgba(24, 38, 58, 0.55), rgba(11, 18, 29, 0.35)); border: 1px solid rgba(58, 82, 112, 0.62); border-radius: var(--r); }
@@ -986,22 +986,16 @@ body[data-public] .status-bar { display: none; }
 /* 個股 K 線（Lightweight Charts）的 MA 圖例：函式庫沒有內建圖例元件，週期與顏色是
    固定的（MA_DEFS），JS 只畫一次靜態列。pointer-events:none 讓它不擋十字線游標。 */
 .lw-legend { position: absolute; top: 6px; left: 12px; z-index: 2; display: flex; gap: 10px; font-size: var(--fs-xs); font-weight: 700; pointer-events: none; }
-/* 十字線 tooltip：沿用既有 .ec-tip-* 樣式（本來就是給圖表用的通用 class，非 ECharts
-   專屬命名），只需定位容器本身。 */
-/* .hidden 用全站既有的 display:none!important 工具類切換顯示，這裡不必再定義一次。 */
-.lw-tooltip { position: absolute; z-index: 3; pointer-events: none; background: var(--bg-card); border: 1px solid var(--border-default); border-radius: 8px; padding: 10px 12px; box-shadow: 0 12px 28px rgba(0,0,0,.38); }
-/* ECharts 的 tooltip 由 JS 注入 body；用 grid 對齊「欄位／數字／單位」，比一整串
-   全形空白更穩定，縮放字體時也不會跑欄。 */
-.ec-tip-date { color: var(--label); font-weight: 700; padding-bottom: 5px; margin-bottom: 6px; border-bottom: 1px solid var(--border); }
-.ec-tip-grid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; min-width: 190px; }
-.ec-tip-series { grid-column: 1 / 2; color: var(--muted); white-space: nowrap; }
-.ec-tip-v { color: var(--text); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.ec-tip-v i { color: var(--muted); font-size: var(--fs-xs); font-style: normal; font-weight: 400; margin-left: 3px; }
-.ec-tip-ohlc { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px 12px; }
-.ec-tip-cell { display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: var(--fs-xs); }
-.ec-tip-cell i { font-style: normal; }
-.ec-tip-cell b { color: var(--text); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.ec-tip-cell em { color: var(--muted); font-size: var(--fs-xs); font-style: normal; font-weight: 400; margin-left: 3px; }
+/* 每個窗格左上角一行讀數（Task 8，取代浮動 tooltip／.lw-tooltip 與其 .ec-tip-* 內容樣式，
+   兩者已一併移除——原本只有這張圖在用，拿掉 tooltip 就是死 CSS）。pointer-events:none
+   才不會擋住圖表操作；z-index 壓在圖表 canvas 之上、但不蓋住 TradingView 授權標誌
+   （它在右下角）。 */
+.lw-readout { position: absolute; left: 8px; z-index: 3; pointer-events: none;
+  font-size: var(--fs-xs); color: var(--text-secondary); white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0,0,0,.55); }
+.lw-readout b { color: var(--text-primary); font-weight: 650; }
+.lw-readout .up { color: var(--up); } .lw-readout .down { color: var(--down); }
+@media (max-width: 600px) { .lw-readout { font-size: 11px; } }
 
 /* ===== AI 區 ===== */
 .ai-head { display: flex; align-items: center; justify-content: space-between; font-size: var(--fs-sm); color: var(--accent); font-weight: 700; }
