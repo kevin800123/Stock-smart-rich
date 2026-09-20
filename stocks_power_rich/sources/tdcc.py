@@ -34,17 +34,20 @@ _LOW_TO_HIGH_LEVELS = {str(i) for i in range(1, 16)}  # 分級 1~15（不含合�
 
 
 def _aggregate_levels(levels) -> dict:
-    """levels＝[(分級序, 人數, 占比%), ...] → {big1000_pct, big400_pct, big_holders, total_holders}。
-    千張大戶＝級15；400張↑＝級12~15；總持股人數＝級1~15加總（兩來源共用，語意一致）。
+    """levels＝[(分級序, 人數, 股數, 占比%), ...] → {big1000_pct, big400_pct, big_holders,
+    total_holders, total_shares}。千張大戶＝級15；400張↑＝級12~15；總持股人數與總股數＝級1~15加總。
 
-    總持股人數刻意用「加總 1~15」而非讀取「合計」列——opendata 的合計列是第 17 級、
+    總持股人數與總股數刻意用「加總 1~15」而非讀取「合計」列——opendata 的合計列是第 17 級、
     智能網 HTML 是第 16 級，兩個來源編號不一致；加總法不依賴任一來源的合計列編號，
     對兩邊都成立（已用真實 2330 資料驗證：分級 1~15 加總＝合計列人數，見 CLAUDE.md）。
+    股數是給人均數（總股數 ÷ 總持股人數）用的；某一級的股數解析不出來就當 0，
+    不讓整筆集保資料因為多一欄而消失。
     """
-    d = {"big1000_pct": 0.0, "big400_pct": 0.0, "big_holders": 0, "total_holders": 0}
-    for lvl, holders, pct in levels:
+    d = {"big1000_pct": 0.0, "big400_pct": 0.0, "big_holders": 0, "total_holders": 0, "total_shares": 0.0}
+    for lvl, holders, shares, pct in levels:
         if lvl in _LOW_TO_HIGH_LEVELS:
             d["total_holders"] += int(holders)
+            d["total_shares"] += float(shares or 0)
         if lvl == "15":               # 千張大戶
             d["big1000_pct"] += pct
             d["big400_pct"] += pct
@@ -54,11 +57,12 @@ def _aggregate_levels(levels) -> dict:
     return {"big1000_pct": round(d["big1000_pct"], 2),
             "big400_pct": round(d["big400_pct"], 2),
             "big_holders": d["big_holders"],
-            "total_holders": d["total_holders"]}
+            "total_holders": d["total_holders"],
+            "total_shares": round(d["total_shares"], 0)}
 
 
 def parse_custody_distribution(text: str) -> dict:
-    """opendata CSV → {week_date, data:{代號: {big1000_pct, big400_pct, big_holders}}}。"""
+    """opendata CSV → {week_date, data:{代號: {big1000_pct, big400_pct, big_holders, total_shares}}}。"""
     rows = list(csv.reader(io.StringIO(text)))
     week = None
     by_code: dict = {}
@@ -68,16 +72,16 @@ def parse_custody_distribution(text: str) -> dict:
         week = r[0].strip()
         code = r[1].strip()
         lvl = r[2].strip()
-        holders, pct = _num(r[3]), _num(r[5])
+        holders, shares, pct = _num(r[3]), _num(r[4]), _num(r[5])
         if holders is None or pct is None:
             continue
-        by_code.setdefault(code, []).append((lvl, holders, pct))
+        by_code.setdefault(code, []).append((lvl, holders, shares, pct))
     data = {code: _aggregate_levels(levels) for code, levels in by_code.items()}
     return {"week_date": _ymd(week), "data": data}
 
 
 def parse_custody_ownership_html(html: str) -> dict:
-    """智能網單股單週 HTML → {big1000_pct, big400_pct, big_holders}。
+    """智能網單股單週 HTML → {big1000_pct, big400_pct, big_holders, total_shares}。
     表列格式：分級序 / 級距 / 人數 / 股數 / 占比%（級16 合計自動略過）。"""
     levels = []
     for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", html, re.S):
@@ -85,9 +89,9 @@ def parse_custody_ownership_html(html: str) -> dict:
                  for c in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)]
         if len(cells) < 5 or not cells[0].isdigit():
             continue
-        holders, pct = _num(cells[2]), _num(cells[4])
+        holders, shares, pct = _num(cells[2]), _num(cells[3]), _num(cells[4])
         if holders is not None and pct is not None:
-            levels.append((cells[0], holders, pct))
+            levels.append((cells[0], holders, shares, pct))
     return _aggregate_levels(levels)
 
 
