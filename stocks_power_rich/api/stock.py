@@ -1,3 +1,4 @@
+import logging
 import threading
 from fastapi import APIRouter, Body
 from datetime import datetime, timedelta
@@ -33,6 +34,9 @@ from .. import analysis, patterns, backtest
 
 router = APIRouter(prefix="/api")
 _custody_lock = threading.Lock()
+_autofill_guard = threading.Lock()   # 護住 _start_custody_autofill 的 check-then-act：
+                                      # 單程序單 worker，一把鎖就夠讓「同一天只補一次」成立
+_log = logging.getLogger("spr")
 
 CUSTODY_MIN_WEEKS = 30          # 少於這個週數就自動補歷史（集保一年約 52 週）
 _custody_autofill = set()        # 本程序正在補的代號，避免同一檔重複起執行緒
@@ -53,27 +57,31 @@ def _start_custody_autofill(code: str) -> bool:
 
     節流：同一檔同一天只補一次（ai_cache `custodyauto:{code}:{date}`），同時間只允許一個
     補歷史在跑（`_custody_lock`，由執行緒內取得）。智能網是逐週抓、每次要帶上一次回應輪替的
-    CSRF token，52 週約半分到一分鐘，所以只能背景做，絕不能卡住請求。"""
+    CSRF token，52 週約半分到一分鐘，所以只能背景做，絕不能卡住請求。
+
+    「同一天只補一次」是 check-then-act（先讀 ai_cache／集合成員，再寫入、起執行緒）——
+    `_custody_lock` 只擋得住兩個背景執行緒同時刮智能網，擋不住「兩個幾乎同時的請求都通過
+    檢查、各自起一條執行緒」這件事本身。所以整段檢查＋標記＋起執行緒要用 `_autofill_guard`
+    包成一個原子區塊；單程序單 worker，一把普通鎖就夠。"""
     pure = code.split(".")[0]
     key = f"custodyauto:{pure}:{datetime.now().date().isoformat()}"
     c = conn()
-    if get_ai_cache(c, key) or pure in _custody_autofill:
-        return False
-    set_ai_cache(c, key, {"at": datetime.now().isoformat(timespec="seconds")})
-    _custody_autofill.add(pure)
-    threading.Thread(target=lambda: _custody_autofill_job(pure), daemon=True,
-                     name=f"spr-custody-{pure}").start()
+    with _autofill_guard:
+        if get_ai_cache(c, key) or pure in _custody_autofill:
+            return False
+        set_ai_cache(c, key, {"at": datetime.now().isoformat(timespec="seconds")})
+        _custody_autofill.add(pure)
+        threading.Thread(target=_custody_autofill_job, args=(pure,), daemon=True,
+                         name=f"spr-custody-{pure}").start()
     return True
 
 
 def _custody_autofill_job(pure: str) -> None:
     """背景執行緒本體：自己開一條 sqlite 連線（sqlite 預設不跨執行緒共用）。
     失敗只記 log，不重試——下一天使用者再查同一檔會再補一次。"""
-    import logging
-    log = logging.getLogger("spr")
     try:
         if not _custody_lock.acquire(blocking=False):
-            log.info("custody autofill skipped (another backfill running): %s", pure)
+            _log.info("custody autofill skipped (another backfill running): %s", pure)
             return
         try:
             c = get_connection(load_config().db_path)   # 自己開一條：請求那條屬於別的執行緒
@@ -84,11 +92,11 @@ def _custody_autofill_job(pure: str) -> None:
             hist = tdcc.fetch_custody_history(pure, weeks=want, max_weeks=52) if want else {}
             for wk_iso, rec in hist.items():
                 upsert_custody(c, wk_iso, pure, rec)
-            log.info("custody autofill %s: +%d weeks", pure, len(hist))
+            _log.info("custody autofill %s: +%d weeks", pure, len(hist))
         finally:
             _custody_lock.release()
     except Exception:  # noqa: BLE001  背景執行緒的例外沒有人接，記下來才看得見
-        log.exception("custody autofill failed: %s", pure)
+        _log.exception("custody autofill failed: %s", pure)
     finally:
         _custody_autofill.discard(pure)
 
@@ -256,7 +264,15 @@ def stock_custody(code: str):
     trend = get_custody_trend(c, pure)
     filling = pure in _custody_autofill
     if not filling and _should_autofill(trend):
-        filling = _start_custody_autofill(code)
+        # 補歷史的判斷本身（sqlite I/O ＋ 起執行緒）不能讓這支端點連帶掛掉——要回的
+        # trend 早就算好了，端點的承諾是「立刻回現有資料」，補歷史只是順手做的加值。
+        # 同上面 tdcc.fetch_custody_distribution() 那段一樣的理由。不可靜默吞掉：
+        # 記下代號與例外，才看得出「補歷史一直沒有起來」是不是這裡在擋。
+        try:
+            filling = _start_custody_autofill(code)
+        except Exception:  # noqa: BLE001
+            _log.exception("custody autofill decision failed: %s", pure)
+            filling = False
     return {"code": pure, "week": (cur or {}).get("week_date"), "current": rec,
             "trend": trend, "weeks": len(trend), "backfilling": filling}
 

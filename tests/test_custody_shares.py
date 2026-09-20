@@ -124,6 +124,28 @@ def test_custody_endpoint_returns_avg_shares_and_week_count(monkeypatch, tmp_pat
     assert d["trend"][-1]["avg_shares"] == round(9000000 / d["trend"][-1]["total_holders"])
 
 
+def test_custody_endpoint_returns_200_even_if_autofill_decision_raises(monkeypatch, tmp_path):
+    """補歷史的判斷本身失敗，不能讓端點跟著死掉——trend 早就算好了，這是這個功能的承諾
+    （「端點立刻回現有資料」）。反證：拿掉 stock.py 裡包住 _start_custody_autofill 呼叫的
+    try/except，這條測試會變成 500。"""
+    from stocks_power_rich.api import stock as S
+    from stocks_power_rich.sources import tdcc as T
+    monkeypatch.setattr(T, "fetch_custody_distribution", lambda: {"week_date": None, "data": {}})
+
+    def _boom(code):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(S, "_start_custody_autofill", _boom)
+    client = _client(monkeypatch, tmp_path)
+    c = db.get_connection(str(tmp_path / "api.sqlite"))
+    _seed_weeks(c, "2330", 5)   # 太短 → 一定會觸發 autofill 判斷
+    resp = client.get("/api/stock/2330.TW/custody")
+    assert resp.status_code == 200
+    d = resp.json()
+    assert d["weeks"] == 5
+    assert d["backfilling"] is False
+
+
 @pytest.mark.parametrize("weeks,with_shares,expect", [
     (40, True, False),    # 夠長又有股數 → 不補
     (5, True, True),      # 太短 → 補
@@ -138,10 +160,57 @@ def test_autofill_decision(conn, weeks, with_shares, expect):
 def test_autofill_runs_once_per_code_per_day(conn, monkeypatch):
     """同一天同一檔只補一次——手動連查很多檔時不可以連打 TDCC 智能網。"""
     from stocks_power_rich.api import stock as S
+    monkeypatch.setattr(S, "_custody_autofill", set())   # 給乾淨的集合，不留到下一條測試
     started = []
+    # 測試替身要跟著真實介面走：production 呼叫 threading.Thread 時 target/args/daemon/name
+    # 全是關鍵字引數，這裡用 **kw 全接住，不是反過來假設 production 只會傳 target。
     monkeypatch.setattr(S.threading, "Thread",
-                        lambda target, daemon=None, name=None: type("T", (), {"start": lambda self: started.append(name)})())
+                        lambda *a, **kw: type("T", (), {"start": lambda self: started.append(kw.get("name"))})())
     monkeypatch.setattr(S, "conn", lambda: conn)
     assert S._start_custody_autofill("2330") is True
     assert S._start_custody_autofill("2330") is False
+    assert len(started) == 1
+
+
+def test_start_custody_autofill_is_atomic_under_concurrent_calls(tmp_path, monkeypatch):
+    """check-then-act 節流必須是原子的：兩個幾乎同時呼叫 _start_custody_autofill("2330")
+    的執行緒，只能有一個真的起跑（_autofill_guard 包住整段檢查＋標記＋起執行緒）。
+
+    反證（拿掉 _autofill_guard 後手動驗證，見任務報告）：兩個真執行緒同時通過
+    「還沒補過」的檢查，各自把 started 加一筆，這條測試會變紅（started 長度 2）。
+    """
+    import threading as real_threading
+
+    from stocks_power_rich.api import stock as S
+
+    # S.threading 就是這個 threading 模組本身（同一個物件），monkeypatch 它的 Thread
+    # 會連測試自己驅動的兩條執行緒都一起被換掉——所以要先留一份真的 Thread 類別，
+    # 測試驅動用真的、production 呼叫的那個用假的。
+    RealThread = real_threading.Thread
+
+    path = str(tmp_path / "concurrent.sqlite")
+    db.init_db(db.get_connection(path))
+    # 每次呼叫 conn() 都開一條新連線——sqlite 連線不能跨執行緒共用，兩個真執行緒
+    # 各自呼叫 S.conn() 時，開連線這個動作本身就發生在呼叫端自己的執行緒裡。
+    monkeypatch.setattr(S, "conn", lambda: db.get_connection(path))
+    monkeypatch.setattr(S, "_custody_autofill", set())
+    started = []
+    monkeypatch.setattr(S.threading, "Thread",
+                        lambda *a, **kw: type("T", (), {"start": lambda self: started.append(kw.get("name"))})())
+
+    barrier = real_threading.Barrier(2)
+    results = []
+
+    def call():
+        barrier.wait()   # 讓兩個執行緒盡量同時進入 _start_custody_autofill
+        results.append(S._start_custody_autofill("2330"))
+
+    t1 = RealThread(target=call)
+    t2 = RealThread(target=call)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert sorted(results) == [False, True]
     assert len(started) == 1
