@@ -358,7 +358,12 @@ function initStockChart(el) {
     priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
   }, 3);
   const panes = chart.panes();
-  // 比例＝各窗格高度佔比（主圖 300、量能 70、法人 95、集保 95，總高 560px）
+  // 這三個值只決定 panes[1..3]（量能／法人／集保）彼此之間的相對比例，是 70:95:95 換算
+  // 成 stretch factor 的結果——不是整張圖的絕對高度分配。主圖（pane 0）從頭到尾都是函式庫
+  // 預設的 stretch factor 2，這裡沒有動過它。實測四格搭配起來是 [368, 42.67, 59.33, 60] px，
+  // 主圖實際佔約 69%，遠高於舊注解「主圖300/總高560≈54%」暗示的比例——那組絕對 px 只是這三個
+  // 相對值最初推算時的假設情境，套用後不代表最終畫面。要調整比例請重新量實際 px，不要沿用
+  // 這行舊數字反推。
   if (panes[1]) panes[1].setStretchFactor(0.23);
   if (panes[2]) panes[2].setStretchFactor(0.32);
   if (panes[3]) panes[3].setStretchFactor(0.32);
@@ -4086,6 +4091,14 @@ async function loadStockChips(code) {
   const note = $("stock-chips-note");
   try {
     const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/chips?days=60`);
+    // 身分守衛：chips 是本地表查詢、常常比 K 線（可能要算波浪甚至走 yfinance）先回來，
+    // 等待期間使用者可能已經切到別檔或別週期重查。這份回應若已經過期，絕不能存進
+    // lastStockChips——renderStockPanes 是拿 lastStockData（K 線，主軸）逐棒去貼
+    // lastStockChips，一旦被舊回應蓋掉，之後任何一次重畫（包括新股票 K 線抵達時那次）
+    // 都會把「上一檔的籌碼」畫在「這一檔的 K 棒」上，直到下一次 chips 回來才會自我修正。
+    // 連 loading/note 這些 UI 副作用也一併放棄——新的那次呼叫會自己接手，這裡動了反而
+    // 可能蓋掉新請求剛設好的「載入中」狀態。
+    if (stockCode !== code) return;
     // 存下原始回應並重畫 LWC 法人窗格（Task 6）；放在任何 early return 之前，查無資料時
     // 該存的就是這份空回應本身，讓 renderStockPanes 走到清空那格的分支，不留上一檔的資料。
     lastStockChips = d; renderStockPanes();
@@ -4118,6 +4131,9 @@ async function loadStockCustody(code) {
   const note = $("stock-custody-note");
   try {
     const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/custody`);
+    // 身分守衛：理由同 loadStockChips 那段——custody 同樣可能比 K 線先回來，過期回應
+    // 一律整段放棄，不存進 lastStockCustody、也不動 loading/note。
+    if (stockCode !== code) return;
     // 存下原始回應並重畫 LWC 集保窗格（Task 6）；放在任何 early return 之前，理由同上。
     lastStockCustody = d; renderStockPanes();
     stockCustodyChart.hideLoading();
