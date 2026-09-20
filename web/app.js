@@ -31,11 +31,11 @@ async function getJSON(url) {
 // 的 API，改資料要對個別 series 呼叫 setData()。
 let stockChart = null;
 let lwCandleSeries = null, lwVolumeSeries = null, lwMaSeries = [], lwMarkersApi = null;
-// 法人窗格（自訂堆疊柱）與集保窗格（兩條階梯線）：與價格、量能共用同一張圖、同一條時間軸
-// （Task 6，見 CLAUDE.md「個股 K 線改 Lightweight Charts」那節的後續工作）。lwCustodySeries
-// 是 {big1000, big400} 兩個 LineSeries，renderStockPanes／renderCustodyMarkers 都吃這個
-// 形狀。lwCustodyMarkers 是人均數箭頭圖層（Task 7 已實作，見 renderCustodyMarkers）。
-let lwInstSeries = null, lwCustodySeries = null, lwCustodyMarkers = null;
+// 法人窗格（自訂堆疊柱）與集保窗格（400張↑% 柱狀圖）：與價格、量能共用同一張圖、同一條
+// 時間軸（見 CLAUDE.md「個股頁三張圖合成一張」那節）。lwCustodySeries 是**單一**
+// HistogramSeries——不再是 {big1000, big400} 兩個 LineSeries，也不再有人均數箭頭圖層
+// （理由見 initStockChart 裡該序列上方的註解）。
+let lwInstSeries = null, lwCustodySeries = null;
 // 四格讀數列（Task 8）：內容更新函式，灌完資料／十字線移動時呼叫；null＝圖表尚未建立。
 let lwPaintReadouts = null;
 // 讀數列位置隨容器尺寸重算的 ResizeObserver（Task 8 review 修正）：必須存變數才能在
@@ -355,21 +355,25 @@ function initStockChart(el) {
   const volume = chart.addSeries(LightweightCharts.HistogramSeries, {
     priceFormat: { type: "volume" }, priceLineVisible: false, lastValueVisible: false,
   }, 1);
-  // 法人窗格（自訂堆疊柱）與集保窗格（兩條階梯線）：與價格、量能共用時間軸與十字線，
+  // 法人窗格（自訂堆疊柱）與集保窗格（400張↑% 柱狀圖）：與價格、量能共用時間軸與十字線，
   // 這就是「合成一張」的重點——滑到哪一天，四格同時顯示那天的價格、法人、大戶。
   const inst = chart.addCustomSeries(new StackedBarsSeries(), {
     colors: [SER.foreign, SER.trust, SER.dealer], priceLineVisible: false, lastValueVisible: false,
   }, 2);
-  // 集保兩條線沿用今天那張圖的顏色（千張大戶＝SER.foreign 冰藍、400張↑＝SER.trust 紫）。
-  // 與法人窗格的外資／投信同色是刻意的取捨：兩者在不同窗格、各自的讀數列已標明名稱，
-  // 使用者現在看到的就是這兩色，換色只會製造「顏色怎麼變了」的困惑。
-  const cust1000 = chart.addSeries(LightweightCharts.LineSeries, {
-    color: SER.foreign, lineWidth: 2, lineType: LightweightCharts.LineType.WithSteps,
-    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
-  }, 3);
-  const cust400 = chart.addSeries(LightweightCharts.LineSeries, {
-    color: SER.trust, lineWidth: 2, lineType: LightweightCharts.LineType.WithSteps,
-    priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+  // 集保窗格只畫**一個**序列＝400張↑%，而且是柱狀圖（XQ 的畫法，使用者看過 production
+  // 的兩條階梯線後指定改成這樣）。
+  // **為什麼只畫一個序列**：千張大戶與 400張↑ 的絕對水位差很遠（使用者在 production 讀到的是
+  // 40.35% vs 50.22%，差 10 個百分點），同一條價格軸要同時容納兩者時，各自 ±1% 的週變化
+  // 被壓到看不見——畫出來是兩條平線，等於沒畫。XQ 那一格也只畫一個量。
+  // **為什麼是 400張↑**：`analysis.custody_change` 的「大戶增比」吃的就是 `big400_pct`，
+  // 圖上的走勢與「為什麼這檔會入選自算選股」從此是同一件事。千張大戶與人均數留在讀數列
+  // （XQ 也是把人均數寫在標題列而不是畫進圖裡）。
+  // 逐點顏色由 custodyHistogram() 給（紅增綠減，見該函式的註解），這裡的 color 只是
+  // 「萬一某點沒帶顏色」的後備值；priceFormat 給 2 位小數，讓非零基準在價格軸上看得見
+  // （見 custodyHistogramBase 的註解）。
+  const cust = chart.addSeries(LightweightCharts.HistogramSeries, {
+    color: C.muted, priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+    priceLineVisible: false, lastValueVisible: false,
   }, 3);
   const panes = chart.panes();
   // 這三個值只決定 panes[1..3]（量能／法人／集保）彼此之間的相對比例，是 70:95:95 換算
@@ -465,7 +469,7 @@ function initStockChart(el) {
   lwPaintReadouts = paintReadouts;   // 灌完資料後也要刷一次（顯示最新一根）
 
   lwCandleSeries = candle; lwVolumeSeries = volume; lwMaSeries = maSeriesArr;
-  lwInstSeries = inst; lwCustodySeries = { big1000: cust1000, big400: cust400 };
+  lwInstSeries = inst; lwCustodySeries = cust;
   return chart;
 }
 
@@ -479,7 +483,7 @@ function disposeStockChart() {
   // timer 在等，觸發時 lwPaintReadouts 已是 null，`&&` 短路不會報錯，但留著就是白跑一次。
   clearTimeout(lwReadoutResizeTimer); lwReadoutResizeTimer = null;
   stockChart = null; lwCandleSeries = null; lwVolumeSeries = null; lwMaSeries = []; lwMarkersApi = null;
-  lwInstSeries = null; lwCustodySeries = null; lwCustodyMarkers = null; lwPaintReadouts = null;
+  lwInstSeries = null; lwCustodySeries = null; lwPaintReadouts = null;
   // chart.remove() 只清掉 LWC 自己建立的 canvas，不會動我們手動塞進容器的圖例／讀數列
   // 覆蓋層——實測踩到：反覆「查無資料的代號 → 有資料的代號」幾次後，容器裡會疊出
   // 好幾份重複的 .lw-legend/.lw-readout（DOM 節點洩漏，且視覺上圖例會重疊變粗）。
@@ -555,8 +559,59 @@ function stockCustodyReadout(bar) {
   // week 可能是 falsy（同舊集保圖 t.week ? t.week.slice(5) : "" 的既有守衛）：少了這個
   // 判斷會在 week 為 null 時丟 TypeError，例外一路冒到 loadStock 的 try/catch，把說明列
   // 改寫成看起來像「K 線抓取失敗」的假錯誤。
-  return `千張大戶 <b>${fmt(v.big1000_pct, 2)}%</b>　400張↑ <b>${fmt(v.big400_pct, 2)}%</b>`
+  // 400張↑ 排第一：窗格裡畫出來的柱子就是它，讀數列第一個數字與圖形講的是同一件事。
+  return `400張↑ <b>${fmt(v.big400_pct, 2)}%</b>　千張大戶 <b>${fmt(v.big1000_pct, 2)}%</b>`
     + `　人均 <b>${v.avg_shares == null ? "—" : fmt(v.avg_shares, 0)}</b> 股（${v.week ? esc(v.week.slice(5)) : ""}）`;
+}
+
+// 集保是**週**資料（一年約 52 筆），X 軸卻是**日** K 棒（約 240 根）。折線靠連線看起來連續，
+// 柱狀圖不會——52 根孤零零的細柱散在 240 天裡是破圖，不是 XQ 那個樣子。所以往前填滿：
+// 每個交易日都取「≤ 當天的最近一週」的值，同一週的所有日子共用同一個值與同一個顏色，
+// 語意與改版前的 `lineType: WithSteps` 完全一致（「這一週大戶比就是這個值」）。第一週
+// 之前的 K 棒沒有集保資料，不畫（不往前補到第一週之前）。
+// **顏色比的是「上一週」，不是「上一根 K 棒」**：同一週內的每一根顏色必須相同。寫成逐根
+// 比前一根的話，同一週內部全部會變成「持平」、只有跨週那一根有顏色，一眼就看得出是錯的。
+// **紅增綠減是使用者明確指定要跟 XQ 一致、並在被告知代價後確認的例外**：本站紅綠原本鎖給
+// 行情漲跌，代價是同一張圖裡紅色同時表示「股價漲」（K 線窗格）與「大戶增」（集保窗格）。
+// 這是刻意的，不要當成 bug「修掉」。剛好持平（與第一週）一律中性色 C.muted，不可塗紅
+// ——「剛好平盤不著漲色」是本站既有規矩（股期概況那批明文記過）。柱子上沒有文字，所以用
+// 亮色那組 C.up/C.down，不是給白字底色用的 C.upFill/C.downFill（同 K 線與漲跌家數條）。
+function custodyHistogram(bars, byBar) {
+  const out = [];
+  let curVal = null, curColor = null, prevWeekVal = null;
+  for (const barDate of bars) {
+    const t = byBar.get(barDate);
+    if (t) {                       // 這根 K 棒是某個集保週貼到的位置（snapToBars 保證每根最多一筆）
+      const v = t.big400_pct;
+      if (v == null) {
+        // 該週沒有 400張↑：從這根起到下一個有值的週之間都不畫，不拿更早的值頂替
+        // （缺值不重置比較鏈：下一個有值的週仍與上一個**有值**的週相比，沿用改版前
+        // 人均數箭頭對缺值的既有處理）。
+        curVal = null; curColor = null;
+      } else {
+        curColor = (prevWeekVal == null || v === prevWeekVal) ? C.muted : (v > prevWeekVal ? C.up : C.down);
+        curVal = v; prevWeekVal = v;
+      }
+    }
+    if (curVal != null) out.push({ time: barDate, value: curVal, color: curColor });
+  }
+  return out;
+}
+// HistogramSeries 的 base 預設是 0，而 400張↑ 全年都在 50% 上下、週變化只有 ±1%：base=0
+// 會讓每根柱子看起來一樣高、完全沒有資訊。**非零基準不是美化，是這張柱狀圖能不能讀的前提。**
+// 基準設在「資料最小值再往下留全距的 15%」，最低那週剩一小截、最高那週貼頂。
+// **代價要誠實標註**：非零基準會放大小變化，柱高的比例不可當成絕對比例讀。標示方式是讓
+// 該窗格的價格軸印 2 位小數的刻度（見 initStockChart 的 priceFormat）——軸上出現
+// 「49.80／50.60」這種非零起點的數字，本身就是標準且誠實的標示。
+function custodyHistogramBase(data) {
+  let lo = Infinity, hi = -Infinity;
+  for (const d of data) { if (d.value < lo) lo = d.value; if (d.value > hi) hi = d.value; }
+  if (!isFinite(lo)) return 0;              // 空陣列（含整段都缺值）：沒有柱子，回預設 0
+  const span = hi - lo;
+  // 全部同值時 span 為 0，直接回 lo 會讓柱高變 0（整格空白，看起來像沒資料）。退而取一個
+  // 與量級相稱的後備值；lo 為 0 時比例算出來也是 0，故再兜一個絕對下限。
+  const pad = span > 0 ? span * 0.15 : Math.max(Math.abs(lo) * 0.05, 0.01);
+  return lo - pad;
 }
 
 // 用目前的三份資料（K 線／法人／集保）重算兩個籌碼窗格。K 線是主軸：籌碼一律貼到
@@ -577,57 +632,20 @@ function renderStockPanes() {
   } else lwInstSeries.setData([]);
   const trend = (cust && cust.trend) || [];
   if (trend.length) {
-    const weeks = trend.map((x) => x.week);
-    const b1000 = snapToBars(bars, weeks, trend.map((x) => x.big1000_pct)).byBar;
-    const b400 = snapToBars(bars, weeks, trend.map((x) => x.big400_pct)).byBar;
-    lwCustodySeries.big1000.setData([...b1000].map(([time, value]) => ({ time, value })));
-    lwCustodySeries.big400.setData([...b400].map(([time, value]) => ({ time, value })));
-    // 值直接放整筆 trend 物件（snapToBars 的 values 可以是任意型別），讀數列一次就能拿到
-    // big1000_pct／big400_pct／avg_shares／week 四個欄位，不必另外查表。
-    // 箭頭改吃這個算好的 Map（final review I4）：renderCustodyMarkers 原本自己另外呼叫
-    // 一次 snapToBars(bars, weeks, avg_shares)，只餵 avg_shares 陣列會把缺值的來源週
-    // 整個濾掉，於是「這根棒子貼到哪一週」在箭頭與讀數列可能算出不同答案——實測月K
-    // 讀數列印「人均 — 股（09-18）」（09-18 那週沒有股數），箭頭卻拿更早 09-04 的值
-    // 去比，畫出一支不存在的向下箭頭。改吃同一份 lwCustByBar 再取 .avg_shares，
-    // 貼齊的答案只算一次。
-    lwCustByBar = snapToBars(bars, weeks, trend).byBar;
-    renderCustodyMarkers(bars, lwCustByBar);
+    // 值直接放整筆 trend 物件（snapToBars 的 values 可以是任意型別），柱狀圖與讀數列
+    // 因此吃同一份貼齊結果——「這根棒子屬於哪一週」只算一次，兩者不可能各自算出不同答案
+    // （改版前箭頭自己另外跑一次 snapToBars，就因為餵的陣列含 null 而與讀數列對不上）。
+    lwCustByBar = snapToBars(bars, trend.map((x) => x.week), trend).byBar;
+    const hist = custodyHistogram(bars, lwCustByBar);
+    // base 跟著資料一起換：資料換了（換股票／換週期）值域就換了，沿用上一檔的基準會讓
+    // 柱子整排頂出格子或縮成一條線。
+    lwCustodySeries.applyOptions({ base: custodyHistogramBase(hist) });
+    lwCustodySeries.setData(hist);
   } else {
-    lwCustodySeries.big1000.setData([]); lwCustodySeries.big400.setData([]);
-    if (lwCustodyMarkers) lwCustodyMarkers.setMarkers([]);
+    lwCustodySeries.setData([]);
     lwCustByBar = new Map();
   }
   lwPaintReadouts && lwPaintReadouts(null);   // 資料變了，讀數列（顯示最新一根）要跟著刷新
-}
-// 人均數（總股數÷總持股人數）箭頭：比上一根「有值」的棒子高＝白色向上（籌碼往少數人集中）、
-// 比上低＝黃色向下（分散）。相等、任一邊缺值、找不到前一根有值的棒子可比（含第一根）都不標。
-// **一根 K 棒最多一個箭頭，不是一週一個**——月K 一根棒子對到 4~5 個集保週，逐週標會在
-// 同一根疊出好幾個箭頭（同側疊在一起看不出方向，日K 也偶爾遇到假日撞在同一根）。折線
-// （lwCustodySeries）已經是「一根棒子一個值」：snapToBars 的規則是「同一根被貼到多筆時取
-// 來源日期最新那筆」，即該月最後一週；箭頭改用同一個 byBar 對照表比相鄰兩根**有值**的
-// 棒子，才會跟折線講的是同一件事（月K＝該月最後一週 vs 上個月最後一週）。日K／週K 每週
-// 各自對到不同棒子，相鄰有值棒子就是相鄰兩週，行為不變。
-// **標記圖層只建一次、之後一律 setMarkers 換內容**——createSeriesMarkers 每呼叫一次就在
-// series 上掛一個新的 primitive，丟掉舊參照並不會卸下它（艾略特波浪踩過的既有教訓）。
-function renderCustodyMarkers(bars, byBar) {
-  const marks = [];
-  let prev = null;
-  for (const barDate of bars) {
-    if (!byBar.has(barDate)) continue;
-    const cur = byBar.get(barDate).avg_shares;
-    if (cur == null) continue;   // 這根有集保資料但沒有股數（舊資料／算不出人均數）——
-                                  // 不列入比較鏈，與讀數列顯示「—」的判斷一致（final review I4）。
-    if (prev != null && cur !== prev) {
-      marks.push({
-        time: barDate, position: cur > prev ? "aboveBar" : "belowBar",
-        shape: cur > prev ? "arrowUp" : "arrowDown",
-        color: cur > prev ? "#ffffff" : C.accent,
-      });
-    }
-    prev = cur;
-  }
-  if (lwCustodyMarkers) lwCustodyMarkers.setMarkers(marks);
-  else if (marks.length) lwCustodyMarkers = LightweightCharts.createSeriesMarkers(lwCustodySeries.big1000, marks);
 }
 
 // ========== 視圖切換 ==========
