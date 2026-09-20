@@ -38,6 +38,11 @@ let lwCandleSeries = null, lwVolumeSeries = null, lwMaSeries = [], lwMarkersApi 
 let lwInstSeries = null, lwCustodySeries = null, lwCustodyMarkers = null;
 // 四格讀數列（Task 8）：內容更新函式，灌完資料／十字線移動時呼叫；null＝圖表尚未建立。
 let lwPaintReadouts = null;
+// 讀數列位置隨容器尺寸重算的 ResizeObserver（Task 8 review 修正）：必須存變數才能在
+// disposeStockChart 呼叫 disconnect()。它 observe 的 #stock-chart 是長存元素，若不
+// disconnect，每跑一次 dispose→reinit 就多累積一個 observer，之後任何一次容器尺寸變化
+// （視窗縮放／側欄收合／手機轉向）都會讓已經 remove() 的舊 chart 被呼叫 panes()。
+let lwReadoutObserver = null;
 let stockCode = "", stockInterval = "1d", stockWaves = false;
 let wavePct = 0.05;
 let lastStockData = null;
@@ -400,6 +405,12 @@ function initStockChart(el) {
   // 圖例與讀數交錯的亂碼）。圖例實測高度 15.3px（top 6.7px→bottom 22px），價格讀數
   // 因此讓到 24px 起，其餘三格沒有圖例可擋，維持 6px。
   const TOP_PAD = [24, 6, 6, 6];
+  // 逐格累加＋分隔線 +1 是實測值（相鄰窗格分隔線固定 1px），但**這個誤差是單向累積的**：
+  // 實測 4 個窗格的基準線相對真實窗格頂端依序偏移 0／−1／−1.7／−2px，目前是靠 TOP_PAD
+  // 的 6px（價格窗格因為要讓開圖例，多留到 24px）吸收掉，不是誤差為 0。這代表這個限制：
+  // 之後若加第五、第六個窗格，或分隔線在某個主題下寬度不是 1px，累積誤差會繼續往下疊，
+  // 最下面那格的讀數可能被畫進上一格裡——屆時不必改這個演算法，但要重新實測偏移量、
+  // 視情況加大對應的 pad。
   const layoutReadouts = () => {
     let y = 0;
     chart.panes().forEach((p, i) => {
@@ -408,24 +419,40 @@ function initStockChart(el) {
     });
   };
   layoutReadouts();
-  new ResizeObserver(layoutReadouts).observe(el);
+  // 存進模組層變數才能在 disposeStockChart 呼叫 disconnect()——它 observe 的 el 是
+  // 長存元素，不 disconnect 的話每次 dispose→reinit 就多累積一個 observer（同型問題見
+  // .lw-legend／createSeriesMarkers 兩處既有教訓）。
+  lwReadoutObserver = new ResizeObserver(layoutReadouts);
+  lwReadoutObserver.observe(el);
 
+  // 十字線在同一根 K 棒上移動時（滑鼠每動 1px 都會觸發）內容完全一樣，只有真的換到
+  // 不同一根、或資料本身換了（換股票／換週期／重新查詢）才需要重畫——同舊版 .lw-tooltip
+  // 的 tipKey/tipData 設計，快取鍵要連 lastStockData 物件本身一起比，只比索引在換股票後
+  // 會顯示舊資料的數字。**layoutReadouts() 量的是「窗格多高」，跟游標停在哪一根 K 棒
+  // 完全無關**，只有資料重灌／滑鼠離開圖表（呼叫方傳入 null，見下方 renderStockPanes 與
+  // subscribeCrosshairMove 的離開分支）才需要重算；擺在十字線這條熱路徑裡只是白算一次
+  // chart.panes() 配置陣列＋四次 getHeight()。
+  let readoutBar = null, readoutData = null;
   const paintReadouts = (param) => {
-    // 內容更新時順便重新量一次位置：換股票／換週期都會重灌資料，讀數列不能卡在
-    // 舊尺寸（見上面 getHeight() 的理由——這裡沒有額外成本，四個窗格的高度查詢很輕）。
-    layoutReadouts();
+    if (!param) layoutReadouts();
     const dates = (lastStockData && lastStockData.dates) || [];
     const i = param && param.time
       ? dates.indexOf(lwTimeLabel(param.time))
-      : dates.length - 1;                                  // 滑鼠離開＝顯示最新一根
+      : dates.length - 1;                                  // 滑鼠離開／資料剛灌完＝顯示最新一根
+    if (param && i === readoutBar && lastStockData === readoutData) return;   // 同一根、資料沒換，跳過重畫
+    readoutBar = i; readoutData = lastStockData;
     if (i < 0 || !lastStockData) { readouts.forEach((n) => (n.innerHTML = "")); return; }
     const c = lastStockData.candles[i] || [];
     const prev = i > 0 ? lastStockData.candles[i - 1][1] : null;
     const chg = prev != null ? c[1] - prev : null;
-    const cls = chg == null ? "" : chg >= 0 ? "up" : "down";
+    // 三態：chgClass 對 0 回 "flat"，不落進 up——平盤不是漲，紅綠只給價格漲跌方向
+    // （chg 為 null 時維持空字串，與「沒有前一根可比」原本的語意一致，不套用任何顏色）。
+    const cls = chg == null ? "" : chgClass(chg);
     readouts[0].innerHTML = `${esc(dates[i].slice(5))}　開 <b>${fmt(c[0], 2)}</b> 高 <b>${fmt(c[3], 2)}</b> 低 <b>${fmt(c[2], 2)}</b> 收 <b class="${cls}">${fmt(c[1], 2)}</b>`
       + (chg == null ? "" : ` <span class="${cls}">${fmtSigned(chg, 2)}（${fmtSigned((chg / prev) * 100, 2)}%）</span>`);
-    readouts[1].innerHTML = `量 <b>${fmt((lastStockData.volumes || [])[i] || 0, 0)}</b> 張`;
+    // 「沒有量能資料」與「量剛好是 0 張」是兩件事（同 sumToBars 上方的既有規矩）：
+    // fmt(null) 本來就回「—」，不必也不該用 || 0 把缺值換成看起來像真值的 0。
+    readouts[1].innerHTML = `量 <b>${fmt((lastStockData.volumes || [])[i], 0)}</b> 張`;
     readouts[2].innerHTML = stockInstReadout(dates[i]);
     readouts[3].innerHTML = stockCustodyReadout(dates[i]);
   };
@@ -439,6 +466,10 @@ function initStockChart(el) {
 
 function disposeStockChart() {
   if (stockChart) { try { stockChart.remove(); } catch (e) { /* ignore */ } }
+  // observer 綁在 #stock-chart 這個長存元素上，chart.remove() 不會連帶 disconnect 它——
+  // 沒有這行的話每跑一次 dispose→reinit 就多累積一個 observer，之後任何一次容器尺寸
+  // 變化都會讓舊 observer 對著已經 remove() 的 chart 呼叫 panes()（見上方宣告處的說明）。
+  if (lwReadoutObserver) { lwReadoutObserver.disconnect(); lwReadoutObserver = null; }
   stockChart = null; lwCandleSeries = null; lwVolumeSeries = null; lwMaSeries = []; lwMarkersApi = null;
   lwInstSeries = null; lwCustodySeries = null; lwCustodyMarkers = null; lwPaintReadouts = null;
   // chart.remove() 只清掉 LWC 自己建立的 canvas，不會動我們手動塞進容器的圖例／讀數列
@@ -501,15 +532,23 @@ let lwInstByBar = new Map(), lwCustByBar = new Map();
 function stockInstReadout(bar) {
   const v = lwInstByBar.get(bar);
   if (!v) return `法人 <b>—</b>`;
-  const [f, t, d] = v, sum = [f, t, d].reduce((a, b) => a + (b || 0), 0);
+  const [f, t, d] = v;
+  // 三者有任一為 null 才回 null（顯示「—」）：外資有值、投信/自營缺值時，若只加有值的
+  // 那幾個（(b || 0) 把缺值當 0），合計會顯示成一個外觀跟「三者齊全的真合計」一模一樣的
+  // 數字——日K 的 T86 三者通常同進同出，但週K／月K 是逐系列獨立加總，某一系列整週皆無
+  // 資料是可能的，不能自作聰明只加有值的。
+  const sum = (f == null || t == null || d == null) ? null : f + t + d;
   const cell = (label, x) => `${label} <b class="${x > 0 ? "up" : x < 0 ? "down" : ""}">${x == null ? "—" : fmtSigned(x, 0)}</b>`;
   return `${cell("外資", f)}　${cell("投信", t)}　${cell("自營", d)}　${cell("合計", sum)} 張`;
 }
 function stockCustodyReadout(bar) {
   const v = lwCustByBar.get(bar);
   if (!v) return `集保 <b>—</b>`;
+  // week 可能是 falsy（同舊集保圖 t.week ? t.week.slice(5) : "" 的既有守衛）：少了這個
+  // 判斷會在 week 為 null 時丟 TypeError，例外一路冒到 loadStock 的 try/catch，把說明列
+  // 改寫成看起來像「K 線抓取失敗」的假錯誤。
   return `千張大戶 <b>${fmt(v.big1000_pct, 2)}%</b>　400張↑ <b>${fmt(v.big400_pct, 2)}%</b>`
-    + `　人均 <b>${v.avg_shares == null ? "—" : fmt(v.avg_shares, 0)}</b> 股（${esc(v.week.slice(5))}）`;
+    + `　人均 <b>${v.avg_shares == null ? "—" : fmt(v.avg_shares, 0)}</b> 股（${v.week ? esc(v.week.slice(5)) : ""}）`;
 }
 
 // 用目前的三份資料（K 線／法人／集保）重算兩個籌碼窗格。K 線是主軸：籌碼一律貼到
