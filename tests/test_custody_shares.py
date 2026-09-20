@@ -163,6 +163,23 @@ def test_autofill_decision(conn, weeks, with_shares, expect):
     assert S._should_autofill(db.get_custody_trend(conn, "2330")) is expect
 
 
+def test_zero_total_shares_counts_as_a_reading_not_a_hole(conn):
+    """股數 0 是有效觀測，不是缺值——當成缺值會讓那一週每天被重抓、永遠補不完。
+
+    `_aggregate_levels` 對解析不出來的股數欄會給 `float(shares or 0)`＝0.0，而
+    `upsert_custody` 的 COALESCE 會把 0.0 寫進去（不是 NULL）。若 `_should_autofill`
+    用真值判斷，這種週就永遠算「缺股數」→ 條件永遠成立 → 每天一次約 52 個智能網
+    POST 且沒有終止狀態（同假日回補那條教訓）。反證：把 `is not None` 改回真值
+    判斷，這條會轉紅。"""
+    from stocks_power_rich.api import stock as S
+    _seed_weeks(conn, "2330", 40, with_shares=False)
+    for t in db.get_custody_trend(conn, "2330"):
+        db.upsert_custody(conn, t["week"], "2330", {"total_shares": 0.0})
+    trend = db.get_custody_trend(conn, "2330")
+    assert all(t["total_shares"] == 0.0 for t in trend)   # 真的寫進 0 而不是 NULL
+    assert S._should_autofill(trend) is False
+
+
 @pytest.mark.real_custody_autofill
 def test_autofill_runs_once_per_code_per_day(conn, monkeypatch):
     """同一天同一檔只補一次——手動連查很多檔時不可以連打 TDCC 智能網。

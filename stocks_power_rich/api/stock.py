@@ -49,7 +49,11 @@ def _should_autofill(trend: list) -> bool:
     ——total_shares 是後加的欄位，既有部署的舊列全是空的，人均數會整片算不出來。"""
     if len(trend) < CUSTODY_MIN_WEEKS:
         return True
-    return sum(1 for t in trend if t.get("total_shares")) < len(trend) / 2
+    # **用 `is not None` 不用真值判斷**：股數 0 是一筆有效觀測（智能網某週的股數欄
+    # 解析不出來時 `_aggregate_levels` 會給 0.0），當成缺值會讓那一週永遠留在待補
+    # 清單裡、每天重抓一次而且永遠補不完——同 `tpex.parse_otc_margin`「零餘額是有效
+    # 觀測」與假日回補「要有終止狀態」那兩條既有教訓。
+    return sum(1 for t in trend if t.get("total_shares") is not None) < len(trend) / 2
 
 
 def _autofill_cache_key(pure: str) -> str:
@@ -109,7 +113,7 @@ def _custody_autofill_job(pure: str) -> None:
             have = get_custody_trend(c, pure)
             have_weeks = {t["week"] for t in have}
             # 已有列但缺股數（total_shares）的週——舊資料沒有這欄，或欄位剛加不久還沒補到。
-            weak_weeks = {t["week"] for t in have if not t.get("total_shares")}
+            weak_weeks = {t["week"] for t in have if t.get("total_shares") is None}
             avail = tdcc.fetch_custody_weeks()
             # `want` 同時收「全新的週」與「已有列但缺股數的週」兩種（final review I1）：
             # 舊版只濾掉 have_weeks，於是「有列但缺股數」的週永遠不會被列進 want——這正是

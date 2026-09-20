@@ -4410,8 +4410,9 @@ async function loadStock(code, name) {
     // series 資料還留在圖表裡，使用者會看到「上一檔的 K 線＋這一檔的法人／集保／基本面」
     // 這種永久的混合狀態（500 不會自己恢復，下次成功查詢前都是這樣；實測：K 線 500 時
     // 讀數列仍顯示台積電 2,460/2,705/2,435/2,460，集保窗格卻已經是亞泥的 51 個點）。
-    // 整個丟掉圖表，之後 renderStockPanes 也會因 !lastStockData 略過，法人／集保窗格
-    // 同步清空，畫面回到乾淨的空狀態而不是半新半舊。
+    // 清空靠的是 disposeStockChart() 把整張圖拆掉——**不是** renderStockPanes 的提早
+    // return（它略過時什麼都不清，上一檔的籌碼會原封不動留在畫面上，實測過）。
+    // 拆掉之後畫面是乾淨的空狀態，不是半新半舊。
     disposeStockChart(); lastStockData = null;
     stockNoteKline = "載入失敗：" + e.message; renderStockNoteLine();
   }
