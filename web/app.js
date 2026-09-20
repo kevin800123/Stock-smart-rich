@@ -216,11 +216,19 @@ function barIndexFor(barDates, d) {
   return ans;
 }
 // 同一根 K 棒收到多筆時取最新一筆（集保：月K 的一個月有四五週，規格說取最後一週）。
+// 「最新」比的是來源日期本身，不是 dates 陣列的走訪順序——呼叫端不保證 dates 由舊到新排序，
+// 所以另外記住每根棒子目前是被哪個來源日期貼上的，只有更晚的日期才覆蓋。
 function snapToBars(barDates, dates, values) {
   const byBar = new Map();
+  const srcDate = new Map();
   for (let i = 0; i < dates.length; i++) {
     const k = barIndexFor(barDates, dates[i]);
-    if (k >= 0 && values[i] != null) byBar.set(barDates[k], values[i]);
+    if (k < 0 || values[i] == null) continue;
+    const barDate = barDates[k];
+    const prevSrc = srcDate.get(barDate);
+    if (prevSrc != null && dates[i] <= prevSrc) continue;
+    byBar.set(barDate, values[i]);
+    srcDate.set(barDate, dates[i]);
   }
   return { byBar };
 }

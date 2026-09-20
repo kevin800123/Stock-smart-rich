@@ -512,7 +512,7 @@ git commit -m "feat(api): 集保端點回人均數與週數，歷史不足時背
 
 **Interfaces:**
 - Produces:
-  - `snapToBars(barDates, dates, values)` → `{bars: [...], byBar: Map}`：把 `dates[i]`／`values[i]` 貼到「≤ 該日期的最後一根 K 棒」上；同一根被貼到多筆時**取最新一筆**；早於第一根 K 棒的丟掉。`values[i]` 可以是任何型別（數字或物件）。回傳 `byBar`＝`Map<barDate, value>`。
+  - `snapToBars(barDates, dates, values)` → `{ byBar: Map }`：把 `dates[i]`／`values[i]` 貼到「≤ 該日期的最後一根 K 棒」上；同一根被貼到多筆時**取最新一筆**；早於第一根 K 棒的丟掉。值可以是任何型別（數字或整筆物件）；同一根取來源日期最晚的那一筆，與輸入順序無關。
   - `sumToBars(barDates, dates, valueArrays)` → `Array<Array<number|null>>`：同樣貼齊，但同一根 K 棒收到多筆時**相加**（週 K／月 K 的法人買賣超按期間加總）；整根都沒有資料回 `null`（不是 0——「沒有資料」與「買賣超剛好是 0」是兩件事）。`valueArrays` 是多條序列（外資／投信／自營），回傳同樣的條數，每條長度＝`barDates.length`。
 
 - [ ] **Step 1: 寫程式**
