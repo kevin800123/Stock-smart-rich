@@ -203,6 +203,43 @@ function lwTimeLabel(t) {
   return String(t);
 }
 
+// ===== 把外來的籌碼資料貼到 K 棒上 =====
+// LWC 的時間軸是所有 series 時間的聯集：直接丟進「K 線沒有的日期」（集保週五遇假日、
+// stock_ohlc 稀疏）會多出沒有 K 棒的刻度，看起來像破圖。所以一律往前貼到「≤ 該日期的
+// 最後一根 K 棒」；貼不到（早於第一根）就丟掉。週K／月K 也靠這個規則落到對的那根棒子。
+function barIndexFor(barDates, d) {
+  let lo = 0, hi = barDates.length - 1, ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (barDates[mid] <= d) { ans = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return ans;
+}
+// 同一根 K 棒收到多筆時取最新一筆（集保：月K 的一個月有四五週，規格說取最後一週）。
+function snapToBars(barDates, dates, values) {
+  const byBar = new Map();
+  for (let i = 0; i < dates.length; i++) {
+    const k = barIndexFor(barDates, dates[i]);
+    if (k >= 0 && values[i] != null) byBar.set(barDates[k], values[i]);
+  }
+  return { byBar };
+}
+// 同一根 K 棒收到多筆時相加（法人：週K 按週加總、月K 按月加總）。整根都沒有資料回 null
+// ——「沒有資料」與「買賣超剛好是 0」是兩件事，混在一起會讓空白日期畫出一根 0 的柱子。
+function sumToBars(barDates, dates, valueArrays) {
+  const out = valueArrays.map(() => new Array(barDates.length).fill(null));
+  for (let i = 0; i < dates.length; i++) {
+    const k = barIndexFor(barDates, dates[i]);
+    if (k < 0) continue;
+    valueArrays.forEach((arr, s) => {
+      const v = arr[i];
+      if (v == null) return;
+      out[s][k] = (out[s][k] == null ? 0 : out[s][k]) + v;
+    });
+  }
+  return out;
+}
+
 // 建立個股 K 線圖，只呼叫一次（loadStock 用 `if (!stockChart)` 判斷）。授權要求保留
 // TradingView 標誌（layout.attributionLogo），不可關閉；紅漲綠跌讀既有 C.up/C.down，
 // 不寫死色碼；字型與 body 堆疊同步用既有 HM_FONT。滾輪縮放／拖曳平移／十字線／右側
