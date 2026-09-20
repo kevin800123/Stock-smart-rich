@@ -504,22 +504,31 @@ function renderStockPanes() {
     if (lwCustodyMarkers) lwCustodyMarkers.setMarkers([]);
   }
 }
-// 人均數（總股數÷總持股人數）箭頭：比上週高＝白色向上（籌碼往少數人集中）、
-// 比上週低＝黃色向下（分散）。相等、任一週缺值、第一週（沒有前一週可比）都不標。
+// 人均數（總股數÷總持股人數）箭頭：比上一根「有值」的棒子高＝白色向上（籌碼往少數人集中）、
+// 比上低＝黃色向下（分散）。相等、任一邊缺值、找不到前一根有值的棒子可比（含第一根）都不標。
+// **一根 K 棒最多一個箭頭，不是一週一個**——月K 一根棒子對到 4~5 個集保週，逐週標會在
+// 同一根疊出好幾個箭頭（同側疊在一起看不出方向，日K 也偶爾遇到假日撞在同一根）。折線
+// （lwCustodySeries）已經是「一根棒子一個值」：snapToBars 的規則是「同一根被貼到多筆時取
+// 來源日期最新那筆」，即該月最後一週；箭頭改用同一個 byBar 對照表比相鄰兩根**有值**的
+// 棒子，才會跟折線講的是同一件事（月K＝該月最後一週 vs 上個月最後一週）。日K／週K 每週
+// 各自對到不同棒子，相鄰有值棒子就是相鄰兩週，行為不變。
 // **標記圖層只建一次、之後一律 setMarkers 換內容**——createSeriesMarkers 每呼叫一次就在
 // series 上掛一個新的 primitive，丟掉舊參照並不會卸下它（艾略特波浪踩過的既有教訓）。
 function renderCustodyMarkers(bars, trend) {
+  const byBar = snapToBars(bars, trend.map((x) => x.week), trend.map((x) => x.avg_shares)).byBar;
   const marks = [];
-  for (let i = 1; i < trend.length; i++) {
-    const cur = trend[i].avg_shares, prev = trend[i - 1].avg_shares;
-    if (cur == null || prev == null || cur === prev) continue;
-    const k = barIndexFor(bars, trend[i].week);
-    if (k < 0) continue;
-    marks.push({
-      time: bars[k], position: cur > prev ? "aboveBar" : "belowBar",
-      shape: cur > prev ? "arrowUp" : "arrowDown",
-      color: cur > prev ? "#ffffff" : C.accent,
-    });
+  let prev = null;
+  for (const barDate of bars) {
+    if (!byBar.has(barDate)) continue;
+    const cur = byBar.get(barDate);
+    if (prev != null && cur !== prev) {
+      marks.push({
+        time: barDate, position: cur > prev ? "aboveBar" : "belowBar",
+        shape: cur > prev ? "arrowUp" : "arrowDown",
+        color: cur > prev ? "#ffffff" : C.accent,
+      });
+    }
+    prev = cur;
   }
   if (lwCustodyMarkers) lwCustodyMarkers.setMarkers(marks);
   else if (marks.length) lwCustodyMarkers = LightweightCharts.createSeriesMarkers(lwCustodySeries.big1000, marks);
