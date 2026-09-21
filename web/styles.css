@@ -81,15 +81,15 @@
   --space-2xl: 32px;
 
   /* Design tokens — dense financial typography */
-  --font-size-xs: 11px;
-  --font-size-table: 12px;
-  --font-size-data: 13px;
-  --font-size-sm: 14px;
-  --font-size-base: 15px;
-  --font-size-md: 16px;
-  --font-size-lg: 20px;
-  --font-size-xl: 26px;
-  --font-size-hero: 40px;
+  --font-size-xs: 12px;
+  --font-size-table: 13px;
+  --font-size-data: 14px;
+  --font-size-sm: 15px;
+  --font-size-base: 16px;
+  --font-size-md: 18px;
+  --font-size-lg: 22px;
+  --font-size-xl: 28px;
+  --font-size-hero: 44px;
 
   /* Legacy aliases keep existing screens stable while the redesign rolls out. */
   /* 表面階梯：背景 → 工作區 → 模組 → 數據卡。保留低飽和深藍黑，讓台股紅綠
@@ -174,6 +174,10 @@ body {
   font-family: "Num", "Huninn", "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", system-ui, sans-serif;
   font-variant-numeric: tabular-nums;
   font-size: var(--fs-base);
+  /* 字級整體放大一級後補上行距：原本沒有 line-height（＝normal，約 1.2），
+     16px 正文在深色底上會黏成一團。密集表格與排行列在各自的規則裡有更緊的
+     line-height，會蓋過這一行，不受影響。 */
+  line-height: 1.5;
   background: radial-gradient(circle at 88% -10%, #142642 0, transparent 34%), var(--bg);
   color: var(--text);
 }
@@ -192,12 +196,21 @@ body {
   overflow: hidden;
 }
 .topbar {
+  /* 頂欄是**常駐 chrome**，不吃 body 的 1.5 行距：字級放大一級後，資料日期／更新時間
+     這兩串在 375px 下會折成兩行，實測把頂欄從 58px 撐到 82px——永久吃掉 3% 的畫面
+     （同下面 .gs-toggle 那條「絕對定位才回得到 56px」的取捨）。1.25 是量出來的：
+     只加這行 71px、只縮字 66px、兩者都做 59px（基準 58px）。 */
+  line-height: 1.25;
   grid-column: 1 / 3;
   display: flex; justify-content: space-between; align-items: center;
   padding: 12px 24px; background: linear-gradient(100deg, var(--panel), var(--panel-raised));
   border-bottom: 1px solid var(--border); box-shadow: 0 5px 18px rgba(0, 0, 0, 0.2); z-index: 2;
 }
-.topbar h1 { font-size: var(--fs-lg); margin: 0; letter-spacing: 1px; }
+/* nowrap＋不可收縮：字級放大一級後，標題單行需要 302px 而 1024px 視窗只分到 298px，
+   **差 4px 就折成兩行**，把頂欄從 59px 撐到 80px（只有中間寬度會中，1904/1280/375 都測不到）。
+   讓搜尋框去吸收這 4px（min-width:0 才收得動），標題保持完整——它是品牌名，不截斷。 */
+.topbar h1 { font-size: var(--fs-lg); margin: 0; letter-spacing: 1px; white-space: nowrap; flex: 0 0 auto; }
+.topbar .gsearch { min-width: 0; }
 .topbar h1 .zh { font-size: var(--fs-sm); color: var(--label); margin-left: 8px; }
 .actions { display: flex; align-items: center; gap: 14px; }
 
@@ -464,7 +477,7 @@ body[data-public] .status-bar { display: none; }
   .market-strip { padding: 12px; }
   .ms-index { gap: 5px 7px; }
   .ms-index .ms-label { flex-basis: 100%; }
-  .ms-index .ms-val { font-size: 28px; }
+  .ms-index .ms-val { font-size: 30px; }
   .ms-index .ms-chg { font-size: var(--fs-sm); }
   .breadth-nums { gap: 5px 8px; }
   .breadth-bar { height: 18px; }
@@ -628,7 +641,7 @@ body[data-public] .status-bar { display: none; }
    沒有鍵的區塊（目前沒有這種情況，但保留這個防呆）點了也不會收合，總比
    收合後找不到鍵、狀態存不住、下次重整又彈開要好。 */
 .card-group[data-key] > .group-title { cursor: pointer; user-select: none; }
-.card-group[data-key] > .group-title::before { content: "▾  "; color: var(--muted); font-size: 10px; }
+.card-group[data-key] > .group-title::before { content: "▾  "; color: var(--muted); font-size: 11px; }
 .card-group[data-key].collapsed > .group-title::before { content: "▸  "; }
 .card-group[data-key].collapsed > .group-title { margin-bottom: 0; }
 .card-group[data-key].collapsed > *:not(.group-title) { display: none; }
@@ -646,7 +659,7 @@ body[data-public] .status-bar { display: none; }
      7 欄，第 8 張會單獨掉到第二列變成孤兒。反過來也不能再壓：實測 8 欄搭 16px 間距時
      卡片只剩 138px，`自營買賣超 -194.29 億` 這種數值就會被 .card-val 的 nowrap 擠出格子
      （現在 143px 剛好放得下）。窄容器仍由 auto-fit 自然降成 4/3 欄，不必寫斷點。 */
-  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(152px, 1fr));
   gap: 10px;
 }
 /* min-width:0 是必要的結構護欄：grid item 預設 min-width:auto（＝min-content），
@@ -659,7 +672,7 @@ body[data-public] .status-bar { display: none; }
      最高也只需 127px，所以「高卡片」不受這個下限影響（它們本來就靠內容自己撐開）；
      被墊高的是佔多數的矮卡片——實測內容 67px 的卡片被撐成 146px，等於每張白白空 55px，
      24 張就是整頁看起來很空的主因。降到 104px 只砍掉純空白，不動任何一張卡的內容。 */
-  min-width: 0; min-height: 104px; padding: 10px var(--space-md);
+  min-width: 0; min-height: 116px; padding: 12px var(--space-md);
   background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: var(--r-lg);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045), var(--shadow-card);
   transition: transform var(--dur-base) var(--ease-out), border-color var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out);
@@ -676,7 +689,7 @@ body[data-public] .status-bar { display: none; }
 /* 23px 而非 --fs-xl(26px)：卡片變窄（台股大盤一列 8 張、每張約 150px）之後 26px 在
    格子裡偏「喊」，參考的儀表板類介面數值多在 20–22px。這只是觀感刻度，**不動
    「卡片裡最大的字只給數字」那條分層規則**——修飾語仍走 .card-qual、單位走 .card-unit。 */
-.card-val { order: 2; color: var(--text-primary); font-size: 23px; font-weight: 700; margin: auto 0 var(--space-xs); line-height: 1.15; white-space: nowrap; }
+.card-val { order: 2; color: var(--text-primary); font-size: 25px; font-weight: 700; margin: auto 0 var(--space-xs); line-height: 1.15; white-space: nowrap; }
 .card-qual { order: 1; font-size: var(--font-size-sm); color: var(--text-muted); margin-top: var(--space-xs); line-height: 1.2; }
 .card-qual + .card-val { margin-top: auto; }
 .card-unit { font-size: var(--fs-sm); font-weight: 400; margin-left: 3px; }
@@ -689,13 +702,13 @@ body[data-public] .status-bar { display: none; }
 .card-metric .card-val { flex: 0 1 auto; margin: 0; }
 .card-metric .card-chg {
   flex: 0 0 auto; align-self: baseline; margin: 0; white-space: nowrap;
-  font-size: 17px; font-weight: 700; line-height: 1.15; text-align: right;
+  font-size: 19px; font-weight: 700; line-height: 1.15; text-align: right;
 }
 .card-qual + .card-metric { margin-top: 5px; }
 .card-trend { order: 4; min-width: 0; margin-top: 8px; }
 .card-trend-head {
   display: flex; justify-content: space-between; gap: 8px; margin-bottom: 2px;
-  color: var(--muted); font-size: 10px; line-height: 1.2; white-space: nowrap;
+  color: var(--muted); font-size: 11px; line-height: 1.2; white-space: nowrap;
 }
 .card-trend-head span:last-child { font-variant-numeric: tabular-nums; }
 .card-trend-bars {
@@ -740,7 +753,7 @@ body[data-public] .status-bar { display: none; }
   box-shadow: inset 0 0 0 1px rgba(112, 184, 255, .16);
 }
 .stat-board > .stat-cell.key-metric:hover { background: #1c2f4b; }
-.stat-cell.key-metric .card-label { color: var(--text-primary); font-size: 15px; font-weight: 800; }
+.stat-cell.key-metric .card-label { color: var(--text-primary); font-size: 16px; font-weight: 800; }
 .stat-cell.key-metric .card-val { font-size: clamp(23px, 1.7vw, 26px); font-weight: 850; }
 .stat-cell.key-metric .card-chg { font-weight: 800; }
 .stat-board > .stat-cell > .card-val { margin: 9px 0 var(--space-xs); }
@@ -799,7 +812,7 @@ body[data-public] .status-bar { display: none; }
 .cup-chip .cup-r { font-size: var(--fs-xs); opacity: .8; }
 .cup-chip.active .cup-r { opacity: 1; }
 .cup-chip.pick { border-color: var(--down); }               /* 同時符合選股名單：綠框標記 */
-.cup-chip.pick::before { content: "●"; color: var(--down); font-size: 9px; margin-right: -2px; }
+.cup-chip.pick::before { content: "●"; color: var(--down); font-size: 10px; margin-right: -2px; }
 .cup-chip.active.pick::before { color: #1a5c2f; }
 
 /* ===== 權值股貢獻（色階卡片，供海期監控共用） ===== */
@@ -819,7 +832,7 @@ body[data-public] .status-bar { display: none; }
 .mv-card { border: 1px solid var(--border); border-radius: var(--r); padding: 8px 10px; color: #fff; overflow: hidden; }
 /* 權值股卡的個股名在紅/綠底色上，陰影讓白字浮起、更清楚有層次 */
 .mv-name { font-size: var(--fs-md); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5); }
-.mv-contrib { font-size: 18px; font-weight: 800; margin-top: 2px; line-height: 1.1; }
+.mv-contrib { font-size: 20px; font-weight: 800; margin-top: 2px; line-height: 1.1; }
 .mv-contrib .mv-unit { font-size: var(--fs-xs); font-weight: 400; margin-left: 2px; }
 .mv-sub { font-size: var(--fs-xs); opacity: .92; margin-top: 2px; white-space: nowrap; }
 /* 海期卡片：垂直三層——名稱獨佔整行（不截斷）、價格為主角、漲跌%/點數分列下方。
@@ -995,7 +1008,7 @@ body[data-public] .status-bar { display: none; }
   text-shadow: 0 1px 2px rgba(0,0,0,.55); }
 .lw-readout b { color: var(--text-primary); font-weight: 650; }
 .lw-readout .up { color: var(--up); } .lw-readout .down { color: var(--down); }
-@media (max-width: 600px) { .lw-readout { font-size: 11px; } }
+@media (max-width: 600px) { .lw-readout { font-size: 12px; } }
 
 /* ===== AI 區 ===== */
 .ai-head { display: flex; align-items: center; justify-content: space-between; font-size: var(--fs-sm); color: var(--accent); font-weight: 700; }
@@ -1140,7 +1153,7 @@ button.file-label { font: inherit; }
 .ss-badge {
   position: relative; display: inline-flex; align-items: center; gap: 4px;
   vertical-align: 1px; margin-left: 6px; padding: 3px 6px 3px 7px;
-  font-family: "Num", system-ui, sans-serif; font-size: 9.5px; font-weight: 800; line-height: 1;
+  font-family: "Num", system-ui, sans-serif; font-size: 10.5px; font-weight: 800; line-height: 1;
   letter-spacing: .12em; text-transform: uppercase; white-space: nowrap;
   border-radius: 3px; cursor: help; isolation: isolate; overflow: hidden;
 }
@@ -1353,7 +1366,7 @@ button.file-label { font: inherit; }
   /* 手機表格只有約 325px，六欄放不下名稱（只剩 45px）。比照高價股的手機做法拿掉名次欄
      （順序本身就是名次）、字級降到 13px（em 欄寬跟著縮），名稱回到約 88px。名次格留在
      DOM 裡（寬度 0、字 0），讀螢幕的人仍聽得到名次。 */
-  .ssf-top-t { font-size: 13px; }
+  .ssf-top-t { font-size: 14px; }
   .ssf-top-t col.c-rk { width: 0; }
   #view-ssf .ssf-top-t .ssf-rk { padding: 0; font-size: 0; }
   #view-ssf .ssf-top-t tbody td:first-child { position: static; box-shadow: none; }
@@ -1523,7 +1536,7 @@ button.file-label { font: inherit; }
   filter: brightness(1.12);
 }
 .ss-market-map.has-selection .ss-market-cell:not(.active) { opacity: .5; }
-.ss-cell-rank { flex: none; color: #c8e6fb; font-size: 11px; font-weight: 800; line-height: 1; letter-spacing: .05em; }
+.ss-cell-rank { flex: none; color: #c8e6fb; font-size: 12px; font-weight: 800; line-height: 1; letter-spacing: .05em; }
 .ss-cell-name {
   margin-top: auto;
   display: -webkit-box; overflow: hidden; color: #f6fbff; font-size: clamp(13px, 1.12vw, 17px);
@@ -1531,13 +1544,13 @@ button.file-label { font: inherit; }
 }
 .ss-cell-value { margin-top: 5px; font-size: clamp(19px, 1.75vw, 28px); font-weight: 800; line-height: 1; letter-spacing: -.025em; }
 .ss-cell-value small { margin-left: 3px; color: #d5ebfa; font-size: .55em; font-weight: 700; letter-spacing: 0; }
-.ss-cell-meta { margin-top: 6px; color: #c8e0f2; font-size: 11px; font-weight: 600; line-height: 1.2; white-space: nowrap; }
+.ss-cell-meta { margin-top: 6px; color: #c8e0f2; font-size: 12px; font-weight: 600; line-height: 1.2; white-space: nowrap; }
 .ss-market-cell.is-compact { padding: 8px 9px; }
 .ss-market-cell.is-compact .ss-cell-rank, .ss-market-cell.is-compact .ss-cell-meta { display: none; }
-.ss-market-cell.is-compact .ss-cell-name { font-size: 12px; }
-.ss-market-cell.is-compact .ss-cell-value { margin-top: 3px; font-size: 16px; }
+.ss-market-cell.is-compact .ss-cell-name { font-size: 13px; }
+.ss-market-cell.is-compact .ss-cell-value { margin-top: 3px; font-size: 18px; }
 .ss-market-cell.is-micro { padding: 5px 6px; }
-.ss-market-cell.is-micro .ss-cell-name { margin-block: auto; font-size: 10px; line-height: 1.15; -webkit-line-clamp: 3; }
+.ss-market-cell.is-micro .ss-cell-name { margin-block: auto; font-size: 11px; line-height: 1.15; -webkit-line-clamp: 3; }
 .ss-market-cell.is-micro .ss-cell-value { display: none; }
 /* fitMarketCells 量過放不下時逐步加上的收合層級（每一級只多收一樣東西） */
 .ss-market-cell.no-meta .ss-cell-meta, .ss-market-cell.no-rank .ss-cell-rank { display: none; }
@@ -1722,7 +1735,7 @@ tr.clickrow { cursor: pointer; }
 #daily th.is-sorted { color: var(--info); box-shadow: inset 0 -2px 0 var(--info); }
 #daily th[data-col="mu_value"], #daily td[data-col="mu_value"],
 #daily th[data-col="mu_score"], #daily td[data-col="mu_score"] { border-right: 1px solid var(--border-default); }
-.sort-mark { margin-left: 5px; color: var(--info); font-size: 9px; }
+.sort-mark { margin-left: 5px; color: var(--info); font-size: 10px; }
 #daily a.stock { font-size: var(--fs-sm); font-weight: 750; }
 #industry tr.is-active td { background: rgba(112, 184, 255, .16); color: var(--text-primary); font-weight: 750; }
 #industry tr.is-active td:first-child { box-shadow: inset 3px 0 0 var(--info); }
@@ -1865,12 +1878,24 @@ a.stock:hover { text-decoration: underline; }
 .nav-more { display: none; }
 .nav-scrim { display: none; }
 
+/* 窄桌面／平板（601–860px）：頂欄**自己的控制項**維持放大前的尺寸。
+   這一段的頂欄本來就排不下「標題＋搜尋＋資料日」而折成 3 列（改動前實測 601px 82px、
+   768px 76px），字級整體 +1 級後 3 列一起長高，601px 直接撐到 125px。頁面內容照樣放大，
+   只把常駐 chrome 收回去：實測 601px 125→85（基準 82）、768px 81→60（比基準還矮）。
+   ≤600px 另有更緊的一組（搜尋收成圖示），寫在下面、順序在後所以會蓋過這裡。 */
+@media (max-width: 860px) {
+  .topbar h1 { font-size: 18px; }
+  .topbar h1 .zh { font-size: 13px; }
+  .topbar .gsearch input { font-size: 15px; padding: 7px 10px; }
+  .topbar .muted, .topbar .data-date { font-size: 12px; }
+}
+
 /* 手機：導覽改「4 個常駐分頁 ＋ 更多面板」，版面單欄；寬表格沿用 .table-wrap 的左右滑動 */
 @media (max-width: 600px) {
   .app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 
   .topbar { padding: 8px 12px; flex-wrap: wrap; gap: 2px 8px; }
-  .topbar h1 { font-size: 15px; letter-spacing: 0; }
+  .topbar h1 { font-size: 16px; letter-spacing: 0; }
   /* 搜尋框自己佔一整列：375px 的頂欄放不下「標題＋搜尋＋資料日」三塊，擠在同一行
      會讓搜尋框窄到只剩兩三個字寬。但常駐一整列＝頂欄 56→101px，**永久**吃掉 45px
      （812px 螢幕的 5.5%），而搜尋不是每次進站都要用的東西。所以預設收成一顆圖示，
@@ -1884,17 +1909,20 @@ a.stock:hover { text-decoration: underline; }
     display: inline-flex; align-items: center; justify-content: center;
     width: 34px; height: 34px; flex: 0 0 auto;
     background: var(--sunken); color: var(--text); border: 1px solid var(--border);
-    border-radius: var(--r); font-size: 15px; line-height: 1; cursor: pointer;
+    border-radius: var(--r); font-size: 16px; line-height: 1; cursor: pointer;
   }
   .gs-toggle[aria-expanded="true"] { border-color: var(--accent); }
   .gsearch { display: none; }
   .topbar.search-open .gsearch { display: block; flex: 1 0 100%; order: 3; margin-top: 4px; }
-  .gsearch input { padding: 9px 12px; font-size: 14px; }   /* 手機可點高度 */
+  .gsearch input { padding: 9px 12px; font-size: 15px; }   /* 手機可點高度 */
   /* 三則標題在 375px 分三欄等於一格 100px，截斷後只剩幾個字＝沒有資訊。改直排。 */
   .news-strip { grid-template-columns: 1fr; }
-  .topbar h1 .zh { font-size: 11px; margin-left: 5px; }
+  .topbar h1 .zh { font-size: 12px; margin-left: 5px; }
   .actions { gap: 8px; }
-  .muted, .data-date { font-size: 12px; }
+  .muted, .data-date { font-size: 13px; }
+  /* 但頂欄自己的那兩串維持 12px：它們橫向排在同一列、13px 就會折行（見上面 .topbar
+     的 line-height 註解）。**只縮頂欄內的**，頁面其他地方的 .muted 照樣是放大後的 13px。 */
+  .topbar .muted, .topbar .data-date { font-size: 12px; }
 
   .content { flex: 1; min-height: 0; }
   /* 底部留白 = 分頁列高度 ＋ iPhone 底部指示條（safe-area），不夠的話最後一列會被蓋住 */
@@ -1931,8 +1959,8 @@ a.stock:hover { text-decoration: underline; }
   #ss-hm-note { text-align: left; }
   .ss-market-cell { padding: 7px 8px; border-width: 1.5px; border-radius: 5px; }
   /* .ss-cell-rank 已改成排在文字流裡（不再絕對定位），手機不必另調 top/left */
-  .ss-cell-name { font-size: 12px; }
-  .ss-cell-value { font-size: 18px; }
+  .ss-cell-name { font-size: 13px; }
+  .ss-cell-value { font-size: 20px; }
 
   /* 左側欄 → 固定底部分頁列。
      **`display: flex` 這行不能省。** `.sidebar` 本身沒有宣告 display（桌機的 flex 容器
@@ -1963,15 +1991,15 @@ a.stock:hover { text-decoration: underline; }
   }
   .nav:not([data-primary]) { display: none; }
   .nav-more { display: flex; }
-  .nav .ico, .nav-more .ico { font-size: 20px; line-height: 1; }
+  .nav .ico, .nav-more .ico { font-size: 22px; line-height: 1; }
   /* 手機一律用 data-short：底部列與面板的格寬都容不下「籌碼/基本選股」這種長度，
      兩種狀態共用一條規則比各寫一條不容易漂移。 */
   .nav .lbl { display: none; }
   .nav::after {
-    content: attr(data-short); font-size: 10px; line-height: 1;
+    content: attr(data-short); font-size: 11px; line-height: 1;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
   }
-  .nav-more .lbl { font-size: 10px; line-height: 1; }
+  .nav-more .lbl { font-size: 11px; line-height: 1; }
   .nav:hover, .nav-more:hover { background: transparent; border-color: transparent; }
   .nav.active { background: transparent; border-color: transparent; box-shadow: none;
                 color: var(--accent); font-weight: 700; }
@@ -1998,11 +2026,11 @@ a.stock:hover { text-decoration: underline; }
     gap: 10px; min-height: 44px; padding: 8px 14px;
   }
   .sidebar.open .nav::after { content: none; }
-  .sidebar.open .nav .lbl { display: inline; font-size: 14px; }
+  .sidebar.open .nav .lbl { display: inline; font-size: 15px; }
   .sidebar.open .nav-more { order: -1; flex: 0 0 auto; }
   .sidebar.open .nav-more .lbl::before { content: "關閉"; }
   .sidebar.open .nav-more .lbl { font-size: 0; }
-  .sidebar.open .nav-more .lbl::before { font-size: 10px; }
+  .sidebar.open .nav-more .lbl::before { font-size: 11px; }
   .sidebar.open .nav-more .ico { transform: rotate(45deg); }
 
   @keyframes nav-drawer-in {
@@ -2021,12 +2049,12 @@ a.stock:hover { text-decoration: underline; }
      加上頂列 56px 等於固定吃掉 188/812＝23% 的畫面；3 欄壓到 ~78px。 */
   .kpi-sticky { grid-template-columns: repeat(3, minmax(0, 1fr));
                 gap: 4px 8px; padding: 6px 10px; }
-  .kpi-k { font-size: 10px; }
-  .kpi-v { font-size: 13px; }
+  .kpi-k { font-size: 11px; }
+  .kpi-v { font-size: 14px; }
 
   /* 大盤條：手機上原本 420px、佔掉半個螢幕才看到第一張卡 */
   .market-strip { padding: 12px 14px; gap: var(--sp-3); }
-  .ms-index .ms-val { font-size: 30px; }
+  .ms-index .ms-val { font-size: 33px; }
   .ms-index .ms-chg { font-size: var(--fs-base); }
   .ms-inst { gap: var(--sp-3); }
   .ms-inst .ms-i-v { font-size: var(--fs-md); }
@@ -2113,7 +2141,7 @@ a.stock:hover { text-decoration: underline; }
   /* 卡片固定 2 欄；並排區塊一律直排 */
   .card-grid, .cards { grid-template-columns: repeat(2, 1fr); gap: 7px; }
   .stat-board { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; }
-  .card-val { font-size: 19px; }
+  .card-val { font-size: 21px; }
   .stat-board .card-metric { flex-direction: column; align-items: stretch; gap: 4px; }
   .stat-board .card-metric .card-chg { align-self: flex-end; }
   .rank-split { flex-direction: column; gap: 4px; }
@@ -2127,7 +2155,7 @@ a.stock:hover { text-decoration: underline; }
 
   /* 輸入框滿版、按鈕加大好點（44px 是 iOS 建議的最小可點高度） */
   .stock-input { width: 100%; }
-  .tf, .ktf, .ctf, .rkf, .rku, .ai-btn, .file-label { padding: 10px 14px; font-size: 14px; min-height: 40px; }
+  .tf, .ktf, .ctf, .rkf, .rku, .ai-btn, .file-label { padding: 10px 14px; font-size: 15px; min-height: 40px; }
   .set-row > label { width: auto; }
 }
 

@@ -10,7 +10,6 @@ from .helpers import (
     _ohlc_names,
     _picks_code_set,
     _valuation_for,
-    _insti_for,
     get_ai_cache,
     set_ai_cache,
     cup_handle_screen_logic
@@ -335,25 +334,93 @@ def stock_custody_backfill(code: str, weeks: int = 52):
     finally:
         _custody_lock.release()
 
+# 法人窗口上限。**這支端點完全不連外**（見下），所以窗口放寬不會變成數百次官方請求——
+# 舊版逐日走 _insti_for，快取沒中就 fetch_t86／fetch_tpex_insti，那才是它必須夾在 60 天的
+# 真正原因。400 對齊 run_update「只保留近 400 天」的規矩。
+CHIPS_MAX_DAYS = 400
+# 表裡沒有、才去翻唯讀快取的日期數上限。保證這支端點的成本永遠不高於改版前的 60 日路徑
+# （實測 60 日全走快取解析 ≈ 1.3 秒，那是舊版每次開個股頁的常態成本）。
+CHIPS_CACHE_FALLBACK_MAX = 60
+
+
+def _chips_market(c, pure: str, dlist: list) -> str:
+    """個股屬上市還是上櫃。優先讀 stock_flow_daily 的 market 欄（零成本）；
+    表裡沒有這檔才翻最近幾天的**唯讀**快取，一樣不連外。"""
+    row = c.execute(
+        "SELECT market FROM stock_flow_daily WHERE code=? AND market IS NOT NULL "
+        "ORDER BY date DESC LIMIT 1", (pure,)).fetchone()
+    if row and row[0]:
+        return "twse" if str(row[0]).upper() == "TWSE" else "tpex"
+    for ds in reversed(dlist[-5:]):
+        t = get_ai_cache(c, f"t86:{ds}")
+        if t:
+            return "twse" if pure in t else "tpex"
+    return "twse"
+
+
 @router.get("/stock/{code}/chips")
 def stock_chips(code: str, days: int = 10):
+    """個股三大法人買賣超（張）。
+
+    **資料只來自本地**：`stock_flow_daily`（每日 `stock_flow.update_day` 寫入）一支 SQL，
+    表缺的日期再翻 `ai_cache` 的 `t86:`／`tpex:`（**唯讀，絕不 fetch**）。改版前是逐日
+    呼叫 `_insti_for`，快取沒中就即時打官方端點——而 `ai_cache` 每天清 120 天前的鍵，
+    結構上最多只留得住約 80 個交易日，所以一年份窗口有 2/3 的日期每次開頁都要連外。
+    那是 `days` 被夾在 60 的成因，也是使用者看到「K 線一整年、法人只有 60 天」的原因。
+
+    值等價已實測：近 8 個共同日期、上市全檔逐筆比對 **136,759 筆全同、0 筆不同**
+    （兩邊同一支 fetch、同一支 parse，`stock_flow.py` 的 `_inst_rows` 只是改名）。
+
+    **已知取捨**：T86 約 16:00 公布，而 `update_day` 最早 17:30 才跑，所以 16:00–17:30
+    之間今天那一格可能是空的——除非期間開過總覽（`/api/inst-ranking` 會把 `t86:{今天}`
+    寫進快取，這裡的唯讀後備就讀得到）。寧可空一格，也不要每次開個股頁就連外。
+    """
     c = conn()
     pure = code.split(".")[0]
-    days = max(2, min(days, 60))
+    days = max(2, min(days, CHIPS_MAX_DAYS))
     rows = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT ?", (days,)).fetchall()
     dlist = [r[0] for r in reversed(rows)]
-    market = "twse"
-    for ds in reversed(dlist):
-        t = _insti_for(c, ds, "twse")
-        if t:
-            market = "twse" if pure in t else "tpex"
-            break
     series = {"foreign": [], "trust": [], "dealer": [], "total": []}
+    if not dlist:
+        return {"code": pure, "market": "twse", "dates": [], "first_date": None,
+                "covered": 0, **series}
+
+    market = _chips_market(c, pure, dlist)
+    by_date = {}
+    for ds, f, t, d, tot in c.execute(
+            "SELECT date, foreign_lots, trust_lots, dealer_lots, institutional_total_lots "
+            "FROM stock_flow_daily WHERE code=? AND date>=? AND date<=?",
+            (pure, dlist[0], dlist[-1])):
+        vals = (f, t, d)
+        if tot is None and any(v is not None for v in vals):
+            tot = sum(v for v in vals if v is not None)
+        if any(v is not None for v in (*vals, tot)):
+            by_date[ds] = {"foreign": f, "trust": t, "dealer": d, "total": tot}
+
+    # 表缺的日期用唯讀快取補。實測上櫃有 8 天只存在於快取而表沒有——純改讀表會在窗格
+    # 中間挖一個洞，而中段空洞比左邊留白更誤導（讀者會以為那幾天法人沒動作）。
+    ckey = "t86" if market == "twse" else "tpex"
+    missing = [ds for ds in dlist if ds not in by_date]
+    for ds in missing[-CHIPS_CACHE_FALLBACK_MAX:]:
+        rec = (get_ai_cache(c, f"{ckey}:{ds}") or {}).get(pure)
+        if rec:
+            by_date[ds] = {k: rec.get(k) for k in ("foreign", "trust", "dealer", "total")}
+
+    def _n(v):
+        # 表存 REAL、T86 給 int；統一成 int 讓前端格式化與改版前一致（來源本來就是整數張）
+        return None if v is None else (int(v) if float(v).is_integer() else v)
+
     for ds in dlist:
-        rec = _insti_for(c, ds, market).get(pure)
+        rec = by_date.get(ds)
         for k in series:
-            series[k].append(rec.get(k) if rec else None)
-    return {"code": pure, "market": market, "dates": dlist, **series}
+            series[k].append(_n(rec.get(k)) if rec else None)
+
+    # 涵蓋範圍要說真話：`dates` 是 market_daily 的**視窗**，不是這檔真的有資料的範圍。
+    # 直接拿 dates[0] 當「法人 X 起」會指到一個當天其實沒有資料的日期。
+    first = next((ds for ds, v in zip(dlist, series["total"]) if v is not None), None)
+    return {"code": pure, "market": market, "dates": dlist,
+            "first_date": first, "covered": sum(1 for v in series["total"] if v is not None),
+            **series}
 
 @router.get("/stock/{code}/profile")
 def stock_profile(code: str):

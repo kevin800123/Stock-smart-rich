@@ -4247,7 +4247,10 @@ function renderStockNoteLine() {
 }
 async function loadStockChips(code) {
   try {
-    const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/chips?days=60`);
+    // 400＝market_daily 的保留上限，與 K 線的一年視窗對得上。**放得開是因為端點已經不連外**
+    // （改讀 stock_flow_daily ＋ 唯讀快取，見 api/stock.py::stock_chips）；改版前寫死 60 是
+    // 因為那時每個日期都可能觸發一次官方請求，也就是使用者看到「K 線一整年、法人只有 60 天」的原因。
+    const d = await getJSON(`/api/stock/${encodeURIComponent(code)}/chips?days=400`);
     // 身分守衛：chips 是本地表查詢、常常比 K 線（可能要算波浪甚至走 yfinance）先回來，
     // 等待期間使用者可能已經切到別檔或別週期重查。這份回應若已經過期，絕不能存進
     // lastStockChips——renderStockPanes 是拿 lastStockData（K 線，主軸）逐棒去貼
@@ -4258,7 +4261,12 @@ async function loadStockChips(code) {
     // early return 之前，查無資料時該存的就是這份空回應本身，讓 renderStockPanes 走到
     // 清空那格的分支，不留上一檔的資料——窗格本身留著，讀數列自然顯示「—」。
     lastStockChips = d; renderStockPanes();
-    stockNoteChips = (!d.total || !d.total.some((v) => v != null)) ? "（查無此股三大法人資料）" : "";
+    // 說明列要講「這檔真的有幾天法人資料」，不是視窗有幾天。`dates` 來自 market_daily
+    // （最多 400 個交易日），拿 dates[0] 當「法人 X 起」會指到一個當天其實沒有資料的日期。
+    // 只在**沒有蓋滿視窗**時才說——蓋滿了就不需要解釋左邊為什麼是空的。
+    stockNoteChips = !d.covered ? "（查無此股三大法人資料）"
+      : (d.covered < d.dates.length && d.first_date
+          ? `（法人 ${d.first_date.slice(5)} 起，共 ${d.covered} 日）` : "");
     renderStockNoteLine();
   } catch (e) {
     // 身分守衛也要覆蓋失敗路徑：過期的請求若最後才失敗，不能把已經正確的說明文字

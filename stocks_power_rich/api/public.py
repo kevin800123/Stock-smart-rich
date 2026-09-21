@@ -22,7 +22,7 @@ from .market import (
     options_sentiment as _options_sentiment,
     inst_ranking as _inst_ranking,
 )
-from .stock import _insti_for, index_kline as _index_kline, tx_volume_sessions as _tx_volume_sessions
+from .stock import index_kline as _index_kline, tx_volume_sessions as _tx_volume_sessions
 from ..db import get_snapshot_dates, get_snapshot
 from ..sources import twse
 from .. import analysis, gemini, exporter
@@ -313,6 +313,6 @@ def public_overview_page():
     # index.html 用相對路徑引資產（站內在 / 底下正常）；本頁在 /public/overview，
     # 相對路徑會被解析成 /public/styles.css → 404。改絕對路徑（不用 <base href="/">：
     # 那會讓滿頁的 href="#" 錨點指向 "/"，點個股連結就跳離本頁）。
-    html = (html.replace('href="styles.css?v=20260817-ui67"', 'href="/styles.css?v=20260817-ui67"')
-                .replace('src="app.js?v=20260817-ui67"', 'src="/app.js?v=20260817-ui67"'))
+    html = (html.replace('href="styles.css?v=20260817-ui68"', 'href="/styles.css?v=20260817-ui68"')
+                .replace('src="app.js?v=20260817-ui68"', 'src="/app.js?v=20260817-ui68"'))
     return HTMLResponse(html.replace("<body>", '<body data-public="1">', 1))

@@ -179,6 +179,11 @@ def init_db(conn: sqlite3.Connection) -> None:
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_stock_flow_market_date "
                  "ON stock_flow_daily(market, date)")
+    # 逐檔查詢（個股頁三大法人）必要的索引：既有的 PK(date, code) 與 market_date 都以
+    # date 開頭，`WHERE code=?` 只能全表掃描。實測本機真實表（1,059,248 列 / 67 個日期）
+    # 單次查詢 78.5ms → 0.175ms（450 倍），代價 +27.4MB；正式站日期更多、掃描只會更貴。
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_stock_flow_code_date "
+                 "ON stock_flow_daily(code, date)")
     conn.execute(
         "CREATE TABLE IF NOT EXISTS stock_source_coverage ("
         "date TEXT, market TEXT, source TEXT, status TEXT, row_count INTEGER DEFAULT 0, "

@@ -1149,43 +1149,117 @@ def test_stock_custody_accumulates(tmp_path, monkeypatch):
     assert len(r["trend"]) == 1 and r["trend"][0]["big1000_pct"] == 70.0  # 已累積入庫
 
 
-def test_stock_chips_per_day_series(tmp_path, monkeypatch):
-    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+def _seed_chips_db(tmp_path, dates):
+    """建 market_daily 的交易日曆（chips 端點的窗口來源）。"""
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
-    from stocks_power_rich.sources import twse
-
     c = get_connection(str(tmp_path / "t.sqlite"))
     init_db(c)
-    upsert_market_daily(c, {"date": "2026-06-25", "taiex": 1.0})
-    upsert_market_daily(c, {"date": "2026-06-26", "taiex": 1.0})
-    table = {"2330": {"foreign": 5000, "trust": 2000, "dealer": -1000, "total": 6000}}
-    monkeypatch.setattr(twse, "fetch_t86", lambda date=None: table)
-    app = create_app()
-    client = TestClient(app)
-    r = client.get("/api/stock/2330.TW/chips?days=10").json()
-    assert r["code"] == "2330"
+    for d in dates:
+        upsert_market_daily(c, {"date": d, "taiex": 1.0})
+    return c
+
+
+def _no_insti_fetch(monkeypatch):
+    """網路絆線：chips 端點**不得**為了畫圖去打官方端點。
+
+    回傳的 list 收集呼叫次數而不是直接拋例外——_insti_for 把例外吞成 {}，
+    用拋的會被接住、斷言看起來還是綠的。
+    """
+    from stocks_power_rich.sources import twse, tpex
+    calls = []
+    monkeypatch.setattr(twse, "fetch_t86", lambda date=None: calls.append(("t86", date)) or {})
+    monkeypatch.setattr(tpex, "fetch_tpex_insti", lambda date=None: calls.append(("tpex", date)) or {})
+    return calls
+
+
+def test_stock_chips_reads_stock_flow_daily_and_never_fetches(tmp_path, monkeypatch):
+    """**契約已改**：資料來自 stock_flow_daily 一支 SQL，端點不再逐日即時連外。
+
+    舊版走 _insti_for，快取沒中就 fetch_t86／fetch_tpex_insti——那正是 days 必須
+    夾在 60 的原因（400 天窗口會變成數百次官方請求）。改讀本地表之後窗口才放得開。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import bulk_upsert_stock_flow
+    c = _seed_chips_db(tmp_path, ["2026-06-25", "2026-06-26"])
+    for d in ("2026-06-25", "2026-06-26"):
+        bulk_upsert_stock_flow(c, d, "TWSE", {"2330": {
+            "foreign_lots": 5000, "trust_lots": 2000,
+            "dealer_lots": -1000, "institutional_total_lots": 6000}})
+    calls = _no_insti_fetch(monkeypatch)
+    r = TestClient(create_app()).get("/api/stock/2330.TW/chips?days=10").json()
+    assert r["code"] == "2330" and r["market"] == "twse"
     assert r["dates"] == ["2026-06-25", "2026-06-26"]
     assert r["foreign"] == [5000, 5000] and r["total"] == [6000, 6000]
+    assert calls == []                            # 零連外
 
 
-def test_stock_chips_market_detect_skips_unpublished_day(tmp_path, monkeypatch):
-    """最新日 T86 未公布（空表）時，市場判定應回看前一個有資料的日子，而非誤判成上櫃。"""
+def test_stock_chips_fills_table_gaps_from_readonly_cache(tmp_path, monkeypatch):
+    """表缺的日期改由**唯讀**快取補，仍然不連外。
+
+    實測本機：上櫃有 8 天只存在於 ai_cache（tpex:{date}）而 stock_flow_daily 沒有，
+    純改讀表會在窗格中間挖一個洞——中段空洞比左邊留白更誤導。
+    """
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
-    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
-    from stocks_power_rich.sources import twse
+    from stocks_power_rich.db import bulk_upsert_stock_flow, set_ai_cache
+    ds = ["2026-06-24", "2026-06-25", "2026-06-26"]
+    c = _seed_chips_db(tmp_path, ds)
+    for d in (ds[0], ds[2]):
+        bulk_upsert_stock_flow(c, d, "TPEx", {"6488": {
+            "foreign_lots": 11, "trust_lots": 22,
+            "dealer_lots": 33, "institutional_total_lots": 66}})
+    set_ai_cache(c, f"tpex:{ds[1]}", {"6488": {"foreign": 7, "trust": 8, "dealer": 9, "total": 24}})
+    calls = _no_insti_fetch(monkeypatch)
+    r = TestClient(create_app()).get("/api/stock/6488.TWO/chips?days=10").json()
+    assert r["market"] == "tpex"
+    assert r["foreign"] == [11, 7, 11]            # 中間那天來自快取，沒有空洞
+    assert r["total"] == [66, 24, 66]
+    assert calls == []
 
-    c = get_connection(str(tmp_path / "t.sqlite"))
-    init_db(c)
-    upsert_market_daily(c, {"date": "2026-06-25", "taiex": 1.0})
-    upsert_market_daily(c, {"date": "2026-06-26", "taiex": 1.0})
-    table = {"2330": {"foreign": 5000, "trust": 2000, "dealer": -1000, "total": 6000}}
-    monkeypatch.setattr(twse, "fetch_t86",
-                        lambda date=None: {} if date.isoformat() == "2026-06-26" else table)
-    app = create_app()
-    client = TestClient(app)
-    r = client.get("/api/stock/2330.TW/chips?days=10").json()
-    assert r["market"] == "twse"                 # 以 6/25（有資料）判定，不被 6/26 空表帶偏
-    assert r["foreign"] == [5000, None]          # 6/26 未公布 → None，不以他日填充
+
+def test_stock_chips_window_is_no_longer_capped_at_60_days(tmp_path, monkeypatch):
+    """放寬 days 上限——這是使用者回報「K 線有一整年、法人只有 60 天」的直接修正。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from datetime import date, timedelta
+    from stocks_power_rich.db import bulk_upsert_stock_flow
+    ds = [(date(2026, 1, 5) + timedelta(days=i)).isoformat() for i in range(80)]
+    c = _seed_chips_db(tmp_path, ds)
+    for d in ds:
+        bulk_upsert_stock_flow(c, d, "TWSE", {"2330": {"foreign_lots": 1, "institutional_total_lots": 1}})
+    calls = _no_insti_fetch(monkeypatch)
+    r = TestClient(create_app()).get("/api/stock/2330.TW/chips?days=400").json()
+    assert len(r["dates"]) == 80                  # 舊版會被夾成 60
+    assert r["covered"] == 80
+    assert calls == []
+
+
+def test_stock_chips_reports_where_data_actually_starts(tmp_path, monkeypatch):
+    """`first_date` 是「這檔真的有法人資料的第一天」，不是視窗起點。
+
+    視窗來自 market_daily，直接拿 dates[0] 當「法人 X 起」會指到一個當天其實
+    沒有資料的日期——正好製造這條說明要消滅的那種假事實。
+    """
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import bulk_upsert_stock_flow
+    ds = ["2026-06-24", "2026-06-25", "2026-06-26"]
+    c = _seed_chips_db(tmp_path, ds)
+    bulk_upsert_stock_flow(c, ds[2], "TWSE", {"2330": {"foreign_lots": 5, "institutional_total_lots": 5}})
+    _no_insti_fetch(monkeypatch)
+    r = TestClient(create_app()).get("/api/stock/2330.TW/chips?days=10").json()
+    assert r["dates"][0] == ds[0]                 # 視窗仍是三天
+    assert r["first_date"] == ds[2]               # 但資料只有最後一天
+    assert r["covered"] == 1
+    assert r["foreign"] == [None, None, 5]
+
+
+def test_stock_chips_market_detect_uses_the_table_not_a_fetch(tmp_path, monkeypatch):
+    """市場判定改讀表的 market 欄；舊版靠「逐日打 T86 看代號在不在裡面」。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import bulk_upsert_stock_flow
+    c = _seed_chips_db(tmp_path, ["2026-06-25", "2026-06-26"])
+    bulk_upsert_stock_flow(c, "2026-06-26", "TPEx", {"6488": {"foreign_lots": 1}})
+    calls = _no_insti_fetch(monkeypatch)
+    r = TestClient(create_app()).get("/api/stock/6488.TWO/chips?days=10").json()
+    assert r["market"] == "tpex" and calls == []
 
 
 def test_kline_endpoint(tmp_path, monkeypatch):
@@ -1529,10 +1603,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260817-ui67"' in html.text
-    assert 'href="/styles.css?v=20260817-ui67"' in html.text
-    assert 'src="app.js?v=20260817-ui67"' not in html.text
-    assert 'href="styles.css?v=20260817-ui67"' not in html.text
+    assert 'src="/app.js?v=20260817-ui68"' in html.text
+    assert 'href="/styles.css?v=20260817-ui68"' in html.text
+    assert 'src="app.js?v=20260817-ui68"' not in html.text
+    assert 'href="styles.css?v=20260817-ui68"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",
