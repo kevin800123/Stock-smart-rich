@@ -571,17 +571,24 @@ function stockCustodyReadout(bar) {
 // 之前的 K 棒沒有集保資料，不畫（不往前補到第一週之前）。
 // **顏色比的是「上一週」，不是「上一根 K 棒」**：同一週內的每一根顏色必須相同。寫成逐根
 // 比前一根的話，同一週內部全部會變成「持平」、只有跨週那一根有顏色，一眼就看得出是錯的。
+// 月K 一根棒子對到 4~5 個集保週、snapToBars 只留最後一週，所以那裡實際比的是「這個月最後
+// 一週 vs 上個月最後一週」，中間那幾週不進比較鏈（改版前的人均數箭頭也是這個行為）。
 // **紅增綠減是使用者明確指定要跟 XQ 一致、並在被告知代價後確認的例外**：本站紅綠原本鎖給
 // 行情漲跌，代價是同一張圖裡紅色同時表示「股價漲」（K 線窗格）與「大戶增」（集保窗格）。
 // 這是刻意的，不要當成 bug「修掉」。剛好持平（與第一週）一律中性色 C.muted，不可塗紅
 // ——「剛好平盤不著漲色」是本站既有規矩（股期概況那批明文記過）。柱子上沒有文字，所以用
 // 亮色那組 C.up/C.down，不是給白字底色用的 C.upFill/C.downFill（同 K 線與漲跌家數條）。
 function custodyHistogram(bars, byBar) {
-  const out = [];
-  let curVal = null, curColor = null, prevWeekVal = null;
+  const data = [];
+  // 往前填滿後的「K 棒 → 該週整筆 trend」：**讀數列吃的就是這一份**，所以「這根棒子屬於
+  // 哪一週」由這支函式算一次、兩邊必然一致。分開各填一次的話遲早漂移（改版前的人均數
+  // 箭頭自己另外跑一次 snapToBars，就是這樣與讀數列指到不同的週）。
+  const filled = new Map();
+  let cur = null, curVal = null, curColor = null, prevWeekVal = null;
   for (const barDate of bars) {
     const t = byBar.get(barDate);
     if (t) {                       // 這根 K 棒是某個集保週貼到的位置（snapToBars 保證每根最多一筆）
+      cur = t;                     // 整筆留著給讀數列——與「這根要不要畫柱子」是兩件事
       const v = t.big400_pct;
       if (v == null) {
         // 該週沒有 400張↑：從這根起到下一個有值的週之間都不畫，不拿更早的值頂替
@@ -593,16 +600,22 @@ function custodyHistogram(bars, byBar) {
         curVal = v; prevWeekVal = v;
       }
     }
-    if (curVal != null) out.push({ time: barDate, value: curVal, color: curColor });
+    // 有週資料就記進讀數列，即使該週 big400_pct 為 null（柱子不畫、讀數仍看得到千張大戶
+    // 與人均，400張↑ 那格由 fmt(null) 顯示「—」）——「圖上沒有柱子」與「這天完全沒有
+    // 集保」是兩件事。
+    if (cur) filled.set(barDate, cur);
+    if (curVal != null) data.push({ time: barDate, value: curVal, color: curColor });
   }
-  return out;
+  return { data, byBar: filled };
 }
-// HistogramSeries 的 base 預設是 0，而 400張↑ 全年都在 50% 上下、週變化只有 ±1%：base=0
-// 會讓每根柱子看起來一樣高、完全沒有資訊。**非零基準不是美化，是這張柱狀圖能不能讀的前提。**
+// HistogramSeries 的 base 預設是 0，而 400張↑ 全年只在同一個水位上下、週變化只有 ±1%
+//（實測 2330 值域 87.39~89.83；每檔的水位不同，這裡只是舉個實際量到的例子）：base=0 會讓
+// 每根柱子一樣高、完全沒有資訊。**非零基準不是美化，是這張柱狀圖能不能讀的前提。**
 // 基準設在「資料最小值再往下留全距的 15%」，最低那週剩一小截、最高那週貼頂。
 // **代價要誠實標註**：非零基準會放大小變化，柱高的比例不可當成絕對比例讀。標示方式是讓
 // 該窗格的價格軸印 2 位小數的刻度（見 initStockChart 的 priceFormat）——軸上出現
-// 「49.80／50.60」這種非零起點的數字，本身就是標準且誠實的標示。
+// 非零起點的刻度數字（實測 2330 那格 59px 高，畫得下 2 個：87.50 與 90.00），本身就是
+// 標準且誠實的標示。
 function custodyHistogramBase(data) {
   let lo = Infinity, hi = -Infinity;
   for (const d of data) { if (d.value < lo) lo = d.value; if (d.value > hi) hi = d.value; }
@@ -635,14 +648,25 @@ function renderStockPanes() {
     // 值直接放整筆 trend 物件（snapToBars 的 values 可以是任意型別），柱狀圖與讀數列
     // 因此吃同一份貼齊結果——「這根棒子屬於哪一週」只算一次，兩者不可能各自算出不同答案
     // （改版前箭頭自己另外跑一次 snapToBars，就因為餵的陣列含 null 而與讀數列對不上）。
-    lwCustByBar = snapToBars(bars, trend.map((x) => x.week), trend).byBar;
-    const hist = custodyHistogram(bars, lwCustByBar);
+    const snapped = snapToBars(bars, trend.map((x) => x.week), trend).byBar;
+    const hist = custodyHistogram(bars, snapped);
+    // **讀數列吃往前填滿後的那份，不是 snapped**：snapped 只有 52 個「週起點」K 棒有值，
+    // 用它的話十字線停在週中會出現「圖上明明有柱子、同一格讀數卻寫『集保 —』」的自相
+    // 矛盾（改版前的階梯線也有這個問題，只是柱狀圖讓它變得很明顯）。
+    lwCustByBar = hist.byBar;
     // base 跟著資料一起換：資料換了（換股票／換週期）值域就換了，沿用上一檔的基準會讓
     // 柱子整排頂出格子或縮成一條線。
-    lwCustodySeries.applyOptions({ base: custodyHistogramBase(hist) });
-    lwCustodySeries.setData(hist);
+    // **順序必須是先 setData 再 applyOptions**：`applyOptions` 會立刻重畫，在換資料之前
+    // 呼叫時 series 還握著上一個週期的資料、時間軸卻已經換成新的，LWC 找不到對應的點就
+    // 丟 `Error: Value is null`（實測切到時K 一次三個；舊版沒有，是下面空狀態那行
+    // applyOptions 加進來才冒出的，改成這個順序後歸零）。
+    lwCustodySeries.setData(hist.data);
+    lwCustodySeries.applyOptions({ base: custodyHistogramBase(hist.data) });
   } else {
+    // base 一併歸零：沒有柱子時看不出來，但留著上一檔的基準值就是「狀態沒清乾淨」，
+    // 日後若讓空狀態也畫基準線／零軸，就會看到別檔股票的殘值。順序同上：先清資料再改 base。
     lwCustodySeries.setData([]);
+    lwCustodySeries.applyOptions({ base: 0 });
     lwCustByBar = new Map();
   }
   lwPaintReadouts && lwPaintReadouts(null);   // 資料變了，讀數列（顯示最新一根）要跟著刷新

@@ -1,5 +1,9 @@
 # 個股頁三張圖合成一張 Implementation Plan
 
+> **⚠ 集保窗格已於 ui67 改為單一「400張↑%」柱狀圖**（紅增綠減、非零基準、無人均數箭頭）。
+> 本檔以下關於兩條 `WithSteps` 階梯線與 `renderCustodyMarkers` 箭頭的段落是**歷史紀錄**，
+> 照著實作會走回舊設計。現況見 `CLAUDE.md` 的「個股頁三張圖合成一張」一節。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 個股頁的 K 線、三大法人、集保三張圖合成同一張 Lightweight Charts（四個窗格共用時間軸與十字線），每格左上角一行讀數，集保加人均數箭頭，集保歷史改成背景自動補。
