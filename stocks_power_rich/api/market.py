@@ -495,7 +495,9 @@ def sectors_flow(days: int = analysis.FLOW_DAYS):
 
     取代 bfd0a53 之後就再也畫不出來的 /sectors/rotation（後端回 dict、前端當陣列用）。
     **不連外**：全部輸入來自本地表與既有逐日快取。快取鍵含法人最新日與**全部**用到的集保週——
-    集保一換週、或多出一個完整週，都是新鍵，不會拿舊集保的圖冒充新的。
+    集保一換週、或多出一個完整週，都是新鍵，不會拿舊集保的圖冒充新的。鍵另外帶一個
+    `stock_flow_fingerprint(cur+prev)`（窗口內逐日 COUNT／Σ淨額的雜湊）：最新日只描述窗口的
+    尾端，「回補在窗口中段補進一天」與「上櫃單邊重抓」都不會動到它，少了指紋就會沿用舊鍵。
     """
     c = conn()
     days = max(FLOW_DAYS_MIN, min(int(days), FLOW_DAYS_MAX))
@@ -513,7 +515,8 @@ def sectors_flow(days: int = analysis.FLOW_DAYS):
     has_custody = len(weeks) >= 2
     # 尾巴要比的是「同樣跨度的兩期」。custody_compare_weeks 會略過殘缺週，所以第 2、3 個完整週
     # 不一定相鄰——真實 DB 正是 09-18／09-11／08-21（09-04、08-28 只有個位數檔、被判殘缺）。
-    # 照用的話 y 是 1 週 delta、y_prev 是 3 週 delta，尾巴長度沒有意義（實測差 2.98 倍中位數）。
+    # 照用的話 y 是 1 週 delta、y_prev 是 3 週 delta，尾巴長度沒有意義
+    # （實測 34 個類股 |y_prev|/|y| 中位數 3.39 倍、最大 40 倍）。
     # 兩段都要相鄰才算數；y 本身維持 weeks[0]-weeks[1]（與全站大戶增比 custody_change_map 同定義）。
     prev_ok = (len(weeks) >= 3 and _weeks_adjacent(weeks[0], weeks[1])
                and _weeks_adjacent(weeks[1], weeks[2]))

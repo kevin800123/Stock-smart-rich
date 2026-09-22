@@ -3734,8 +3734,12 @@ async function loadSectorFlow() {
     const pw = d.custody_prev_weeks || [];
     if (pw.length) bits.push(`上一期集保 ${md(pw[1])}→${md(pw[0])}`);
     else if (d.custody_prev_skipped === "weeks_not_adjacent" && d.custody_prev_gap) {
-      const g = d.custody_prev_gap;                       // [較新, 較舊]；殘缺週被略過造成的洞
-      bits.push(`上一期集保不相鄰（${md(g[1])}→${md(g[0])} 跨 ${Math.round(dayGap(g[1], g[0]) / 7)} 週），尾巴省略`);
+      const g = d.custody_prev_gap, cw = d.custody_weeks || [];   // g＝[較新, 較舊]；殘缺週被略過造成的洞
+      const wk = Math.round(dayGap(g[1], g[0]) / 7);
+      // 斷掉的可能是「本期」那一對（y 自己就是多週 delta），措辭要講對是哪一段斷掉
+      bits.push(g[0] === cw[0] && g[1] === cw[1]
+        ? `本期集保跨 ${wk} 週（${md(g[1])}→${md(g[0])}），上一期尾巴省略`
+        : `上一期集保不相鄰（${md(g[1])}→${md(g[0])} 跨 ${wk} 週），尾巴省略`);
     }
     if (!d.has_tail) bits.push(`法人資料不足 ${d.flow_dates.length * 2} 日，尚無上一期`);
     bits.push(`${secs.length} 類股`);
@@ -3751,6 +3755,7 @@ async function loadSectorFlow() {
     disposeFlowChart();
     el.innerHTML = '<div class="muted small" style="padding:12px">族群輪動載入失敗</div>';
     $("flow-quadrants").innerHTML = "";
+    if (note) note.textContent = "";       // 上一次成功的「法人 09-16～09-22…」留著會像是這次的資料
     lastSectorFlow = null;
   }
 }
