@@ -3599,3 +3599,103 @@ def test_intraday_breakout_volume_gate_holds_thin_volume_and_fires_when_it_build
     r3 = client.post("/api/intraday/test?push=1").json()
     assert [h["code"] for h in r3["hits"]] == ["2812"] and r3["held_by_volume"] == 0
     assert "台中銀 19.85(壓19.80) 量1.8倍" in sent[1] and "元太" not in sent[1]
+
+
+def _seed_sector_flow(tmp_path, monkeypatch, *, flow_days=12, custody_weeks=("2026-09-04", "2026-09-11", "2026-09-18")):
+    """族群輪動端點的固定場景：2330（半導體、1e9 股、收盤 100）每天法人淨買 +100 張；
+    1101（水泥、5e8 股、收盤 20）每天 -10 張；三檔非普通股法人各 +99999 張（不得進加總）。
+    market_daily 多一個「今天」的空列（法人窗口不得含它）。"""
+    from datetime import date, timedelta
+    from stocks_power_rich.db import (get_connection, init_db, upsert_market_daily,
+                                      bulk_upsert_stock_flow, bulk_upsert_custody, set_ai_cache)
+    from stocks_power_rich.sources import twse, tpex
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
+    days = [(date(2026, 9, 1) + timedelta(days=i)).isoformat() for i in range(flow_days)]
+    for d in days:
+        upsert_market_daily(c, {"date": d, "taiex": 1.0})
+        bulk_upsert_stock_flow(c, d, "TWSE", {
+            "2330": {"foreign_lots": 100}, "1101": {"foreign_lots": -10},
+            "0050": {"foreign_lots": 99_999}, "00878": {"foreign_lots": 99_999}, "12345": {"foreign_lots": 99_999}})
+    upsert_market_daily(c, {"date": "2026-12-31", "taiex": None})      # 今天的空列
+    for i, wk in enumerate(custody_weeks):
+        bulk_upsert_custody(c, wk, {"2330": {"big400_pct": 80.0 + i}, "1101": {"big400_pct": 40.0}})
+    universe = {"2330": {"sector": "半導體", "name": "台積電", "shares": 1_000_000_000},
+                "1101": {"sector": "水泥", "name": "台泥", "shares": 500_000_000},
+                "0050": {"sector": "半導體", "name": "ETF", "shares": 1_000_000},
+                "00878": {"sector": "半導體", "name": "ETF2", "shares": 1_000_000},
+                "12345": {"sector": "半導體", "name": "五碼", "shares": 1_000_000}}
+    monkeypatch.setattr(twse, "fetch_listed_industry", lambda: universe)
+    monkeypatch.setattr(tpex, "fetch_otc_industry", lambda: {})
+    monkeypatch.setattr(tpex, "fetch_otc_quotes", lambda date=None: {})
+    monkeypatch.setattr(twse, "fetch_sector_indices", lambda date=None: [{"name": "半導體", "close": 1, "chg_pct": 1.5}])
+    set_ai_cache(c, f"stock_quotes:{days[-1]}", {"2330": {"close": 100.0, "chg_pct": 0},
+                                                 "1101": {"close": 20.0, "chg_pct": 0},
+                                                 "0050": {"close": 100.0, "chg_pct": 0},
+                                                 "00878": {"close": 10.0, "chg_pct": 0},
+                                                 "12345": {"close": 10.0, "chg_pct": 0}})
+    return c, days
+
+
+def test_sectors_flow_window_comes_from_stock_flow_daily_and_only_common_stocks(tmp_path, monkeypatch):
+    c, days = _seed_sector_flow(tmp_path, monkeypatch)
+    r = TestClient(create_app()).get("/api/sectors/flow").json()
+    assert r["flow_dates"] == days[-5:]                 # 今天的空列不在窗口裡
+    assert r["flow_prev_dates"] == days[-10:-5]
+    assert r["has_tail"] is True and r["has_custody"] is True
+    by = {s["sector"]: s for s in r["sectors"]}
+    semi = by["半導體"]
+    assert semi["n"] == 1                                # 0050／00878／12345 沒進來
+    # 5 日 × 100 張 × 1000 × 100 元 = 5e7；市值 1e11 → 0.05%
+    assert semi["x"] == 0.05 and semi["x_prev"] == 0.05
+    # 集保 09-11→09-18：81→82 = +1% → 1e9 元；÷1e11 = 1%；上一期 80→81 也是 1%
+    assert semi["y"] == 1.0 and semi["y_prev"] == 1.0
+    assert semi["chg_pct"] == 1.5
+    assert r["custody_weeks"] == ["2026-09-18", "2026-09-11"]
+    assert by["水泥"]["y"] == 0.0                        # 40→40：有資料、淨額為零
+
+
+def test_sectors_flow_without_two_complete_custody_weeks_has_no_y(tmp_path, monkeypatch):
+    _seed_sector_flow(tmp_path, monkeypatch, custody_weeks=("2026-09-18",))
+    r = TestClient(create_app()).get("/api/sectors/flow").json()
+    assert r["has_custody"] is False and r["custody_weeks"] == []
+    assert all(s["y"] is None and s["y_prev"] is None for s in r["sectors"])
+    assert r["sectors"]                                  # X 軸照樣有
+
+
+def test_sectors_flow_read_guard_rejects_cache_written_without_custody(tmp_path, monkeypatch):
+    """寫入守衛擋不住已經寫進去的半套：預先塞一份 has_custody=false 的舊快取，
+    集保現在已有兩週 → 必須重算，不得回舊的。"""
+    from stocks_power_rich.db import set_ai_cache
+    c, days = _seed_sector_flow(tmp_path, monkeypatch)
+    stale = {"flow_dates": days[-5:], "flow_prev_dates": [], "custody_weeks": [], "custody_prev_weeks": [],
+             "has_custody": False, "has_tail": False, "sectors": [], "excluded": {}}
+    set_ai_cache(c, f"sectorflow:v1:{days[-1]}:none:5", stale)
+    r = TestClient(create_app()).get("/api/sectors/flow").json()
+    assert r["has_custody"] is True and r["sectors"]
+
+
+def test_sectors_flow_cache_key_changes_with_custody_week(tmp_path, monkeypatch):
+    from stocks_power_rich.db import get_ai_cache
+    c, days = _seed_sector_flow(tmp_path, monkeypatch)
+    TestClient(create_app()).get("/api/sectors/flow")
+    assert get_ai_cache(c, f"sectorflow:v1:{days[-1]}:2026-09-18:5") is not None
+
+
+def test_sectors_flow_days_is_clamped_between_3_and_20(tmp_path, monkeypatch):
+    _, days = _seed_sector_flow(tmp_path, monkeypatch, flow_days=45)
+    cl = TestClient(create_app())
+    assert len(cl.get("/api/sectors/flow?days=100").json()["flow_dates"]) == 20
+    assert len(cl.get("/api/sectors/flow?days=1").json()["flow_dates"]) == 3
+
+
+def test_sectors_flow_short_history_has_no_tail(tmp_path, monkeypatch):
+    _seed_sector_flow(tmp_path, monkeypatch, flow_days=7)   # 只有 7 天 < 2×5
+    r = TestClient(create_app()).get("/api/sectors/flow").json()
+    assert r["has_tail"] is False and r["flow_prev_dates"] == []
+    assert all(s["x_prev"] is None for s in r["sectors"])
+
+
+def test_sectors_rotation_endpoint_is_gone(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    assert TestClient(create_app()).get("/api/sectors/rotation").status_code == 404

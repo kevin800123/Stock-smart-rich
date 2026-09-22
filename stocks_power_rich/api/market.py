@@ -27,7 +27,7 @@ from .helpers import (
 )
 from ..sources import twse, taifex, mis, tpex
 from ..sources import taifex_ssf
-from ..db import get_ssf_dates, get_ssf_rows, count_ssf_dates
+from ..db import get_ssf_dates, get_ssf_rows, count_ssf_dates, stock_flow_dates, institutional_window_map, custody_delta_map, custody_compare_weeks
 from .. import analysis, gemini, ss_trader, traders
 from ..config import load_config
 
@@ -471,35 +471,52 @@ def heatmap(date: str | None = None, market: str = "tse"):
     out.sort(key=lambda g: -g["mcap"])
     return {"date": date, "market": market, "groups": out}
 
-@router.get("/sectors/rotation")
-def sectors_rotation():
+FLOW_DAYS_MIN, FLOW_DAYS_MAX = 3, 20
+
+
+@router.get("/sectors/flow")
+def sectors_flow(days: int = analysis.FLOW_DAYS):
+    """族群輪動：法人（X）× 大戶（Y）資金流向，逐類股（spec 2026-09-22-sector-flow-quadrant-design.md §3）。
+
+    取代 bfd0a53 之後就再也畫不出來的 /sectors/rotation（後端回 dict、前端當陣列用）。
+    **不連外**：全部輸入來自本地表與既有逐日快取。快取鍵含法人最新日與集保週——集保一換週就是新鍵，
+    不會拿舊集保的圖冒充新的；讀取端另外比對 has_custody，擋掉集保從「沒有」變「有」之前寫進去的半套。
+    """
     c = conn()
-    from ..db import get_ai_cache, set_ai_cache
-    rows = c.execute("SELECT date FROM market_daily ORDER BY date DESC LIMIT 20").fetchall()
-    dlist = [r[0] for r in reversed(rows)]
-    if not dlist:
-        return {"dates": [], "sectors": {}}
-    ckey = f"rotation2:{dlist[-1]}:{len(dlist)}"
+    days = max(FLOW_DAYS_MIN, min(int(days), FLOW_DAYS_MAX))
+    empty = {"flow_dates": [], "flow_prev_dates": [], "custody_weeks": [], "custody_prev_weeks": [],
+             "has_custody": False, "has_tail": False, "sectors": [],
+             "excluded": {"no_price": 0, "no_sector": 0, "sectors_no_mcap": 0}}
+    dates = stock_flow_dates(c, days * 2)
+    if not dates:
+        return empty
+    cur_dates = dates[-days:]
+    prev_dates = dates[:-days] if len(dates) >= 2 * days else []
+    weeks = custody_compare_weeks(c, limit=3)
+    has_custody = len(weeks) >= 2
+    ckey = f"sectorflow:v1:{cur_dates[-1]}:{weeks[0] if has_custody else 'none'}:{days}"
     cached = get_ai_cache(c, ckey)
-    if cached is not None:
+    if cached is not None and cached.get("has_custody") == has_custody:
         return cached
-    sectors = {}
-    names = set()
-    for ds in dlist:
-        secs = _sectors_for(c, ds)
-        for s in secs:
-            nm = s.get("name")
-            if nm:
-                names.add(nm)
-                sectors.setdefault(nm, []).append(s.get("chg_pct"))
-    for nm in names:
-        arr = sectors[nm]
-        if len(arr) < len(dlist):
-            sectors[nm] = [None] * (len(dlist) - len(arr)) + arr
-    result = {"dates": dlist, "sectors": sectors}
-    if names:
-        set_ai_cache(c, ckey, result)
-    return result
+    universe = {**_otc_industry(c), **_industry_map(c)}          # 代號不衝突；上市優先
+    d0 = cur_dates[-1]
+    closes = {code: q["close"] for code, q in {**_otc_quotes_for(c, d0), **_quotes_for(c, d0)}.items()
+              if q and q.get("close") is not None}
+    res = analysis.sector_flow(
+        universe, closes,
+        flow_cur=institutional_window_map(c, cur_dates),
+        flow_prev=institutional_window_map(c, prev_dates) if prev_dates else None,
+        cust_cur=custody_delta_map(c, weeks[0], weeks[1]) if has_custody else None,
+        cust_prev=custody_delta_map(c, weeks[1], weeks[2]) if len(weeks) >= 3 else None,
+        sector_chg={s["name"]: s.get("chg_pct") for s in _sectors_for(c, d0) if s.get("name")},
+    )
+    out = {"flow_dates": cur_dates, "flow_prev_dates": prev_dates,
+           "custody_weeks": weeks[:2] if has_custody else [],
+           "custody_prev_weeks": weeks[1:3] if len(weeks) >= 3 else [],
+           "has_custody": has_custody, "has_tail": bool(prev_dates), **res}
+    if res["sectors"]:                       # 空結果不寫快取（失敗值不可永久化）
+        set_ai_cache(c, ckey, out)
+    return out
 
 @router.get("/index-movers")
 def index_movers(date: str | None = None, top: int = 20):
