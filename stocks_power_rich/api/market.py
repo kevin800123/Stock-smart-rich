@@ -479,8 +479,8 @@ def sectors_flow(days: int = analysis.FLOW_DAYS):
     """族群輪動：法人（X）× 大戶（Y）資金流向，逐類股（spec 2026-09-22-sector-flow-quadrant-design.md §3）。
 
     取代 bfd0a53 之後就再也畫不出來的 /sectors/rotation（後端回 dict、前端當陣列用）。
-    **不連外**：全部輸入來自本地表與既有逐日快取。快取鍵含法人最新日與集保週——集保一換週就是新鍵，
-    不會拿舊集保的圖冒充新的；讀取端另外比對 has_custody，擋掉集保從「沒有」變「有」之前寫進去的半套。
+    **不連外**：全部輸入來自本地表與既有逐日快取。快取鍵含法人最新日與**全部**用到的集保週——
+    集保一換週、或多出一個完整週，都是新鍵，不會拿舊集保的圖冒充新的。
     """
     c = conn()
     days = max(FLOW_DAYS_MIN, min(int(days), FLOW_DAYS_MAX))
@@ -494,9 +494,12 @@ def sectors_flow(days: int = analysis.FLOW_DAYS):
     prev_dates = dates[:-days] if len(dates) >= 2 * days else []
     weeks = custody_compare_weeks(c, limit=3)
     has_custody = len(weeks) >= 2
-    ckey = f"sectorflow:v1:{cur_dates[-1]}:{weeks[0] if has_custody else 'none'}:{days}"
+    # 鍵要編進**計算真正用到的每一個集保週**（最多 3 個）：只放最新週的話，完整週從 2 變 3 而最新週
+    # 不變時（回補讓舊週跨過門檻）會沿用舊鍵、吃到沒有 y_prev 的舊快取。鍵已完整描述輸入，
+    # 不需要另外比對 has_custody——同一把鍵之下它不可能不一致（Task 4 審查證明那是死碼）。
+    ckey = f"sectorflow:v2:{cur_dates[-1]}:{'-'.join(weeks) or 'none'}:{days}"
     cached = get_ai_cache(c, ckey)
-    if cached is not None and cached.get("has_custody") == has_custody:
+    if cached is not None:
         return cached
     universe = {**_otc_industry(c), **_industry_map(c)}          # 代號不衝突；上市優先
     d0 = cur_dates[-1]
