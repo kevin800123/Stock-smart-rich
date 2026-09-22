@@ -57,6 +57,93 @@ def big_holder_amount(delta_pct, shares, close):
     return delta_pct / 100 * shares * close
 
 
+FLOW_DAYS = 5   # 族群輪動法人窗口（交易日）；端點可帶 days 覆寫，夾在 [3, 20]
+
+
+def _is_common_code(code) -> bool:
+    """4 碼、非 00 開頭＝普通股（同 top_movers／change_histogram 的過濾）。ETF／權證／特別股不進加總。"""
+    c = str(code or "")
+    return len(c) == 4 and c.isdigit() and not c.startswith("00")
+
+
+def sector_flow(universe: dict, closes: dict, flow_cur: dict,
+                flow_prev: dict | None = None, cust_cur: dict | None = None,
+                cust_prev: dict | None = None, sector_chg: dict | None = None) -> dict:
+    """族群輪動的兩軸（spec §2）：每個類股 X＝Σ法人淨買賣金額 ÷ Σ市值 ×100、Y＝Σ大戶淨買進金額 ÷ Σ市值 ×100。
+
+    除以市值是為了跨類股可比——用絕對金額的話半導體永遠在最右邊，圖只會告訴你「半導體很大」。
+    缺收盤或股數的檔整檔排除（法人金額也要收盤換算），計入 excluded.no_price；缺類股計入 no_sector。
+    大戶缺某檔 Δ：不進分子、**仍進分母**（分母是類股規模，不隨分子缺漏縮小），n_cust 另外回報樣本數；
+    整個類股一檔都沒有 Δ 時 y 是 None——0 是「有資料且淨額為零」，不能拿來頂替「沒資料」。
+    flow_prev／cust_prev 為 None 時 x_prev／y_prev 一律 None（同理）。
+    """
+    flow_cur = flow_cur or {}
+    sector_chg = sector_chg or {}
+    seen_sectors: set = set()
+    groups: dict = {}
+    excl = {"no_price": 0, "no_sector": 0, "sectors_no_mcap": 0}
+    for code, info in (universe or {}).items():
+        if not _is_common_code(code):
+            continue
+        info = info or {}
+        sector = info.get("sector")
+        if not sector:
+            excl["no_sector"] += 1
+            continue
+        seen_sectors.add(sector)
+        shares, close = info.get("shares"), closes.get(code)
+        if not shares or not close:
+            excl["no_price"] += 1
+            continue
+        mcap = shares * close
+        g = groups.setdefault(sector, {
+            "mcap": 0.0, "n": 0, "inst": 0.0, "n_inst": 0, "inst_prev": 0.0, "n_inst_prev": 0,
+            "big": 0.0, "n_cust": 0, "big_prev": 0.0, "n_cust_prev": 0, "stocks": []})
+        g["mcap"] += mcap
+        g["n"] += 1
+        lots = flow_cur.get(code)
+        if lots is not None:
+            amt = lots * 1000 * close
+            g["inst"] += amt
+            g["n_inst"] += 1
+            g["stocks"].append({"code": code, "name": info.get("name") or code, "amount": round(amt)})
+        if flow_prev is not None and flow_prev.get(code) is not None:
+            g["inst_prev"] += flow_prev[code] * 1000 * close
+            g["n_inst_prev"] += 1
+        if cust_cur is not None:
+            b = big_holder_amount(cust_cur.get(code), shares, close)
+            if b is not None:
+                g["big"] += b
+                g["n_cust"] += 1
+        if cust_prev is not None:
+            b = big_holder_amount(cust_prev.get(code), shares, close)
+            if b is not None:
+                g["big_prev"] += b
+                g["n_cust_prev"] += 1
+
+    def pct(num, den, have):
+        return round(num / den * 100, 3) if (have and den) else None
+
+    sectors = []
+    for sector, g in groups.items():
+        if not g["mcap"]:
+            continue
+        g["stocks"].sort(key=lambda s: s["amount"], reverse=True)
+        sectors.append({
+            "sector": sector,
+            "x": pct(g["inst"], g["mcap"], g["n_inst"] > 0),
+            "y": pct(g["big"], g["mcap"], cust_cur is not None and g["n_cust"] > 0),
+            "x_prev": pct(g["inst_prev"], g["mcap"], flow_prev is not None and g["n_inst_prev"] > 0),
+            "y_prev": pct(g["big_prev"], g["mcap"], cust_prev is not None and g["n_cust_prev"] > 0),
+            "mcap": round(g["mcap"]), "n": g["n"], "n_cust": g["n_cust"],
+            "top3": g["stocks"][:3],
+            "chg_pct": sector_chg.get(sector),
+        })
+    sectors.sort(key=lambda s: s["mcap"], reverse=True)   # 大泡泡先畫、小泡泡疊上面才點得到
+    excl["sectors_no_mcap"] = len(seen_sectors - {s["sector"] for s in sectors})
+    return {"sectors": sectors, "excluded": excl}
+
+
 def estimate_quarterly_eps(monthly_revenue: list, gross_margin: list, opex: list,
                             tax: list, shares) -> float | None:
     """推估季EPS（XQ 的 Call_LE，CSV「推估獲利」欄位）：反推自使用者提供的 XS 原始碼
