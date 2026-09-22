@@ -87,10 +87,12 @@ APIRouter）之後就再也畫不出來**：那次重寫把 `/api/sectors/rotati
   }
   ```
   `y`／`y_prev` 在 `has_custody=false` 時為 `None`。
-- 快取：`ai_cache` 鍵 `sectorflow:v1:{flow_dates[-1]}:{custody_weeks[0] or "none"}:{days}`。**鍵含集保週**，
-  所以集保一換週（custody_watch 週六抓到新週）就是新鍵，不會拿舊集保的圖冒充新的；集保從「沒有」變「有」時
-  鍵從 `none` 變成週別，同理。payload 帶 `has_custody`，**讀取端只接受 `has_custody` 與當下 `custody_compare_weeks`
-  結果一致的快取**（同 `_os_futures` 的 `has_remote` 規矩：寫入守衛擋不住已經寫進去的半套）。
+- 快取：`ai_cache` 鍵 `sectorflow:v2:{flow_dates[-1]}:{'-'.join(全部完整週，最多 3 個) or "none"}:{days}`。
+  **鍵要編進計算真正用到的每一個集保週**，不是只放最新週：只放最新週的話，完整週從 2 變 3 而最新週不變時
+  （回補讓舊週跨過門檻）會沿用舊鍵、吃到沒有 `y_prev` 的舊快取（Task 4 審查抓到）。鍵完整描述了輸入，
+  所以**不需要**另外比對 `has_custody`——同一把鍵之下它不可能不一致，那道守衛是死碼。集保一換週
+  （custody_watch 週六抓到新週）或從「沒有」變「有」都自然換鍵。payload 仍帶 `has_custody` 給前端分支用。
+  （2026-09-22 修訂：原文寫 v1 鍵只含最新週＋讀取端比對 `has_custody`，經審查證明守衛不可能觸發。）
 - **不連外**：全部輸入都來自本地表與既有的逐日快取（`_quotes_for`／`_otc_quotes_for`／`_sectors_for` 快取沒中會
   抓當天一次，那是既有行為且只針對最新一日，不是逐日迴圈）。
 
