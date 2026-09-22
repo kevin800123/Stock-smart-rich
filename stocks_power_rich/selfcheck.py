@@ -205,7 +205,8 @@ def compute_self_screen(conn, date, universe: dict) -> dict:
         shares = info.get("shares")
         closes = (ohlc.get(code) or {}).get("closes")
         price = closes[-1] if closes else None
-        buy_value = (bhr / 100 * shares * price) if (shares and price) else None
+        # 算式只有一份：analysis.big_holder_amount（族群輪動的 Y 軸也用它）
+        buy_value = analysis.big_holder_amount(bhr, shares, price)
         if buy_value is not None:
             with_mcap += 1
         g = groups.setdefault(gk, {"this": 0.0, "prev": 0.0, "bhr": 0.0,

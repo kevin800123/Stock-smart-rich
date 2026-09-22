@@ -45,6 +45,18 @@ def custody_change(cur: dict | None, prev: dict | None) -> dict:
     return out
 
 
+def big_holder_amount(delta_pct, shares, close):
+    """大戶淨買進金額估計（元）＝ Δ400張↑% ÷ 100 × 股數 × 收盤。
+
+    這是全站**唯一**的一份算式：自算選股的「大戶買進版圖」（selfcheck.build_self_screen）與
+    族群輪動的 Y 軸（sector_flow）都呼叫這裡，不各自再寫一次——兩份會漂移。
+    任一輸入缺、股數或收盤為 0 都回 None（算不出就說算不出，不用 0 頂替）。
+    """
+    if delta_pct is None or not shares or not close:
+        return None
+    return delta_pct / 100 * shares * close
+
+
 def estimate_quarterly_eps(monthly_revenue: list, gross_margin: list, opex: list,
                             tax: list, shares) -> float | None:
     """推估季EPS（XQ 的 Call_LE，CSV「推估獲利」欄位）：反推自使用者提供的 XS 原始碼
