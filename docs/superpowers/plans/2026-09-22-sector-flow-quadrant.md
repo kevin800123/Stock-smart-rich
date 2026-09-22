@@ -615,7 +615,7 @@ def test_sectors_flow_new_third_custody_week_is_not_served_stale(tmp_path, monke
     semi1 = next(s for s in r1["sectors"] if s["sector"] == "半導體")
     assert semi1["y"] == 1.0 and semi1["y_prev"] is None
     assert get_ai_cache(c, f"sectorflow:v2:{days[-1]}:2026-09-18-2026-09-11:5") is not None
-    bulk_upsert_custody(c, "2026-09-04", {"2330": {"big400_pct": 80.0}, "1101": {"big400_pct": 40.0}})
+    bulk_upsert_custody(c, "2026-09-04", {"2330": {"big400_pct": 79.0}, "1101": {"big400_pct": 40.0}})   # 09-04→09-11 = +1% → y_prev 1.0
     r2 = cl.get("/api/sectors/flow").json()
     assert r2["custody_prev_weeks"] == ["2026-09-11", "2026-09-04"]
     semi2 = next(s for s in r2["sectors"] if s["sector"] == "半導體")
