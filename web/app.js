@@ -3721,8 +3721,22 @@ async function loadSectorFlow() {
       return;
     }
     const md = (s) => (s || "").slice(5);
+    const dayGap = (a, b) => (Date.parse(b) - Date.parse(a)) / 86400000;       // b − a，日曆天
     const bits = [`法人 ${md(d.flow_dates[0])}～${md(d.flow_dates[d.flow_dates.length - 1])}（${d.flow_dates.length} 日）`];
+    const pd = d.flow_prev_dates || [];
+    if (d.has_tail && pd.length) {
+      // 尾巴的起點是「上一期」，日期不寫出來就無從判斷它離現在多遠（停機幾天時前期會整段往前拉）
+      const span = dayGap(pd[0], pd[pd.length - 1]);
+      bits.push(`上一期 ${md(pd[0])}～${md(pd[pd.length - 1])}`
+        + (span > d.flow_dates.length * 2 + 4 ? "（不連續）" : ""));
+    }
     bits.push(d.has_custody ? `集保 ${md(d.custody_weeks[1])}→${md(d.custody_weeks[0])}` : "集保不足兩個完整週，暫以法人單軸顯示");
+    const pw = d.custody_prev_weeks || [];
+    if (pw.length) bits.push(`上一期集保 ${md(pw[1])}→${md(pw[0])}`);
+    else if (d.custody_prev_skipped === "weeks_not_adjacent" && d.custody_prev_gap) {
+      const g = d.custody_prev_gap;                       // [較新, 較舊]；殘缺週被略過造成的洞
+      bits.push(`上一期集保不相鄰（${md(g[1])}→${md(g[0])} 跨 ${Math.round(dayGap(g[1], g[0]) / 7)} 週），尾巴省略`);
+    }
     if (!d.has_tail) bits.push(`法人資料不足 ${d.flow_dates.length * 2} 日，尚無上一期`);
     bits.push(`${secs.length} 類股`);
     const ex = d.excluded || {};
@@ -3733,8 +3747,11 @@ async function loadSectorFlow() {
     if (d.has_custody) renderSectorFlow(d); else renderFlowBars(d);
     renderFlowQuadrants(d);
   } catch (e) {
+    // 失敗也要清狀態：留著上一次的四區排行與 lastSectorFlow 的話，按篩選會拿舊資料重畫
     disposeFlowChart();
     el.innerHTML = '<div class="muted small" style="padding:12px">族群輪動載入失敗</div>';
+    $("flow-quadrants").innerHTML = "";
+    lastSectorFlow = null;
   }
 }
 
@@ -3844,7 +3861,16 @@ function flowColumn(k, title, rows, withY) {
 function toggleRotationFilter(sector) {
   rotationSectorFilter = (sector && rotationSectorFilter !== sector) ? sector : null;
   applyRotationFilter();
-  if (lastSectorFlow) renderFlowQuadrants(lastSectorFlow);
+  if (!lastSectorFlow) return;
+  // 重繪會換掉整批 DOM 節點 → 焦點掉回 body，只用鍵盤的人會失去位置（同 ss-picked-note 那段的作法）
+  const cur = document.activeElement && document.activeElement.closest
+    ? document.activeElement.closest(".flow-row") : null;
+  const keep = cur && cur.dataset.sector;
+  renderFlowQuadrants(lastSectorFlow);
+  if (keep) {
+    const again = $("flow-quadrants").querySelector(`.flow-row[data-sector="${CSS.escape(keep)}"]`);
+    if (again) again.focus();
+  }
 }
 function applyRotationFilter() {
   document.querySelectorAll("#cross .cross-grp").forEach((g) => {
@@ -3857,7 +3883,6 @@ function applyRotationFilter() {
 async function loadCross() {
   const el = $("cross");
   if (!el) return;
-  const note = $("cross-note");
   try {
     const d = await getJSON("/api/sectors/picks");
     // 名單優先用自算、CSV 較新才用 CSV（後端 active_picks）；用哪份、查不到類股幾檔都要寫出來
@@ -3878,7 +3903,10 @@ async function loadCross() {
       return `<div class="cross-grp ${cls}" data-sector="${esc(g.sector)}"><div class="cross-h"><b>${esc(g.sector)}</b>　${pct}　<span class="muted">· ${g.count} 檔</span></div><div class="cross-stocks">${stocks}</div></div>`;
     }).join("");
     applyRotationFilter();
-  } catch (e) { el.innerHTML = '<div class="muted small">交叉選股載入失敗</div>'; }
+  } catch (e) {   // 說明列還留著上一次的「共 N 族群」會與空清單自相矛盾
+    el.innerHTML = '<div class="muted small">交叉選股載入失敗</div>';
+    crossNoteBase = ""; applyRotationFilter();
+  }
 }
 
 // ========== 大盤 × 籌碼對照圖（多窗格共用一條 X 軸，純前端） ==========

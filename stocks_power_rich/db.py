@@ -1,6 +1,7 @@
 """SQLite 資料層：建立 schema、每日大盤快照與籌碼快照的 upsert/查詢。"""
 import glob
 import gzip
+import hashlib
 import json
 import math
 import os
@@ -506,6 +507,23 @@ def institutional_window_map(conn: sqlite3.Connection, dates: list) -> dict:
         "COUNT(foreign_lots)+COUNT(trust_lots)+COUNT(dealer_lots) "
         f"FROM stock_flow_daily WHERE date IN ({q}) GROUP BY code", list(dates)).fetchall()
     return {code: total for code, total, non_null in rows if non_null > 0}
+
+
+def stock_flow_fingerprint(conn: sqlite3.Connection, dates: list) -> str:
+    """這批日期在 `stock_flow_daily` 裡的**內容指紋**（逐日 COUNT＋淨額合計的雜湊）。
+
+    給族群輪動的快取鍵用：只放「最新那一天」描述不了窗口的組成——回補在窗口中段補進一天
+    （日期集合變、最新日不變）或上櫃單邊重抓（日期集合不變、筆數與淨額變）都會沿用舊鍵、
+    吃到舊結果。逐日彙總同時涵蓋這兩種。與傳入順序無關（SQL 自己 ORDER BY date）。
+    """
+    if not dates:
+        return "none"
+    q = ",".join("?" * len(dates))
+    rows = conn.execute(
+        "SELECT date, COUNT(*), SUM(COALESCE(foreign_lots,0)+COALESCE(trust_lots,0)+COALESCE(dealer_lots,0)) "
+        f"FROM stock_flow_daily WHERE date IN ({q}) GROUP BY date ORDER BY date", list(dates)).fetchall()
+    raw = "|".join(f"{d}:{n}:{total}" for d, n, total in rows)
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()[:10]
 
 
 def custody_delta_map(conn: sqlite3.Connection, week_cur: str, week_prev: str) -> dict:

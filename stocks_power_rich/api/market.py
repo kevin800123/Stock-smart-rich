@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from datetime import datetime
+from datetime import date as _date, datetime
 from .deps import conn
 from .helpers import (
     _latest_date,
@@ -27,7 +27,9 @@ from .helpers import (
 )
 from ..sources import twse, taifex, mis, tpex
 from ..sources import taifex_ssf
-from ..db import get_ssf_dates, get_ssf_rows, count_ssf_dates, stock_flow_dates, institutional_window_map, custody_delta_map, custody_compare_weeks
+from ..db import (get_ssf_dates, get_ssf_rows, count_ssf_dates, stock_flow_dates,
+                  institutional_window_map, custody_delta_map, custody_compare_weeks,
+                  stock_flow_fingerprint)
 from .. import analysis, gemini, ss_trader, traders
 from ..config import load_config
 
@@ -472,6 +474,19 @@ def heatmap(date: str | None = None, market: str = "tse"):
     return {"date": date, "market": market, "groups": out}
 
 FLOW_DAYS_MIN, FLOW_DAYS_MAX = 3, 20
+FLOW_WEEK_ADJACENT_DAYS = 10   # 相鄰的兩個集保週最多差幾天（見 _weeks_adjacent）
+
+
+def _weeks_adjacent(newer: str, older: str) -> bool:
+    """兩個集保週是不是**相鄰的兩週**（newer 較新）。
+
+    TDCC 的週日期遇假日會往前位移到週四，所以容差不能寫死 7 天；但 14 天＝中間整整少一週，
+    那就不是相鄰。日期解析不出來一律當不相鄰（寧可少畫尾巴，也不要畫一條意義不明的線）。"""
+    try:
+        gap = (_date.fromisoformat(newer) - _date.fromisoformat(older)).days
+    except (ValueError, TypeError):
+        return False
+    return 0 < gap <= FLOW_WEEK_ADJACENT_DAYS
 
 
 @router.get("/sectors/flow")
@@ -485,6 +500,7 @@ def sectors_flow(days: int = analysis.FLOW_DAYS):
     c = conn()
     days = max(FLOW_DAYS_MIN, min(int(days), FLOW_DAYS_MAX))
     empty = {"flow_dates": [], "flow_prev_dates": [], "custody_weeks": [], "custody_prev_weeks": [],
+             "custody_prev_skipped": None, "custody_prev_gap": None,
              "has_custody": False, "has_tail": False, "sectors": [],
              "excluded": {"no_price": 0, "no_sector": 0, "sectors_no_mcap": 0}}
     dates = stock_flow_dates(c, days * 2)
@@ -492,12 +508,25 @@ def sectors_flow(days: int = analysis.FLOW_DAYS):
         return empty
     cur_dates = dates[-days:]
     prev_dates = dates[:-days] if len(dates) >= 2 * days else []
-    weeks = custody_compare_weeks(c, limit=3)
+    # as_of 是法人最新日——法人窗口落後時不可拿更新的集保週（全站其他呼叫點都帶 as_of）。
+    weeks = custody_compare_weeks(c, as_of=cur_dates[-1], limit=3)
     has_custody = len(weeks) >= 2
-    # 鍵要編進**計算真正用到的每一個集保週**（最多 3 個）：只放最新週的話，完整週從 2 變 3 而最新週
-    # 不變時（回補讓舊週跨過門檻）會沿用舊鍵、吃到沒有 y_prev 的舊快取。鍵已完整描述輸入，
-    # 不需要另外比對 has_custody——同一把鍵之下它不可能不一致（Task 4 審查證明那是死碼）。
-    ckey = f"sectorflow:v2:{cur_dates[-1]}:{'-'.join(weeks) or 'none'}:{days}"
+    # 尾巴要比的是「同樣跨度的兩期」。custody_compare_weeks 會略過殘缺週，所以第 2、3 個完整週
+    # 不一定相鄰——真實 DB 正是 09-18／09-11／08-21（09-04、08-28 只有個位數檔、被判殘缺）。
+    # 照用的話 y 是 1 週 delta、y_prev 是 3 週 delta，尾巴長度沒有意義（實測差 2.98 倍中位數）。
+    # 兩段都要相鄰才算數；y 本身維持 weeks[0]-weeks[1]（與全站大戶增比 custody_change_map 同定義）。
+    prev_ok = (len(weeks) >= 3 and _weeks_adjacent(weeks[0], weeks[1])
+               and _weeks_adjacent(weeks[1], weeks[2]))
+    prev_gap = None
+    if len(weeks) >= 3 and not prev_ok:      # 把「哪一對不相鄰」講出來，說明列才印得出跨了幾週
+        prev_gap = weeks[0:2] if not _weeks_adjacent(weeks[0], weeks[1]) else weeks[1:3]
+    # 鍵要編進**計算真正用到的每一個輸入**：法人最新日只描述窗口的尾端——回補在窗口中段補進一天
+    # （日期集合變、最新日不變）或上櫃單邊重抓（日期不變、筆數／淨額變）都會沿用舊鍵，所以加一個
+    # 逐日 COUNT／SUM 的指紋。集保週也要**全部**放進去（最多 3 個）：完整週從 2 變 3 而最新週不變時
+    # （回補讓舊週跨過門檻）會吃到沒有 y_prev 的舊快取。鍵已完整描述輸入，不需要另外比對
+    # has_custody——同一把鍵之下它不可能不一致（Task 4 審查證明那是死碼）。
+    ckey = (f"sectorflow:v3:{cur_dates[-1]}:{stock_flow_fingerprint(c, cur_dates + prev_dates)}"
+            f":{'-'.join(weeks) or 'none'}:{days}")
     cached = get_ai_cache(c, ckey)
     if cached is not None:
         return cached
@@ -510,12 +539,14 @@ def sectors_flow(days: int = analysis.FLOW_DAYS):
         flow_cur=institutional_window_map(c, cur_dates),
         flow_prev=institutional_window_map(c, prev_dates) if prev_dates else None,
         cust_cur=custody_delta_map(c, weeks[0], weeks[1]) if has_custody else None,
-        cust_prev=custody_delta_map(c, weeks[1], weeks[2]) if len(weeks) >= 3 else None,
+        cust_prev=custody_delta_map(c, weeks[1], weeks[2]) if prev_ok else None,
         sector_chg={s["name"]: s.get("chg_pct") for s in _sectors_for(c, d0) if s.get("name")},
     )
     out = {"flow_dates": cur_dates, "flow_prev_dates": prev_dates,
            "custody_weeks": weeks[:2] if has_custody else [],
-           "custody_prev_weeks": weeks[1:3] if len(weeks) >= 3 else [],
+           "custody_prev_weeks": weeks[1:3] if prev_ok else [],
+           "custody_prev_skipped": "weeks_not_adjacent" if prev_gap else None,
+           "custody_prev_gap": prev_gap,
            "has_custody": has_custody, "has_tail": bool(prev_dates), **res}
     if res["sectors"]:                       # 空結果不寫快取（失敗值不可永久化）
         set_ai_cache(c, ckey, out)

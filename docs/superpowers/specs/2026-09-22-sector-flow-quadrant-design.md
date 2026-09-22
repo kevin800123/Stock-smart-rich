@@ -73,26 +73,42 @@ APIRouter）之後就再也畫不出來**：那次重寫把 `/api/sectors/rotati
 - 交易日曆＝`stock_flow_daily` 的 distinct `date`（**不是** `market_daily`：法人窗口要的是「有法人資料的日子」；
   `market_daily` 當天早上就有列而法人 16:00 後才公布，用它會把今天的空列算進窗口）。本期＝最近 `days` 日，
   前期＝再往前 `days` 日；不足 `2×days` 日 → `flow_prev=None`、回應 `has_tail=false`。
-- 集保：`custody_compare_weeks(c)` 回的前兩週給 `cust_cur`，前三週給 `cust_prev`；不足兩週 → `cust_cur=None`、
-  回應 `has_custody=false`；兩週但不足三週 → 只 `cust_prev=None`。
+- 集保：`custody_compare_weeks(c, as_of=flow_dates[-1], limit=3)`（**要帶 `as_of`**：法人窗口落後時不可拿更新的
+  集保週）回的前兩週給 `cust_cur`，第 2、3 週給 `cust_prev`；不足兩週 → `cust_cur=None`、回應 `has_custody=false`；
+  兩週但不足三週 → 只 `cust_prev=None`。
+  **第 2、3 週不保證相鄰**：`custody_compare_weeks` 會略過殘缺週，真實 DB 是 09-18／09-11／**08-21**
+  （09-04 只有 6 檔、08-28 只有 4 檔）——照用的話 `y` 是 1 週 delta 而 `y_prev` 是 3 週 delta，尾巴長度沒有意義
+  （實測 34 個類股 `|y_prev|/|y|` 中位數 3.39、最大 40 倍）。`_weeks_adjacent(newer, older)` ＝ `0 < 天數差 ≤ 10`（TDCC 週日期遇
+  假日會位移到週四；14 天＝中間少一週），**weeks[0]-weeks[1] 與 weeks[1]-weeks[2] 兩段都要相鄰**才算 `cust_prev`；
+  否則 `cust_prev=None`、`custody_prev_weeks=[]`、回應帶 `custody_prev_skipped="weeks_not_adjacent"` 與
+  `custody_prev_gap=[較新, 較舊]`（不相鄰的那一對），前端說明列印「上一期集保不相鄰（MM-DD→MM-DD 跨 N 週），
+  尾巴省略」——安靜地少一條尾巴跟「這週大戶沒動」長得一模一樣。`y` 本身維持 weeks[0]-weeks[1]（與全站大戶增比
+  `custody_change_map` 同一定義）。
+  （2026-09-23 修訂：原文只寫「前三週給 `cust_prev`」，最終審查抓到相鄰性沒判。）
 - 回應：
 
   ```
   {
     "flow_dates": [...5 日...], "flow_prev_dates": [...]|[],
     "custody_weeks": ["2026-09-18","2026-09-11"]|[], "custody_prev_weeks": [...]|[],
+    "custody_prev_skipped": "weeks_not_adjacent"|null, "custody_prev_gap": [新,舊]|null,
     "has_custody": bool, "has_tail": bool,
     "sectors": [{"sector","x","y","x_prev","y_prev","mcap","n","n_cust","top3","chg_pct"}],
     "excluded": {"no_price": int, "no_sector": int, "sectors_no_mcap": int}
   }
   ```
   `y`／`y_prev` 在 `has_custody=false` 時為 `None`。
-- 快取：`ai_cache` 鍵 `sectorflow:v2:{flow_dates[-1]}:{'-'.join(全部完整週，最多 3 個) or "none"}:{days}`。
-  **鍵要編進計算真正用到的每一個集保週**，不是只放最新週：只放最新週的話，完整週從 2 變 3 而最新週不變時
-  （回補讓舊週跨過門檻）會沿用舊鍵、吃到沒有 `y_prev` 的舊快取（Task 4 審查抓到）。鍵完整描述了輸入，
-  所以**不需要**另外比對 `has_custody`——同一把鍵之下它不可能不一致，那道守衛是死碼。集保一換週
-  （custody_watch 週六抓到新週）或從「沒有」變「有」都自然換鍵。payload 仍帶 `has_custody` 給前端分支用。
-  （2026-09-22 修訂：原文寫 v1 鍵只含最新週＋讀取端比對 `has_custody`，經審查證明守衛不可能觸發。）
+- 快取：`ai_cache` 鍵
+  `sectorflow:v3:{flow_dates[-1]}:{stock_flow_fingerprint(cur+prev)}:{'-'.join(全部完整週，最多 3 個) or "none"}:{days}`。
+  **鍵要編進計算真正用到的每一個輸入**，不是只放最顯眼的那一個。三種踩過的：(a) 只放最新週的話，完整週從 2 變 3
+  而最新週不變時（回補讓舊週跨過門檻）會沿用舊鍵、吃到沒有 `y_prev` 的舊快取（Task 4 審查抓到）；(b) **回補在
+  窗口中段補進一天**——日期集合變、最新日不變；(c) **上櫃單邊重抓**——日期集合也不變，只有筆數／淨額變。
+  (b)(c) 只靠 `flow_dates[-1]` 完全看不出來，所以加 `db.stock_flow_fingerprint(conn, dates)`＝窗口內逐日
+  `COUNT(*)` 與 `Σ(外資+投信+自營)` 串成字串取 md5 前 10 碼（空 `dates` 回 `"none"`；SQL 自己 `ORDER BY date`，
+  與傳入順序無關）。鍵完整描述了輸入，所以**不需要**另外比對 `has_custody`——同一把鍵之下它不可能不一致，
+  那道守衛是死碼。payload 仍帶 `has_custody` 給前端分支用。
+  （2026-09-22 修訂：原文寫 v1 鍵只含最新週＋讀取端比對 `has_custody`，經審查證明守衛不可能觸發。
+  2026-09-23 修訂：v2 → v3，加窗口指紋，最終審查抓到 (b)(c)。）
 - **不連外**：全部輸入都來自本地表與既有的逐日快取（`_quotes_for`／`_otc_quotes_for`／`_sectors_for` 快取沒中會
   抓當天一次，那是既有行為且只針對最新一日，不是逐日迴圈）。
 

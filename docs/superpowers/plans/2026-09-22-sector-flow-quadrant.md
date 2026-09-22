@@ -390,7 +390,7 @@ Expected: 11 passed
 
 - [ ] **Step 5: 反證一條守衛（做完要還原）**
 
-把 `g["mcap"] += mcap` 那行暫時移到 `if cust_cur is not None:` 區塊裡面（讓分母只算有集保 Δ 的檔），跑：
+把 `g["mcap"] += mcap` 那行暫時移到 `if b is not None:`（`cust_cur` 那段）裡面（讓分母只算有集保 Δ 的檔），跑：
 
 Run: `.venv\Scripts\python -m pytest tests/test_analysis_sector_flow.py -q --no-header -k denominator`
 Expected: 1 failed（`y == 1.0` 而非 `0.5`）——證明「缺 Δ 仍進分母」不是恆真。**然後 `git checkout stocks_power_rich/analysis.py` 之前先確認只動了那一行，或手動搬回原位**，再跑一次全綠。

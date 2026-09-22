@@ -3601,19 +3601,26 @@ def test_intraday_breakout_volume_gate_holds_thin_volume_and_fires_when_it_build
     assert "台中銀 19.85(壓19.80) 量1.8倍" in sent[1] and "元太" not in sent[1]
 
 
-def _seed_sector_flow(tmp_path, monkeypatch, *, flow_days=12, custody_weeks=("2026-09-04", "2026-09-11", "2026-09-18")):
+def _seed_sector_flow(tmp_path, monkeypatch, *, flow_days=12, skip_dates=(),
+                      custody_weeks=("2026-09-04", "2026-09-11", "2026-09-18")):
     """族群輪動端點的固定場景：2330（半導體、1e9 股、收盤 100）每天法人淨買 +100 張；
     1101（水泥、5e8 股、收盤 20）每天 -10 張；三檔非普通股法人各 +99999 張（不得進加總）。
-    market_daily 多一個「今天」的空列（法人窗口不得含它）。"""
+    market_daily 多一個「今天」的空列（法人窗口不得含它）。
+
+    法人窗口的起日刻意排在所有集保週之後——端點用 `as_of=法人最新日` 挑集保週（法人窗口
+    落後時不可拿更新的集保週），起日若早於集保週會把它們整批濾掉。`skip_dates` 只跳過
+    `stock_flow_daily`（market_daily 那列照建），模擬「法人資料缺一天」。"""
     from datetime import date, timedelta
     from stocks_power_rich.db import (get_connection, init_db, upsert_market_daily,
                                       bulk_upsert_stock_flow, bulk_upsert_custody, set_ai_cache)
     from stocks_power_rich.sources import twse, tpex
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
-    days = [(date(2026, 9, 1) + timedelta(days=i)).isoformat() for i in range(flow_days)]
+    days = [(date(2026, 9, 14) + timedelta(days=i)).isoformat() for i in range(flow_days)]
     for d in days:
         upsert_market_daily(c, {"date": d, "taiex": 1.0})
+        if d in skip_dates:
+            continue
         bulk_upsert_stock_flow(c, d, "TWSE", {
             "2330": {"foreign_lots": 100}, "1101": {"foreign_lots": -10},
             "0050": {"foreign_lots": 99_999}, "00878": {"foreign_lots": 99_999}, "12345": {"foreign_lots": 99_999}})
@@ -3637,6 +3644,14 @@ def _seed_sector_flow(tmp_path, monkeypatch, *, flow_days=12, custody_weeks=("20
     return c, days
 
 
+def _flow_ckey(c, weeks, n=5):
+    """端點會用的快取鍵（指紋用 db 那支算，不手寫雜湊）。窗口組法與 sectors_flow 一致。"""
+    from stocks_power_rich.db import stock_flow_dates, stock_flow_fingerprint
+    dates = stock_flow_dates(c, n * 2)
+    cur, prev = dates[-n:], (dates[:-n] if len(dates) >= 2 * n else [])
+    return f"sectorflow:v3:{cur[-1]}:{stock_flow_fingerprint(c, cur + prev)}:{weeks}:{n}"
+
+
 def test_sectors_flow_window_comes_from_stock_flow_daily_and_only_common_stocks(tmp_path, monkeypatch):
     c, days = _seed_sector_flow(tmp_path, monkeypatch)
     r = TestClient(create_app()).get("/api/sectors/flow").json()
@@ -3652,6 +3667,7 @@ def test_sectors_flow_window_comes_from_stock_flow_daily_and_only_common_stocks(
     assert semi["y"] == 1.0 and semi["y_prev"] == 1.0
     assert semi["chg_pct"] == 1.5
     assert r["custody_weeks"] == ["2026-09-18", "2026-09-11"]
+    assert r["custody_prev_weeks"] == ["2026-09-11", "2026-09-04"] and r["custody_prev_skipped"] is None
     assert by["水泥"]["y"] == 0.0                        # 40→40：有資料、淨額為零
 
 
@@ -3671,22 +3687,57 @@ def test_sectors_flow_new_third_custody_week_is_not_served_stale(tmp_path, monke
     cl = TestClient(create_app())
     r1 = cl.get("/api/sectors/flow").json()
     assert r1["has_custody"] is True and r1["custody_prev_weeks"] == []
+    assert r1["custody_prev_skipped"] is None and r1["custody_prev_gap"] is None   # 只是沒有第三週，不是不相鄰
     semi1 = next(s for s in r1["sectors"] if s["sector"] == "半導體")
     assert semi1["y"] == 1.0 and semi1["y_prev"] is None
-    assert get_ai_cache(c, f"sectorflow:v2:{days[-1]}:2026-09-18-2026-09-11:5") is not None
+    assert get_ai_cache(c, _flow_ckey(c, "2026-09-18-2026-09-11")) is not None
     bulk_upsert_custody(c, "2026-09-04", {"2330": {"big400_pct": 79.0}, "1101": {"big400_pct": 40.0}})  # 09-04→09-11 = +1% → y_prev 1.0
     r2 = cl.get("/api/sectors/flow").json()
     assert r2["custody_prev_weeks"] == ["2026-09-11", "2026-09-04"]
     semi2 = next(s for s in r2["sectors"] if s["sector"] == "半導體")
     assert semi2["y_prev"] == 1.0                        # 沒吃到舊快取
-    assert get_ai_cache(c, f"sectorflow:v2:{days[-1]}:2026-09-18-2026-09-11-2026-09-04:5") is not None
+    assert get_ai_cache(c, _flow_ckey(c, "2026-09-18-2026-09-11-2026-09-04")) is not None
 
 
 def test_sectors_flow_cache_key_changes_with_custody_week(tmp_path, monkeypatch):
     from stocks_power_rich.db import get_ai_cache
     c, days = _seed_sector_flow(tmp_path, monkeypatch)
     TestClient(create_app()).get("/api/sectors/flow")
-    assert get_ai_cache(c, f"sectorflow:v2:{days[-1]}:2026-09-18-2026-09-11-2026-09-04:5") is not None
+    assert get_ai_cache(c, _flow_ckey(c, "2026-09-18-2026-09-11-2026-09-04")) is not None
+
+
+def test_sectors_flow_cache_key_changes_when_a_missing_flow_day_is_filled(tmp_path, monkeypatch):
+    """鍵要描述窗口的**組成**：回補補進窗口中段缺的那一天時，法人最新日與集保週都沒變——
+    只含最新日的鍵會沿用舊快取，x 永遠停在缺那天的值。"""
+    from stocks_power_rich.db import bulk_upsert_stock_flow
+    c, days = _seed_sector_flow(tmp_path, monkeypatch, skip_dates=("2026-09-22",))
+    cl = TestClient(create_app())
+    r1 = cl.get("/api/sectors/flow").json()
+    assert "2026-09-22" not in r1["flow_dates"]
+    x1 = next(s for s in r1["sectors"] if s["sector"] == "半導體")["x"]
+    assert x1 == 0.05                                    # 5 天 × 100 張
+    bulk_upsert_stock_flow(c, "2026-09-22", "TWSE", {"2330": {"foreign_lots": 500},
+                                                     "1101": {"foreign_lots": -10}})
+    r2 = cl.get("/api/sectors/flow").json()
+    assert r2["flow_dates"][-1] == r1["flow_dates"][-1]  # 最新日沒變（舊鍵看不出差異）
+    assert r2["custody_weeks"] == r1["custody_weeks"]    # 集保週也沒變
+    assert "2026-09-22" in r2["flow_dates"] and r2["flow_dates"] != r1["flow_dates"]
+    x2 = next(s for s in r2["sectors"] if s["sector"] == "半導體")["x"]
+    assert x2 == 0.09 and x2 != x1                       # 4×100 + 500 張，不是舊快取
+
+
+def test_sectors_flow_tail_is_dropped_when_the_two_custody_weeks_are_not_adjacent(tmp_path, monkeypatch):
+    """`custody_compare_weeks` 會略過殘缺週，所以第 2、3 個完整週不一定相鄰——真實 DB 正是
+    09-18／09-11／08-21（09-04、08-28 殘缺）。照用的話 y 是 1 週 delta、y_prev 是 3 週 delta，
+    尾巴長度沒有意義。不相鄰就不給 y_prev，並在回應裡講出原因。"""
+    _seed_sector_flow(tmp_path, monkeypatch,
+                      custody_weeks=("2026-08-21", "2026-09-11", "2026-09-18"))   # 中間缺兩週
+    r = TestClient(create_app()).get("/api/sectors/flow").json()
+    assert r["custody_weeks"] == ["2026-09-18", "2026-09-11"]
+    assert r["custody_prev_weeks"] == [] and r["custody_prev_skipped"] == "weeks_not_adjacent"
+    assert r["custody_prev_gap"] == ["2026-09-11", "2026-08-21"]                  # 說明列要印的那一對
+    semi = next(s for s in r["sectors"] if s["sector"] == "半導體")
+    assert semi["y"] == 1.0 and semi["y_prev"] is None                            # y 本身不受影響
 
 
 def test_sectors_flow_days_is_clamped_between_3_and_20(tmp_path, monkeypatch):

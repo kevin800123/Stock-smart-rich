@@ -757,3 +757,25 @@ def test_custody_delta_map_needs_both_weeks(tmp_path):
     bulk_upsert_custody(c, "2026-09-18", {"2330": {"big400_pct": 87.5}, "2454": {"big400_pct": 60.0}})
     m = custody_delta_map(c, "2026-09-18", "2026-09-11")
     assert m == {"2330": 0.5}       # 1101 只有舊週、2454 只有新週 → 都不出現
+
+
+def test_stock_flow_fingerprint_describes_the_window_composition(tmp_path):
+    """快取鍵要描述窗口的**組成**，不只是最新那一天：回補在窗口中段補一天（日期集合變）、
+    或上櫃單邊重抓（日期不變、筆數／淨額變），只含最新日的舊鍵都會沿用舊結果。"""
+    from stocks_power_rich.db import (get_connection, init_db, bulk_upsert_stock_flow,
+                                      stock_flow_fingerprint)
+    c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
+    dates = ["2026-09-16", "2026-09-17"]
+    bulk_upsert_stock_flow(c, "2026-09-16", "TWSE", {"2330": {"foreign_lots": 100}})
+    bulk_upsert_stock_flow(c, "2026-09-17", "TWSE", {"2330": {"foreign_lots": 50}})
+    base = stock_flow_fingerprint(c, dates)
+    assert base and stock_flow_fingerprint(c, dates) == base            # 同資料穩定
+    assert stock_flow_fingerprint(c, list(reversed(dates))) == base     # 與傳入順序無關
+    bulk_upsert_stock_flow(c, "2026-09-18", "TWSE", {"2330": {"foreign_lots": 9}})
+    assert stock_flow_fingerprint(c, dates) == base                     # 窗口外的日期不算
+    bulk_upsert_stock_flow(c, "2026-09-17", "TPEx", {"6488": {"foreign_lots": 3}})
+    more = stock_flow_fingerprint(c, dates)
+    assert more != base                                                 # 多一列就換鍵
+    bulk_upsert_stock_flow(c, "2026-09-16", "TWSE", {"2330": {"foreign_lots": 101}})
+    assert stock_flow_fingerprint(c, dates) not in (base, more)         # 只改一個值也換鍵
+    assert stock_flow_fingerprint(c, []) == "none"
