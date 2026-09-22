@@ -17,7 +17,7 @@ Spec：`docs/superpowers/specs/2026-09-22-sector-flow-quadrant-design.md`。
 - 法人交易日曆來自 **`stock_flow_daily` 的 distinct date**，不是 `market_daily`。
 - 大戶用 `custody_compare_weeks` 挑**完整週**；`x_prev`/`y_prev` 缺資料時是 `None`，不是 `0`。
 - 大戶缺某檔 Δ：不進分子、**仍進市值分母**；該類股一檔都沒有 Δ 時 `y = None`。
-- 快取鍵 `sectorflow:v1:{flow_dates[-1]}:{custody_weeks[0] or "none"}:{days}`，讀取端只接受 `has_custody` 與當下一致的快取。
+- 快取鍵 `sectorflow:v2:{flow_dates[-1]}:{'-'.join(weeks) or "none"}:{days}`（`weeks`＝`custody_compare_weeks(limit=3)` 的全部結果），鍵完整描述輸入，**不另外比對 `has_custody`**。
 - 大戶金額只能有一份算式：`analysis.big_holder_amount(delta_pct, shares, close)`，`selfcheck.build_self_screen` 也要改呼叫它。
 - **顏色不用紅綠**（紅綠鎖給行情漲跌），資金流向一律 `C.info`；價格漲跌只在 tooltip 的 `chg_pct`。
 - 圖高桌機 460px、≤600px 360px；`.rotation-flow` ≤1180px 改單欄；排行列 `min-height: 28px`。
@@ -604,23 +604,30 @@ def test_sectors_flow_without_two_complete_custody_weeks_has_no_y(tmp_path, monk
     assert r["sectors"]                                  # X 軸照樣有
 
 
-def test_sectors_flow_read_guard_rejects_cache_written_without_custody(tmp_path, monkeypatch):
-    """寫入守衛擋不住已經寫進去的半套：預先塞一份 has_custody=false 的舊快取，
-    集保現在已有兩週 → 必須重算，不得回舊的。"""
-    from stocks_power_rich.db import set_ai_cache
-    c, days = _seed_sector_flow(tmp_path, monkeypatch)
-    stale = {"flow_dates": days[-5:], "flow_prev_dates": [], "custody_weeks": [], "custody_prev_weeks": [],
-             "has_custody": False, "has_tail": False, "sectors": [], "excluded": {}}
-    set_ai_cache(c, f"sectorflow:v1:{days[-1]}:none:5", stale)
-    r = TestClient(create_app()).get("/api/sectors/flow").json()
-    assert r["has_custody"] is True and r["sectors"]
+def test_sectors_flow_new_third_custody_week_is_not_served_stale(tmp_path, monkeypatch):
+    """鍵要編進計算用到的**每一個**集保週：先只有兩個完整週（沒有 y_prev），再補進第三個較舊的
+    完整週而最新週不變——若鍵只含最新週就會沿用舊快取、y_prev 永遠是 None。"""
+    from stocks_power_rich.db import bulk_upsert_custody, get_ai_cache
+    c, days = _seed_sector_flow(tmp_path, monkeypatch, custody_weeks=("2026-09-11", "2026-09-18"))
+    cl = TestClient(create_app())
+    r1 = cl.get("/api/sectors/flow").json()
+    assert r1["has_custody"] is True and r1["custody_prev_weeks"] == []
+    semi1 = next(s for s in r1["sectors"] if s["sector"] == "半導體")
+    assert semi1["y"] == 1.0 and semi1["y_prev"] is None
+    assert get_ai_cache(c, f"sectorflow:v2:{days[-1]}:2026-09-18-2026-09-11:5") is not None
+    bulk_upsert_custody(c, "2026-09-04", {"2330": {"big400_pct": 80.0}, "1101": {"big400_pct": 40.0}})
+    r2 = cl.get("/api/sectors/flow").json()
+    assert r2["custody_prev_weeks"] == ["2026-09-11", "2026-09-04"]
+    semi2 = next(s for s in r2["sectors"] if s["sector"] == "半導體")
+    assert semi2["y_prev"] == 1.0                        # 沒吃到舊快取
+    assert get_ai_cache(c, f"sectorflow:v2:{days[-1]}:2026-09-18-2026-09-11-2026-09-04:5") is not None
 
 
 def test_sectors_flow_cache_key_changes_with_custody_week(tmp_path, monkeypatch):
     from stocks_power_rich.db import get_ai_cache
     c, days = _seed_sector_flow(tmp_path, monkeypatch)
     TestClient(create_app()).get("/api/sectors/flow")
-    assert get_ai_cache(c, f"sectorflow:v1:{days[-1]}:2026-09-18:5") is not None
+    assert get_ai_cache(c, f"sectorflow:v2:{days[-1]}:2026-09-18-2026-09-11-2026-09-04:5") is not None
 
 
 def test_sectors_flow_days_is_clamped_between_3_and_20(tmp_path, monkeypatch):
@@ -663,8 +670,8 @@ def sectors_flow(days: int = analysis.FLOW_DAYS):
     """族群輪動：法人（X）× 大戶（Y）資金流向，逐類股（spec 2026-09-22-sector-flow-quadrant-design.md §3）。
 
     取代 bfd0a53 之後就再也畫不出來的 /sectors/rotation（後端回 dict、前端當陣列用）。
-    **不連外**：全部輸入來自本地表與既有逐日快取。快取鍵含法人最新日與集保週——集保一換週就是新鍵，
-    不會拿舊集保的圖冒充新的；讀取端另外比對 has_custody，擋掉集保從「沒有」變「有」之前寫進去的半套。
+    **不連外**：全部輸入來自本地表與既有逐日快取。快取鍵含法人最新日與**全部**用到的集保週——
+    集保一換週、或多出一個完整週，都是新鍵，不會拿舊集保的圖冒充新的。
     """
     c = conn()
     days = max(FLOW_DAYS_MIN, min(int(days), FLOW_DAYS_MAX))
@@ -678,9 +685,12 @@ def sectors_flow(days: int = analysis.FLOW_DAYS):
     prev_dates = dates[:-days] if len(dates) >= 2 * days else []
     weeks = custody_compare_weeks(c, limit=3)
     has_custody = len(weeks) >= 2
-    ckey = f"sectorflow:v1:{cur_dates[-1]}:{weeks[0] if has_custody else 'none'}:{days}"
+    # 鍵要編進**計算真正用到的每一個集保週**（最多 3 個）：只放最新週的話，完整週從 2 變 3 而最新週
+    # 不變時（回補讓舊週跨過門檻）會沿用舊鍵、吃到沒有 y_prev 的舊快取。鍵已完整描述輸入，
+    # 不需要另外比對 has_custody——同一把鍵之下它不可能不一致（Task 4 審查證明那是死碼）。
+    ckey = f"sectorflow:v2:{cur_dates[-1]}:{'-'.join(weeks) or 'none'}:{days}"
     cached = get_ai_cache(c, ckey)
-    if cached is not None and cached.get("has_custody") == has_custody:
+    if cached is not None:
         return cached
     universe = {**_otc_industry(c), **_industry_map(c)}          # 代號不衝突；上市優先
     d0 = cur_dates[-1]
@@ -1062,8 +1072,9 @@ dict `{name: [...]}`，前端 `loadRotation` 沒跟著改，`d.sectors.length` �
   （0 是「有資料且淨額為零」）。反證做過：把分母改成只算有 Δ 的檔 → `y` 從 0.5 變 1.0、測試紅。
 - **法人交易日曆用 `stock_flow_daily` 自己的日期**，不用 `market_daily`——後者當天早上就有列而法人
   16:00 後才公布，會把今天的空列算進 5 日窗口。
-- **快取鍵含集保週** `sectorflow:v1:{法人最新日}:{集保週|none}:{days}`，週六 custody_watch 抓到新週自然
-  換鍵；**讀取端另外比對 `has_custody`**（同 `_os_futures` 的 `has_remote`：寫入守衛擋不住已寫進去的半套）。
+- **快取鍵含全部用到的集保週** `sectorflow:v2:{法人最新日}:{三個完整週以 - 相接|none}:{days}`。第一版只放最新週
+  ＋讀取端比對 `has_custody`，審查證明那道守衛是死碼（同一把鍵下不可能不一致），而且完整週 2→3 但最新週不變
+  時會吃到沒有 `y_prev` 的舊快取——**鍵要描述計算用到的每一個輸入**，不是只放最顯眼的那一個。
 - **顏色不用紅綠**：資金流向不是漲跌，一律 `C.info`；價格漲跌只在 tooltip 的 `chg_pct`。
 - **四區排行是 canvas 的鍵盤替代**（同 ui29 chip），每列 `<button aria-pressed>`、`min-height: 28px`；
   點泡泡或列都篩下方交叉選股（`.cross-grp` 帶 `data-sector`、只切 `.hidden` 不重打 API）。
@@ -1081,7 +1092,7 @@ dict `{name: [...]}`，前端 `loadRotation` 沒跟著改，`d.sectors.length` �
 
 ```markdown
 ## 族群輪動改「法人 × 大戶」資金流向四象限（ui69，2026-09）
-主圖「近 N 日類股漲跌表」從 `bfd0a53`（拆 APIRouter）起就壞了——後端把 `sectors` 從陣列改成 dict、前端沒跟，永遠「尚無類股資料」。直接移除 `/api/sectors/rotation`，換成 `GET /api/sectors/flow`：X＝法人近 5 日淨買賣 ÷ 類股市值、Y＝大戶 400張↑ 週增 ÷ 類股市值（除以市值才跨類股可比），泡泡＝類股、尾巴＝上一期→本期；純函式 `analysis.sector_flow`，大戶金額只有一份算式 `analysis.big_holder_amount`（selfcheck 也改呼叫它，`inspect.getsource` 鎖住）。大戶缺某檔 Δ 不進分子仍進分母、整類股沒 Δ 時 `y=None` 不是 0；法人交易日曆用 `stock_flow_daily` 自己的日期（不用 `market_daily`，今天的空列會被算進窗口）；快取鍵含集保週且讀取端比對 `has_custody`；顏色一律 `C.info` 不碰紅綠；四區排行 `<button aria-pressed>` 是 canvas 的鍵盤替代，點泡泡或列篩下方交叉選股；集保不足兩週降級成單軸長條。`custody_compare_weeks` 加 `limit`（預設 2）。
+主圖「近 N 日類股漲跌表」從 `bfd0a53`（拆 APIRouter）起就壞了——後端把 `sectors` 從陣列改成 dict、前端沒跟，永遠「尚無類股資料」。直接移除 `/api/sectors/rotation`，換成 `GET /api/sectors/flow`：X＝法人近 5 日淨買賣 ÷ 類股市值、Y＝大戶 400張↑ 週增 ÷ 類股市值（除以市值才跨類股可比），泡泡＝類股、尾巴＝上一期→本期；純函式 `analysis.sector_flow`，大戶金額只有一份算式 `analysis.big_holder_amount`（selfcheck 也改呼叫它，`inspect.getsource` 鎖住）。大戶缺某檔 Δ 不進分子仍進分母、整類股沒 Δ 時 `y=None` 不是 0；法人交易日曆用 `stock_flow_daily` 自己的日期（不用 `market_daily`，今天的空列會被算進窗口）；快取鍵含**全部**用到的集保週（只放最新週會在 2→3 週時吃到舊快取；`has_custody` 讀取守衛是死碼、已拿掉）；顏色一律 `C.info` 不碰紅綠；四區排行 `<button aria-pressed>` 是 canvas 的鍵盤替代，點泡泡或列篩下方交叉選股；集保不足兩週降級成單軸長條。`custody_compare_weeks` 加 `limit`（預設 2）。
 
 ```
 
@@ -1102,7 +1113,7 @@ Expected: `EXIT=0`，`N passed`（N ≥ 1038 + 11 + 4 + 7 = 1060）
 
 ```bash
 git add CLAUDE.md AGENTS.md
-git commit -m "docs: 族群輪動四象限——記下 bfd0a53 弄壞的表格、除以市值、has_custody 雙守衛與不用紅綠的理由" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git commit -m "docs: 族群輪動四象限——記下 bfd0a53 弄壞的表格、除以市值、快取鍵為何要含全部集保週、以及不用紅綠的理由" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
 ---
