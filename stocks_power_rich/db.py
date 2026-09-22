@@ -421,8 +421,8 @@ def _recent_custody_week_counts(conn: sqlite3.Connection, as_of: str | None = No
         "GROUP BY week ORDER BY week DESC LIMIT 10", (cutoff,)).fetchall()
 
 
-def custody_compare_weeks(conn: sqlite3.Connection, as_of: str | None = None) -> list:
-    """挑出算大戶增比要用的『最近兩週完整集保週』（新到舊），略過殘缺週。
+def custody_compare_weeks(conn: sqlite3.Connection, as_of: str | None = None, limit: int = 2) -> list:
+    """挑出算大戶增比要用的『最近 limit 週完整集保週』（新到舊，預設 2），略過殘缺週。
 
     集保全市場批次一週約 4000 檔（updater._accumulate_custody），但逐檔集保回補
     （fetch_custody_history）會把「單一檔」寫進全市場批次尚未公布的週——實測 production
@@ -434,7 +434,7 @@ def custody_compare_weeks(conn: sqlite3.Connection, as_of: str | None = None) ->
     if not counts:
         return []
     mx = max(c for _, c in counts)
-    return [w for w, c in counts if c >= mx * CUSTODY_WEEK_MIN_FRAC][:2]
+    return [w for w, c in counts if c >= mx * CUSTODY_WEEK_MIN_FRAC][:limit]
 
 
 def latest_complete_custody_week(conn: sqlite3.Connection) -> str | None:
@@ -485,6 +485,38 @@ def custody_change_map(conn: sqlite3.Connection, as_of: str | None = None) -> di
             continue
         out[code] = analysis.custody_change(cur_row, prev[code])
     return out
+
+
+def stock_flow_dates(conn: sqlite3.Connection, limit: int) -> list:
+    """最近 limit 個**有法人資料**的日期（舊→新）。族群輪動的法人窗口用這個當交易日曆，
+    不用 market_daily——後者當天早上就有列而法人 16:00 後才公布，會把今天的空列算進窗口。"""
+    rows = conn.execute(
+        "SELECT DISTINCT date FROM stock_flow_daily ORDER BY date DESC LIMIT ?", (int(limit),)).fetchall()
+    return [r[0] for r in reversed(rows)]
+
+
+def institutional_window_map(conn: sqlite3.Connection, dates: list) -> dict:
+    """{code: Σ(外資+投信+自營) 淨張數} 於指定日期集合。缺欄位當 0（T86 沒列＝當日無該類法人淨額），
+    但三欄在窗口內**全部** NULL 的檔不出現（那是「沒資料」，不是 0）。"""
+    if not dates:
+        return {}
+    q = ",".join("?" * len(dates))
+    rows = conn.execute(
+        "SELECT code, SUM(COALESCE(foreign_lots,0)+COALESCE(trust_lots,0)+COALESCE(dealer_lots,0)), "
+        "COUNT(foreign_lots)+COUNT(trust_lots)+COUNT(dealer_lots) "
+        f"FROM stock_flow_daily WHERE date IN ({q}) GROUP BY code", list(dates)).fetchall()
+    return {code: total for code, total, non_null in rows if non_null > 0}
+
+
+def custody_delta_map(conn: sqlite3.Connection, week_cur: str, week_prev: str) -> dict:
+    """{code: big400_pct(week_cur) − big400_pct(week_prev)}，兩週都有值的檔才出現
+    （大戶增比的定義，同 analysis.custody_change 的 big_holder_ratio）。"""
+    rows = conn.execute(
+        "SELECT n.code, n.big400_pct - o.big400_pct FROM custody_dist n "
+        "JOIN custody_dist o ON o.code = n.code AND o.week = ? "
+        "WHERE n.week = ? AND n.big400_pct IS NOT NULL AND o.big400_pct IS NOT NULL",
+        (week_prev, week_cur)).fetchall()
+    return {code: round(delta, 2) for code, delta in rows}
 
 
 def seed_sub_industry_ref(conn: sqlite3.Connection) -> int:

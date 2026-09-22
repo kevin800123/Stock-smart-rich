@@ -712,3 +712,48 @@ def test_insert_chip_snapshot_keeps_the_frozen_table_in_sync(tmp_path):
     insert_chip_snapshot(conn, "2026-07-01",
                          [{"code": "2330.TW", "name": "台積電", "sub_industry": "晶圓代工"}])
     assert sub_industry_map(conn) == {"2330": "IC設計"}
+
+
+def test_custody_compare_weeks_limit_returns_three_complete_weeks(tmp_path):
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_custody, custody_compare_weeks
+    c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
+    full = {f"{i:04d}": {"big400_pct": 50.0} for i in range(1000, 1010)}
+    for wk in ("2026-08-28", "2026-09-04", "2026-09-11", "2026-09-18"):
+        bulk_upsert_custody(c, wk, full)
+    bulk_upsert_custody(c, "2026-09-25", {"1000": {"big400_pct": 50.0}})   # 殘缺週（只有 1 檔）
+    assert custody_compare_weeks(c) == ["2026-09-18", "2026-09-11"]          # 預設 2，行為不變
+    assert custody_compare_weeks(c, limit=3) == ["2026-09-18", "2026-09-11", "2026-09-04"]
+
+
+def test_stock_flow_dates_returns_oldest_to_newest_from_the_flow_table(tmp_path):
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_stock_flow, upsert_market_daily, stock_flow_dates
+    c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
+    for d in ("2026-09-15", "2026-09-16", "2026-09-17"):
+        bulk_upsert_stock_flow(c, d, "TWSE", {"2330": {"foreign_lots": 1}})
+    upsert_market_daily(c, {"date": "2026-09-18", "taiex": 1.0})   # market_daily 有、法人沒有 → 不算
+    assert stock_flow_dates(c, 2) == ["2026-09-16", "2026-09-17"]
+    assert stock_flow_dates(c, 10) == ["2026-09-15", "2026-09-16", "2026-09-17"]
+
+
+def test_institutional_window_map_sums_three_groups_and_skips_all_null(tmp_path):
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_stock_flow, institutional_window_map
+    c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
+    bulk_upsert_stock_flow(c, "2026-09-16", "TWSE", {
+        "2330": {"foreign_lots": 100, "trust_lots": 10, "dealer_lots": -5},
+        "2454": {"foreign_lots": None, "trust_lots": None, "dealer_lots": None},   # 全空＝當日沒法人資料
+        "1101": {"foreign_lots": 7}})                                                # 缺欄位當 0
+    bulk_upsert_stock_flow(c, "2026-09-17", "TWSE", {"2330": {"foreign_lots": -20}})
+    m = institutional_window_map(c, ["2026-09-16", "2026-09-17"])
+    assert m["2330"] == 85          # (100+10-5) + (-20)
+    assert m["1101"] == 7
+    assert "2454" not in m          # 三欄全 NULL 的檔不出現（不是 0）
+    assert institutional_window_map(c, []) == {}
+
+
+def test_custody_delta_map_needs_both_weeks(tmp_path):
+    from stocks_power_rich.db import get_connection, init_db, bulk_upsert_custody, custody_delta_map
+    c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
+    bulk_upsert_custody(c, "2026-09-11", {"2330": {"big400_pct": 87.0}, "1101": {"big400_pct": 40.0}})
+    bulk_upsert_custody(c, "2026-09-18", {"2330": {"big400_pct": 87.5}, "2454": {"big400_pct": 60.0}})
+    m = custody_delta_map(c, "2026-09-18", "2026-09-11")
+    assert m == {"2330": 0.5}       # 1101 只有舊週、2454 只有新週 → 都不出現
