@@ -702,7 +702,7 @@ function showView(name) {
       stockChart.applyOptions({ autoSize: true });
     }
   }
-  if (name === "rotation") { loadRotation(); loadCross(); }
+  if (name === "rotation") { if (flowChart) flowChart.resize(); loadSectorFlow(); loadCross(); }
   // 高價股監控輪詢：進入才啟動、切走即停——控制請求量。海期監控 2026-07 起改排程
   // 每日兩次更新（見 main.py::osfut_job），切進頁面只讀快取，不再輪詢。
   if (name === "osfut") loadOsFutures();
@@ -3692,20 +3692,167 @@ async function addWatch() {
 }
 
 // ========== 族群輪動 + 交叉選股 ==========
-async function loadRotation() {
-  const el = $("rotation");
+// ========== 族群輪動：法人 × 大戶 資金流向四象限 ==========
+// 取代 bfd0a53 之後就再也畫不出來的「近 N 日類股漲跌表」（後端回 dict、前端當陣列用）。
+// X＝法人近 5 日淨買賣 ÷ 類股市值、Y＝大戶 400張↑ 週增 ÷ 類股市值，尾巴＝上一期→本期。
+// 資金流向不是漲跌 → 一律 C.info，不碰紅綠（紅綠鎖給行情；價格漲跌只在 tooltip）。
+let flowChart = null, lastSectorFlow = null, rotationSectorFilter = null, crossNoteBase = "";
+
+function flowQuadrant(s) {
+  if (s.x > 0 && s.y > 0) return "in";
+  if (s.x <= 0 && s.y > 0) return "big";
+  if (s.x > 0 && s.y <= 0) return "inst";
+  return "out";
+}
+const FLOW_Q = [["in", "雙流入"], ["big", "大戶增・法人賣"], ["inst", "法人買・大戶減"], ["out", "雙流出"]];
+
+async function loadSectorFlow() {
+  const el = $("flow-chart"), note = $("rotation-note");
   if (!el) return;
   try {
-    const d = await getJSON("/api/sectors/rotation?days=5");
-    if (!d.sectors || !d.sectors.length) { el.innerHTML = '<div class="muted small">尚無類股資料</div>'; return; }
-    const note = $("rotation-note");
-    if (note && d.dates.length) note.textContent = `（${d.dates[0].slice(5)} ～ ${d.dates[d.dates.length - 1].slice(5)}）`;
-    const cell = (v) => v == null ? '<td class="num muted">—</td>'
-      : `<td class="num ${chgClass(v)}">${v > 0 ? "+" : ""}${fmt(v, 2)}</td>`;
-    const head = "<tr><th>類股</th>" + d.dates.map((dt) => `<th class="num">${dt.slice(5)}</th>`).join("") + '<th class="num">累計</th></tr>';
-    const body = d.sectors.map((s) => `<tr><td>${esc(s.name)}</td>${s.series.map(cell).join("")}<td class="num ${chgClass(s.sum)}" style="font-weight:700">${s.sum > 0 ? "+" : ""}${fmt(s.sum, 2)}</td></tr>`).join("");
-    el.innerHTML = `<table>${head}${body}</table>`;
-  } catch (e) { el.innerHTML = '<div class="muted small">輪動載入失敗</div>'; }
+    const d = await getJSON("/api/sectors/flow");
+    lastSectorFlow = d;
+    const secs = d.sectors || [];
+    if (!secs.length) {
+      disposeFlowChart();
+      el.innerHTML = '<div class="muted small" style="padding:12px">尚無法人資料（stock_flow_daily 尚未累積）</div>';
+      $("flow-quadrants").innerHTML = "";
+      if (note) note.textContent = "";
+      return;
+    }
+    const md = (s) => (s || "").slice(5);
+    const bits = [`法人 ${md(d.flow_dates[0])}～${md(d.flow_dates[d.flow_dates.length - 1])}（${d.flow_dates.length} 日）`];
+    bits.push(d.has_custody ? `集保 ${md(d.custody_weeks[1])}→${md(d.custody_weeks[0])}` : "集保不足兩個完整週，暫以法人單軸顯示");
+    if (!d.has_tail) bits.push(`法人資料不足 ${d.flow_dates.length * 2} 日，尚無上一期`);
+    bits.push(`${secs.length} 類股`);
+    const ex = d.excluded || {};
+    const gaps = [];
+    if (ex.no_price) gaps.push(`${ex.no_price} 檔查不到收盤`);
+    if (ex.sectors_no_mcap) gaps.push(`${ex.sectors_no_mcap} 類算不出市值未列`);
+    if (note) note.textContent = `（${bits.join("・")}${gaps.length ? "；" + gaps.join("、") : ""}）`;
+    if (d.has_custody) renderSectorFlow(d); else renderFlowBars(d);
+    renderFlowQuadrants(d);
+  } catch (e) {
+    disposeFlowChart();
+    el.innerHTML = '<div class="muted small" style="padding:12px">族群輪動載入失敗</div>';
+  }
+}
+
+function disposeFlowChart() {
+  if (flowChart) { flowChart.dispose(); flowChart = null; }
+}
+
+function renderSectorFlow(d) {
+  const el = $("flow-chart");
+  const secs = d.sectors.filter((s) => s.x != null && s.y != null);
+  // 順序：先寫容器高 → setOption → resize（echarts.init 會凍住它看到的尺寸）
+  el.style.height = (matchMedia("(max-width: 600px)").matches ? 360 : 460) + "px";
+  if (!flowChart) { el.innerHTML = ""; flowChart = initChart(el); }
+  const absMax = (arr) => Math.max(0.05, ...arr.filter((v) => v != null).map((v) => Math.abs(v)));
+  const xm = Math.ceil(absMax(secs.flatMap((s) => [s.x, s.x_prev])) * 1.1 * 100) / 100;
+  const ym = Math.ceil(absMax(secs.flatMap((s) => [s.y, s.y_prev])) * 1.1 * 100) / 100;
+  const mcMax = Math.max(1, ...secs.map((s) => s.mcap));
+  const size = (m) => Math.max(10, Math.min(56, 10 + 46 * Math.sqrt(m / mcMax)));   // √市值，台積電那類不獨大
+  const alpha = (s) => 0.45 + 0.4 * Math.min(1, (Math.abs(s.x) / xm + Math.abs(s.y) / ym) / 2);
+  const md = (s) => (s || "").slice(5);
+  const tails = d.has_tail ? secs.filter((s) => s.x_prev != null && s.y_prev != null).map((s) => ({
+    type: "line", silent: true, showSymbol: false, z: 1, data: [[s.x_prev, s.y_prev], [s.x, s.y]],
+    lineStyle: { width: 1, color: withAlpha(C.info, 0.45) },
+  })) : [];
+  const prevDots = d.has_tail ? {
+    type: "scatter", silent: true, z: 2, symbolSize: 4, itemStyle: { color: withAlpha(C.info, 0.5) },
+    data: secs.filter((s) => s.x_prev != null && s.y_prev != null).map((s) => [s.x_prev, s.y_prev]),
+  } : null;
+  const bubbles = {
+    type: "scatter", z: 3,
+    data: secs.map((s) => ({
+      name: s.sector, value: [s.x, s.y], sector: s, symbolSize: size(s.mcap),
+      itemStyle: { color: withAlpha(C.info, alpha(s)), borderColor: C.info, borderWidth: 1 },
+      label: { show: size(s.mcap) >= 22, position: "inside", formatter: s.sector, fontSize: 11, color: C.text, fontFamily: HM_FONT },
+    })),
+    markLine: { silent: true, symbol: "none", lineStyle: { color: C.border, type: "solid" }, label: { show: false }, data: [{ xAxis: 0 }, { yAxis: 0 }] },
+    markArea: { silent: true, data: [
+      [{ xAxis: 0, yAxis: 0, itemStyle: { color: withAlpha(C.info, 0.10) } }, { xAxis: xm, yAxis: ym }],   // 雙流入略亮
+      [{ xAxis: -xm, yAxis: 0, itemStyle: { color: withAlpha(C.info, 0.04) } }, { xAxis: 0, yAxis: ym }],
+      [{ xAxis: 0, yAxis: -ym, itemStyle: { color: withAlpha(C.info, 0.04) } }, { xAxis: xm, yAxis: 0 }],
+      [{ xAxis: -xm, yAxis: -ym, itemStyle: { color: withAlpha(C.info, 0.02) } }, { xAxis: 0, yAxis: 0 }],
+    ] },
+  };
+  const qLabel = (text, left, top) => ({ type: "text", left, top, silent: true,
+    style: { text, fill: C.muted, fontSize: 11, fontFamily: HM_FONT } });
+  const tip = financeTooltip({ trigger: "item", formatter: (p) => {
+    const s = p.data && p.data.sector; if (!s) return "";
+    const chg = s.chg_pct == null ? "—" : `<span class="${chgClass(s.chg_pct)}">${s.chg_pct > 0 ? "▲" : s.chg_pct < 0 ? "▼" : ""}${fmt(Math.abs(s.chg_pct), 2)}%</span>`;
+    const top = (s.top3 || []).map((t) => `${esc(t.code)} ${esc(t.name)} ${fmt(t.amount / 1e8, 1)} 億`).join("<br>");
+    return `<b>${esc(s.sector)}</b>　當日 ${chg}<br>`
+      + `法人 ${d.flow_dates.length} 日 ${fmtSigned(s.x, 2)}%（${md(d.flow_dates[0])}～${md(d.flow_dates[d.flow_dates.length - 1])}）<br>`
+      + `大戶週增 ${fmtSigned(s.y, 2)}%（${md(d.custody_weeks[1])}→${md(d.custody_weeks[0])}，樣本 ${s.n_cust}/${s.n} 檔）<br>`
+      + `市值 ${fmt(s.mcap / 1e8, 0)} 億　${s.n} 檔` + (top ? `<br><span class="muted">法人買最多：</span><br>${top}` : "");
+  } });
+  flowChart.setOption({
+    tooltip: tip,
+    grid: { left: 60, right: 24, top: 30, bottom: 48 },
+    xAxis: { type: "value", min: -xm, max: xm, name: `法人近 ${d.flow_dates.length} 日淨買賣 ÷ 市值（%）`, nameLocation: "middle", nameGap: 30,
+      axisLabel: { color: C.muted, fontSize: 11 }, nameTextStyle: { color: C.label, fontSize: 11 }, splitLine: { show: false } },
+    yAxis: { type: "value", min: -ym, max: ym, name: "大戶 400張↑ 週增 ÷ 市值（%）", nameLocation: "middle", nameGap: 44,
+      axisLabel: { color: C.muted, fontSize: 11 }, nameTextStyle: { color: C.label, fontSize: 11 }, splitLine: { show: false } },
+    graphic: [qLabel("大戶增・法人賣", 68, 34), qLabel("雙流入", "right", 34), qLabel("雙流出", 68, "bottom"), qLabel("法人買・大戶減", "right", "bottom")]
+      .map((g, i) => (i === 1 || i === 3) ? { ...g, right: 30, left: undefined } : g)
+      .map((g, i) => (i >= 2) ? { ...g, bottom: 56, top: undefined } : g),
+    series: [...tails, ...(prevDots ? [prevDots] : []), bubbles],
+  }, true);
+  flowChart.resize();
+  flowChart.off("click");
+  flowChart.on("click", (p) => { if (p.data && p.data.sector) toggleRotationFilter(p.data.sector.sector); });
+}
+
+// 降級：集保不足兩個完整週 → 只有 X 軸，畫置中零點的水平長條（不畫沒有 Y 的散點）
+function renderFlowBars(d) {
+  const el = $("flow-chart");
+  disposeFlowChart();
+  el.style.height = "auto";
+  const secs = d.sectors.filter((s) => s.x != null).slice().sort((a, b) => b.x - a.x);
+  const xm = Math.max(0.05, ...secs.map((s) => Math.abs(s.x)));
+  el.innerHTML = `<div class="flow-bars">${secs.map((s) => {
+    const w = Math.abs(s.x) / xm * 50, left = s.x < 0 ? 50 - w : 50;
+    return `<div class="flow-bar-row"><span class="flow-bar-name" title="${esc(s.sector)}">${esc(s.sector)}</span>`
+      + `<span class="flow-bar-track"><span class="flow-bar-fill" style="left:${left}%;width:${w}%"></span></span>`
+      + `<span class="flow-bar-val">${fmtSigned(s.x, 2)}%</span></div>`;
+  }).join("")}</div>`;
+}
+
+function renderFlowQuadrants(d) {
+  const el = $("flow-quadrants"); if (!el) return;
+  const secs = d.sectors.filter((s) => s.x != null);
+  const dist = (s) => Math.hypot(s.x, s.y == null ? 0 : s.y);
+  if (!d.has_custody) {   // 單軸時只分「法人買／法人賣」兩欄
+    const cols = [["in", "法人買超", (s) => s.x > 0], ["out", "法人賣超", (s) => s.x <= 0]];
+    el.innerHTML = cols.map(([k, title, pred]) => flowColumn(k, title, secs.filter(pred).sort((a, b) => dist(b) - dist(a)), false)).join("");
+    return;
+  }
+  el.innerHTML = FLOW_Q.map(([k, title]) =>
+    flowColumn(k, title, secs.filter((s) => s.y != null && flowQuadrant(s) === k).sort((a, b) => dist(b) - dist(a)), true)).join("");
+}
+function flowColumn(k, title, rows, withY) {
+  return `<div class="flow-q flow-q-${k}"><h4>${title} <span class="muted small">${rows.length}</span></h4>`
+    + (rows.map((s) => `<button type="button" class="flow-row" data-sector="${esc(s.sector)}" aria-pressed="${rotationSectorFilter === s.sector}">`
+      + `<span class="flow-row-name">${esc(s.sector)}</span><span class="flow-row-val">${fmtSigned(s.x, 2)}${withY ? "／" + fmtSigned(s.y, 2) : ""}</span></button>`).join("")
+      || '<div class="muted small">—</div>') + "</div>";
+}
+
+// drill-down：篩下方交叉選股（不重打 API，只切 .hidden）；再點同一個取消。狀態不持久化。
+function toggleRotationFilter(sector) {
+  rotationSectorFilter = (sector && rotationSectorFilter !== sector) ? sector : null;
+  applyRotationFilter();
+  if (lastSectorFlow) renderFlowQuadrants(lastSectorFlow);
+}
+function applyRotationFilter() {
+  document.querySelectorAll("#cross .cross-grp").forEach((g) => {
+    g.classList.toggle("hidden", !!rotationSectorFilter && g.dataset.sector !== rotationSectorFilter);
+  });
+  const note = $("cross-note"); if (!note) return;
+  note.innerHTML = esc(crossNoteBase) + (rotationSectorFilter
+    ? `<span class="flow-filter">篩選：${esc(rotationSectorFilter)}<button type="button" id="cross-clear" class="tf">顯示全部</button></span>` : "");
 }
 async function loadCross() {
   const el = $("cross");
@@ -3719,17 +3866,18 @@ async function loadCross() {
       const msg = !d.source ? "尚無選股名單（自算籌碼/基本選股還沒算出，也沒有匯入 CSV）。"
         : d.total ? `${src} 的 ${d.total} 檔入選股都查不到官方類股，暫時無法分組。`
         : `${src} 沒有入選股。`;
-      el.innerHTML = `<div class="muted small">${esc(msg)}</div>`; if (note) note.textContent = ""; return;
+      el.innerHTML = `<div class="muted small">${esc(msg)}</div>`; crossNoteBase = ""; applyRotationFilter(); return;
     }
-    if (note) note.textContent = `（${src}，共 ${d.groups.length} 族群`
+    crossNoteBase = `（${src}，共 ${d.groups.length} 族群`
       + (d.unclassified ? `；${d.unclassified} 檔查不到類股未列` : "") + `）`;
     el.innerHTML = d.groups.map((g) => {
       const cls = chgClass(g.chg_pct);
       const arrow = g.chg_pct > 0 ? "▲" : g.chg_pct < 0 ? "▼" : "";
       const pct = g.chg_pct == null ? '<span class="muted">—</span>' : `<span class="${cls}">${arrow}${fmt(Math.abs(g.chg_pct), 2)}%</span>`;
       const stocks = g.stocks.map((s) => stockLink(s.code, s.name)).join("　");
-      return `<div class="cross-grp ${cls}"><div class="cross-h"><b>${esc(g.sector)}</b>　${pct}　<span class="muted">· ${g.count} 檔</span></div><div class="cross-stocks">${stocks}</div></div>`;
+      return `<div class="cross-grp ${cls}" data-sector="${esc(g.sector)}"><div class="cross-h"><b>${esc(g.sector)}</b>　${pct}　<span class="muted">· ${g.count} 檔</span></div><div class="cross-stocks">${stocks}</div></div>`;
     }).join("");
+    applyRotationFilter();
   } catch (e) { el.innerHTML = '<div class="muted small">交叉選股載入失敗</div>'; }
 }
 
@@ -4931,7 +5079,7 @@ $("ssf-margin-table").addEventListener("click", (e) => {
 // 停下來後重算一次。
 window.addEventListener("resize", () => {
   [chipChart, pulseChart, cupChart, distChart,
-    instBreadthChart, instAlphaChart]
+    instBreadthChart, instAlphaChart, flowChart]
     .forEach((c) => c && c.resize());
   Object.values(ssfCharts).forEach(ch => ch && ch.resize());
   if (sectorChart) { sectorChart.resize(); if (lastHeatmapData) fitHeatmapFonts(lastHeatmapData); }
@@ -4942,6 +5090,11 @@ window.addEventListener("resize", () => {
     renderSelfScreenBubbles(ssData.heatmap || []);
   }
 });
+// 族群輪動：四區排行與「顯示全部」都委派在靜態祖先上（CSP script-src 'self' 會丟掉 inline on*=）
+const flowQEl = $("flow-quadrants");
+if (flowQEl) flowQEl.addEventListener("click", (e) => { const b = e.target.closest(".flow-row"); if (b) toggleRotationFilter(b.dataset.sector); });
+const crossNoteEl = $("cross-note");
+if (crossNoteEl) crossNoteEl.addEventListener("click", (e) => { if (e.target.closest("#cross-clear")) toggleRotationFilter(null); });
 // 粉圓/M PLUS 是 async 載入。若熱力圖在字型載入前已排版，measureText 量到的是系統字寬度，
 // 字型 swap 後實際寬度改變 → 可能截字。字型就緒後重跑一次字級擬合（重用既有 refit 路徑）。
 if (document.fonts && document.fonts.ready) {

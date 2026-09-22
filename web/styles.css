@@ -888,6 +888,32 @@ body[data-public] .status-bar { display: none; }
 .cross-grp.down { border-left-color: var(--down); }
 .cross-h { font-size: var(--fs-sm); margin-bottom: 3px; }
 .cross-stocks { font-size: var(--fs-data); line-height: 1.95; }
+/* 族群輪動：法人 × 大戶 四象限。資金流向不是漲跌，一律 --info 藍，不碰紅綠。 */
+.rotation-flow { display: grid; grid-template-columns: 8fr 4fr; gap: 16px; align-items: start; }
+.flow-chart { height: 460px; }
+.flow-quadrants { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.flow-q { background: var(--card); border: 1px solid var(--border); border-radius: var(--r); padding: 8px 10px; min-width: 0; }
+.flow-q h4 { margin: 0 0 6px; font-size: var(--fs-sm); color: var(--label); font-weight: 700; }
+.flow-q-in { border-color: var(--info); }
+.flow-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; min-height: 28px;
+  padding: 3px 6px; background: transparent; border: 1px solid transparent; border-radius: var(--r);
+  color: var(--text); font: inherit; font-size: var(--fs-sm); cursor: pointer; text-align: left; }
+.flow-row:hover { background: var(--card-hover); }
+.flow-row[aria-pressed="true"] { border-color: var(--info); background: rgba(108, 182, 255, 0.10); }
+.flow-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.flow-row-val { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* 降級：集保不足兩週時只剩 X 軸，畫置中零點的水平長條 */
+.flow-bars { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
+.flow-bar-row { display: grid; grid-template-columns: 92px 1fr 64px; align-items: center; gap: var(--space-sm); }
+.flow-bar-name { font-size: var(--fs-sm); color: var(--label); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.flow-bar-track { position: relative; height: 8px; background: var(--sunken); border-radius: 4px; }
+.flow-bar-track::before { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--border); }
+.flow-bar-fill { position: absolute; top: 0; height: 100%; border-radius: 4px; background: var(--info); }
+.flow-bar-val { font-size: var(--fs-sm); font-weight: 700; text-align: right; white-space: nowrap; }
+.flow-filter { margin-left: 8px; }
+.flow-filter .tf { margin-left: 6px; }
+@media (max-width: 1180px) { .rotation-flow { grid-template-columns: 1fr; } }
+@media (max-width: 600px) { .flow-chart { height: 360px; } .flow-quadrants { grid-template-columns: 1fr; } }
 
 /* ===== Phase 1 — institutional ranking / selection tables ===== */
 .rank-split { display: flex; gap: var(--space-md); }
