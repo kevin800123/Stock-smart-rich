@@ -2336,6 +2336,38 @@ md 16→18、lg 20→22、xl 26→28、hero 40→44；另有 **34 處硬寫的 `
 那時 `init_db`（由第一次 `conn()` 觸發）還沒跑，於是得到「索引不存在」的錯誤結論，還把
 一次性建索引的 929ms 誤讀成「全表掃描很慢」。**查 lazy migration 的結果，順序必須在觸發它之後。**
 
+### 族群輪動改「法人 × 大戶」資金流向四象限（ui69，2026-09）
+
+**先講一個從 `bfd0a53` 起就存在的壞掉功能**：族群輪動頁的主圖「近 N 日類股漲跌表」再也畫不出來——
+那次 main.py 拆 APIRouter 時把 `/api/sectors/rotation` 的 `sectors` 從陣列 `[{name, series, sum}]` 改成
+dict `{name: [...]}`，前端 `loadRotation` 沒跟著改，`d.sectors.length` 恆為 `undefined` → 永遠「尚無類股資料」。
+資料一直都在（37 類股、20 天）。**refactor 改回傳形狀時，唯一會抓到的是端到端測試或真的打開頁面**；
+兩條 chips 測試也是同型的「綠燈但沒測到重點」。這次直接移除那條端點與表格。
+
+新圖（spec `docs/superpowers/specs/2026-09-22-sector-flow-quadrant-design.md`）：X＝法人近 5 日淨買賣
+÷ 類股市值、Y＝大戶 400張↑ 週增 ÷ 類股市值，泡泡＝類股（√市值）、尾巴＝上一期→本期。純函式
+`analysis.sector_flow`；端點 `GET /api/sectors/flow`；db 三支小查詢 `stock_flow_dates`／
+`institutional_window_map`／`custody_delta_map`。
+
+- **除以市值不是美化**：用絕對金額半導體永遠在最右邊，圖只會告訴你「半導體很大」。
+- **大戶金額只有一份算式** `analysis.big_holder_amount`，`selfcheck.build_self_screen` 也改呼叫它；
+  `tests/test_analysis_sector_flow.py` 用 `inspect.getsource` 鎖住 selfcheck 不能再內聯一份。
+- **大戶缺某檔 Δ 不進分子、仍進分母**（分母是類股規模）；整類股一檔都沒 Δ 時 `y=None`，不是 0
+  （0 是「有資料且淨額為零」）。反證做過：把分母改成只算有 Δ 的檔 → `y` 從 0.5 變 1.0、測試紅。
+- **法人交易日曆用 `stock_flow_daily` 自己的日期**，不用 `market_daily`——後者當天早上就有列而法人
+  16:00 後才公布，會把今天的空列算進 5 日窗口。
+- **快取鍵含全部用到的集保週** `sectorflow:v2:{法人最新日}:{三個完整週以 - 相接|none}:{days}`。第一版只放最新週
+  ＋讀取端比對 `has_custody`，審查證明那道守衛是死碼（同一把鍵下不可能不一致），而且完整週 2→3 但最新週不變
+  時會吃到沒有 `y_prev` 的舊快取——**鍵要描述計算用到的每一個輸入**，不是只放最顯眼的那一個。
+- **顏色不用紅綠**：資金流向不是漲跌，一律 `C.info`；價格漲跌只在 tooltip 的 `chg_pct`。
+- **四區排行是 canvas 的鍵盤替代**（同 ui29 chip），每列 `<button aria-pressed>`、`min-height: 28px`；
+  點泡泡或列都篩下方交叉選股（`.cross-grp` 帶 `data-sector`、只切 `.hidden` 不重打 API）。
+- **降級**：集保不足兩完整週 → 單軸水平長條（`.flow-bars`）＋兩欄排行；法人不足 `2×days` 日 → 無尾巴；
+  都寫在說明列。
+- **`custody_compare_weeks` 加了 `limit`**（預設 2、行為不變），Y 的上一期需要第 3 個完整週。
+- 刻意不做：潮汐的 108 板塊（本站 32 個官方產業別剛好一屏，細分類 530 太碎）、合成分數（不手訂權重）、
+  加速度四區（尾巴已表達方向）。
+
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.
