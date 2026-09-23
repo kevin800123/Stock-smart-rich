@@ -233,7 +233,7 @@ def test_frontend_card_alert_guards():
     assert 'compactDeltaHtml(chg, pct, " 口")' in js
     assert ".card-rank::before" not in css
     assert ".card-rank-badge" in css
-    for label in ("外資買賣超", "融資餘額(張)", "融資維持率（上市）", "融資維持率（上櫃）",
+    for label in ("外資買賣超", "融資餘額(張)", "整戶擔保維持率",
                   "外資台指淨未平倉", "微台散戶多空比"):
         assert f'"{label}"' in js
     assert "const KEY_METRICS = [" in js
@@ -1670,10 +1670,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260817-ui69"' in html.text
-    assert 'href="/styles.css?v=20260817-ui69"' in html.text
-    assert 'src="app.js?v=20260817-ui69"' not in html.text
-    assert 'href="styles.css?v=20260817-ui69"' not in html.text
+    assert 'src="/app.js?v=20260817-ui70"' in html.text
+    assert 'href="/styles.css?v=20260817-ui70"' in html.text
+    assert 'src="app.js?v=20260817-ui70"' not in html.text
+    assert 'href="styles.css?v=20260817-ui70"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",

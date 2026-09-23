@@ -730,6 +730,11 @@ body[data-public] .status-bar { display: none; }
 .up { color: var(--up); }
 .down { color: var(--down); }
 .flat { color: var(--muted); }
+/* 增減不是行情漲跌的卡（整戶維持率、追繳戶數、融資占市值、信用交易占比）：方向仍由 ▲▼
+   與柱子在中線上／下表達，但不借用紅綠——紅綠鎖給行情方向。 */
+.stat-cell.dir-neutral .up, .stat-cell.dir-neutral .down { color: var(--text-secondary); }
+.stat-cell.dir-neutral .card-trend-bar.up::before,
+.stat-cell.dir-neutral .card-trend-bar.down::before { background: var(--info); }
 
 /* StatBoard / StatCell：密集讀數是一張表，不是 8 張彼此競爭的卡。容器統一處理圓角與
    邊界；cell 只保留一層色階和 1px 分隔，hover 不位移，掃視時數字不會跳。 */
@@ -738,7 +743,7 @@ body[data-public] .status-bar { display: none; }
   overflow: hidden; background: var(--border-subtle); border: 1px solid var(--border-subtle);
   border-radius: calc(var(--r-lg) - 2px); font-variant-numeric: tabular-nums;
 }
-.stat-board--tw { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.stat-board--tw { grid-template-columns: repeat(5, minmax(0, 1fr)); }
 .stat-board--fut { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .stat-board--opt { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .stat-board--intl { grid-template-columns: repeat(6, minmax(0, 1fr)); }
@@ -763,6 +768,13 @@ body[data-public] .status-bar { display: none; }
 /* 長數值卡在中間寬度不能從 4 欄直接撐到 1000px 才切 2 欄：實測極端資料
    （453.51 億／▼303.44 億、8,918,284／▼51,555 張）在 1200px viewport 的
    4 欄卡片仍會溢出。先切 3 欄保留密度，再於 1100px 切 2 欄。 */
+/* 台股大盤 10 張卡、5 欄。中間寬度先退 4 欄再退 3 欄——ui68 的教訓：只測 1904/1280/375 會漏掉
+   中間那一段，每個斷點都要量卡片內容有沒有溢出（不只 .card-val：.card-chg 是 nowrap，
+   撐出去不會被 .card-val 的量測抓到）。原訂 1400，實測 1401px 的 5 欄卡片只有 212px，
+   「▲47.7 (+0.56%)」「▼85,096 張」溢出 25～35px（6 張）；5 欄至少要約 256px，故 1640。 */
+@media (max-width: 1640px) {
+  .stat-board--tw { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
 @media (max-width: 1240px) {
   .stat-board--tw { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }

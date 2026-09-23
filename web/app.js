@@ -62,7 +62,7 @@ let chipChart = null, lastHistory = [];
 let chipPanes = new Set(["margin", "inst"]), comboKline = null;
 // 判讀句需要「指數方向」(dashboard) ＋「漲跌家數」(breadth) 兩支 API 的值，但兩者分開載入。
 // 兩處呼叫點都是 loadDashboard 先 await、loadBreadth 後跑，故此處存下最新一列即可。
-let lastLatest = null, lastBands = {};
+let lastLatest = null, lastBands = {}, lastCreditHistory = {};
 let distChart = null;
 let pulseChart = null, lastPulse = null, pulseExpanded = false;
 // heatmapTop 預設 5：實測 1267px 寬下，5 檔比 6 檔「顯示更多可讀標籤」(110 vs 108) 且字更大、
@@ -2354,7 +2354,7 @@ function trendHtml(hist, key, opts = {}) {
 let lastAlerts = [];
 // 核心指標由同一份清單決定視覺權重，避免各 render call 各自塞 class 後日後漂移。
 const KEY_METRICS = [
-  "外資買賣超", "融資餘額(張)", "融資維持率（上市）", "融資維持率（上櫃）",
+  "外資買賣超", "融資餘額(張)", "整戶擔保維持率",
   "外資台指淨未平倉", "微台散戶多空比",
 ];
 function keyMetricClass(label) {
@@ -2363,10 +2363,12 @@ function keyMetricClass(label) {
 function emptyStatCard(label) {
   return `<div class="card stat-cell${keyMetricClass(label)}"><div class="card-label">${label}</div><div class="card-val">—</div></div>`;
 }
-function cardWrap(inner, title, rk, alert, trend = "", label = "") {
+// cls：額外 class，目前只有 "dir-neutral"——增減不代表行情漲跌的卡（維持率、戶數、比率），
+// 日變化與近 7 日柱改用中性色，紅綠留給行情方向（見 styles.css 的 .dir-neutral）。
+function cardWrap(inner, title, rk, alert, trend = "", label = "", cls = "") {
   if (alert && typeof alert === "object") lastAlerts.push(alert);
   const attr = title ? ` title="${esc(title)}"` : "";
-  return `<div class="card stat-cell${keyMetricClass(label)}${alert ? " alert" : ""}${trend ? " has-trend" : ""}"${attr}>${inner}${trend}${rankHtml(rk)}</div>`;
+  return `<div class="card stat-cell${keyMetricClass(label)}${cls ? " " + cls : ""}${alert ? " alert" : ""}${trend ? " has-trend" : ""}"${attr}>${inner}${trend}${rankHtml(rk)}</div>`;
 }
 // 修飾語（淨多/淨空/散戶偏多）獨立成一行小字。原本它跟數字同為 26px 擠在 .card-val 裡，
 // 175px 的卡片放不下就把單位「口」擠到第二行；而且真正的讀數是數字，修飾語只是標籤，
@@ -2393,13 +2395,13 @@ function qualCard(label, q, value, chg, pct, rk = null, alert = false, trend = "
     + metricRow(value, sub), "", rk, alert, trend, label);
 }
 // label, value, chg(可空), pct(可空), unit；compactUnit 非 null 時改用單行精簡變化。
-function card(label, value, chg, pct, unit = "", title = "", rk = null, alert = false, extra = "", trend = "", compactUnit = null) {
+function card(label, value, chg, pct, unit = "", title = "", rk = null, alert = false, extra = "", trend = "", compactUnit = null, cls = "") {
   let sub = "";
   if (chg !== undefined && chg !== null) sub = compactUnit !== null
     ? compactDeltaHtml(chg, pct, compactUnit)
     : `<div class="card-chg ${chgClass(chg)}">${chgText(chg)}${pctTag(pct)}</div>`;
   else if (pct !== undefined && pct !== null) sub = `<div class="card-chg ${chgClass(pct)}">${pct > 0 ? "▲" : pct < 0 ? "▼" : ""}${fmt(Math.abs(pct), 2)}%</div>`;
-  return cardWrap(`<div class="card-label">${label}</div>${metricRow(value + unit, sub)}${note(extra)}`, title, rk, alert, trend, label);
+  return cardWrap(`<div class="card-label">${label}</div>${metricRow(value + unit, sub)}${note(extra)}`, title, rk, alert, trend, label, cls);
 }
 // 未平倉口數卡：依淨多/淨空上色（紅多綠空），附「較昨日」增減口數與百分比
 function oiCard(label, v, prev, rk = null, alert = false, trend = "") {
@@ -2443,53 +2445,84 @@ function balanceCard(label, srcRow, curDate, balKey, chgKey, hist = [], amtKey =
   return card(lbl, fmt(srcRow[balKey], 0), srcRow[chgKey], pctOf(srcRow[balKey], srcRow[chgKey]),
     "", "", rk, alert, extra, trend, " 張");
 }
-// 融資維持率卡：DB 未存官方逐日漲跌（不像融資/融券有 margin_chg/short_chg 現成值），
-// 故從 hist 找 srcRow 當日之前最近一筆有值的交易日自行算較昨——比較基準是 srcRow 自己的日期，
-// 而非「今天」，避免資料延遲時把「vs 6 天前」誤標成「較昨」
-// 兩個市場各一張。融資成數不同（上市 60%／上櫃 50%）→ 損益兩平線 166.7% vs 200%，
-// 所以原始數字看起來接近時意義可能相反（今日：上市 180.1% 獲利、上櫃 166.8% 套牢）。
-// 副標放「相對兩平 ±X%」才是兩張卡之間唯一可比的量；兩平線與追繳線由後端 bands 供給。
-function maintTip(even, call, mv, sv, amt, est) {
-  return `整戶擔保維持率＝(融資市值＋融券擔保品＋融券保證金)÷(融資金額＋融券市值)。`
-    + `\n損益兩平 ${even}%（剛融資買進、價格未動的水準，由融資成數推得）；`
+// 整戶擔保維持率：證交所公布的全市場數字（券商申報的真實帳戶合計，上市上櫃同值，2026-08-03 起）。
+// 兩平線由後端每天用兩市場融資金額加權融資成數推得（bands.keep_rate.breakeven），前端不複寫。
+function keepRateTip(even, call) {
+  return `證交所定義：全市場融資融券擔保品市值加計融券保證金，與融資金加計融券標的市值之比例；`
+    + `代表整體市場擔保能力，不代表個別投資人或個別證券商狀況。`
+    + (even ? `\n損益兩平約 ${even}%（以當日上市／上櫃融資金額加權融資成數 60%／50% 推得，為近似值）；` : `\n`)
     + `低於 ${call}% 會被追繳、限期未補即斷頭。`
-    + (mv != null ? `\n本日 融資市值 ${fmt(mv, 0)} 億 ÷ 融資金額 ${fmt(amt, 0)} 億` : "")
-    + `\n註：成數為一般股票標準值，警示股／處置股更低，故兩平線為近似；`
-    + `各家計算口徑不同（是否含 ETF 等），與外部數字不可直接對照。`;
+    + `\n資料：臺股儀表板「信用交易」，2026-08-03 起提供。`;
 }
 function relToBreakeven(v, even) { return even ? (v - even) / even * 100 : null; }
 const MAINT_NEAR_CALL = 1.08, MAINT_DEEP_LOSS = -20;
 function isMaintAlert(v, call, rel) {
   return call != null && (v < call * MAINT_NEAR_CALL || (rel != null && rel <= MAINT_DEEP_LOSS));
 }
-function marginMaintCard(hist, srcRow, curDate, opts) {
-  const { label, col, mvCol, amtCol } = opts;
-  const band = (lastBands[col] || {});
+function keepRateCard(hist, srcRow, curDate) {
+  const label = "整戶擔保維持率", col = "keep_rate";
+  const band = lastBands.keep_rate || {};
   const even = band.breakeven, call = band.call;
-  if (!srcRow || srcRow[col] === null || srcRow[col] === undefined) {
-    return emptyStatCard(label);
-  }
+  if (!srcRow || srcRow[col] == null) return emptyStatCard(label);
   const stale = srcRow.date && srcRow.date !== curDate;
   const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
   const idx = hist.findIndex((r) => r && r.date === srcRow.date);
-  const priorRow = idx > 0
-    ? [...hist.slice(0, idx)].reverse().find((r) => r && r[col] != null)
-    : null;
+  const priorRow = idx > 0 ? [...hist.slice(0, idx)].reverse().find((r) => r && r[col] != null) : null;
   const chg = priorRow ? srcRow[col] - priorRow[col] : null;
   const v = srcRow[col];
   const rk = pctile(hist, col, v);
   const rel = relToBreakeven(v, even);
-  const extra = rel == null ? ""
-    : `相對兩平 ${rel > 0 ? "+" : ""}${fmt(rel, 1)}%（${rel >= 0 ? "獲利" : "套牢"}）`;
-  const tip = maintTip(even, call, srcRow[mvCol], srcRow[opts.svCol], srcRow[amtCol]);
-  // 逼近追繳線或深度套牢＝值得看一眼（與 ss_trader 同向：低維持率是反指標，不是利空）
+  const extra = rel == null ? "" : `相對兩平 ${rel > 0 ? "+" : ""}${fmt(rel, 1)}%（${rel >= 0 ? "獲利" : "套牢"}）`;
   const alert = isMaintAlert(v, call, rel) ? {
     key: col, label, display: `${fmt(v, 1)}%`,
     reason: `追繳線 ${fmt(call, 0)}%` + (rel == null ? "" : `；相對兩平 ${rel > 0 ? "+" : ""}${fmt(rel, 1)}%`),
     tier: 1, rank: rk, group: "tw",
   } : false;
   const trend = trendHtml(hist, col, { delta: true, label: "近7日增減", unit: "%", digits: 1 });
-  return card(lbl, fmt(v, 1) + "%", chg, pctOf(v, chg), "", tip, rk, alert, extra, trend);
+  // 精簡日變化（compactUnit=""）：「▲0.81 (+0.42%)」在 4 欄 235px 的卡片會溢出 7px，
+  // 而維持率本身就是百分比，再給一個「變動百分比」只是雜訊，完整字串留在 title。
+  return card(lbl, fmt(v, 1) + "%", chg, pctOf(v, chg), "", keepRateTip(even, call), rk, alert, extra, trend, "", "dir-neutral");
+}
+// 追繳壓力：維持率是平均值，這三個戶數是分布的尾巴——斷頭潮來臨時它們先動。
+function callPressureCard(hist, srcRow, curDate) {
+  const label = "追繳壓力", col = "below_call_acc";
+  if (!srcRow || srcRow[col] == null) return emptyStatCard(label);
+  const stale = srcRow.date && srcRow.date !== curDate;
+  const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
+  const idx = hist.findIndex((r) => r && r.date === srcRow.date);
+  const priorRow = idx > 0 ? [...hist.slice(0, idx)].reverse().find((r) => r && r[col] != null) : null;
+  const v = srcRow[col];
+  const chg = priorRow ? v - priorRow[col] : null;
+  const rk = pctile(hist, col, v);
+  const extra = `追繳 ${fmt(srcRow.call_acc ?? null, 0)} 戶　處分 ${fmt(srcRow.exe_acc ?? null, 0)} 戶`;
+  const tip = `證交所定義：截至當日止，整戶擔保維持率低於 130% 之戶數（主數字）。`
+    + `\n追繳＝當日證券商通知應補繳之戶數；處分＝未依期限補足差額或屆期未清償，次一營業日應由證券商處分信用交易部位之戶數。`
+    + `\n位階條落在近期分布最高 10% 時標琥珀外框。資料：臺股儀表板「信用交易」，2026-08-03 起。`;
+  // 只看高尾：戶數落在近期最低 10% 是「沒什麼人被追繳」，不值得標琥珀（泛用 alertReason 兩尾都標）。
+  const alert = rk && rk.p >= 90 ? cardAlert(col, label, v, `${fmt(v, 0)} 戶`, rk, "tw") : false;
+  const trend = trendHtml(hist, col, { delta: true, label: "近7日增減", unit: "戶", digits: 0 });
+  return card(lbl, fmt(v, 0), chg, null, '<span class="card-unit">戶</span>', tip, rk, alert, extra, trend, " 戶", "dir-neutral");
+}
+// 兩個官方比率共用一張卡型：融資占市值（上市）、信用交易占比（上市）。值由後端逐列算好（不落地）。
+function ratioCard(hist, srcRow, curDate, opts) {
+  const { label, col, tip, extra } = opts;
+  if (!srcRow || srcRow[col] == null) return emptyStatCard(label);
+  const stale = srcRow.date && srcRow.date !== curDate;
+  const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
+  const idx = hist.findIndex((r) => r && r.date === srcRow.date);
+  const priorRow = idx > 0 ? [...hist.slice(0, idx)].reverse().find((r) => r && r[col] != null) : null;
+  const v = srcRow[col];
+  const chg = priorRow ? v - priorRow[col] : null;
+  const rk = pctile(hist, col, v);
+  const alert = cardAlert(col, label, v, `${fmt(v, 2)}%`, rk, "tw");
+  const trend = trendHtml(hist, col, { delta: true, label: "近7日增減", unit: "%", digits: 2 });
+  return card(lbl, fmt(v, 2) + "%", chg, null, "", tip, rk, alert, extra, trend, null, "dir-neutral");
+}
+function histRangeText(key, unit = "%") {
+  const h = (lastCreditHistory || {})[key];
+  if (!h || h.min == null || h.max == null) return "";
+  const since = h.since ? `${new Date().getFullYear() - Number(h.since)} 年` : "歷史";
+  return `近 ${since} ${fmt(h.min, 2)}${unit}～${fmt(h.max, 2)}${unit}`;
 }
 // 10 日均量卡：大盤量能的「絕對水位」（既有的爆量/量縮判定看的是相對變化，兩者互補）。
 // 讀數就是均量本身，不在卡面上放「距 8000 億 ±X%」——8000 只是一條參考線，把它
@@ -2699,8 +2732,8 @@ function renderCards(m, prev = {}, hist = []) {
   const lst = dod(pct100(m.retail_ls_tmf), pct100(prev.retail_ls_tmf));
   // 融資/融券：當日有就用當日，否則退到最近一筆有資料的交易日（晚間才公布的容錯）
   const marginRow = [...hist].reverse().find((r) => r && r.margin_balance != null) || m;
-  // 上櫃走櫃買自己的發布時程，與上市未必同時到齊，故各自找最近一筆有值的列
-  const otcRow = [...hist].reverse().find((r) => r && r.otc_margin_maintenance != null) || m;
+  // 官方信用交易概況（BFIJ3U）常晚於 21:00 產製，同樣退到最近一筆有值的列
+  const creditRow = [...hist].reverse().find((r) => r && r.keep_rate != null) || m;
   renderMarketStrip(m, sum3(m));   // 加權指數與三大法人合計移到頂端儀表，下方卡片不再重複
   // 位階：把「這個數字在近期分佈的哪裡」補上。同一欄位算一次，rk 與 alert 共用。
   const rank = (key, v) => pctile(hist, key, v === undefined ? m[key] : v);
@@ -2721,10 +2754,16 @@ function renderCards(m, prev = {}, hist = []) {
     // 融資金額是官方數字；融券金額官方不發布，只能以現價估算，故標「估」
     balanceCard("融資餘額(張)", marginRow, m.date, "margin_balance", "margin_chg", hist, "margin_value", false, "margin_value_chg"),
     balanceCard("融券餘額(張)", marginRow, m.date, "short_balance", "short_chg", hist, "short_mv", true),
-    marginMaintCard(hist, marginRow, m.date, { label: "融資維持率（上市）", col: "margin_maintenance",
-      mvCol: "margin_mv", svCol: "short_mv", amtCol: "margin_value" }),
-    marginMaintCard(hist, otcRow, m.date, { label: "融資維持率（上櫃）", col: "otc_margin_maintenance",
-      mvCol: "otc_margin_mv", svCol: "otc_short_mv", amtCol: "otc_margin_value" }),
+    keepRateCard(hist, creditRow, m.date),
+    callPressureCard(hist, creditRow, m.date),
+    ratioCard(hist, creditRow, m.date, { label: "融資占市值（上市）", col: "margin_mcap_pct",
+      tip: `證交所定義：融資餘額占上市股票總市值的比率，用以觀察市場使用融資槓桿的相對程度。\n＝融資金額 ÷ 上市總市值（MI_MARGN_TREND 的 marketValue）。`
+        + (histRangeText("margin_ratio") ? `\n${histRangeText("margin_ratio")}（年度資料，證交所 MI_MARGN_HISTORY）` : ""),
+      extra: histRangeText("margin_ratio") }),
+    ratioCard(hist, creditRow, m.date, { label: "信用交易占比（上市）", col: "credit_ratio",
+      tip: `證交所定義：信用交易成交值占市場總成交值的比率。\n＝信用交易成交值 ÷ (2 × 市場總成交值)——買賣兩邊各算一次成交值，故分母乘 2（證交所 JS 原式）。`
+        + (histRangeText("credit_ratio") ? `\n${histRangeText("credit_ratio")}（年度資料）` : ""),
+      extra: creditRow.credit_amt != null ? `成交 ${fmt(creditRow.credit_amt, 0)} 億` : "" }),
     volMaCard(hist, m, prev),
   ].join("");
   const foreignOi = rankedAlert("tx_foreign_oi", "外資台指淨未平倉", m.tx_foreign_oi,
@@ -2900,7 +2939,7 @@ async function loadDashboard() {
   const hist = d.history || [];
   const prev = hist.length >= 2 ? hist[hist.length - 2] : {};
   // lastBands 供 renderCards 判定「異常讀數」，必須在它之前設好
-  lastHistory = hist; lastLatest = d.latest || null; lastBands = d.bands || {};
+  lastHistory = hist; lastLatest = d.latest || null; lastBands = d.bands || {}; lastCreditHistory = d.credit_history || {};
   lastDataStale = !!d.data_stale;
   renderCards(d.latest, prev, hist);
   renderPulse(d.pulse || null);
@@ -3964,9 +4003,13 @@ const CHIP_PANES = [
         itemStyle: { color: C.up, borderColor: C.panel, borderWidth: 1 }, areaStyle: techArea(C.up), markPoint: extremaMark(C.up) },
       { ...LP, name: "融券市值(估)", axis: 1, data: at((r) => r.short_mv), lineStyle: { color: C.down, width: 2.2, shadowBlur: 8, shadowColor: withAlpha(C.down, 0.42) },
         itemStyle: { color: C.down, borderColor: C.panel, borderWidth: 1 }, areaStyle: techArea(C.down), markPoint: extremaMark(C.down) }] },
-  { key: "maint", label: "融資維持率", unit: "%", series: (at) => [
-      { ...LP, name: "維持率(上市)", data: at((r) => r.margin_maintenance), lineStyle: { color: C.up }, itemStyle: { color: C.up } },
-      { ...LP, name: "維持率(上櫃)", data: at((r) => r.otc_margin_maintenance), lineStyle: { color: SER.trust }, itemStyle: { color: SER.trust } }] },
+  // 追繳線取後端 bands.keep_rate.call（同卡片），不在這裡寫死 130；bands 未到時不畫線。
+  { key: "maint", label: "整戶維持率", unit: "%", series: (at) => {
+      const call = (lastBands.keep_rate || {}).call;
+      return [{ ...LP, name: "整戶擔保維持率", data: at((r) => r.keep_rate), lineStyle: { color: C.info }, itemStyle: { color: C.info },
+        ...(call == null ? {} : { markLine: { silent: true, symbol: "none",
+          label: { show: true, position: "insideEndTop", formatter: `追繳 ${call}%`, color: C.muted, fontSize: 10 },
+          lineStyle: { color: C.muted, type: "dashed" }, data: [{ yAxis: call }] } }) }]; } },
   { key: "inst", label: "三大法人", unit: "億", bar: true, series: (at) => [
       { name: "外資", type: "bar", data: at((r) => r.inst_foreign), itemStyle: techBar(SER.foreign) },
       { name: "投信", type: "bar", data: at((r) => r.inst_trust), itemStyle: techBar(SER.trust) },
