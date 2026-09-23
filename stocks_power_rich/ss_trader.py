@@ -13,11 +13,27 @@ from datetime import date, timedelta
 # 所以兩平線可由成數直接推出，是我們自己定義下就成立的錨點，不必借外部數字。
 # 一套比例規則同時適用兩個市場（成數不同，兩平線自然不同）。
 MARGIN_CALL_LINE = 130.0         # 整戶維持率追繳線（法規常數，兩市場相同）
-MARGIN_RATIO_TSE = 0.6           # 上市融資成數 → 兩平線 166.7%
-MARGIN_RATIO_OTC = 0.5           # 上櫃融資成數 → 兩平線 200%
+MARGIN_RATIO_TSE = 0.6           # 上市融資成數（加權兩平線的權重之一）
+MARGIN_RATIO_OTC = 0.5           # 上櫃融資成數
 MARGIN_SUNK_DEEP = -20.0         # 相對兩平低於此％：融資深度套牢＝Ss 的抄底區（反指標）
 MARGIN_HOT = 20.0                # 高於此％：融資整體獲利偏多，防高檔反殺
 # 註：成數是一般股票的標準值，警示股／處置股更低，故兩平線是近似值。
+
+
+def blended_margin_ratio(tse_value, otc_value):
+    """全市場的融資成數：以當日上市／上櫃**融資金額（億）**為權重加權 0.6／0.5。
+
+    2026-09 起維持率改用證交所公布的全市場整戶擔保維持率——它是券商申報的真實帳戶合計、
+    上市上櫃同一個數字，沒有單一成數可推兩平線。兩平線是這張卡唯一可判讀的錨點
+    （沒有它 193.9% 無從判斷是賺是賠），所以用兩市場融資金額的比例加權出一個近似成數，
+    每天重算（2026-09-22：6048.6／2085.2 億 → 0.5744 → 兩平 174.1%）。
+    只缺一邊就用另一邊的成數；兩邊都缺（或都是 0）回 None，讓呼叫端顯示 na，不硬套預設。
+    """
+    t = tse_value if tse_value and tse_value > 0 else 0
+    o = otc_value if otc_value and otc_value > 0 else 0
+    if not t and not o:
+        return None
+    return (t * MARGIN_RATIO_TSE + o * MARGIN_RATIO_OTC) / (t + o)
 
 
 def margin_breakeven(ratio: float) -> float:
@@ -93,18 +109,15 @@ def market_checklist(rows: list[dict], osfut: dict | None = None,
     bull/bear 指「對後市偏多/偏空」，warn 為需留意的中性警示。"""
     out = []
 
-    # 1) 融資維持率：上市與上櫃分開判讀。兩者融資成數不同（60%/50%），兩平線 166.7% vs 200%，
-    #    所以原始數字看起來接近時意義可能相反——併成單一「大盤」值會把這個訊號抵銷掉。
-    for key, name, col, ratio in (
-        ("margin_maint", "融資維持率（上市）", "margin_maintenance", MARGIN_RATIO_TSE),
-        ("margin_maint_otc", "融資維持率（上櫃）", "otc_margin_maintenance", MARGIN_RATIO_OTC),
-    ):
-        mm = _last_valid(rows, col)
-        if mm is None:
-            out.append(_item(key, name, "na", note="尚無資料"))
-            continue
-        status, rel, note = margin_verdict(mm, ratio)
-        out.append(_item(key, name, status, round(mm, 1), note))
+    # 1) 整戶擔保維持率（證交所公布的全市場數字）。兩平線用兩市場融資金額加權的成數推得，
+    #    見 blended_margin_ratio；成數算不出（兩邊融資金額都缺）就 na，不拿單一市場的成數硬判。
+    kr = _last_valid(rows, "keep_rate")
+    ratio = blended_margin_ratio(_last_valid(rows, "margin_value"), _last_valid(rows, "otc_margin_value"))
+    if kr is None or ratio is None:
+        out.append(_item("margin_maint", "整戶擔保維持率", "na", note="尚無資料"))
+    else:
+        status, rel, note = margin_verdict(kr, ratio)
+        out.append(_item("margin_maint", "整戶擔保維持率", status, round(kr, 1), note))
 
     # 2) 融資 vs 大盤（近5日）：融資跌幅大於大盤 = 籌碼清洗，底部訊號
     recent = [r for r in rows if r.get("taiex") is not None and r.get("margin_balance") is not None][-5:]

@@ -433,25 +433,81 @@ def test_breadth_distribution_stale_cache_without_has_otc_self_heals(tmp_path, m
 def test_dashboard_bands_come_from_ss_trader(tmp_path, monkeypatch):
     """總覽卡片的「異常讀數」門檻必須是 ss_trader 的那一份，不得在前端另寫一組。
 
-    這條測試存在的理由是防漂移：門檻散成兩份實作後，改了一邊另一邊不會報錯，
-    介面就會安靜地用舊標準判定（艾略特波浪的 JS/Python 雙實作已經吃過這個虧）。
+    維持率的兩平線 2026-09 起是**每天算的**：以最新列的上市／上櫃融資金額加權融資成數
+    （官方整戶維持率是全市場單一數字，沒有單一成數）。所以這裡種一列真的值，斷言 breakeven
+    等於 ss_trader 對同一組輸入算出來的數。
     """
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich import ss_trader
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
+    upsert_market_daily(c, {"date": "2026-09-22", "taiex": 47800.17, "margin_value": 6048.6,
+                            "otc_margin_value": 2085.2, "keep_rate": 193.92})
 
-    app = create_app()
-    client = TestClient(app)
+    client = TestClient(create_app())
     bands = client.get("/api/dashboard").json()["bands"]
 
-    # 維持率送的是「兩平線＋追繳線」而非上下限：兩個市場成數不同，兩平線也不同，
-    # 前端要靠它才能說明「上市 180.1% 是獲利、上櫃 166.8% 是套牢」。
-    assert bands["margin_maintenance"] == {"breakeven": 166.7, "call": ss_trader.MARGIN_CALL_LINE}
-    assert bands["otc_margin_maintenance"] == {"breakeven": 200.0, "call": ss_trader.MARGIN_CALL_LINE}
+    even = ss_trader.margin_breakeven(ss_trader.blended_margin_ratio(6048.6, 2085.2))
+    assert bands["keep_rate"] == {"breakeven": even, "call": ss_trader.MARGIN_CALL_LINE}
+    assert even == 174.1
+    assert "margin_maintenance" not in bands and "otc_margin_maintenance" not in bands
     assert bands["vix"] == {"low": ss_trader.VIX_COMPLACENT, "high": ss_trader.VIX_PANIC}
-    # 量能只有下緣：量縮才是要看的事，給 high 反而會讓「爆量」也亮琥珀外框
     assert bands["turnover_ma10"] == {"low": ss_trader.VOL_QUIET_YI}
     # 免密碼的公開總覽走同一個 handler，門檻也必須跟著出現
     assert client.get("/public/api/dashboard").json()["bands"] == bands
+
+
+def test_dashboard_bands_keep_rate_breakeven_is_none_without_margin_values(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich import ss_trader
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
+    upsert_market_daily(c, {"date": "2026-09-22", "taiex": 1.0, "keep_rate": 193.92})
+    bands = TestClient(create_app()).get("/api/dashboard").json()["bands"]
+    assert bands["keep_rate"] == {"breakeven": None, "call": ss_trader.MARGIN_CALL_LINE}
+
+
+def test_dashboard_injects_credit_ratios_per_row_and_credit_history(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily, set_ai_cache
+    c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
+    upsert_market_daily(c, {"date": "2026-09-21", "taiex": 1.0, "turnover": 8668.2, "margin_value": 6030.4})   # 沒市值
+    upsert_market_daily(c, {"date": "2026-09-22", "taiex": 1.0, "turnover": 10787.8, "margin_value": 6048.6,
+                            "market_value": 1563443.68, "credit_amt": 1433.06})
+    set_ai_cache(c, "credit_hist:2026-09", {"margin_ratio": {"min": 0.36, "max": 2.42, "since": "2000"}})
+    d = TestClient(create_app()).get("/api/dashboard").json()
+    by = {r["date"]: r for r in d["history"]}
+    assert by["2026-09-22"]["margin_mcap_pct"] == 0.39 and by["2026-09-22"]["credit_ratio"] == 6.64
+    assert by["2026-09-21"]["margin_mcap_pct"] is None and by["2026-09-21"]["credit_ratio"] is None
+    assert d["latest"]["credit_ratio"] == 6.64          # latest 與 history 最後一列是同一個 dict
+    assert d["credit_history"]["margin_ratio"]["max"] == 2.42
+
+
+def test_public_overview_reports_official_keep_rate(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import twse
+    monkeypatch.setattr(twse, "fetch_sector_indices", lambda date=None: [])
+    c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
+    upsert_market_daily(c, {"date": "2026-09-21", "taiex": 1.0, "keep_rate": 193.11})
+    upsert_market_daily(c, {"date": "2026-09-22", "taiex": 1.0, "keep_rate": 193.92, "margin_balance": 1})
+    m = TestClient(create_app()).get("/public/api/overview").json()["margin"]
+    assert m["keep_rate"] == 193.92 and m["keep_rate_prev"] == 193.11
+    assert "maintenance" not in m
+
+
+def test_credit_backfill_endpoint_reports_remaining_within_official_window(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich import updater
+    c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
+    from datetime import date, timedelta
+    for i in (1, 2):
+        upsert_market_daily(c, {"date": (date.today() - timedelta(days=i)).isoformat(), "taiex": 1.0})
+    monkeypatch.setattr(updater, "_backfill_credit", lambda conn, days=10, cap=5, errors=None: ["2026-09-22"])
+    r = TestClient(create_app()).get("/api/credit/backfill?days=60").json()
+    assert r["filled"] == ["2026-09-22"] and r["remaining"] == 2
+    assert TestClient(create_app()).get("/api/margin-maintenance/heal").status_code == 404
 
 
 def test_scoring_rules_come_from_analysis_constants(tmp_path, monkeypatch):
@@ -567,6 +623,7 @@ def test_chips_and_maint_backfill_windows_reach_as_far_as_row_creation(tmp_path,
     窄一截的後果是安靜的不對稱：最舊那段只有大盤與法人、沒有期貨籌碼與維持率，
     對照圖的那幾個窗格就比其他窗格短（實測上限 120 時為 80~81/130 列、自 03-30 才有值）。
     這裡用「180 天前的缺值列有沒有被算進 remaining」來證明窗口真的伸得到那麼遠。
+    維持率自 2026-09 改用官方值，heal 端點已移除，這裡只剩期貨籌碼那一支。
     """
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from datetime import date, timedelta
@@ -588,12 +645,9 @@ def test_chips_and_maint_backfill_windows_reach_as_far_as_row_creation(tmp_path,
 
     chips = client.get("/api/chips/backfill?days=200&max_fetch=1").json()
     assert chips["remaining"] >= 1, "200 天的窗口要看得到 180 天前的缺值列"
-    maint = client.get("/api/margin-maintenance/heal?days=200&max_fetch=1").json()
-    assert maint["remaining"] >= 1
 
     # 對照：窄窗口看不到它，證明上面不是恆真
     assert client.get("/api/chips/backfill?days=60&max_fetch=1").json()["remaining"] == 0
-    assert client.get("/api/margin-maintenance/heal?days=60&max_fetch=1").json()["remaining"] == 0
 
 
 def test_dashboard_window_is_wide_enough_for_the_combo_chart(tmp_path, monkeypatch):
@@ -1540,12 +1594,12 @@ def test_public_pages_bypass_basic_auth(tmp_path, monkeypatch):
     c = get_connection(str(tmp_path / "t.sqlite"))
     init_db(c)
     upsert_market_daily(c, {"date": "2026-07-07", "taiex": 45000.0, "inst_foreign": -200.0,
-                            "margin_balance": 9000000.0, "margin_maintenance": 180.0})
+                            "margin_balance": 9000000.0, "keep_rate": 180.0})
     upsert_market_daily(c, {"date": "2026-07-08", "taiex": 45500.0, "taiex_chg": 20.0, "turnover": 3000.0,
                             "tx_price": 45600.0, "tx_chg": 30.0, "n225": 40000.0, "n225_chg": -1.2,
                             "inst_foreign": 547.31, "inst_trust": 96.83, "tx_foreign_oi": -80042.0,
                             "retail_ls_mtx": 0.1655, "margin_balance": 9531735.0, "margin_chg": -130236.0,
-                            "margin_maintenance": 186.1})
+                            "keep_rate": 186.1})
     monkeypatch.setattr(twse, "fetch_sector_indices", lambda date=None: [
         {"name": "半導體", "close": 1.0, "chg_pct": 2.0}, {"name": "航運", "close": 1.0, "chg_pct": -1.5}])
     monkeypatch.setattr(twse, "fetch_t86", lambda date=None: {
@@ -1566,7 +1620,7 @@ def test_public_pages_bypass_basic_auth(tmp_path, monkeypatch):
     assert r["inst"]["foreign"] == 547.31 and r["inst"]["foreign_prev"] == -200.0
     assert r["fut"]["tx_foreign_oi"] == -80042.0 and r["fut"]["retail_ls_mtx"] == 0.1655
     assert r["margin"]["balance"] == 9531735.0 and r["margin"]["chg"] == -130236.0
-    assert r["margin"]["maintenance"] == 186.1 and r["margin"]["maintenance_prev"] == 180.0
+    assert r["margin"]["keep_rate"] == 186.1 and r["margin"]["keep_rate_prev"] == 180.0
     # 法人買賣超個股排行（使用者反應「三大法人買賣超的個股沒有放」）
     assert r["inst_rank"]["buy"][0]["code"] == "2330" and r["inst_rank"]["buy"][0]["net"] == 29635
     assert r["inst_rank"]["sell"][0]["code"] == "2317" and r["inst_rank"]["sell"][0]["net"] == -17934
@@ -2369,7 +2423,7 @@ def test_trader_ss_sections_checklist_and_signals(tmp_path, monkeypatch):
     c = get_connection(str(tmp_path / "t.sqlite"))
     init_db(c)
     upsert_market_daily(c, {"date": "2026-07-01", "taiex": 20000.0, "turnover": 4000.0,
-                            "margin_maintenance": 133.0, "vix": 32.0})
+                            "keep_rate": 133.0, "margin_value": 5000.0, "vix": 32.0})
     insert_chip_snapshot(c, "2026-07-01", [
         {"code": "1111", "name": "候選", "month_inc": 5, "rev_yoy": 10, "accum_inc": 3,
          "big_holder_ratio": 0.5, "lan_value": 80, "close": 100},

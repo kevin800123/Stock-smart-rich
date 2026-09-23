@@ -29,7 +29,7 @@ from ..sources import twse, taifex, mis, tpex
 from ..sources import taifex_ssf
 from ..db import (get_ssf_dates, get_ssf_rows, count_ssf_dates, stock_flow_dates,
                   institutional_window_map, custody_delta_map, custody_compare_weeks,
-                  stock_flow_fingerprint)
+                  stock_flow_fingerprint, latest_ai_cache_with_prefix)
 from .. import analysis, gemini, ss_trader, traders
 from ..config import load_config
 
@@ -254,6 +254,10 @@ def dashboard():
     mas = analysis.turnover_ma([r.get("turnover") for r in asc], ss_trader.VOL_MA_DAYS)
     for r, ma in zip(asc, mas):
         r["turnover_ma10"] = ma
+    # 官方定義的兩個衍生比率（融資占市值／信用交易占成交值）同樣逐列注入、不落地
+    for r in asc:
+        r.update(analysis.credit_ratios(r.get("margin_value"), r.get("market_value"),
+                                        r.get("credit_amt"), r.get("turnover")))
     latest = rows[0] if rows else {}      # 與 asc[-1] 是同一個 dict，均量自動帶到
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")
@@ -272,23 +276,32 @@ def dashboard():
         # 前端「異常讀數」判定用的固定門檻。刻意由後端供給而非在 app.js 複寫——
         # 同一組數字有兩份實作就會漂移（艾略特波浪已經吃過這個虧）。ss_trader 是
         # 這些門檻的唯一出處，「操盤手」頁與總覽卡片共用同一份。
-        "bands": _BANDS,
+        "bands": _bands_for(asc),
+        "credit_history": latest_ai_cache_with_prefix(c, "credit_hist:") or {},
         "pulse": pulse,
     }
 
 # 只列「跨過就值得看一眼」的欄位；沒有公認門檻的欄位不硬編，交給位階條處理。
 _BANDS = {
-    # 維持率沒有單一門檻——兩個市場的融資成數不同，兩平線也不同。前端要靠 breakeven
-    # 才能把「180.1% 與 166.8% 意義相反」講清楚，所以送的是各自的錨點而非一組上下限。
-    "margin_maintenance": {"breakeven": ss_trader.margin_breakeven(ss_trader.MARGIN_RATIO_TSE),
-                           "call": ss_trader.MARGIN_CALL_LINE},
-    "otc_margin_maintenance": {"breakeven": ss_trader.margin_breakeven(ss_trader.MARGIN_RATIO_OTC),
-                               "call": ss_trader.MARGIN_CALL_LINE},
     "vix": {"low": ss_trader.VIX_COMPLACENT, "high": ss_trader.VIX_PANIC},
     # 量能只有下緣有意義（量縮才是要看的事），不給 high——前端 isAlert 對 undefined
     # 的比較恆為 false，單邊門檻是安全的。
     "turnover_ma10": {"low": ss_trader.VOL_QUIET_YI},
 }
+
+
+def _bands_for(asc: list) -> dict:
+    """固定門檻＋一個每天算的：整戶維持率的兩平線由最新列的上市／上櫃融資金額加權成數推得
+    （ss_trader.blended_margin_ratio 是唯一出處，前端不得複寫）。算不出時 breakeven 為 None，
+    前端只剩追繳線可用、副標留白。"""
+    def last(col):
+        for r in reversed(asc):
+            if r.get(col) is not None:
+                return r[col]
+        return None
+    ratio = ss_trader.blended_margin_ratio(last("margin_value"), last("otc_margin_value"))
+    return {**_BANDS, "keep_rate": {"breakeven": ss_trader.margin_breakeven(ratio) if ratio else None,
+                                    "call": ss_trader.MARGIN_CALL_LINE}}
 
 @router.get("/health")
 def health():
@@ -719,7 +732,7 @@ def market_summary_logic(c, refresh: int = 0):
         "散戶微台多空比(%)": _pct100(m.get("retail_ls_tmf")),
         "融資餘額(張)": m.get("margin_balance"), "融資增減(張)": m.get("margin_chg"),
         "融資金額(億)": m.get("margin_value"), "融資金額增減(億)": m.get("margin_value_chg"),
-        "融資維持率(%)": m.get("margin_maintenance"),
+        "整戶擔保維持率(%)": m.get("keep_rate"),
         "VIX": m.get("vix"), "VIX漲跌(%)": m.get("vix_chg"),
         "費半漲跌(%)": m.get("sox_chg"), "日經漲跌(%)": m.get("n225_chg"),
         "韓股漲跌(%)": m.get("kospi_chg"), "黃金漲跌(%)": m.get("gold_chg"),

@@ -180,8 +180,7 @@ def test_expected_after_close_data_is_not_a_line_alert(tmp_path, monkeypatch):
     _check_update_result_and_alert(c, {
         "date": date.today().isoformat(),
         "failed": [
-            {"name": "margin_maintenance", "error": "融資金額尚未公布（約 21:00），稍後回補"},
-            {"name": "otc_margin_maintenance", "error": "上櫃融資餘額尚未發布，稍後回補"},
+            {"name": "twse_credit", "error": "信用交易概況尚未公布，稍後回補"},
             {"name": "intl", "error": "當日場次收盤尚未取得，下次更新自動回補"},
         ],
     })

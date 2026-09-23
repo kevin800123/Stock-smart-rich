@@ -107,7 +107,7 @@ def _ssf_missing_spans(missing_desc: list[str], max_days: int = SSF_BACKFILL_SPA
 @router.get("/ssf/backfill")
 def ssf_backfill(days: int = 30, max_fetch: int = 3):
     """回補股期歷史——**只補缺的交易日**；重複呼叫直到 `remaining` 不再下降
-    （同 `chips/backfill`、`margin-maintenance/heal` 的既有契約）。
+    （同 `chips/backfill` 的既有契約）。
 
     交易日曆＝`market_daily` 有收盤指數（`taiex` 非 NULL）的日子，與
     `coverage.lag_trading_days` 同一個定義。窗口內「在日曆上、但 `ssf_daily` 還沒有」的
@@ -165,32 +165,25 @@ def ssf_backfill(days: int = 30, max_fetch: int = 3):
     finally:
         _backfill_lock.release()
 
-@router.get("/margin-maintenance/heal")
-def margin_maintenance_heal(days: int = 45, max_fetch: int = 15):
-    """大範圍回補融資維持率歷史（上市＋上櫃）。
+@router.get("/credit/backfill")
+def credit_backfill(days: int = 60):
+    """一次性回補證交所官方信用交易欄位（整戶維持率／追繳處分戶數／信用交易成交值／上市總市值）。
 
-    每日更新的 _heal_margin_maintenance 只回看 7 天、每次最多 3 筆——上線前累積的洞
-    （尤其上櫃：verify=False 修好前，Zeabur 上一天都沒補到過）永遠補不到。此端點用
-    同一支自癒函式放大視窗與上限，重複呼叫直到 remaining 不再下降。
-
-    上限 200（原 120）：理由同 chips/backfill——建列窗口是 200 天，上限比它窄會讓
-    維持率窗格比其他窗格短一截（實測 120 時是 80/130 列）。每個日期 4 個請求，其中
-    TWSE 全市場收盤約 1.7 萬列，故 max_fetch 勿設過大。已實測 TWSE 逐檔融資明細與
-    櫃買融資對 200 天前的日期都仍有資料。
+    每日更新的 _backfill_credit 只回看 10 天、每次最多 5 個日期；官方 2026-08-03 才開始提供，
+    上線那次要一口氣把 08-03 起補齊。BFIJ3U 每個日期一個請求，cap 放大到 90。
     """
     if not _backfill_lock.acquire(blocking=False):
         return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
     try:
         from datetime import date, timedelta
+        from ..sources import twse
         c = conn()
-        days = max(5, min(days, 200))     # 200 對齊 /api/backfill 建列的窗口，見下方註記
-        filled = updater._heal_margin_maintenance(c, days=days, cap=max(1, min(max_fetch, 30)))
-        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        days = max(5, min(days, 120))
+        filled = updater._backfill_credit(c, days=days, cap=90)
+        cutoff = max((date.today() - timedelta(days=days)).isoformat(), twse.CREDIT_SINCE)
         remaining = c.execute(
-            "SELECT COUNT(*) FROM market_daily WHERE date >= ? "
-            "AND ((margin_value IS NOT NULL AND margin_mv IS NULL) OR otc_margin_maintenance IS NULL)",
-            (cutoff,)).fetchone()[0]
-        return {"filled": filled, "remaining": remaining}
+            "SELECT COUNT(*) FROM market_daily WHERE date >= ? AND keep_rate IS NULL", (cutoff,)).fetchone()[0]
+        return {"filled": filled, "remaining": remaining, "since": twse.CREDIT_SINCE}
     finally:
         _backfill_lock.release()
 

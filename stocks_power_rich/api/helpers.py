@@ -1518,7 +1518,7 @@ def _check_update_result_and_alert(c, result: dict) -> None:
     # for the UI/backfill, but do not turn expected timing into a LINE alarm.
     def expected_later(f: dict) -> bool:
         name, error = f.get("name") or "", f.get("error") or ""
-        if name in ("margin_maintenance", "otc_margin_maintenance"):
+        if name in ("twse_credit", "otc_margin"):
             return "尚未" in error or "稍後回補" in error
         return name == "intl" and ("尚未取得" in error or "自動回補" in error)
 

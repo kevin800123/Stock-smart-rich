@@ -128,7 +128,7 @@ def public_overview():
             "margin": {"balance": m.get("margin_balance"), "chg": m.get("margin_chg"),
                       "value": m.get("margin_value"), "value_chg": m.get("margin_value_chg"),
                       "short_balance": m.get("short_balance"), "short_chg": m.get("short_chg"),
-                      "maintenance": m.get("margin_maintenance"), "maintenance_prev": pv.get("margin_maintenance")},
+                      "keep_rate": m.get("keep_rate"), "keep_rate_prev": pv.get("keep_rate")},
             "sectors_up": [{"name": s["name"], "chg_pct": s["chg_pct"]} for s in ups],
             "sectors_down": [{"name": s["name"], "chg_pct": s["chg_pct"]} for s in downs],
             "ai_text": (ai.get("text") or "") if ai.get("enabled") else ""}
