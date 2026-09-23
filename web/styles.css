@@ -920,7 +920,8 @@ body[data-public] .status-bar { display: none; }
   border-radius: 999px; background: var(--bg-sunken); color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
 .flow-help-btn { min-height: 28px; color: var(--info); font: inherit; font-size: var(--fs-xs); cursor: pointer; }
 .flow-help-btn:not(:disabled):hover { border-color: var(--info); }
-/* 載入失敗／單軸降級時 #flow-help-body 是空的，按鈕改停用，不要讓它看起來還能點開一個空面板 */
+/* 第一次載入完成前、載入失敗／尚無資料時 #flow-help-body 是空的，按鈕停用，不要讓它看起來還能點開一個空面板
+   （單軸降級另有說明文字，按鈕照常可按） */
 .flow-help-btn:disabled { opacity: .5; cursor: default; }
 .flow-help[popover] { position: fixed; inset: auto; margin: 0; width: min(440px, calc(100vw - 32px)); max-height: min(70vh, 560px);
   overflow: auto; padding: 12px 14px; color: var(--text); background: var(--bg-card); border: 1px solid var(--border);
