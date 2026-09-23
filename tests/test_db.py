@@ -779,3 +779,13 @@ def test_stock_flow_fingerprint_describes_the_window_composition(tmp_path):
     bulk_upsert_stock_flow(c, "2026-09-16", "TWSE", {"2330": {"foreign_lots": 101}})
     assert stock_flow_fingerprint(c, dates) not in (base, more)         # 只改一個值也換鍵
     assert stock_flow_fingerprint(c, []) == "none"
+
+
+def test_market_daily_has_official_credit_columns(tmp_path):
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
+    upsert_market_daily(c, {"date": "2026-09-22", "keep_rate": 193.92, "below_call_acc": 147,
+                            "call_acc": 27, "exe_acc": 11, "credit_amt": 1433.06, "market_value": 1563443.68})
+    r = c.execute("SELECT keep_rate, below_call_acc, call_acc, exe_acc, credit_amt, market_value "
+                  "FROM market_daily WHERE date='2026-09-22'").fetchone()
+    assert tuple(r) == (193.92, 147, 27, 11, 1433.06, 1563443.68)

@@ -12,13 +12,15 @@ from datetime import datetime
 MARKET_COLS = [
     "date", "taiex", "taiex_chg", "turnover", "inst_foreign", "inst_trust", "inst_dealer",
     "margin_balance", "margin_chg", "short_balance", "short_chg",
-    "margin_value", "margin_value_chg", "margin_maintenance",
-    # 維持率的分子分母（億）——存下來卡片才能把「怎麼算出來的」秀給人看
-    "margin_mv", "short_mv",
-    # 上櫃自成一組：融資成數 50%（上市 60%），損益兩平線 200% vs 166.7%，
-    # 併成單一「大盤」數字會把兩個市場的反向訊號互相抵銷掉
-    "otc_margin_balance", "otc_short_balance", "otc_margin_value",
+    "margin_value", "margin_value_chg",
+    # 2026-09 起維持率改用證交所公布的全市場「整戶擔保維持率」（BFIJ3U），下面五欄是它
+    # 的同伴；margin_mcap_pct／credit_ratio 兩個衍生比率讀取時算、不落地（analysis.credit_ratios）。
+    "keep_rate", "below_call_acc", "call_acc", "exe_acc", "credit_amt", "market_value",
+    # ---- 已停用（2026-09）：自算維持率整條路徑已移除，欄位留在 schema 但不再寫值 ----
+    "margin_maintenance", "margin_mv", "short_mv",
     "otc_margin_mv", "otc_short_mv", "otc_margin_maintenance",
+    # 上櫃融資餘額／融券餘額／融資金額仍每天寫（加權兩平線需要 otc_margin_value）
+    "otc_margin_balance", "otc_short_balance", "otc_margin_value",
     "tx_price", "tx_chg", "tx_open", "tx_high", "tx_low",
     "fut_inst_net", "retail_ls_mtx", "retail_ls_tmf",
     "tx_foreign_oi", "retail_oi_mtx",

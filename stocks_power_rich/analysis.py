@@ -425,30 +425,19 @@ def industry_to_sector(industry: str | None) -> str | None:
     return _SECTOR_ALIAS.get(name, name)
 
 
-def margin_maintenance(lots_by_code: dict, closes: dict, margin_value_yi,
-                       short_lots_by_code: dict | None = None, short_margin_pct: float = 0.9) -> float | None:
-    """大盤整戶擔保維持率(%) ≒ (融資市值＋融券擔保品市值＋融券保證金) ÷ (融資金額＋融券市值) ×100。
+def credit_ratios(margin_value, market_value, credit_amt, turnover) -> dict:
+    """證交所儀表板「信用交易」頁的兩個比率，照它的 JS 原式（2026-09-23 對過）：
 
-    官方完整定義：整戶維持率＝(融資買進證券市值＋融券賣出所得價金＋融券保證金) ÷ (融資金額＋融券股票現值)。
-    lots_by_code/short_lots_by_code＝{代號: 融資/融券餘額(張)}、closes＝{代號: 收盤}、
-    margin_value_yi＝官方融資金額(億，TWSE 直接公布)。TWSE 不公布個股「融券賣出原始價金」，
-    故以「融券張數×1000×現價」近似（原始賣出價與現價有差時會有偏差）；融券保證金成數固定近似 90%
-    （多數個股適用，警示股實際可能到 120%，此處未逐股區分）。只加總兩邊都有報價的代號，
-    缺報價的部位不計入分子（比實際略低，屬保守估）。short_lots_by_code 缺省時完全退化為純融資版本。
+    - 融資餘額占市值比重 ＝ 融資金額(億) ÷ 上市總市值(億) × 100
+    - 信用交易占成交值比重 ＝ 信用交易成交值(億) ÷ (2 × 市場總成交值(億)) × 100
+      **分母乘 2**：買賣兩邊各算一次成交值。2026-09-22 實測 1433.06 ÷ (2×10787.8) ＝ 6.64%，
+      與頁面一致；不乘 2 是 13.3%。
+    純衍生值不落地（同 turnover_ma10），任一輸入缺或分母為 0 該欄回 None，各自獨立。
     """
-    if not margin_value_yi or margin_value_yi <= 0:
-        return None
-    margin_val = sum(lots * 1000 * closes[code]
-                     for code, lots in lots_by_code.items() if code in closes and lots)
-    short_val = sum(lots * 1000 * closes[code]
-                    for code, lots in (short_lots_by_code or {}).items() if code in closes and lots)
-    if margin_val <= 0 and short_val <= 0:
-        return None
-    numerator = margin_val + (1 + short_margin_pct) * short_val
-    denominator = margin_value_yi * 1e8 + short_val
-    if denominator <= 0:
-        return None
-    return round(numerator / denominator * 100, 1)
+    def pct(num, den):
+        return round(num / den * 100, 2) if (num is not None and den) else None
+    return {"margin_mcap_pct": pct(margin_value, market_value),
+            "credit_ratio": pct(credit_amt, (turnover * 2) if turnover else None)}
 
 
 def estimate_price_range(revenue, gross_margin_pct, opex, tax, shares,

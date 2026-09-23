@@ -15,27 +15,20 @@ def test_ranks_big_holder_up_retail_down_first():
     assert out[0]["flags"]["rev_growth"] is True
 
 
-def test_margin_maintenance_ratio():
-    from stocks_power_rich.analysis import margin_maintenance
+def test_credit_ratios_follow_twse_dashboard_formulas():
+    from stocks_power_rich.analysis import credit_ratios
 
-    # 融資部位市值 = 9,050張×1000×100元 + 1,020張×1000×50元 = 9.56 億；融資金額 6 億 → 159.3%
-    lots = {"2330": 9050, "0050": 1020, "9999": 500}   # 9999 無報價 → 不計（保守）
-    closes = {"2330": 100.0, "0050": 50.0}
-    assert margin_maintenance(lots, closes, 6.0) == 159.3
-    assert margin_maintenance(lots, closes, 0) is None      # 無融資金額
-    assert margin_maintenance({}, closes, 6.0) is None      # 無部位
+    # 2026-09-22 證交所頁面：融資金額 6048.6 億 ÷ 上市總市值 1,563,443.68 億 = 0.39%；
+    # 信用交易成交值 1433.06 億 ÷ (2 × 市場總成交值 10787.8 億) = 6.64%——分母乘 2 是
+    # 證交所 JS 的原式（買賣兩邊各算一次成交值）。不乘 2 會得到 13.3%。
+    out = credit_ratios(6048.6, 1563443.68, 1433.06, 10787.8)
+    assert out == {"margin_mcap_pct": 0.39, "credit_ratio": 6.64}
 
 
-def test_margin_maintenance_full_formula_includes_short():
-    from stocks_power_rich.analysis import margin_maintenance
+def test_credit_ratios_return_none_per_field_when_inputs_missing_or_zero():
+    from stocks_power_rich.analysis import credit_ratios
 
-    # 整戶擔保維持率＝(融資市值＋融券擔保品市值＋融券保證金) ÷ (融資金額＋融券市值) ×100
-    # 融資市值＝9.56億（同上）；融券部位 2,000張×1000×100元＝2億（融券擔保品市值近似值）
-    # 融券保證金＝90%×2億＝1.8億 → 分子＝9.56+2+1.8＝13.36億；分母＝6+2＝8億 → 167.0%
-    lots = {"2330": 9050, "0050": 1020}
-    closes = {"2330": 100.0, "0050": 50.0}
-    short_lots = {"2330": 2000, "9999": 300}   # 9999 無報價 → 不計（保守，同融資規則）
-    assert margin_maintenance(lots, closes, 6.0, short_lots) == 167.0
-    # 無融券明細時完全退化為原融資版本（既有行為不變）
-    assert margin_maintenance(lots, closes, 6.0, None) == 159.3
-    assert margin_maintenance(lots, closes, 6.0, {}) == 159.3
+    assert credit_ratios(None, 1563443.68, 1433.06, 10787.8) == {"margin_mcap_pct": None, "credit_ratio": 6.64}
+    assert credit_ratios(6048.6, 0, 1433.06, 10787.8)["margin_mcap_pct"] is None
+    assert credit_ratios(6048.6, 1563443.68, None, 10787.8)["credit_ratio"] is None
+    assert credit_ratios(6048.6, 1563443.68, 1433.06, 0)["credit_ratio"] is None
