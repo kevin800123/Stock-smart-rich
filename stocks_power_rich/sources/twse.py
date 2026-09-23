@@ -555,17 +555,22 @@ def parse_stock_daily(payload: dict) -> dict:
     }
 
 
-def fetch_stock_daily(date: datetime.date | None = None) -> dict:
-    """Fetch MI_INDEX ALLBUT0999 once and share it across price/volume parsing."""
+def fetch_stock_daily(date: datetime.date | None = None, *, strict: bool = False) -> dict:
+    """Fetch MI_INDEX ALLBUT0999 once and share it across price/volume parsing.
+
+    `strict=True` 讓連線／解析例外往上拋（stock_flow 要記原因），「尚未發布」仍回 `{}`。
+    """
     day = date or datetime.date.today()
     try:
         j = httpx.get(MI_INDEX_RWD,
                       params={"date": day.strftime("%Y%m%d"), "type": "ALLBUT0999", "response": "json"},
                       timeout=25, follow_redirects=True).json()
-        if j.get("stat") == "OK" and j.get("tables"):
-            return parse_stock_daily(j)
     except Exception:  # noqa: BLE001
-        pass
+        if strict:
+            raise
+        return {}
+    if j.get("stat") == "OK" and j.get("tables"):
+        return parse_stock_daily(j)
     return {}
 
 

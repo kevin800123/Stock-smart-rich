@@ -13,6 +13,8 @@ import httpx
 DAILY_TRADE_URL = "https://www.tpex.org.tw/www/zh-tw/insti/dailyTrade"
 OTC_COMPANY_URL = "https://www.tpex.org.tw/openapi/v1/mopsfin_t187ap03_O"  # 上櫃公司基本資料
 DAILY_QUOTES_URL = "https://www.tpex.org.tw/www/zh-tw/afterTrading/dailyQuotes"  # 上櫃盤後每日行情
+# dailyQuotes 的備援：openapi 靜態檔（只有「最新一個交易日」、約 4.5 MB，但支援 Range／ETag，走 get_resumable）
+OTC_CLOSE_QUOTES_OPENAPI = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
 OTC_MARGIN_URL = "https://www.tpex.org.tw/www/zh-tw/margin/balance"  # 上櫃融資融券餘額
 
 
@@ -260,19 +262,62 @@ def parse_otc_daily(payload: dict) -> dict:
     }
 
 
-def fetch_otc_daily(date: datetime.date | None = None) -> dict:
-    """Fetch dailyQuotes once and share it across price/volume parsing."""
+def fetch_otc_daily(date: datetime.date | None = None, *, strict: bool = False) -> dict:
+    """Fetch dailyQuotes once and share it across price/volume parsing.
+
+    `strict=True`：連線／解析例外**往上拋**，不再吞成 `{}`——stock_flow 要把真正的原因寫進
+    覆蓋表（2026-09-23 之前 production 七個失敗日全部只留下「官方行情資料未回傳」，事後
+    分不出是逾時、被切斷還是回了非 ok 的 stat，同月營收「例外被吞兩層」的教訓）。
+    「尚未發布」（stat 非 ok／沒有 tables）仍回 `{}`，那不是錯誤。
+    """
     day = date or datetime.date.today()
     ds = f"{day.year}/{day.month:02d}/{day.day:02d}"
     try:
         j = httpx.get(DAILY_QUOTES_URL, params={"date": ds, "response": "json"},
                       timeout=25, follow_redirects=True, verify=False,
                       headers={"User-Agent": "Mozilla/5.0"}).json()
-        if j.get("stat") == "ok" and j.get("tables"):
-            return parse_otc_daily(j)
     except Exception:  # noqa: BLE001
-        pass
+        if strict:
+            raise
+        return {}
+    if j.get("stat") == "ok" and j.get("tables"):
+        return parse_otc_daily(j)
     return {}
+
+
+def _roc_yyyymmdd(day: datetime.date) -> str:
+    return f"{day.year - 1911}{day.month:02d}{day.day:02d}"
+
+
+def parse_otc_close_quotes_openapi(rows: list, day: datetime.date) -> dict:
+    """openapi `tpex_mainboard_daily_close_quotes` → 與 `parse_otc_daily` 同形（open/high/low/close/
+    volume_lots/amount_twd）。這支端點**只有最新一個交易日**，所以只收 `Date` 等於 `day`（民國）的列；
+    日期不符整份回 `{}`——資料日 D 紀律：寧可留白，也不拿別天的收盤冒充。同樣只取 4 碼非 00 普通股，
+    量從股數換成張（`shares // 1000`，與 parse_otc_turnover 一致）。2026-09-23 實測 1240：兩個來源
+    open/high/low/close/amount 全同、股數 11,586 → 11 張。
+    """
+    want = _roc_yyyymmdd(day)
+    out: dict[str, dict] = {}
+    for r in rows or []:
+        if str(r.get("Date") or "").strip() != want:
+            continue
+        code = str(r.get("SecuritiesCompanyCode") or "").strip()
+        if not (len(code) == 4 and code.isdigit() and not code.startswith("00")):
+            continue
+        o, h, l, c = _f(r.get("Open")), _f(r.get("High")), _f(r.get("Low")), _f(r.get("Close"))
+        shares, amount = _f(r.get("TradingShares")), _f(r.get("TransactionAmount"))
+        if None in (o, h, l, c) or shares is None or amount is None:
+            continue
+        out[code] = {"open": o, "high": h, "low": l, "close": c,
+                     "volume_lots": int(shares // 1000), "amount_twd": amount}
+    return out
+
+
+def fetch_otc_daily_openapi(day: datetime.date) -> dict:
+    """dailyQuotes 的備援（同一個發布者、不同端點）。走 `get_resumable`：這是 nginx 靜態檔，
+    傳到一半被切還能續傳——正是 dailyQuotes（動態端點、無 Range）做不到的。例外往上拋，
+    呼叫端記進覆蓋表。日期不符（還沒換日）回 `{}`。"""
+    return parse_otc_close_quotes_openapi(json.loads(get_resumable(OTC_CLOSE_QUOTES_OPENAPI, timeout=25)), day)
 
 
 def fetch_otc_turnover(date: datetime.date | None = None) -> dict:

@@ -119,12 +119,12 @@ def test_backfill_counts_trading_dates_and_keeps_market_failures_separate(tmp_pa
     init_db(conn)
     calls = {"twse_quotes": 0, "tpex_quotes": 0}
 
-    def twse_quotes(day=None):
+    def twse_quotes(day=None, **kw):
         calls["twse_quotes"] += 1
         return {"2330": {"open": 1, "high": 2, "low": 1, "close": 2,
                          "volume_lots": 10, "amount_twd": 100}}
 
-    def tpex_quotes(day=None):
+    def tpex_quotes(day=None, **kw):
         calls["tpex_quotes"] += 1
         return {}
 
@@ -160,11 +160,11 @@ def test_backfill_treats_double_market_empty_as_retry_before_confirming_holiday(
     init_db(conn)
     calls = {"twse": [], "tpex": []}
 
-    def empty_twse(day=None):
+    def empty_twse(day=None, **kw):
         calls["twse"].append(day)
         return {}
 
-    def empty_tpex(day=None):
+    def empty_tpex(day=None, **kw):
         calls["tpex"].append(day)
         return {}
 
@@ -219,7 +219,7 @@ def test_backfill_never_refetches_a_confirmed_holiday_date(tmp_path, monkeypatch
 
     calls = []
 
-    def counted(day=None):
+    def counted(day=None, **kw):
         calls.append(day)
         return {}
 
@@ -268,7 +268,7 @@ def test_daily_update_fetches_each_shared_source_once(tmp_path, monkeypatch):
     calls = {name: 0 for name in ("twq", "otcq", "twi", "otci", "twm", "otcm")}
 
     def once(name, payload):
-        def fetch(day=None):
+        def fetch(day=None, **kw):
             calls[name] += 1
             return payload
         return fetch
@@ -293,8 +293,8 @@ def test_daily_update_fetches_each_shared_source_once(tmp_path, monkeypatch):
 def test_daily_update_keeps_other_market_when_one_source_raises(tmp_path, monkeypatch):
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
-    monkeypatch.setattr(stock_flow.twse, "fetch_stock_daily", lambda day=None: (_ for _ in ()).throw(RuntimeError("down")))
-    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily", lambda day=None: {
+    monkeypatch.setattr(stock_flow.twse, "fetch_stock_daily", lambda day=None, **kw: (_ for _ in ()).throw(RuntimeError("down")))
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily", lambda day=None, **kw: {
         "6488": {"open": 1, "high": 2, "low": 1, "close": 2, "volume_lots": 10, "amount_twd": 100}})
     monkeypatch.setattr(stock_flow.twse, "fetch_t86", lambda day=None: {})
     monkeypatch.setattr(stock_flow.tpex, "fetch_tpex_insti", lambda day=None: {
@@ -318,15 +318,15 @@ def test_evening_refetch_failure_keeps_the_self_screen_gate_open(tmp_path, monke
     quote = {"6488": {"open": 1, "high": 2, "low": 1, "close": 2, "volume_lots": 10, "amount_twd": 100}}
     inst = {"6488": {"name": "環球晶", "foreign": 1, "trust": 0, "dealer": 0, "total": 1}}
     for name in ("fetch_stock_daily", "fetch_t86"):
-        monkeypatch.setattr(stock_flow.twse, name, lambda day=None, p=(quote if "daily" in name else inst): p)
-    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily", lambda day=None: quote)
+        monkeypatch.setattr(stock_flow.twse, name, lambda day=None, p=(quote if "daily" in name else inst), **kw: p)
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily", lambda day=None, **kw: quote)
     monkeypatch.setattr(stock_flow.tpex, "fetch_tpex_insti", lambda day=None: inst)
     monkeypatch.setattr(stock_flow.twse, "fetch_margin_detail", lambda day=None: {})
     monkeypatch.setattr(stock_flow.tpex, "fetch_otc_margin", lambda day=None: {})
     stock_flow.update_day(conn, date(2026, 9, 17))
     assert self_screen_missing_inputs(conn, "2026-09-17") == []
 
-    def cut(day=None):
+    def cut(day=None, **kw):
         raise RuntimeError("ReadError: Connection reset by peer")
     monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily", cut)
     monkeypatch.setattr(stock_flow.tpex, "fetch_tpex_insti", cut)
@@ -543,3 +543,194 @@ def test_institutional_research_frontend_covers_verdicts_mobile_and_stale_states
     assert "@media (max-width: 600px)" in css
     assert ".ir-readiness { grid-template-columns: 1fr" in css
     assert "本頁為歷史資料研究工具，不構成投資建議" in html
+
+
+# ---------------------------------------------------------------------------
+# 行情抓取的三層（重試 → 上櫃 openapi 備援 → 帶原因的失敗），2026-09-23 之後
+
+
+def _quote_rows():
+    return {"1240": {"open": 55.0, "high": 55.0, "low": 54.6, "close": 54.7, "volume_lots": 11, "amount_twd": 634704.0}}
+
+
+def _stub_rest(monkeypatch):
+    monkeypatch.setattr(stock_flow.twse, "fetch_stock_daily", lambda day=None, **kw: {
+        "2330": {"open": 1, "high": 2, "low": 1, "close": 2, "volume_lots": 10, "amount_twd": 100}})
+    monkeypatch.setattr(stock_flow.twse, "fetch_t86", lambda day=None: {})
+    monkeypatch.setattr(stock_flow.tpex, "fetch_tpex_insti", lambda day=None: {})
+    monkeypatch.setattr(stock_flow.twse, "fetch_margin_detail", lambda day=None: {})
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_margin", lambda day=None: {})
+
+
+def test_parse_otc_close_quotes_openapi_keeps_only_the_requested_day_and_common_stocks():
+    from stocks_power_rich.sources import tpex
+    rows = [
+        {"Date": "1150923", "SecuritiesCompanyCode": "1240", "Open": "55.00", "High": "55.00", "Low": "54.60",
+         "Close": "54.70", "TradingShares": "11586", "TransactionAmount": "634704"},
+        {"Date": "1150923", "SecuritiesCompanyCode": "00411A", "Open": "10.60", "High": "10.60", "Low": "10.48",
+         "Close": "10.50", "TradingShares": "14120188", "TransactionAmount": "148511032"},   # ETF，排除
+        {"Date": "1150922", "SecuritiesCompanyCode": "3105", "Open": "1", "High": "1", "Low": "1",
+         "Close": "1", "TradingShares": "1000", "TransactionAmount": "1000"},                 # 別天，排除
+        {"Date": "1150923", "SecuritiesCompanyCode": "6488", "Open": "--", "High": "1", "Low": "1",
+         "Close": "1", "TradingShares": "1000", "TransactionAmount": "1000"},                 # 缺開盤，排除
+    ]
+    assert tpex.parse_otc_close_quotes_openapi(rows, date(2026, 9, 23)) == _quote_rows()
+    # 端點只有最新交易日：要的是昨天、拿到的是今天 → 整份回空，不拿今天的收盤冒充昨天
+    assert tpex.parse_otc_close_quotes_openapi(rows, date(2026, 9, 22)) == {"3105": {
+        "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume_lots": 1, "amount_twd": 1000.0}}
+    assert tpex.parse_otc_close_quotes_openapi(rows, date(2026, 9, 24)) == {}
+
+
+def test_tpex_quotes_fall_back_to_openapi_when_dailyquotes_fails(tmp_path, monkeypatch):
+    import httpx
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _stub_rest(monkeypatch)
+    calls = {"daily": 0, "openapi": 0}
+
+    def broken(day=None, **kw):
+        calls["daily"] += 1
+        raise httpx.ReadError("[Errno 104] Connection reset by peer")
+
+    def openapi(day):
+        calls["openapi"] += 1
+        return _quote_rows()
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily", broken)
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily_openapi", openapi)
+
+    out = stock_flow.update_day(conn, date(2026, 9, 23))
+
+    assert calls == {"daily": 3, "openapi": 1}          # 重試 3 次後才退到備援
+    assert out["TPEx"]["quotes"]["1240"]["close"] == 54.7
+    st = conn.execute("SELECT status, row_count, last_error FROM stock_source_coverage "
+                      "WHERE date='2026-09-23' AND market='TPEx' AND source='quotes'").fetchone()
+    assert tuple(st) == ("complete", 1, None)
+    assert conn.execute("SELECT close FROM stock_ohlc WHERE date='2026-09-23' AND code='1240'").fetchone()[0] == 54.7
+
+
+def test_quotes_failure_records_every_attempt_reason_instead_of_a_generic_message(tmp_path, monkeypatch):
+    import httpx
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _stub_rest(monkeypatch)
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily",
+                        lambda day=None, **kw: (_ for _ in ()).throw(httpx.ReadTimeout("timed out")))
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily_openapi",
+                        lambda day: (_ for _ in ()).throw(httpx.RemoteProtocolError("peer closed connection")))
+    stock_flow.update_day(conn, date(2026, 9, 23))
+    st = conn.execute("SELECT status, last_error FROM stock_source_coverage "
+                      "WHERE date='2026-09-23' AND market='TPEx' AND source='quotes'").fetchone()
+    assert st[0] == "failed"
+    assert "dailyQuotes ReadTimeout" in st[1] and "openapi RemoteProtocolError" in st[1]
+    assert "官方行情資料未回傳" not in st[1]
+
+
+def test_quotes_retry_succeeds_without_touching_the_fallback(tmp_path, monkeypatch):
+    import httpx
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _stub_rest(monkeypatch)
+    n = {"daily": 0}
+
+    def flaky(day=None, **kw):
+        n["daily"] += 1
+        if n["daily"] < 3:
+            raise httpx.ConnectError("boom")
+        return _quote_rows()
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily", flaky)
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily_openapi",
+                        lambda day: (_ for _ in ()).throw(AssertionError("fallback must not be called")))
+    stock_flow.update_day(conn, date(2026, 9, 23))
+    assert n["daily"] == 3
+    assert conn.execute("SELECT status FROM stock_source_coverage WHERE date='2026-09-23' "
+                        "AND market='TPEx' AND source='quotes'").fetchone()[0] == "complete"
+
+
+def test_unpublished_quotes_still_ask_the_fallback_but_do_not_count_as_failure(tmp_path, monkeypatch):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _stub_rest(monkeypatch)
+    asked = []
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily", lambda day=None, **kw: {})
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily_openapi", lambda day: asked.append(day) or {})
+    stock_flow.update_day(conn, date(2026, 9, 23))
+    assert asked == [date(2026, 9, 23)]
+    st = conn.execute("SELECT status, last_error FROM stock_source_coverage "
+                      "WHERE date='2026-09-23' AND market='TPEx' AND source='quotes'").fetchone()
+    assert tuple(st) == ("failed", "官方行情資料未回傳")
+
+
+def test_backfill_does_not_retry_or_use_the_openapi_fallback(tmp_path, monkeypatch):
+    """手動回補是同步請求、一次掃十幾個日期：不重試、不下載只有最新交易日的備援檔，只多記原因。"""
+    import httpx
+    from stocks_power_rich.db import set_stock_source_coverage
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    _stub_rest(monkeypatch)
+    today = date(2026, 9, 23)
+    # 其他日子都標完成／假日，只留 09-16 的上櫃行情是 failed
+    for ds in (today - timedelta(days=i) for i in range(0, 70)):
+        for market in stock_flow.MARKETS:
+            for source in stock_flow.SOURCES:
+                set_stock_source_coverage(conn, ds.isoformat(), market, source, "holiday", 0)
+    conn.execute("DELETE FROM stock_source_coverage WHERE date='2026-09-16'")
+    for market in stock_flow.MARKETS:
+        for source in stock_flow.SOURCES:
+            set_stock_source_coverage(conn, "2026-09-16", market, source, "complete", 1)
+    conn.execute("UPDATE stock_source_coverage SET status='failed' "
+                 "WHERE date='2026-09-16' AND market='TPEx' AND source='quotes'")
+    calls = []
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily",
+                        lambda day=None, **kw: calls.append(day) or (_ for _ in ()).throw(httpx.ReadError("reset")))
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily_openapi",
+                        lambda day: (_ for _ in ()).throw(AssertionError("backfill must not download the fallback")))
+    stock_flow.backfill(conn, days=60, max_fetch=1, today=today)
+    assert calls == [date(2026, 9, 16)]                      # 一次，不重試
+    err = conn.execute("SELECT status, last_error FROM stock_source_coverage "
+                       "WHERE date='2026-09-16' AND market='TPEx' AND source='quotes'").fetchone()
+    assert err[0] == "failed" and "ReadError" in err[1]
+
+
+def test_heal_recent_quotes_retries_only_failed_trading_days_newest_first(tmp_path, monkeypatch):
+    import httpx
+    from stocks_power_rich.db import set_stock_source_coverage, upsert_market_daily
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    today = date(2026, 9, 23)
+    calls = []
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily_openapi",
+                        lambda day: (_ for _ in ()).throw(AssertionError("heal must not download the fallback")))
+
+    def fetch(day=None, **kw):
+        calls.append(day)
+        if day == date(2026, 9, 16):
+            raise httpx.ReadTimeout("timed out")
+        return _quote_rows()
+    monkeypatch.setattr(stock_flow.tpex, "fetch_otc_daily", fetch)
+
+    # 沒有任何失敗 → 一個請求都不發
+    assert stock_flow.heal_recent_quotes(conn, today=today) == {"skipped": "nothing_failed"}
+    assert calls == []
+
+    for ds in ("2026-09-16", "2026-09-17", "2026-08-01"):
+        upsert_market_daily(conn, {"date": ds, "taiex": 1.0})
+    upsert_market_daily(conn, {"date": "2026-09-18", "turnover": 1.0})   # 沒有收盤指數＝不是交易日
+    for ds in ("2026-09-16", "2026-09-17", "2026-09-18", "2026-08-01", "2026-09-23"):
+        set_stock_source_coverage(conn, ds, "TPEx", "quotes", "failed", 0, "官方行情資料未回傳")
+    upsert_market_daily(conn, {"date": "2026-09-23", "taiex": 1.0})     # 今天：不在 heal 範圍
+
+    out = stock_flow.heal_recent_quotes(conn, cap=1, today=today)
+    assert out == {"targets": 2, "healed": ["2026-09-17 TPEx"], "still_failed": []}
+    assert calls == [date(2026, 9, 17)]                       # 新到舊、只做 cap 個；假日與今天不碰
+    st = lambda ds: conn.execute("SELECT status, last_error, attempts FROM stock_source_coverage "
+                                 "WHERE date=? AND market='TPEx' AND source='quotes'", (ds,)).fetchone()
+    assert st("2026-09-17")[0] == "complete"
+    assert conn.execute("SELECT close FROM stock_ohlc WHERE date='2026-09-17' AND code='1240'").fetchone()[0] == 54.7
+
+    calls.clear()
+    out = stock_flow.heal_recent_quotes(conn, cap=2, today=today)
+    assert out["healed"] == [] and out["still_failed"][0].startswith("2026-09-16 TPEx：QuotesFetchError")
+    assert calls == [date(2026, 9, 16)] * 3                  # 重試 3 次（conftest 把延遲歸零）
+    status, err, attempts = st("2026-09-16")
+    assert status == "failed" and "ReadTimeout" in err and attempts == 2
+    assert st("2026-09-18")[0] == "failed" and st("2026-08-01")[0] == "failed"   # 從沒被碰過

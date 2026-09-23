@@ -951,6 +951,17 @@ def run_update(conn, intl_tickers: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         failed.append({"source": "stock_flow", "name": "stock_flow_daily", "error": str(e)})
 
+    # 近期抓失敗的行情順手補回來（沒有失敗日就零請求）——TPEx dailyQuotes 從 Zeabur 出站偶爾
+    # 整晚失敗（2026-09-23 四次皆失敗、近 147 個交易日 7 天），以前失敗就永遠缺著。
+    try:
+        heal = stock_flow.heal_recent_quotes(conn)
+        if heal.get("healed"):
+            success.append("stock_flow_heal")
+        # 補不回來的不進 failed：同一天會連補 21 晚，進 failed 就是連發 21 則 LINE 告警。原因已寫進
+        # 覆蓋表 last_error（/api/stock-flow/coverage 的 failed[].error 看得到）。
+    except Exception as e:  # noqa: BLE001
+        failed.append({"source": "stock_flow", "name": "stock_flow_heal", "error": str(e)})
+
     # 證交所官方「信用交易概況」（整戶擔保維持率／低於130%戶數／追繳／處分／信用交易成交值）。
     # 產製時間不固定、常晚於 21:00；當日沒有就記進 failed（看得見、不告警），由 _backfill_credit 隔天補。
     try:

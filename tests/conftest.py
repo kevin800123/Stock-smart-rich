@@ -189,4 +189,19 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "real_ssf_fetch: 不套用 _no_ssf_network 的樁（測試自行樁掉 ssf.httpx.Client）")
     config.addinivalue_line(
+        "markers", "real_otc_openapi: 不套用 fetch_otc_daily_openapi 的空樁（測試自行處理連外）")
+    config.addinivalue_line(
         "markers", "real_custody_autofill: 不套用 _no_custody_autofill 的樁（測試自行樁掉集保自動補歷史／TDCC 智能網抓取）")
+
+
+@pytest.fixture(autouse=True)
+def _no_quote_retry_delay_or_openapi_fallback(request, monkeypatch):
+    """`stock_flow._fetch_quotes` 抓行情失敗會隔 2／5 秒重試，上櫃再退到 openapi 靜態檔（真的連外、
+    約 4.5 MB）。既有測試大量把 `fetch_otc_daily` 樁成 `{}` 或丟例外，不擋的話每一條都會慢 7 秒
+    又連外。延遲歸零、備援樁成回空；要測備援本身的測試自己 monkeypatch，或標
+    `@pytest.mark.real_otc_openapi` 退出。"""
+    from stocks_power_rich import stock_flow
+    from stocks_power_rich.sources import tpex
+    monkeypatch.setattr(stock_flow, "QUOTE_RETRY_DELAYS", (0, 0))
+    if "real_otc_openapi" not in request.keywords:
+        monkeypatch.setattr(tpex, "fetch_otc_daily_openapi", lambda day: {})

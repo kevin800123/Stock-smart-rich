@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import math
 import sqlite3
+import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from statistics import median, quantiles
@@ -19,6 +21,13 @@ from .sources import tpex, twse
 
 MARKETS = ("TWSE", "TPEx")
 SOURCES = ("quotes", "institutional", "margin")
+log = logging.getLogger("spr.stock_flow")
+# 行情抓取的重試：第 1 次失敗後隔 2 秒、第 2 次後隔 5 秒再試（共 3 次）。只重試「例外」，
+# 「尚未發布」（回 {}）不重試。測試由 conftest 把延遲歸零。
+QUOTE_RETRY_DELAYS = (2.0, 5.0)
+# 每日排程順手重抓近期抓失敗的行情：只看這幾天內「確定是交易日」的 failed quotes，沒有就一個請求都不發
+HEAL_LOOKBACK_DAYS = 21
+HEAL_CAP = 2          # 每晚最多重抓幾個（日期, 市場）——在 21:00 的 run_update 裡，成本要有上限
 WINDOWS = (1, 3, 5, 10, 20, 60)
 HORIZONS = (5, 10, 20)
 MIN_VALID_DATES = 60
@@ -123,12 +132,58 @@ def _coverage_status(conn: sqlite3.Connection, ds: str, market: str, source: str
     return row[0] if row else None
 
 
-def _fetch_quotes(conn: sqlite3.Connection, ds: str, market: str) -> dict:
+class QuotesFetchError(RuntimeError):
+    """行情抓取失敗（含每一次嘗試的原因），與「尚未發布」（回 {}）分開。"""
+
+
+def _fetch_quotes(conn: sqlite3.Connection, ds: str, market: str, *,
+                  retries: bool = False, fallback: bool = False) -> dict:
+    """抓一個市場一天的行情並寫進 stock_ohlc。
+
+    2026-09-23 production 的 TPEx dailyQuotes 從 17:30 到 21:00 四次都失敗（同一時刻本機 1 秒就拿到
+    868 檔），近 147 個交易日有 7 天同樣失敗、且沒有任何機制事後補；而每一次留下的錯誤都只是
+    「官方行情資料未回傳」——例外被吞成 `{}`，事後分不出是逾時、被切斷還是回了非 ok 的 stat。
+    所以一律用 strict 模式讓原因浮出來：全部失敗就丟 QuotesFetchError，訊息串起每一次嘗試的原因，
+    呼叫端寫進覆蓋表 last_error。「尚未發布」（官方回 `{}`）不是失敗，照舊回 `{}`。
+
+    兩個開關由呼叫端決定，因為成本與用處依場合而不同：
+    - `retries`：例外時隔 QUOTE_RETRY_DELAYS 再試（共 3 次）。每日路徑（update_day、heal）開；
+      手動回補 `backfill` 不開——它是同步請求、一次掃十幾個日期，每個失敗日多花 7 秒會把請求推進
+      Zeabur 502 的範圍（`stock-flow/research` 那條教訓），而它本來就是「重複呼叫直到不再下降」。
+    - `fallback`：上櫃再退到 openapi 靜態檔（`fetch_otc_daily_openapi`，不同端點、可續傳）。它**只有
+      最新一個交易日**，日期不符回 `{}`，所以只有 update_day（抓的就是最新那天）開；對過去的日子
+      開它只是白下載 4.5 MB。主來源回 `{}` 時也問備援：那 7 天的錯誤訊息把「例外」與「回了非 ok 的
+      stat」混成同一句，我們不知道 Zeabur 上是哪一種，兩條路都要接得住。
+    """
     D = _day(ds)
-    rows = twse.fetch_stock_daily(D) if market == "TWSE" else tpex.fetch_otc_daily(D)
+    fetch = (lambda: twse.fetch_stock_daily(D, strict=True)) if market == "TWSE" \
+        else (lambda: tpex.fetch_otc_daily(D, strict=True))
+    label = "MI_INDEX" if market == "TWSE" else "dailyQuotes"
+    delays = QUOTE_RETRY_DELAYS if retries else ()
+    errors: list[str] = []
+    rows: dict = {}
+    for attempt in range(len(delays) + 1):
+        try:
+            rows = fetch() or {}
+            break
+        except Exception as e:  # noqa: BLE001 — 原因收進 errors，最後一起丟出
+            errors.append(f"{label} {type(e).__name__}: {e}"[:120])
+            if attempt < len(delays):
+                time.sleep(delays[attempt])
+    if not rows and fallback and market == "TPEx":
+        try:
+            rows = tpex.fetch_otc_daily_openapi(D) or {}
+            if rows:
+                log.warning("TPEx dailyQuotes 沒有 %s 的資料（%s），openapi 備援取得 %d 檔",
+                            ds, "；".join(errors) or "回空", len(rows))
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"openapi {type(e).__name__}: {e}"[:120])
     if rows:
         bulk_upsert_ohlc(conn, ds, rows)
-    return rows
+        return rows
+    if errors:
+        raise QuotesFetchError("；".join(errors)[:400])
+    return {}
 
 
 def _fetch_source(conn: sqlite3.Connection, ds: str, market: str, source: str) -> bool:
@@ -161,12 +216,13 @@ def update_day(conn: sqlite3.Connection, D: date) -> dict:
     ds = D.isoformat()
     result = {}
     for market in MARKETS:
+        quote_error = None
         try:
-            quotes = _fetch_quotes(conn, ds, market)
-        except Exception:  # noqa: BLE001
-            quotes = {}
+            quotes = _fetch_quotes(conn, ds, market, retries=True, fallback=True)
+        except Exception as e:  # noqa: BLE001 — 原因寫進覆蓋表，不吞
+            quotes, quote_error = {}, f"{type(e).__name__}: {e}"[:200]
         _mark(conn, ds, market, "quotes", quotes,
-              None if quotes else "官方行情資料未回傳")
+              None if quotes else (quote_error or "官方行情資料未回傳"))
         try:
             inst = twse.fetch_t86(D) if market == "TWSE" else tpex.fetch_tpex_insti(D)
         except Exception:  # noqa: BLE001
@@ -222,14 +278,16 @@ def backfill(conn: sqlite3.Connection, days: int = 220, max_fetch: int = 3,
         scanned += 1
         known_trading = any(state.get((ds, market, "quotes")) == "complete" for market in MARKETS)
         quote_results = {}
+        quote_errors: dict[str, str] = {}
         for market in MARKETS:
             if state.get((ds, market, "quotes")) == "complete":
                 quote_results[market] = True
                 continue
             try:
                 rows = _fetch_quotes(conn, ds, market)
-            except Exception:  # noqa: BLE001
+            except Exception as e:  # noqa: BLE001
                 rows = {}
+                quote_errors[market] = f"{type(e).__name__}: {e}"[:200]
             quote_results[market] = bool(rows)
         if not known_trading and not any(quote_results.values()):
             # Both markets came back empty and neither was ever confirmed trading on
@@ -259,10 +317,9 @@ def backfill(conn: sqlite3.Connection, days: int = 220, max_fetch: int = 3,
                                               conn.execute("SELECT COUNT(*) FROM stock_ohlc WHERE date=?",
                                                            (ds,)).fetchone()[0])
             elif state.get((ds, market, "quotes")) != "complete":
-                set_stock_source_coverage(conn, ds, market, "quotes", "failed", 0,
-                                          "官方行情資料未回傳")
-                errors.append({"date": ds, "market": market, "source": "quotes",
-                               "error": "官方行情資料未回傳"})
+                reason = quote_errors.get(market) or "官方行情資料未回傳"
+                set_stock_source_coverage(conn, ds, market, "quotes", "failed", 0, reason)
+                errors.append({"date": ds, "market": market, "source": "quotes", "error": reason})
                 continue
             for source in ("institutional", "margin"):
                 if state.get((ds, market, source)) == "complete":
@@ -277,6 +334,43 @@ def backfill(conn: sqlite3.Connection, days: int = 220, max_fetch: int = 3,
             "estimated_calls_remaining": report["estimated_calls_remaining"],
             "estimate_basis": report["estimate_basis"], "coverage": report["markets"],
             "data_version": report["data_version"]}
+
+
+def heal_recent_quotes(conn: sqlite3.Connection, cap: int = HEAL_CAP,
+                       today: date | None = None) -> dict:
+    """每日排程用：把近 HEAL_LOOKBACK_DAYS 天內「確定是交易日、但行情抓失敗」的日子重抓回來。
+
+    以前失敗就永遠缺著（production 那 7 天就是這樣來的）。三個刻意的限制：
+    - **交易日以 market_daily 有收盤指數為準**。國定假日兩個市場的行情也會標 failed，不過濾的話
+      每晚都會先重試同一批假日（新到舊），把名額吃光、真正缺的日子永遠輪不到。
+    - **只重抓行情**，不像 backfill 那樣整套重跑：update_day 的法人／融資與行情各自獨立，行情失敗
+      那天它們多半已經 complete。
+    - **每晚最多 cap 個（日期, 市場）、重試但不問 openapi 備援**（它只有最新交易日，對過去一定對不上），
+      在 21:00 的 run_update 裡成本有上限。不含今天：今天剛由 update_day 試過，隔晚再補。
+    沒有失敗日就一個請求都不發——run_update 的測試 DB 是空的，不擋會連外。
+    """
+    ref = today or date.today()
+    since = (ref - timedelta(days=HEAL_LOOKBACK_DAYS)).isoformat()
+    targets = conn.execute(
+        "SELECT c.date, c.market FROM stock_source_coverage c "
+        "JOIN market_daily m ON m.date = c.date AND m.taiex IS NOT NULL "
+        "WHERE c.source='quotes' AND c.status='failed' AND c.date>=? AND c.date<? "
+        "ORDER BY c.date DESC, c.market", (since, ref.isoformat())).fetchall()
+    if not targets:
+        return {"skipped": "nothing_failed"}
+    healed, still = [], []
+    for ds, market in targets[:max(1, int(cap))]:
+        try:
+            rows = _fetch_quotes(conn, ds, market, retries=True)
+            reason = None if rows else "官方行情資料未回傳"
+        except Exception as e:  # noqa: BLE001 — 原因寫進覆蓋表
+            rows, reason = {}, f"{type(e).__name__}: {e}"[:200]
+        _mark(conn, ds, market, "quotes", rows, reason)
+        if rows:
+            healed.append(f"{ds} {market}")
+        else:
+            still.append(f"{ds} {market}：{reason}")
+    return {"targets": len(targets), "healed": healed, "still_failed": still}
 
 
 def coverage_report(conn: sqlite3.Connection, days: int = 220, batch_size: int = 3,

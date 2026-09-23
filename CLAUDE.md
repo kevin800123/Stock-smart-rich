@@ -1190,7 +1190,32 @@ self_screen 三格都會是「尚未到期」，那是**正確**顯示不是故�
   但同一晚若連這支也失敗，加權兩平線並不會退回只用上市成數：`api/market.py::_bands_for` 與
   `ss_trader._last_valid` 都取視窗內**最近一筆非空**的 `otc_margin_value`，所以當天用的是前一交易日的
   上櫃融資金額當權重——兩平線照算、只差一天的權重，不會安靜地變成另一個定義。）
-  尚未處理；可行的方向是行情重抓失敗時改用 `stock_ohlc` 裡 17:30 已存好的當天收盤。
+  ~~尚未處理~~ **2026-09-23 已處理**（`stock_flow._fetch_quotes` 三層）。那天更糟：TPEx 行情從 17:30／18:30／19:30 到 21:00
+  **四次全失敗**，17:30 那條「改用已存好的收盤」退路根本沒有東西可退；production 覆蓋表近 147 個交易日有 **7 天**
+  同樣失敗（08-19、09-02、09-10、09-11、09-15、09-16、09-23），上市 147/147 全好；同一時刻本機 1 秒就拿到 868 檔。
+  而每一天留下的錯誤都只是「官方行情資料未回傳」——`fetch_otc_daily` 與 `update_day` **各吞一層**例外，事後分不出
+  是逾時、被切斷還是回了非 ok 的 stat（同月營收那次）。修法：
+  - **原因要留下**：`fetch_otc_daily`／`fetch_stock_daily` 加 `strict=True` 讓例外往上拋（其他呼叫端不帶 strict、行為不變），
+    `update_day`／`backfill` 把 `型別: 訊息` 寫進覆蓋表 `last_error`，`QuotesFetchError` 串起每一次嘗試的原因。
+    「尚未發布」（回 `{}`）與「抓失敗」分開，前者仍寫「官方行情資料未回傳」。
+  - **瞬時錯誤重試**：`QUOTE_RETRY_DELAYS=(2, 5)` 共 3 次，只重試例外、不重試「尚未發布」。測試由 conftest 歸零。
+    **只在每日路徑開**（`update_day`、heal）：手動 `backfill` 是同步請求、一次掃十幾個日期，每個失敗日多花
+    7 秒會把它推進 Zeabur 502 的範圍，所以 `_fetch_quotes(retries=, fallback=)` 兩個開關由呼叫端決定、預設都關。
+  - **上櫃備援走 openapi `tpex_mainboard_daily_close_quotes`**（`fetch_otc_daily_openapi`）：同一個發布者、不同端點，
+    nginx 靜態檔（約 4.5 MB）**支援 Range／ETag**，所以走 `get_resumable` 續傳——正是 `dailyQuotes` 這種動態端點
+    做不到的。它**只有最新一個交易日**，`parse_otc_close_quotes_openapi` 只收 `Date` 等於要的那天（民國）的列，
+    日期不符整份回 `{}`（資料日 D 紀律，實測要 09-22 拿到 09-23 的檔 → 0 檔）。實測 09-23 兩個來源 868 檔逐欄
+    **全部相同**（含 `shares // 1000` 的張數）。**只有 `update_day` 開備援**（抓的就是最新那天），對過去的日子開只是
+    白下載 4.5 MB。主來源回 `{}` 時也問一次備援：那 7 天的錯誤訊息把「例外」與「回了非 ok 的 stat」混成同一句，
+    不知道 Zeabur 上是哪一種，兩條路都要接得住。
+  - **失敗日事後會補**：`stock_flow.heal_recent_quotes` 掛在 `run_update`，只重抓近 `HEAL_LOOKBACK_DAYS`(21) 天內
+    「`market_daily` 有收盤指數」的日子裡 quotes 標 failed 的（日期, 市場），新到舊、每晚最多 `HEAL_CAP`(2) 個、重試但不問
+    備援、不含今天。**以交易日過濾是必要的**：國定假日兩個市場也會標 failed，不濾的話每晚先重試同一批假日、把名額
+    吃光。第一版直接叫 `backfill(days=60, max_fetch=2)`，review 時發現三個問題才改掉：它一次可掃 14 個日期（21:00
+    成本沒有上限）、會一起重試假日、而且回傳值挑的是 backfill 根本沒有的鍵。補不回來的**不進 `failed`**（同一天會
+    連補 21 晚＝連發 21 則 LINE 告警），原因寫在覆蓋表。沒有失敗日一個請求都不發（`run_update` 的測試 DB 是空的）。
+  - **反證**：把備援那行改成 `if False` → 兩條測試紅。**Zeabur 上到底是哪一種失敗仍未知**——這次的修法讓下一次失敗
+    把原因寫進 `/api/stock-flow/coverage` 的 `failed[].error`，看到之後再決定要不要再加一層。
 
 ### 週集保一公布就反映到自算選股（custody_watch，2026-09）
 
