@@ -3778,6 +3778,134 @@ function flowQuadrant(s) {
 }
 const FLOW_Q = [["in", "雙流入"], ["big", "大戶增・法人賣"], ["inst", "法人買・大戶減"], ["out", "雙流出"]];
 
+// ---------- 族群輪動模型（純函式，不碰 DOM；ui72）----------
+// 主圖、放大鏡、摘要卡、象限領先者、標籤、細節列、頁首判讀都只讀 flowModel 的結果，同一個類股
+// 在不同區塊不會有不同的判定。規則與 2026-09-23 的實測基準見
+// docs/superpowers/specs/2026-09-23-sector-rotation-redesign-design.md §1。
+const FLOW_CORE_SHARE = 0.8;    // 放大鏡至少框住的類股比例（「中央約 80%」）
+const FLOW_CORE_TRIM0 = 0.10;   // 修剪起點：每軸兩端各修 10%，框不到 80% 就每次放寬 1 點
+const FLOW_CORE_PAD = 0.12;     // 放大鏡兩側邊界（寬度的比例）
+const FLOW_MAIN_PAD = 0.06;     // 主圖兩側邊界
+const FLOW_MIN_SPAN = 0.02;     // 軸的最小寬度（%）：全部同值時不讓座標退化成一點
+const FLOW_LABELS_BASE = 7;     // 常駐標籤數（不含目前選取的那一個）
+const FLOW_Q_NAME = { in: "雙流入", big: "大戶增・法人賣", inst: "法人買・大戶減", out: "雙流出" };
+
+// 固定兩位小數：既有 fmt() 會去掉尾端 0（+0.30 變 +0.3），並排的數字會對不齊。四捨五入後為 0 寫 0.00，不寫 -0.00。
+const flowSigned2 = (v) => {
+  if (v == null) return "—";
+  const r = Math.round(v * 100) / 100;
+  return (r > 0 ? "+" : "") + (r === 0 ? "0.00" : r.toFixed(2));
+};
+const flowPct = (v) => (v == null ? "—" : flowSigned2(v) + "%");
+
+// 百分位：排序後線性內插（同 numpy 預設）
+function flowQuantile(values, p) {
+  const b = values.slice().sort((a, c) => a - c);
+  if (!b.length) return null;
+  const i = (b.length - 1) * p, lo = Math.floor(i), hi = Math.ceil(i);
+  return b[lo] + (b[hi] - b[lo]) * (i - lo);
+}
+function flowPadded(lo, hi, pad) {
+  if (hi - lo < FLOW_MIN_SPAN) { const c = (lo + hi) / 2; lo = c - FLOW_MIN_SPAN / 2; hi = c + FLOW_MIN_SPAN / 2; }
+  const w = hi - lo;
+  return [lo - w * pad, hi + w * pad];
+}
+// 核心放大鏡：兩軸同比例修剪兩端，取框住至少 80% 類股的最小範圍（一定含原點，象限線才看得到）
+function flowCoreWindow(rows) {
+  const xs = rows.map((r) => r.s.x), ys = rows.map((r) => r.s.y), n = rows.length;
+  const need = Math.ceil(FLOW_CORE_SHARE * n - 1e-9);
+  let t = FLOW_CORE_TRIM0;
+  for (;;) {
+    const x = flowPadded(Math.min(flowQuantile(xs, t), 0), Math.max(flowQuantile(xs, 1 - t), 0), FLOW_CORE_PAD);
+    const y = flowPadded(Math.min(flowQuantile(ys, t), 0), Math.max(flowQuantile(ys, 1 - t), 0), FLOW_CORE_PAD);
+    const inside = rows.filter((r) => r.s.x >= x[0] && r.s.x <= x[1] && r.s.y >= y[0] && r.s.y <= y[1]).length;
+    if (inside >= need || t <= 0) return { x, y, trim: t, inside, n };
+    t = Math.max(0, Math.round((t - 0.01) * 100) / 100);
+  }
+}
+// 主圖：本期＋上期＋原點的完整範圍（線性、不對稱；舊版對稱 ±最大值，Y 軸空了約兩成）
+function flowMainRange(rows, axis) {
+  const vals = [0];
+  rows.forEach((r) => { vals.push(r.s[axis]); if (r.prev) vals.push(r.s[axis + "_prev"]); });
+  return flowPadded(Math.min(...vals), Math.max(...vals), FLOW_MAIN_PAD);
+}
+
+function flowModel(d) {
+  const base = (d.sectors || []).filter((s) => s.x != null && s.y != null);
+  if (!base.length) return null;
+  const rows = base.map((s) => ({
+    s, sector: s.sector, q: flowQuadrant(s),
+    prev: !!d.has_tail && s.x_prev != null && s.y_prev != null,
+  }));
+  const core = flowCoreWindow(rows);
+  // 正規化刻度＝放大鏡的寬度。不用主圖全範圍：主圖 Y 軸會被單一離群值（2026-09-23 是汽車上期的 −1.267）
+  // 撐開，用它正規化，Y 的變化會被壓到約三分之一、變成 X 主導。
+  const wx = core.x[1] - core.x[0], wy = core.y[1] - core.y[0];
+  rows.forEach((r) => {
+    r.nx = r.s.x / wx; r.ny = r.s.y / wy;
+    r.comp = r.nx + r.ny;
+    r.dist = Math.hypot(r.nx, r.ny);
+    r.inCore = r.s.x >= core.x[0] && r.s.x <= core.x[1] && r.s.y >= core.y[0] && r.s.y <= core.y[1];
+    if (r.prev) {
+      r.dnx = (r.s.x - r.s.x_prev) / wx; r.dny = (r.s.y - r.s.y_prev) / wy;
+      r.move = r.dnx + r.dny; r.mag = Math.hypot(r.dnx, r.dny);
+      r.qPrev = flowQuadrant({ x: r.s.x_prev, y: r.s.y_prev });
+    }
+  });
+  const top = (arr, key) => arr.slice().sort((a, b) => key(b) - key(a));
+  const moved = rows.filter((r) => r.prev);
+  // 加速轉強／風險外流多一道「本期站到對的一邊」：從很差變成沒那麼差，不叫轉強（使用者 2026-09-23 選擇）。
+  // move 也必須同號：全部惡化的日子，不能把惡化最少的叫加速轉強。
+  const cards = {
+    strongest: top(rows.filter((r) => r.q === "in"), (r) => r.comp)[0] || null,
+    accel: top(moved.filter((r) => r.comp > 0 && r.move > 0), (r) => r.move)[0] || null,
+    outflow: top(moved.filter((r) => r.comp < 0 && r.move < 0), (r) => -r.move)[0] || null,
+  };
+  const labels = [];
+  const add = (r) => { if (r && labels.length < FLOW_LABELS_BASE && !labels.includes(r.sector)) labels.push(r.sector); };
+  [cards.strongest, cards.accel, cards.outflow].forEach(add);
+  top(moved, (r) => r.mag).forEach(add);
+  top(rows, (r) => r.dist).forEach(add);     // 沒有上期時，以離原點最遠（正規化）的補滿
+  const leaders = {};
+  ["in", "big", "inst", "out"].forEach((q) => {
+    const g = rows.filter((r) => r.q === q);
+    leaders[q] = { count: g.length, top: top(g, (r) => r.dist).slice(0, 3) };
+  });
+  return {
+    rows, bySector: Object.fromEntries(rows.map((r) => [r.sector, r])),
+    core, wx, wy, main: { x: flowMainRange(rows, "x"), y: flowMainRange(rows, "y") },
+    cards, labels, leaders, hasPrevAny: moved.length > 0,
+  };
+}
+
+// 上期→本期的方向：由正規化位移 (dnx, dny) 的角度取八方位
+function flowArrow(r) {
+  if (!r || !r.prev || (r.dnx === 0 && r.dny === 0)) return "";
+  const k = Math.round(Math.atan2(r.dny, r.dnx) / (Math.PI / 4));
+  return ["→", "↗", "↑", "↖", "←", "↙", "↓", "↘"][((k % 8) + 8) % 8];
+}
+// 摘要卡的一句判讀（規則式）
+function flowCardNote(kind, r) {
+  if (!r) return "";
+  if (kind === "strongest") {
+    if (!r.prev) return "法人與大戶同步流入，兩軸合計最強";
+    return r.qPrev === "in" ? "連續兩期雙流入，兩軸合計最強" : `由${FLOW_Q_NAME[r.qPrev]}轉為雙流入，兩軸合計最強`;
+  }
+  const useY = kind === "accel" ? r.dny >= r.dnx : r.dny <= r.dnx;   // 主因＝正規化後變動較大的那一軸
+  const k = useY ? "y" : "x";
+  return `${useY ? "大戶" : "法人"}${kind === "accel" ? "改善" : "惡化"}最多：`
+    + `${flowPct(r.s[k + "_prev"])} → ${flowPct(r.s[k])}`;
+}
+// 頁首的一句白話判讀
+function flowHeadline(m) {
+  if (!m) return "";
+  const { strongest, accel, outflow } = m.cards, parts = [];
+  if (strongest) parts.push(`${strongest.sector}雙流入最強`);
+  if (accel) parts.push(`${accel.sector}轉強最快`);
+  if (outflow) parts.push(`${outflow.sector}外流最急`);
+  return parts.length ? parts.join("、") + "。" : "今天沒有明顯的雙流入或輪動訊號。";
+}
+
 async function loadSectorFlow() {
   const el = $("flow-chart"), note = $("rotation-note");
   if (!el) return;
