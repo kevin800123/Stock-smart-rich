@@ -23,6 +23,7 @@ def test_run_update_collects_and_tolerates_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(updater.tdcc, "fetch_custody_distribution", lambda: {"week_date": None, "data": {}})
     monkeypatch.setattr(updater.revenue, "fetch_twse_revenue", lambda: {})
     monkeypatch.setattr(updater.revenue, "fetch_otc_revenue", lambda: {})
+    monkeypatch.setattr(updater.twse, "fetch_margin_history", lambda: {})  # _refresh_credit_history 不連外
 
     def boom(*a, **k):
         raise RuntimeError("network down")
@@ -707,55 +708,6 @@ def test_reset_ohlc_progress_clears_state_and_unsticks(tmp_path, monkeypatch):
     assert r2["twse_exhausted"] is False and r2["otc_exhausted"] is False and r2["done"] is True
 
 
-def test_heal_margin_maintenance_fills_days_that_had_no_margin_value_yet(tmp_path, monkeypatch):
-    """維持率的自癒：margin_value 由 _refresh_recent 事後補上，維持率必須跟著補算。
-
-    原本維持率只在當次 run 算一次，21:00 前跑的那些 run 因 margin_value 未公布而整段
-    跳過，之後再也不會重算——依賴補好了、被依賴的沒補，導致 45 天只有 7 天有值。
-    """
-    conn = get_connection(str(tmp_path / "t.sqlite"))
-    init_db(conn)
-    today = date.today()
-    d1, d2 = (today - timedelta(days=i) for i in (2, 1))
-    upsert_market_daily(conn, {"date": d1.isoformat(), "margin_value": 5800.0})   # 待補
-    upsert_market_daily(conn, {"date": d2.isoformat(), "taiex": 23000.0})          # 無 margin_value
-
-    monkeypatch.setattr(updater, "_compute_margin_maintenance",
-                        lambda D, mv: {"margin_maintenance": 175.5, "margin_mv": 100.0,
-                                       "short_mv": 2.0})
-    monkeypatch.setattr(updater, "_compute_otc_margin_maintenance", lambda D: {})
-    filled = updater._heal_margin_maintenance(conn, days=7)
-
-    assert d1.isoformat() in filled
-    got = {r[0]: r for r in conn.execute(
-        "SELECT date, margin_maintenance, margin_mv FROM market_daily ORDER BY date")}
-    assert got[d1.isoformat()][1] == 175.5 and got[d1.isoformat()][2] == 100.0  # 補上比率與分子
-    assert got[d2.isoformat()][1] is None      # 沒有 margin_value 就不硬算
-
-
-def test_heal_computes_otc_independently_of_tse(tmp_path, monkeypatch):
-    """上櫃走櫃買自己的端點（餘額與融資金額同一支），不該被上市那邊的缺料卡住。
-
-    兩個市場的融資成數不同（60% vs 50%），損益兩平線 166.7% vs 200%，本來就要分開判讀；
-    若上櫃跟著上市一起失敗，等於少掉一個獨立訊號。
-    """
-    conn = get_connection(str(tmp_path / "t.sqlite"))
-    init_db(conn)
-    ds = (date.today() - timedelta(days=1)).isoformat()
-    upsert_market_daily(conn, {"date": ds, "taiex": 23000.0})   # 刻意沒有 margin_value
-
-    monkeypatch.setattr(updater, "_compute_otc_margin_maintenance", lambda D: {
-        "otc_margin_maintenance": 166.8, "otc_margin_mv": 3203.7, "otc_short_mv": 45.9,
-        "otc_margin_value": 1927.5, "otc_margin_balance": 2365064, "otc_short_balance": 29937})
-    filled = updater._heal_margin_maintenance(conn, days=7)
-
-    assert filled == [ds]
-    r = conn.execute("SELECT otc_margin_maintenance, otc_margin_value, margin_maintenance "
-                     "FROM market_daily WHERE date=?", (ds,)).fetchone()
-    assert r[0] == 166.8 and r[1] == 1927.5
-    assert r[2] is None            # 上市仍留空，兩邊互不牽連
-
-
 def test_backfill_intl_fills_only_nulls_and_respects_session_availability(tmp_path, monkeypatch):
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
@@ -1005,6 +957,12 @@ def test_run_update_writes_session_aligned_intl_not_live_snapshot(tmp_path, monk
                         lambda: {"week_date": None, "data": {}})
     monkeypatch.setattr(updater.revenue, "fetch_twse_revenue", lambda: {})
     monkeypatch.setattr(updater.revenue, "fetch_otc_revenue", lambda: {})
+    # D 是今天，落在 CREDIT_SINCE 之後：_backfill_credit／_refresh_credit_history
+    # 會真的連外，樁掉四個官方端點，維持這條測試只驗證 intl 場次規則。
+    monkeypatch.setattr(updater.twse, "fetch_credit_summary", lambda D: {})
+    monkeypatch.setattr(updater.twse, "fetch_margin_trend", lambda D, days=60: {})
+    monkeypatch.setattr(updater.twse, "fetch_margin_history", lambda: {})
+    monkeypatch.setattr(updater.tpex, "fetch_otc_margin", lambda D: {})
     # sox 走 Nasdaq（見 _backfill_intl_nasdaq）：有「D 之前那一場」。n225 走 FRED
     # （見 _backfill_intl_fred），只有 D 之前，沒有 D 當天（亞股尚未收盤）。
     # kospi 走 TradingView 帶日期快照，這裡模擬抓不到。
@@ -1161,3 +1119,79 @@ def test_refresh_monthly_revenue_success_has_no_error(tmp_path, monkeypatch):
     out = updater._refresh_monthly_revenue(conn)
     assert out["TWSE"] == {"count": 1, "error": None}
     assert out["TPEx"] == {"count": 1, "error": None}
+
+
+def test_backfill_credit_fills_only_nulls_and_never_before_credit_since(tmp_path, monkeypatch):
+    """官方信用交易概況的洞掃描：只填 NULL、CREDIT_SINCE 之前不打、市值一次 TREND 補整段。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    monkeypatch.setattr(updater.twse, "CREDIT_SINCE", "2026-08-03")
+    class _FrozenDate(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 8, 6)
+    monkeypatch.setattr(updater, "_date", _FrozenDate)
+    for ds in ("2026-07-31", "2026-08-03", "2026-08-04", "2026-08-05"):
+        upsert_market_daily(conn, {"date": ds, "taiex": 1.0})
+    upsert_market_daily(conn, {"date": "2026-08-04", "keep_rate": 183.79, "market_value": 999.0})  # 已有值，不可覆蓋
+
+    asked = []
+    def fake_credit(D):
+        asked.append(D.isoformat())
+        return {"2026-08-03": {"keep_rate": 178.76, "below_call_acc": 102, "call_acc": 19, "exe_acc": 8, "credit_amt": 1206.97},
+                "2026-08-05": {}}[D.isoformat()]          # 08-05 尚未公布
+    monkeypatch.setattr(updater.twse, "fetch_credit_summary", fake_credit)
+    trend_calls = []
+    monkeypatch.setattr(updater.twse, "fetch_margin_trend",
+                        lambda D, days=60: trend_calls.append(D) or {"2026-08-03": 1487845.76, "2026-08-04": 1.0, "2026-08-05": 1500000.0})
+    monkeypatch.setattr(updater, "_otc_margin_summary", lambda D, detail=None: {"otc_margin_value": 1900.0})
+
+    filled = updater._backfill_credit(conn, days=10)
+
+    assert asked == ["2026-08-05", "2026-08-03"]           # 新→舊；07-31 早於 CREDIT_SINCE，一次都沒打
+    assert len(trend_calls) == 1                           # 市值只打一次 TREND
+    got = {r[0]: r[1:] for r in conn.execute(
+        "SELECT date, keep_rate, market_value, otc_margin_value FROM market_daily ORDER BY date")}
+    assert got["2026-08-03"] == (178.76, 1487845.76, 1900.0)
+    assert got["2026-08-04"] == (183.79, 999.0, 1900.0)     # 既有 keep_rate／market_value 沒被 1.0 蓋掉
+    assert got["2026-08-05"] == (None, 1500000.0, 1900.0)   # 尚未公布 → keep_rate 留 NULL、市值照補
+    assert got["2026-07-31"] == (None, None, None)
+    assert filled == ["2026-08-03", "2026-08-04", "2026-08-05"]
+
+
+def test_backfill_credit_respects_cap_newest_first(tmp_path, monkeypatch):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    class _FrozenDate(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 9, 10)
+    monkeypatch.setattr(updater, "_date", _FrozenDate)
+    for i in range(1, 8):
+        upsert_market_daily(conn, {"date": f"2026-09-0{i}", "taiex": 1.0, "market_value": 1.0, "otc_margin_value": 1.0})
+    asked = []
+    monkeypatch.setattr(updater.twse, "fetch_credit_summary", lambda D: asked.append(D.isoformat()) or {"keep_rate": 190.0})
+    monkeypatch.setattr(updater.twse, "fetch_margin_trend", lambda D, days=60: {})
+    updater._backfill_credit(conn, days=10, cap=3)
+    assert asked == ["2026-09-07", "2026-09-06", "2026-09-05"]
+
+
+def test_otc_margin_summary_keeps_balances_without_computing_maintenance():
+    d = {"balance": 2335144, "short_balance": 35783, "value": 2085.2, "margin": {"8069": 10}, "short": {}}
+    assert updater._otc_margin_summary(date(2026, 9, 22), d) == {
+        "otc_margin_value": 2085.2, "otc_margin_balance": 2335144, "otc_short_balance": 35783}
+    assert updater._otc_margin_summary(date(2026, 9, 22), {"value": None, "margin": {}, "short": {}}) == {}
+    assert updater._otc_margin_summary(None) == {}
+
+
+def test_refresh_credit_history_is_monthly(tmp_path, monkeypatch):
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    calls = []
+    monkeypatch.setattr(updater.twse, "fetch_margin_history",
+                        lambda: calls.append(1) or {"margin_ratio": {"min": 0.36, "max": 2.42}})
+    assert updater._refresh_credit_history(conn) is True
+    assert updater._refresh_credit_history(conn) is False        # 同月第二次不再連外
+    assert len(calls) == 1
+    from stocks_power_rich.db import latest_ai_cache_with_prefix
+    assert latest_ai_cache_with_prefix(conn, "credit_hist:")["margin_ratio"]["max"] == 2.42

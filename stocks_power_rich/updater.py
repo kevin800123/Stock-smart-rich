@@ -425,91 +425,81 @@ def _backfill_chips(conn, days: int = 10, cap: int = 3) -> list:
     return filled
 
 
-def _maint(lots, shorts, closes, margin_value, prefix=""):
-    """把「明細×收盤 → 維持率＋分子分母」收在一處，上市與上櫃共用。
+def _otc_margin_summary(D, detail=None):
+    """上櫃融資餘額／融券餘額／融資金額（億），櫃買 margin/balance 同一支端點。
 
-    分子分母一併回傳（億），是為了讓卡片能把算式秀出來——維持率是個推導值，
-    只給結果的話沒人能檢查它對不對。
-    """
-    mm = analysis.margin_maintenance(lots, closes, margin_value, shorts)
-    if mm is None:
-        return {}
-    mv = sum(l * 1000 * closes[c] for c, l in lots.items() if c in closes and l)
-    sv = sum(l * 1000 * closes[c] for c, l in (shorts or {}).items() if c in closes and l)
-    return {f"{prefix}margin_maintenance": mm,
-            f"{prefix}margin_mv": round(mv / 1e8, 1),
-            f"{prefix}short_mv": round(sv / 1e8, 1)}
-
-
-def _compute_margin_maintenance(D, margin_value, detail=None, quotes=None):
-    """上市整戶擔保維持率＋分子分母。算不出回 {}。
-
-    抽成函數是為了讓每日更新與 _heal_margin_maintenance 共用同一條計算路徑，
-    否則兩邊各寫一份會漂移。
-    """
-    if not D or not margin_value:
-        return {}
-    detail = detail if detail is not None else twse.fetch_margin_detail(D)
-    quotes = quotes if quotes is not None else twse.fetch_stock_quotes(D)
-    closes = {c: q["close"] for c, q in quotes.items() if q.get("close")}
-    return _maint(detail.get("margin", {}), detail.get("short"), closes, margin_value)
-
-
-def _compute_otc_margin_maintenance(D, detail=None, quotes=None):
-    """上櫃版。餘額與融資金額都在同一支櫃買端點，故連 otc_margin_value 一起回傳。
-
-    上櫃融資成數 50%（上市 60%），損益兩平線因此是 200% 而非 166.7%——同一個數字
-    在兩個市場意義不同，所以分開存、分開判讀，不併成單一「大盤」值。
+    以前這裡順便算上櫃維持率；2026-09 起維持率改用證交所公布的全市場整戶擔保維持率，
+    但 otc_margin_value 仍要每天寫——加權兩平線（ss_trader.blended_margin_ratio）靠它。
     """
     if not D:
         return {}
     d = detail if detail is not None else tpex.fetch_otc_margin(D)
-    if not d.get("value"):
+    if not d or not d.get("value"):
         return {}
-    quotes = quotes if quotes is not None else tpex.fetch_otc_quotes(D)
-    closes = {c: q["close"] for c, q in quotes.items() if q.get("close")}
-    out = _maint(d.get("margin", {}), d.get("short"), closes, d["value"], prefix="otc_")
-    if not out:
-        return {}
-    out.update({"otc_margin_value": d["value"], "otc_margin_balance": d.get("balance"),
-                "otc_short_balance": d.get("short_balance")})
-    return out
+    return {"otc_margin_value": d["value"], "otc_margin_balance": d.get("balance"),
+            "otc_short_balance": d.get("short_balance")}
 
 
-def _heal_margin_maintenance(conn, days: int = 7, cap: int = 3) -> list:
-    """回補近 days 天維持率仍缺的交易日（上市＋上櫃）。
+def _backfill_credit(conn, days: int = 10, cap: int = 5) -> list:
+    """回補近 days 天官方信用交易欄位的洞（只填 NULL，絕不覆蓋既有值）。
 
-    存在的理由：margin_value（官方融資金額）約 21:00 才公布，而更新可能跑在那之前
-    （16:00 推播、白天開頁的 autoUpdate），此時維持率整段算不出來。margin_value 之後
-    會被 _refresh_recent 補上，但維持率原本只在當次 run 算一次、不會回頭重算——
-    於是「被依賴的欄位自癒了，依賴它的沒有」，45 天只有 7 天有值。
-    每天數支全市場請求，故限 cap 天。
+    三種洞、三個來源：上市總市值一次 MI_MARGN_TREND（60 天）補整段；keep_rate 等五欄逐日
+    BFIJ3U（新→舊、最多 cap 個日期，當日尚未產製的明天再補）；otc_margin_value 逐日櫃買。
+    CREDIT_SINCE 之前的日期證交所沒有資料，掃描視窗直接截在那裡、一次都不打。
     """
-    cutoff = (_date.today() - timedelta(days=days)).isoformat()
-    pending = conn.execute(
-        "SELECT date, margin_value, margin_mv, otc_margin_maintenance FROM market_daily "
-        "WHERE date >= ? AND ((margin_value IS NOT NULL AND margin_mv IS NULL) "
-        "                     OR otc_margin_maintenance IS NULL) ORDER BY date DESC",
-        (cutoff,),
-    ).fetchall()[:cap]
-    filled = []
-    for ds, mval, mmv, otc_mm in pending:
-        patch = {}
+    cutoff = max((_date.today() - timedelta(days=days)).isoformat(), twse.CREDIT_SINCE)
+    rows = conn.execute(
+        "SELECT date, keep_rate, market_value, otc_margin_value FROM market_daily "
+        "WHERE date >= ? ORDER BY date DESC", (cutoff,)).fetchall()
+    if not rows:
+        return []
+    filled = set()
+    mv_holes = [r[0] for r in rows if r[2] is None]
+    if mv_holes:
+        try:
+            trend = twse.fetch_margin_trend(_iso_to_date(rows[0][0]), days=60)
+        except Exception:  # noqa: BLE001 — 市值補不到不影響其餘欄位
+            trend = {}
+        for ds in mv_holes:
+            if trend.get(ds) is not None:
+                upsert_market_daily(conn, {"date": ds, "market_value": trend[ds]})
+                filled.add(ds)
+    attempts = 0
+    for ds, kr, _mv, omv in rows:
+        if kr is not None and omv is not None:
+            continue
+        if attempts >= cap:
+            break
+        attempts += 1
         D = _iso_to_date(ds)
-        if mval is not None and mmv is None:
+        patch = {}
+        if kr is None:
             try:
-                patch.update(_compute_margin_maintenance(D, mval))
-            except Exception:  # noqa: BLE001 — 單邊失敗不影響另一邊
+                patch.update({k: v for k, v in twse.fetch_credit_summary(D).items() if v is not None})
+            except Exception:  # noqa: BLE001 — 單日失敗略過，下次再補
                 pass
-        if otc_mm is None:
+        if omv is None:
             try:
-                patch.update(_compute_otc_margin_maintenance(D))
+                patch.update(_otc_margin_summary(D))
             except Exception:  # noqa: BLE001
                 pass
         if patch:
             upsert_market_daily(conn, {"date": ds, **patch})
-            filled.append(ds)
-    return filled
+            filled.add(ds)
+    return sorted(filled)
+
+
+def _refresh_credit_history(conn) -> bool:
+    """年度「融資占市值／信用交易占成交值」（2000 年起）月更一次，給卡片 tooltip 的歷史區間。
+    鍵帶年月，dashboard 用 latest_ai_cache_with_prefix 讀最新一份、絕不連外。"""
+    key = f"credit_hist:{_date.today():%Y-%m}"
+    if get_ai_cache(conn, key):
+        return False
+    data = twse.fetch_margin_history()
+    if not data:
+        return False
+    set_ai_cache(conn, key, data)
+    return True
 
 
 def _backfill_intl(conn, intl_tickers: dict, days: int = 10) -> list:
@@ -945,40 +935,28 @@ def run_update(conn, intl_tickers: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         failed.append({"source": "stock_flow", "name": "stock_flow_daily", "error": str(e)})
 
-    # 大盤整戶擔保維持率（需融資金額＋個股融資融券明細＋全市場收盤；約 21:00 融資公布後才算得出）
-    # 跑在 21:00 前時 margin_value 還沒公布，這裡算不出來——記進 failed 而非靜默跳過，
-    # 否則「今天為什麼沒維持率」在更新結果裡完全看不出來。缺的那天由 _heal_margin_maintenance 補。
+    # 證交所官方「信用交易概況」（整戶擔保維持率／低於130%戶數／追繳／處分／信用交易成交值）。
+    # 產製時間不固定、常晚於 21:00；當日沒有就記進 failed（看得見、不告警），由 _backfill_credit 隔天補。
     try:
-        if D and row.get("margin_value"):
-            twse_daily = daily_flow.get("TWSE", {})
-            mm = _compute_margin_maintenance(D, row["margin_value"],
-                                             twse_daily.get("margin"),
-                                             twse_daily.get("quotes"))
-            if mm:
-                row.update(mm)
-                success.append("margin_maintenance")
-            else:
-                failed.append({"source": "twse", "name": "margin_maintenance",
-                               "error": "明細或收盤不足，算不出維持率"})
+        credit = twse.fetch_credit_summary(D) if D else {}
+        if credit:
+            row.update({k: v for k, v in credit.items() if v is not None})
+            success.append("twse_credit")
         elif D:
-            failed.append({"source": "twse", "name": "margin_maintenance",
-                           "error": "融資金額尚未公布（約 21:00），稍後回補"})
+            failed.append({"source": "twse", "name": "twse_credit", "error": "信用交易概況尚未公布，稍後回補"})
     except Exception as e:  # noqa: BLE001
-        failed.append({"source": "twse", "name": "margin_maintenance", "error": str(e)})
+        failed.append({"source": "twse", "name": "twse_credit", "error": str(e)})
 
-    # 上櫃維持率（櫃買同一支端點就給餘額與融資金額，不必等 TWSE）
+    # 上櫃融資餘額／融券餘額／融資金額（櫃買同一支端點；加權兩平線需要 otc_margin_value）
     try:
-        otc_daily = daily_flow.get("TPEx", {})
-        otc = _compute_otc_margin_maintenance(D, otc_daily.get("margin"),
-                                              otc_daily.get("quotes"))
+        otc = _otc_margin_summary(D, daily_flow.get("TPEx", {}).get("margin"))
         if otc:
             row.update(otc)
-            success.append("otc_margin_maintenance")
+            success.append("otc_margin")
         elif D:
-            failed.append({"source": "tpex", "name": "otc_margin_maintenance",
-                           "error": "上櫃融資餘額尚未發布，稍後回補"})
+            failed.append({"source": "tpex", "name": "otc_margin", "error": "上櫃融資餘額尚未發布，稍後回補"})
     except Exception as e:  # noqa: BLE001
-        failed.append({"source": "tpex", "name": "otc_margin_maintenance", "error": str(e)})
+        failed.append({"source": "tpex", "name": "otc_margin", "error": str(e)})
 
     upsert_market_daily(conn, row)
     # 清理：以「真實今天」為基準刪掉未來幽靈列，並清掉異常過舊(>400天)的髒列。
@@ -1009,12 +987,17 @@ def run_update(conn, intl_tickers: dict) -> dict:
     except Exception as e:  # noqa: BLE001
         failed.append({"source": "taifex", "name": "chips_backfill", "error": str(e)})
 
-    # 補算近期缺的融資維持率（21:00 前跑的那些 run 算不出來，margin_value 事後才補上）
+    # 回補近期缺的官方信用交易欄位（BFIJ3U 常晚於 21:00 產製）＋ 年度歷史月更
     try:
-        if _heal_margin_maintenance(conn):
-            success.append("twse_margin_maint_heal")
+        if _backfill_credit(conn):
+            success.append("twse_credit_backfill")
     except Exception as e:  # noqa: BLE001
-        failed.append({"source": "twse", "name": "margin_maint_heal", "error": str(e)})
+        failed.append({"source": "twse", "name": "credit_backfill", "error": str(e)})
+    try:
+        if _refresh_credit_history(conn):
+            success.append("credit_history")
+    except Exception as e:  # noqa: BLE001
+        failed.append({"source": "twse", "name": "credit_history", "error": str(e)})
 
     # 國際指數的唯一寫入點（含當日）。刻意不在上面的 tasks 裡抓「當下最新值」——
     # 那個值取決於更新程式幾點跑，不是任何一場的收盤：實測同一個 sox 數字被寫進

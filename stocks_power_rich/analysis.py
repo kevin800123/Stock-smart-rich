@@ -155,7 +155,7 @@ def estimate_quarterly_eps(monthly_revenue: list, gross_margin: list, opex: list
     opex／tax：最新在前的季營業費用／所得稅費用(百萬元)，各至少 4 筆，XS 取近 4 季
     「最高」而非最新——保守估計，寧可高估成本也不要低估獲利。
     shares：發行股數（不是張數）。任一輸入不足筆數、缺值(None)、或 shares 非正 → 回 None
-    （同 estimate_price_range／margin_maintenance 的「算不出回 None」慣例，不擲例外）。
+    （同 estimate_price_range／credit_ratios 的「算不出回 None」慣例，不擲例外）。
     """
     if (monthly_revenue is None or len(monthly_revenue) < 6
             or any(v is None for v in monthly_revenue[:6])
@@ -449,7 +449,7 @@ def estimate_price_range(revenue, gross_margin_pct, opex, tax, shares,
     → ÷股數 → 單季本業EPS → ×4 年化 → ×本益比低/中/高 → 三個預估價位。
 
     任何一個輸入缺漏（None）或 shares 非正 → 回 None，前端顯示「—」（算不出就留白，
-    不擲例外——跟 margin_maintenance 同一套風格）。稅後淨利/EPS 可以是負值（虧損季度），
+    不擲例外——跟 credit_ratios 同一套風格）。稅後淨利/EPS 可以是負值（虧損季度），
     不擋，讓使用者自己判讀。
     """
     inputs = (revenue, gross_margin_pct, opex, tax, shares, pe_low, pe_mid, pe_high)
