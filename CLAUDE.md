@@ -34,20 +34,66 @@ Gotchas:
 ### The central design: single "資料日期 D"
 `updater.run_update` fetches 加權指數 **first** to define the data date `D`, then fetches every other source **for that exact D**, so all values on a dashboard row are the same trading day. Two rules make this reliable:
 - **Prefer direct endpoints over openapi.** TWSE `rwd/zh/...` and TAIFEX official CSV downloads publish same-day (~15:00); the openapi mirrors lag to evening/next day. Only fall back to openapi where no direct source exists.
-- **Never walk back to another date.** A source returns null if D isn't published yet (rather than silently returning yesterday's data mislabeled as D). `_refresh_recent` / `_backfill_chips` / `_backfill_margin` / `_heal_margin_maintenance` / `_backfill_intl` re-fetch recent days on later runs to fill nulls and overwrite preliminary→final revisions.
-- **A healed field does not heal its dependents.** 融資維持率 is computed from `margin_value`, which TWSE publishes ~21:00 and which `_refresh_recent` back-fills onto earlier rows. The maintenance ratio was originally only computed inside the current run's `if row.get("margin_value")` branch, so any run before 21:00 (the 16:00 push, a daytime `autoUpdate`) skipped it **silently** and nothing ever recomputed — the dependency self-healed and the dependent did not, leaving 7 of 45 days populated while the inputs were fully available. `_heal_margin_maintenance` now re-computes recent days where `margin_value` is present but the ratio is NULL, and the skip is recorded in `failed` instead of vanishing. **When you add a derived column, give it its own heal pass** — inheriting the source's heal is not automatic.
+- **Never walk back to another date.** A source returns null if D isn't published yet (rather than silently returning yesterday's data mislabeled as D). `_refresh_recent` / `_backfill_chips` / `_backfill_margin` / `_backfill_credit` / `_backfill_intl` re-fetch recent days on later runs to fill nulls and overwrite preliminary→final revisions.
+- **A healed field does not heal its dependents.** 融資維持率 is computed from `margin_value`, which TWSE publishes ~21:00 and which `_refresh_recent` back-fills onto earlier rows. The maintenance ratio was originally only computed inside the current run's `if row.get("margin_value")` branch, so any run before 21:00 (the 16:00 push, a daytime `autoUpdate`) skipped it **silently** and nothing ever recomputed — the dependency self-healed and the dependent did not, leaving 7 of 45 days populated while the inputs were fully available. `_heal_margin_maintenance` (since removed, see the ui70 section below) re-computed recent days where `margin_value` was present but the ratio was NULL, and the skip was recorded in `failed` instead of vanishing. **When you add a derived column, give it its own heal pass** — inheriting the source's heal is not automatic. **The maintenance example itself no longer exists**: 2026-09 replaced the self-computed ratio with the TWSE official 整戶擔保維持率, so `margin_value`/the maintenance ratio pairing described here is historical — the lesson (heal passes don't propagate) still holds and is now illustrated by `_backfill_credit`'s own per-column fill logic instead.
 
-### 融資維持率：兩個市場，兩條基準線
-`margin_maintenance` 是推導值（融資市值 ÷ 融資金額），所以刻度不能用抄的。上市與上櫃**分開存、分開判讀**（`margin_maintenance` / `otc_margin_maintenance`），因為融資成數不同：
+### 融資維持率改用證交所官方「整戶擔保維持率」（ui70，2026-09）
 
-| | 融資成數 | 損益兩平線 | 2026-07-23 實測 |
-|---|---|---|---|
-| 上市 | 60% | **166.7%** | 180.1% → 帳面獲利 +8% |
-| 上櫃 | 50% | **200%** | 166.8% → 套牢 −17% |
+證交所 2026-08-03 上線「臺股儀表板 › 信用交易」，使用者要求總覽的融資融券**定義與它一致**。
+逐項對過：融資餘額（張）／融資金額／融券餘額三個數字本站與證交所**完全相同**（同源 MI_MARGN），
+差的只有維持率——本站原本用「Σ融資明細×收盤 ÷ 融資金額」自算、還拆成上市／上櫃兩個數字；
+證交所公布的是**券商申報的真實帳戶合計、全市場一個數字**，08-03 起 19 天實測自算值比官方低
+0.3%～5.9%、比例還會跳。使用者拍板：**改用官方值，自算路徑刪除**（`_compute_margin_maintenance`／
+`_compute_otc_margin_maintenance`／`_heal_margin_maintenance`／`analysis.margin_maintenance`／
+`GET /api/margin-maintenance/heal` 全部移除；`market_daily` 舊欄位留在 schema 不寫值）。下面
+「兩個市場、兩條基準線」的舊推理因此整段作廢——那套推理的前提（自算、分市場）已不存在。
 
-**兩個原始數字看起來接近，意義卻相反**——併成單一「大盤維持率」會把這個訊號抵銷掉，所以不要合併。可比的量是「相對兩平 ±%」，卡片副標放的就是它；追繳線 130% 是法規常數，兩市場相同。兩平線由 `ss_trader.margin_breakeven(成數)` 推得，經 `/api/dashboard` 的 `bands` 送到前端（同 Elliott 規矩：不得在 `app.js` 複寫）。
+- **資料源**：`BFIJ3U`（單日：`keep_rate`／`below_call_acc`／`call_acc`／`exe_acc`／`credit_amt` 元，
+  `twse.fetch_credit_summary`）、`MI_MARGN_TREND`（逐日上市總市值 `market_value` 億，
+  `twse.fetch_margin_trend`，**`days` 實測上限 60**——錨在「今天」會拿到今天尚無資料時往回算的前
+  60 個已產製交易日，錨在未來日期整段回錯誤 `stat`，所以 `_backfill_credit` 一律錨在資料庫裡
+  目前最新的那一列，不是 `date.today()`）、`MI_MARGN_HISTORY`（2000 年起年度，
+  `twse.fetch_margin_history`，給卡片 tooltip 的歷史區間）。**08-03 之前沒有資料**
+  （`twse.CREDIT_SINCE`，回補一律截在那裡）。產製時間不固定、常晚於 21:00：當日沒有就記
+  `failed name=twse_credit「信用交易概況尚未公布，稍後回補」`（`expected_later` 放行、不告警），
+  `run_update` 把 BFIJ3U 回傳全欄皆 `None` 視為「尚未公布」而非成功。`_backfill_credit(conn,
+  days=10, cap=5, errors=None)` 隔天只填 NULL、絕不覆蓋既有值，端點失敗原因收進選用的 `errors`
+  列表而不吞掉。一次性回補 `GET /api/credit/backfill?days=60`（內部 `cap=90`）回傳
+  `filled`／`remaining`／`since`／`errors`；**`remaining` 只數 `keep_rate` 的洞且不含今天**——
+  當日 BFIJ3U 晚上才產製，算進去只會讓數字卡在 1 永遠補不完，交給每日排程。`_refresh_credit_history`
+  把年度歷史存進 `credit_hist:{YYYY-MM}`（月更一次即可），`dashboard` 一律用
+  `latest_ai_cache_with_prefix` 讀最新一份、**絕不現抓**。
+- **兩個衍生比率不落地**（`analysis.credit_ratios`，同 `turnover_ma10` 規矩）：融資占市值＝融資金額÷上市
+  總市值；**信用交易占比＝信用交易成交值÷(2×市場總成交值)——分母乘 2 是證交所 JS 的原式**（買賣兩邊各
+  算一次成交值；實測 1433.06÷(2×10787.8)＝6.64% 與頁面一致，不乘 2 是 13.3%）。
+- **兩平線改成每天算的加權值**（`ss_trader.blended_margin_ratio`）：官方維持率沒有單一融資成數，
+  以當日上市／上櫃融資金額加權 0.6／0.5（09-22：6048.6／2085.2 億 → 0.5744 → 174.1%），經
+  `bands.keep_rate.breakeven` 送前端；兩邊融資金額都缺就 `None`，卡片副標留白、檢核表 na。
+  `otc_margin_value` 因此仍要每天寫（`_otc_margin_summary`），只是不再算上櫃維持率。
+- **新增四張卡**（台股大盤組因此變 10 張、改 **5 欄**）：整戶擔保維持率（`keepRateCard`，日變化用
+  精簡格式，不帶百分比變動——完整字串在 4 欄 235px 的卡片會溢出，完整版留在 `title`）、追繳壓力
+  （主數字＝低於 130% 戶數、副標追繳／處分戶——維持率是平均，這三個數是分布的尾巴；**琥珀外框
+  只在高尾觸發**〔位階 ≥90%〕，戶數落在最低 10% 是「沒什麼人被追繳」不值得標、使用者拍板兩尾
+  不對稱處理，仍走 `cardAlert`/`cardWrap` 收進 `lastAlerts`）、融資占市值（上市）、信用交易占比
+  （上市）。四張新卡都帶 `dir-neutral`（`.stat-cell.dir-neutral`）：日變化文字與近 7 日柱改用
+  中性色（`--text-secondary`／`--info`），紅綠留給行情方向——維持率漲不是「行情漲」，加不著色會
+  誤導。**斷點 ≤1640px→4 欄／≤1240px→3 欄／≤1100px→2 欄，不是原訂的 ≤1400**：實測 1401px 時 5
+  欄卡片只有 212px，「▲47.7 (+0.56%)」「▼85,096 張」等 `.card-chg`（nowrap）溢出 25～35px（6
+  張卡）——只量整卡的 `.card-val`／`.card-note` 抓不到這個溢出，1640 是 5 欄卡片至少約 256px 的
+  實測門檻，同時對齊股期概況頁既有的 1640 斷點。**已知殘留、這次沒修**：1241–1330px 之間仍有
+  兩張既有卡片（10日均量／融資餘額）溢出 8～21px，屬既有缺陷、非本次回歸。
+- 消費端一致：檢核表兩項併一項、LINE 卡片一列＋完整版追繳列、對照圖窗格一條線＋追繳線（讀後端
+  `bands.keep_rate.call`，不寫死 130，bands 未到前不畫線；`index.html` 核取方塊標籤是「整戶維持率」）、
+  公開總覽 `margin.keep_rate`、Gemini 輸入鍵名「整戶擔保維持率(%)」、`app.js` 的 `KEY_METRICS`
+  換成「整戶擔保維持率」。
+- 刻意不做：不存上櫃的信用交易概況（同值）、不做信用交易戶數（與追繳壓力重疊、分母未說明）、
+  不用自算值補 08-03 之前的對照圖（兩個定義不能接在同一條線上）。
+- **測試環境的坑**：這台機器跑 Python 3.14，`datetime.date.today` 已不可 monkeypatch（immutable
+  type，直接 patch 會丟 `TypeError`），`_backfill_credit`／`_refresh_credit_history` 等吃「今天」
+  的測試改成把 `_FrozenDate(date)` 子類別換上 `updater._date`，不是 patch 內建型別本身。
 
-**不要拿外部數字校準這一欄。** 對過 MacroMicro 同日的 155.71%：我們每一項輸入都與官方相符（Σ融資明細＝MI_MARGN 官方 9,349,915 張、融資金額＝582,626,351 仟元、2330 收盤＝STOCK_DAY 2,405），算式也是教科書定義；照他們公布的方法（上市、不含 ETF）實測只到 171.36%，**他們自己的公式算不出他們自己的數字**（ETF 僅佔融資市值 4.7%），四種口徑組合最接近的仍差 14 點。差異是固定倍率（1.157/1.159），屬口徑差異而非錯誤。原本 `ss_trader` 的 `MARGIN_MAINT_LOW=135`/`HIGH=165` 就是照外部刻度訂的，實測我們 42 天序列 `min=168.0 > 165`，**42 天全判「偏熱」、另外兩檔永遠不可能觸發**——整個檢核項零資訊量。現在改用相對兩平的比例規則，方向與 VIX 一致（低維持率＝斷頭清洗＝反指標偏多，不是利空）。
+**不要拿外部數字校準這一欄**這條舊教訓保留一半：MacroMicro 那次證明**第三方**的口徑對不上；
+這次換成**官方**數字則是定義本身就該一致——兩者不衝突，差別在來源是誰。
 
 ### Two hard-won invariants (do not regress)
 - **`run_update`'s "delete future rows" keys off the real calendar `datetime.now()`**, deleting only rows outside `[today-400d, today]`. It must NOT key off the *fetched* date — a source occasionally returning a wrong old date (e.g. a month-boundary bug) would then wipe all good history.
@@ -64,7 +110,7 @@ View-switching SPA + ECharts (local `web/vendor/echarts.min.js`, no CDN — CSP 
 - **異常讀數的門檻來自 `ss_trader`**, surfaced via `/api/dashboard`'s `bands` key — **do not hardcode 135/165/15/30 in `app.js`** (same rule as Elliott: two copies drift silently, and the UI would quietly judge by the stale set). `tests/test_api.py::test_dashboard_bands_come_from_ss_trader` locks this.
 - **全市場漲跌幅分布** (`GET /api/breadth/distribution` → `analysis.change_histogram`, `#dist-chart` bar): the shape 漲跌家數 can't show — is a down-heavy day broad-and-shallow (piled at −1~−2%) or narrow-and-deep (a segment at −8~−10%). Built from data already cached: `_quotes_for` + `_otc_quotes_for` (both self-fetch on cache miss, so no backfill dependency), filtered to **4-digit numeric codes** (common stocks — the raw 上市 quote cache holds ~14k rows because 6-digit warrants dominate; filter or the histogram is meaningless). Buckets are integer lower-bounds clamped to [−10, 10] (漲跌停 limits; overflow folds into the end buckets, no −11/+11). Bars carry no text → **bright `C.up`/`C.down`** (0-bucket grey), same token rule as 漲跌家數條/K線. `avg` matches 期天's −1.11%-style caption. **Not** 創新高/新低 — `stock_ohlc` only holds ~13 days locally, can't do 20/60-day highs without a deep OHLC backfill.
 
-- **10日均量** (`analysis.turnover_ma` → `/api/dashboard` 的 `turnover_ma10`, 台股大盤組第 8 張卡): 大盤量能的**絕對水位**, 門檻 `ss_trader.VOL_QUIET_YI` = 8000 億 (黃國華常提的量能觀察線), 經 `bands` 送到前端 — 同 Elliott/bands 規矩, **不得在 `app.js` 寫死 8000**。與既有的 `VOL_BURST`/`VOL_SHRINK` (今量 vs 前 5 日均量, **相對**量能) 互補而非取代。`turnover` 是**上市** (TWSE FMTQIK) 口徑, 與外部「上市櫃合計」數字不可直接對照 — 卡片 tooltip 標了這件事。三個設計決定: (1) **純衍生值不落地成 DB 欄位** — 落地就要配自己的 heal pass (見融資維持率那條教訓), 每次算即可; (2) **逐列注入 `history` 而非只算 `latest`**, 位階條才有整個視窗可取樣 (實測 37/46 列有值 > `RAIL_MIN_N`); (3) `turnover_ma` 遇 None **略過而非中斷視窗** — 若要求連續 n 筆非空, 一個洞會讓後面整整 10 列全算不出來 (實測 turnover 3/41 為 NULL)。卡片由 `isVolMaAlert` 專責依 band 判定 alert，**不吃泛用的 `isAlert`**: 琥珀外框要專指「量縮破線」, 混入「位階頭尾 10%」會稀釋它的意思 (同 `marginMaintCard` 的做法)。**卡面上不放「距 8,000 億 ±X%」** — 曾照 `marginMaintCard`「相對兩平」的類比做成常駐 `.card-note`, 使用者退回: 8000 只是一條參考線, 不是這張卡的主題, 常駐副標會讓卡片看起來像在追那個門檻而不是在報今天的量。這也是與融資維持率的關鍵差異: 兩平線是維持率**定義上的錨點**(由融資成數推得, 沒有它 173.6% 這個數字無從判讀), 8000 億則只是外部經驗值, 均量本身就是完整讀數。門檻只保留兩個角色: 跌破時亮琥珀外框、以及在 tooltip 裡說明它是什麼。實測近 41 日 10 日均量 10,295–13,609 億、**0/29 低於 8000**, 所以外框平時不亮 — 這與 `MARGIN_MAINT_LOW=135/165` 那個「42 天全判偏熱」的零資訊量**不同**: 那是分類器永遠只吐同一類, 這是一條本來就該罕見觸發的參考線。
+- **10日均量** (`analysis.turnover_ma` → `/api/dashboard` 的 `turnover_ma10`, 台股大盤組第 8 張卡): 大盤量能的**絕對水位**, 門檻 `ss_trader.VOL_QUIET_YI` = 8000 億 (黃國華常提的量能觀察線), 經 `bands` 送到前端 — 同 Elliott/bands 規矩, **不得在 `app.js` 寫死 8000**。與既有的 `VOL_BURST`/`VOL_SHRINK` (今量 vs 前 5 日均量, **相對**量能) 互補而非取代。`turnover` 是**上市** (TWSE FMTQIK) 口徑, 與外部「上市櫃合計」數字不可直接對照 — 卡片 tooltip 標了這件事。三個設計決定: (1) **純衍生值不落地成 DB 欄位** — 落地就要配自己的 heal pass (見融資維持率那條教訓), 每次算即可; (2) **逐列注入 `history` 而非只算 `latest`**, 位階條才有整個視窗可取樣 (實測 37/46 列有值 > `RAIL_MIN_N`); (3) `turnover_ma` 遇 None **略過而非中斷視窗** — 若要求連續 n 筆非空, 一個洞會讓後面整整 10 列全算不出來 (實測 turnover 3/41 為 NULL)。卡片由 `isVolMaAlert` 專責依 band 判定 alert，**不吃泛用的 `isAlert`**: 琥珀外框要專指「量縮破線」, 混入「位階頭尾 10%」會稀釋它的意思 (同 `keepRateCard` 的做法；`marginMaintCard` 是它改名前的舊稱，2026-09 隨自算維持率一併改名)。**卡面上不放「距 8,000 億 ±X%」** — 曾照 `keepRateCard`「相對兩平」的類比做成常駐 `.card-note`, 使用者退回: 8000 只是一條參考線, 不是這張卡的主題, 常駐副標會讓卡片看起來像在追那個門檻而不是在報今天的量。這也是與融資維持率的關鍵差異: 兩平線是維持率**定義上的錨點**(由融資成數推得, 沒有它 173.6% 這個數字無從判讀), 8000 億則只是外部經驗值, 均量本身就是完整讀數。門檻只保留兩個角色: 跌破時亮琥珀外框、以及在 tooltip 裡說明它是什麼。實測近 41 日 10 日均量 10,295–13,609 億、**0/29 低於 8000**, 所以外框平時不亮 — 這與已移除的 `MARGIN_MAINT_LOW=135/165` 常數（隨自算維持率路徑於 2026-09 一併刪除，見 ui70 那節）當年「42 天全判偏熱」的零資訊量**不同**: 那是分類器永遠只吐同一類, 這是一條本來就該罕見觸發的參考線。
 
 - **大盤 × 籌碼對照圖** (`chipTrendOption` + `CHIP_PANES`, 容器仍是 `#chipchart`): 取代原本的「籌碼趨勢（近 60 日）」。原本 K 線與籌碼是兩張獨立的圖、X 軸各自為政，答不出這張圖唯一要答的問題——**大盤轉折那天籌碼怎麼動**。現在是多窗格共用一條 X 軸: 頂端 K 線 (固定 `symbol=taiex&interval=1d`)，下面用 checkbox 勾選 0–6 個籌碼窗格 (成交金額／融資券／融資維持率／三大法人／外資未平倉／散戶多空比)。設計要點:
   - **`comboKline` 自己抓、不共用 `lastIndexData`** — 後者會隨 K 線區塊的 台指期／週K／月K 切換而變，共用的話按一下「週K」對照圖頂端就變週線甚至台指期，與日頻籌碼對不起來。這也是為什麼**這張圖固定日頻、不做週/月聚合**。
@@ -254,7 +300,7 @@ Same flex container bites line-clamping: **`-webkit-line-clamp` does not work on
 
 **DOM 位置有一個不能違反的限制**：插在 `#kpi-sticky` 之後、`#news-strip` 之前，**不可以**插在 `.overview-top` 與 `#kpi-sticky` 之間——桌機上 KPI 條靠「緊貼、重疊一行代價很小」的設計成立（見上），中間插一塊高度每天不同（0–4 條）的區塊會讓那個理由當場失效。連標題都由 JS 產生，空狀態靠 `#today-focus:empty { display:none }` 整塊消失；標題若寫死在 HTML，`:empty` 永遠不會命中，安靜的日子會留一個空框。`#view-overview.active` 是 12 欄 grid，`#today-focus` 要加進 `grid-column: 1/-1` 清單，漏了在寬螢幕會拿到 span 1（約 50px 寬）——1180px 以下有 `!important` 兜底，**這個 bug 只在寬螢幕出現，窄視窗測不到**。
 
-**判定只有一份，收集點也只有一個**：`alertReason(key, v, rank)` 是泛用門檻判定的唯一權威版本（回 `null | {tier, text}`），`isAlert` 只是它的布林投影。**`v != null` 守門必須同時包住 `low`/`high` 兩個比較**——拆成兩個 if 時很容易只在第一個保留守門，而 JS 會把 `null` 脅迫成 0（`null <= 15` 為 `true`），少了守門會讓某欄位缺值那天被誤報成異常，這種迴歸只在缺資料的日子出現、肉眼幾乎測不到，只有歷史掃描刻意帶 null 才抓得到。`marginMaintCard`／`volMaCard` 的判定原本寫死在函式內，抽成 `isMaintAlert`／`isVolMaAlert`——`volMaCard` 仍**刻意不吃泛用 `alertReason`**，保留「量縮破線」不被位階頭尾 10% 稀釋的既有取捨（見上）。`cardWrap`（全站唯一產生 `.card.alert` 的地方）同時是唯一的收集點：`alert` 參數從 boolean 改成 `false | 明細物件`，物件是 truthy 所以四個純轉發的卡片建構式一字不用改；`lastAlerts` 在 `renderCards` 第一行、`if (!m || !m.date)` early-return **之前**歸零，位置放錯或漏放，按「一鍵更新」重跑就會累加。
+**判定只有一份，收集點也只有一個**：`alertReason(key, v, rank)` 是泛用門檻判定的唯一權威版本（回 `null | {tier, text}`），`isAlert` 只是它的布林投影。**`v != null` 守門必須同時包住 `low`/`high` 兩個比較**——拆成兩個 if 時很容易只在第一個保留守門，而 JS 會把 `null` 脅迫成 0（`null <= 15` 為 `true`），少了守門會讓某欄位缺值那天被誤報成異常，這種迴歸只在缺資料的日子出現、肉眼幾乎測不到，只有歷史掃描刻意帶 null 才抓得到。`marginMaintCard`（已於 2026-09 改名 `keepRateCard`）／`volMaCard` 的判定原本寫死在函式內，抽成 `isMaintAlert`／`isVolMaAlert`——`volMaCard` 仍**刻意不吃泛用 `alertReason`**，保留「量縮破線」不被位階頭尾 10% 稀釋的既有取捨（見上）。`cardWrap`（全站唯一產生 `.card.alert` 的地方）同時是唯一的收集點：`alert` 參數從 boolean 改成 `false | 明細物件`，物件是 truthy 所以四個純轉發的卡片建構式一字不用改；`lastAlerts` 在 `renderCards` 第一行、`if (!m || !m.date)` early-return **之前**歸零，位置放錯或漏放，按「一鍵更新」重跑就會累加。
 
 **排序三層、上限 4、不設下限**：tier 0 背離（最多 1 條，永遠第一）→ tier 1 跨過固定門檻（維持卡片產生順序，讀者往下找得到）→ tier 2 位階極端（依 `|rank.p - 50|` 由大到小）。tier 1 與 tier 2 不揉成一個分數——「距追繳線 3%」與「位階 96%」沒有共同單位。上限 4 條、**不設下限**：安靜日就該短甚至整塊消失，湊滿下限只會逼它挑普通讀數當重點；超過 4 條在末尾補「另 N 項見下方卡片」，不靜默截斷。**整塊不用琥珀**：琥珀的工作是「從 24 張卡分出這 2 張」，今日重點裡每一條依定義都是琥珀等級，全塗琥珀在區塊內部得不到任何區辨，只換來琥珀在全站多出第三種用法。措辭刻意不重用 `verdictOf().text`（背離句就在 120px 上方，兩句一樣會被讀成樣板）——第一版寫成「下跌多 300 家／指數收紅」，實測與判讀句的**字元重疊率 100%**，改成提供判讀句沒有的資訊（背離強度 `|gap|/tot`），最長共同子字串才從 8 字降到 4。
 
@@ -265,7 +311,7 @@ Same flex container bites line-clamping: **`-webkit-line-clamp` does not work on
 新增獨立於既有 `market_daily`／逐檔快取之外的正規化資料層，動機是回答一個具體問題：「近期法人多週期買超」是不是有效選股訊號，還是只是選擇偏誤（某工作簿篩出 70 檔幾乎都符合這個特徵，但那份名單本身就是法人偏多股，用它反推規則是循環論證）。**這個模組刻意只交付「資料層＋研究報告」，不交付選股頁、分數或訊號**——研究結果若通過所有統計閘門，也只代表「值得前瞻觀察 6–12 個月」，不代表可以選股，這句話同時進 `verdict.message`（API 回應本身）與畫面，不只是留在文件裡。
 
 - **`stock_flow_daily`**（`(date, code)` 主鍵）正規化三大法人與融資券逐檔數字；`stock_ohlc` 加 `volume_lots`／`amount_twd`。`stock_source_coverage`（`(date, market, source)` 主鍵）讓上市／上櫃的 `quotes`／`institutional`／`margin` 三種來源**各自獨立判定完整度**——TWSE 完成不能代表 TPEx 完成，這是 TPEx `verify=False` 那個「安靜地只有一邊缺資料」教訓的延伸。
-- **`MI_INDEX ALLBUT0999`（上市）與 `dailyQuotes`（上櫃）現在真的只各打一次**：`twse.fetch_stock_daily`／`tpex.fetch_otc_daily` 用同一份回應同時解析 OHLC 與量額（`parse_stock_ohlc`＋`parse_stock_turnover` 的合併版），`update_day` 把這份 payload 直接傳給 `_compute_margin_maintenance`／`_compute_otc_margin_maintenance` 當 `quotes` 參數，取代它們原本各自呼叫 `fetch_stock_quotes`／`fetch_otc_quotes`。兩者都過濾成 4 碼非 00 普通股，融資明細涉及的股票本來就在這個集合內，維持率計算範圍不受影響。`_compute_margin_maintenance`／`_compute_otc_margin_maintenance` 的 `detail`／`quotes` 參數是選用（預設 `None` 時退回舊的獨立抓取），`_heal_margin_maintenance` 完全沒改，向後相容。
+- **`MI_INDEX ALLBUT0999`（上市）與 `dailyQuotes`（上櫃）現在真的只各打一次**：`twse.fetch_stock_daily`／`tpex.fetch_otc_daily` 用同一份回應同時解析 OHLC 與量額（`parse_stock_ohlc`＋`parse_stock_turnover` 的合併版），`update_day` 把這份 payload 直接傳給 `_compute_margin_maintenance`／`_compute_otc_margin_maintenance` 當 `quotes` 參數，取代它們原本各自呼叫 `fetch_stock_quotes`／`fetch_otc_quotes`。兩者都過濾成 4 碼非 00 普通股，融資明細涉及的股票本來就在這個集合內，維持率計算範圍不受影響。`_compute_margin_maintenance`／`_compute_otc_margin_maintenance` 的 `detail`／`quotes` 參數是選用（預設 `None` 時退回舊的獨立抓取），`_heal_margin_maintenance` 完全沒改，向後相容。**這兩支函式與 `_heal_margin_maintenance` 已於 2026-09 隨官方整戶擔保維持率一併移除**（見 ui70 那節）；`fetch_stock_daily`／`fetch_otc_daily` 只打一次的優化本身還在（供 `stock_ohlc`／量額使用），但 `update_day` 現在只把上櫃的 `margin` payload 轉餵給 `_otc_margin_summary`，不再有 `_compute_*_margin_maintenance` 這一段消費端。
 - **`bulk_upsert_ohlc` 從無條件覆寫改成 `COALESCE`，null 不再洗掉既有值**——這是兩個來源合併寫入同一列所必須的（先寫量額、後補價格，或反過來，任一半都不該把另一半清空），但也因此改變了既有杯柄回補路徑的語意：官方定稿值仍會覆寫初值（非 null 一律覆寫），只有「這次沒抓到」才會保留舊值而非寫成空。`tests/test_db.py::test_stock_flow_schema_migrates_old_ohlc_and_preserves_partial_updates` 鎖住這個行為：寫入完整 OHLC 後只寫 `{close}`，斷言 `open`／`volume_lots`／`amount_twd` 原封不動。
 - **上櫃融資的零餘額曾經被當成缺值濾掉**（`tpex.parse_otc_margin` 原本 `if im is not None and (v := _f(row[im]))`，真值判斷把 `0.0` 跟 `None` 混為一談）——改成 `is not None`。驗證過下游 `analysis.margin_maintenance`／`updater._maint` 都已經有 `and lots` 守衛，零張本來就不進加總，所以修正對既有維持率數值**沒有影響**，純粹是語意修正（`stock_flow_daily` 需要區分「餘額是 0」與「沒抓到資料」這兩種不同的事實）。`tests/test_tpex.py` 的斷言從「餘額 0 者不入表」翻成「零餘額是有效觀測，缺值才不入表」，註解原本寫的理由（「免得拖累後續加總」）從來不成立，改的時候一併修正。
 - **回補（`GET /api/stock-flow/backfill?days=220&max_fetch=3`）不依賴 `market_daily` 建立日期範圍**——改用「該市場成功取得行情的日期」自建覆蓋基準，解除了既有 `inst_backfill`（`/api/inst/backfill`）那種「歷史多長完全看 `/api/backfill` 建了幾列」的耦合。`days=220` 是算出來的，不是隨手選的：站內 `days` 一律是**日曆天**，實測交易日/日曆天約 0.67，而研究閘門要求至少 60 個有效日期＋40 個成熟 Ret20 日期，反推至少需要 ~119 個交易日 ≈ 178 日曆天；220 天留了實質餘裕。**改這個數字前務必重新核算**，改小會讓研究永遠卡在 `insufficient_data` 而看不出是規則沒用還是窗口不夠。
@@ -291,7 +337,7 @@ Same flex container bites line-clamping: **`-webkit-line-clamp` does not work on
 - **TWSE**: ROC (民國) dates = year+1911. `T86` (per-stock 三大法人) is **上市 only**; OTC uses TPEx. Direct RWD endpoints take a `date` param.
 - **TAIFEX**: official CSV downloads (`dlFutDataDown`, `futContractsDateDown`) need **GET-cookie-then-POST**, ≤~30-day chunks, and `.decode("ms950")`.
 - **TDCC (集保)**: opendata `getOD.ashx?id=1-5` returns **the current week only** (trend accumulates weekly via `updater._accumulate_custody`, new-week-only). Requires `verify=False` (their cert lacks a Subject Key Identifier). Stock codes are **space-padded to 6 chars** — `.strip()`. For **pre-app-start history**, `tdcc.fetch_custody_history(code, weeks)` scrapes the 智能網 股權分散表 (`smWeb/qryStock`, ~1yr of weekly dates) — a Spring form whose `SYNCHRONIZER_TOKEN` CSRF is **single-use and rotates every response**, so each POST must reuse the token harvested from the previous response's HTML (reusing the old token silently returns no table). Both sources share `_aggregate_levels` (級15=千張大戶, 級12~15=400張↑). Exposed via `GET /api/stock/{code}/custody/backfill?weeks=52` (per-stock on-demand, only fills missing weeks).
-- **TPEx (櫃買)**: `dailyTrade` by date; fields are parsed **by fixed column position** (the field labels 買進/賣出/買賣超股數 repeat and can't disambiguate groups). **Every fetcher hitting `www.tpex.org.tw` needs `verify=False`** — the cert is missing a Subject Key Identifier, same as TDCC. This bit twice: it shipped on `fetch_otc_margin` only (2026-07), leaving the other six fetchers in `sources/tpex.py` (`fetch_otc_names`/`fetch_otc_industry`/`fetch_otc_turnover`/`fetch_otc_ohlc`/`fetch_otc_quotes`/`fetch_tpex_insti`) silently broken **only on Zeabur's Linux TLS stack** — Windows tolerates the missing SKI, so every local test and manual check passed while production's `otc_margin_maintenance` stayed 0/41 days and `_otc_quotes_for` (used by both the OTC margin calc and the 全市場漲跌幅分布 histogram's OTC half) quietly returned empty, degrading the histogram to 上市-only (`n=1091` instead of ~1948) with no error anywhere. Root-caused by diffing the local sqlite (had OTC values) against a live `curl` of production (didn't) — a same-code-different-host split is the tell for "TLS/cert, not logic." `tests/test_tpex.py::test_all_tpex_www_fetchers_use_verify_false` now locks `verify=False` across every fetcher in the module at once so a new one can't reintroduce the gap. `margin/balance` (融資融券餘額) returns per-stock rows in `tables[0].data` *and* the market totals in `tables[0].summary` (a 「合計(張)」 row and a 「融資金(仟元)」 row), so one request covers both 餘額 and 融資金額. A wide-window heal endpoint exists for post-fix backfill: `GET /api/margin-maintenance/heal?days=200&max_fetch=15` (the daily path's `_heal_margin_maintenance` only looks back 7 days × 3/run — call repeatedly until `remaining` stops dropping, same pattern as `chips_backfill`).
+- **TPEx (櫃買)**: `dailyTrade` by date; fields are parsed **by fixed column position** (the field labels 買進/賣出/買賣超股數 repeat and can't disambiguate groups). **Every fetcher hitting `www.tpex.org.tw` needs `verify=False`** — the cert is missing a Subject Key Identifier, same as TDCC. This bit twice: it shipped on `fetch_otc_margin` only (2026-07), leaving the other six fetchers in `sources/tpex.py` (`fetch_otc_names`/`fetch_otc_industry`/`fetch_otc_turnover`/`fetch_otc_ohlc`/`fetch_otc_quotes`/`fetch_tpex_insti`) silently broken **only on Zeabur's Linux TLS stack** — Windows tolerates the missing SKI, so every local test and manual check passed while production's `otc_margin_maintenance` (a self-computed column, since removed — see the ui70 section) stayed 0/41 days and `_otc_quotes_for` (used by both the OTC margin calc and the 全市場漲跌幅分布 histogram's OTC half) quietly returned empty, degrading the histogram to 上市-only (`n=1091` instead of ~1948) with no error anywhere. Root-caused by diffing the local sqlite (had OTC values) against a live `curl` of production (didn't) — a same-code-different-host split is the tell for "TLS/cert, not logic." `tests/test_tpex.py::test_all_tpex_www_fetchers_use_verify_false` now locks `verify=False` across every fetcher in the module at once so a new one can't reintroduce the gap. `margin/balance` (融資融券餘額) returns per-stock rows in `tables[0].data` *and* the market totals in `tables[0].summary` (a 「合計(張)」 row and a 「融資金(仟元)」 row), so one request covers both 餘額 and 融資金額. (2026-09 起自算維持率已移除，見 ui70 那節：`otc_margin_maintenance` 這個欄位與描述其歷史故障的段落一併作廢，不再計算；上市／上櫃 `margin/balance` 仍每天抓，只是不再拿來算維持率，`otc_margin_value` 改餵 `ss_trader.blended_margin_ratio` 的加權兩平線。當年那支 `GET /api/margin-maintenance/heal` 寬視窗回補端點已刪除，換成 `GET /api/credit/backfill?days=60` 補官方整戶擔保維持率的洞，同樣是「重複呼叫直到 `remaining` 不再下降」的模式。)
 - **MIS（證交所盤中快照）**: `z`＝最新成交價，**盤中很常是 `'-'`**（該筆快照沒有成交，不代表沒交易——`v` 累積量可能已數百張），此時退回委買 `b` 的最佳檔。**但 `b` 的第一檔可能是佔位的 `0.0000`，不能盲取 index 0**，要往後找第一個正數。實測 2026-07-30 09:43 川湖 `z='-'`、`b='0.0000_7850.0000_7845...'`：舊碼取 0.0 當現價 → 漲跌算成 `0−昨收＝−7,140`、`−100%`，而 `rank_price` 的 `price or close` 又把 0 當假值退回昨收，畫面於是變成**「正常價格配 −100% 假跌停」**（同時 5 檔高價股中鏢）。`_pos()` 現在把「≤0 一律視為無效」集中處理，完全無有效報價時 `_price` 回 None 讓整檔略過——寧可不顯示，也不要顯示假跌停。連帶原則：**`rank_price` 的現價與漲跌必須同源**，MIS 有價才用 MIS 的漲跌，退回昨收時漲跌一律留白（`tests/test_api.py::test_rank_price_never_pairs_fallback_price_with_stale_change`）；混用正是這個 bug 從「缺資料」升級成「顯示錯誤數字」的原因。
 - **個股 K 線的 `stock_ohlc` 後備必須自己套 `period`。** yfinance 自己會依 period 截斷，`get_ohlc_history` 不會——它回傳該股**整張表**。雲端 yfinance 被擋（見下）所以一定走這條後備，而 `stock_ohlc` 的覆蓋度取決於 `/api/ohlc/backfill` 跑到哪，很容易只有零星幾天：實測 2615 在雲端畫出來的 X 軸橫跨 **2017→2026**，相鄰兩個刻度的實際間隔從 1 天到 6 年都有，圖形完全失去意義（本機看不到這個問題，因為本機 yfinance 通、根本不走後備——又一個「本機全綠、production 壞掉」的案例）。截窗後窗內若沒有資料就**回空讓前端顯示「尚無資料」**，不要畫一張看起來像 K 線、尺度卻錯亂的圖。**注意 `stock_ohlc` 只靠 `run_update` 每天累積一列**，所以新部署或停機過的機器需要補資料才有足夠密度。**但 `/api/ohlc/backfill` 在 Zeabur 上已證實打不動官方來源**（見下方「本機抓→匯入雲端」），實際補資料請用 `scripts/sync_ohlc.bat`；那支端點留著只是本機還用得到。
 - **`kline._sanitize_series` 必須明確擋 NaN，不能只靠 `None in c` 與大小比較。** NaN 不是 None，而且**所有與 NaN 的比較都回 False**（`nan <= 0`、`hi < lo`、日對日跳動門檻全部不成立），壞列因此通過所有守衛，一路到 FastAPI 序列化才炸成 `ValueError: Out of range float values are not JSON compliant: nan` → **整個端點 500、該股 K 線完全打不開**。實測 yfinance 偶爾會給出這種未完成的 bar：同一支股票（2615）早上還好好的 243 根，下午就 500，屬於間歇性故障、事後極難重現。判定用 `v != v`（NaN 的標準測法，不必 import math 也不挑型別）。
@@ -326,7 +372,7 @@ Same flex container bites line-clamping: **`-webkit-line-clamp` does not work on
 
 LINE push (`line_push.py`): `LINE_CHANNEL_ACCESS_TOKEN` (Messaging API **broadcast** — the user's OA has only themselves as friend; LINE Notify is discontinued) + `SPR_WEEKLY_PUSH_TIME` (default 17:00; the `weekly_line` job broadcasts the 籌碼週報 — **重點類股＋本週前五個股**＋AI, as **one plain-text message** (user's call: no card) — every **Saturday** at this time; day is fixed, only time is configurable. The card is fed by `analysis.weekly_highlights` (surfaced as `weekly()`'s `highlights` key): sectors merged across 上市/上櫃 via `industry_to_sector` and filtered to ≥10 檔 — a 5-檔 sector otherwise tops the average-score ranking on noise. 個股 rank by 大戶增比 − 人數降比 over **all** rows, deliberately not by `status == "加速"`: that flag measured **0 檔 market-wide** one week, which would have shipped an empty list). Non-today data auto-skips pushes; `POST /api/line/test` forces one. Never expose the token (settings returns `line_configured: bool` only; the push times are surfaced read-only as `weekly_push_time`/`schedule_time` and shown in the 設定 page's LINE badge).
 
-**「預期晚公布」不算推播警告，但判斷依據是錯誤訊息的文字而非欄位名。** `api/helpers.py::_check_update_result_and_alert` 的 `expected_later()` 只在 `margin_maintenance`/`otc_margin_maintenance` 的 error 含「尚未」或「稍後回補」、或 `intl` 的 error 含「尚未取得」或「自動回補」時才排除。換句話說**同一個欄位若因別的原因失敗仍會告警**——這是刻意的，不要改成用欄位名無條件排除，否則真正的抓取失敗會被靜音。
+**「預期晚公布」不算推播警告，但判斷依據是錯誤訊息的文字而非欄位名。** `api/helpers.py::_check_update_result_and_alert` 的 `expected_later()` 只在 `twse_credit`/`otc_margin`（2026-09 前是 `margin_maintenance`/`otc_margin_maintenance`，自算路徑刪除時欄位名一併換掉，見 ui70 那節）的 error 含「尚未」或「稍後回補」、或 `intl` 的 error 含「尚未取得」或「自動回補」時才排除。換句話說**同一個欄位若因別的原因失敗仍會告警**——這是刻意的，不要改成用欄位名無條件排除，否則真正的抓取失敗會被靜音。
 
 **LINE 額度用盡自動停播（2026-08）。** 看到「You have reached your monthly limit」是 LINE broadcast/push 的**月額度**用盡（與 Gemini／Telegram 無關）——這與一般推播失敗（`line_push_fail` → 下次成功時補一則「前次推播失敗」通知）是不同性質的狀態：一般失敗會自動重試、重試成功就清除；額度用盡**重試也不會成功**，繼續打只是白費一次 API 呼叫（`api/helpers.py::_is_quota_exceeded` 認 429 + body 含「monthly limit」，不能只看狀態碼——其他原因的 429 也是同一個碼）。三個會耗用月額度的 broadcast 路徑（`_push_line` 每日完整版／`weekly_line_job` 週報／`_intraday_scan` 盤中突破警示）都先查 `line_quota_paused(c)`：本月已知用盡就直接跳過、連 broadcast 都不打；偵測到新的用盡就記下 `line_quota_month` 設成當月字串（`_note_line_quota_exceeded`）。**自動恢復不靠排程去清除**——判斷式只比對「這個字串是不是等於現在的月份」，月份一換算式自然不成立，次月第一次呼叫就自動恢復。`GET /api/settings` 回傳 `line_quota_paused`，設定頁的 LINE 徽章在暫停時轉為既有的琥珀樣式（`.set-badge.no`）並附文字說明；**webhook 的 reply 完全不受影響**（reply 不耗額度，見下）。`_intraday_scan` 暫停時掃描/命中判定照常執行、只是不送——命中不標成「已警示」，讓額度恢復後同一天仍補送。
 
@@ -1116,9 +1162,12 @@ self_screen 三格都會是「尚未到期」，那是**正確**顯示不是故�
 - **21:00 櫃買為什麼失敗（查到一半）**：同一晚櫃買的法人、融資都抓成功，**只有行情失敗**；行情是三支裡最大的
   （`dailyQuotes` 約 1.7MB），與 09-12／13 那兩晚「21:00 前後櫃買把大檔傳到一半切斷」同一型。22:39 本機連打 4 次
   全正常（200、867 檔），故障時段已過，重現不了。**這支是動態端點，沒有 `Accept-Ranges`／`ETag`**，
-  `tpex.get_resumable` 的續傳解法用不上。連帶影響：21:00 的 `_compute_otc_margin_maintenance` 拿到空行情算不出
-  上櫃融資維持率，要靠之後的 `_heal_margin_maintenance` 補。尚未處理；可行的方向是行情重抓失敗時改用
-  `stock_ohlc` 裡 17:30 已存好的當天收盤。
+  `tpex.get_resumable` 的續傳解法用不上。（原本記載的連帶影響是「21:00 的 `_compute_otc_margin_maintenance`
+  拿到空行情算不出上櫃融資維持率，要靠 `_heal_margin_maintenance` 補」——這兩支函式已於 2026-09 隨官方
+  整戶擔保維持率移除，此後果不再適用，見 ui70 那節。行情失敗現在仍會拖到的是 `otc_margin_value`——
+  它不靠這批行情，是 `_otc_margin_summary` 直接讀 `tpex.fetch_otc_margin` 的 `margin/balance` 端點，
+  但同一晚若連這支也失敗，`ss_trader.blended_margin_ratio` 的加權兩平線當天就少一邊、退回只用上市成數。）
+  尚未處理；可行的方向是行情重抓失敗時改用 `stock_ohlc` 裡 17:30 已存好的當天收盤。
 
 ### 週集保一公布就反映到自算選股（custody_watch，2026-09）
 
