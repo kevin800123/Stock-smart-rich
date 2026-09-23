@@ -4149,31 +4149,18 @@ function flowHighlight(sector, on) {
 }
 
 async function loadSectorFlow() {
-  const el = $("flow-chart");
-  if (!el) return;
-  const clearFlowBits = () => {
-    ["flow-quadrants", "flow-summary", "flow-chip-list", "flow-help-body"].forEach((id) => { const n = $(id); if (n) n.innerHTML = ""; });
-    const h = $("flow-headline"); if (h) h.textContent = "";
-  };
+  if (!$("flow-chart")) return;
   try {
     const d = await getJSON("/api/sectors/flow");
+    if (!(d.sectors || []).length) { clearFlowView("尚無法人資料（stock_flow_daily 尚未累積）"); return; }
     lastSectorFlow = d;
-    if (!(d.sectors || []).length) {
-      disposeFlowChart(); lastFlowModel = null; clearFlowBits();
-      el.innerHTML = '<div class="muted small" style="padding:12px">尚無法人資料（stock_flow_daily 尚未累積）</div>';
-      return;
-    }
     lastFlowModel = d.has_custody ? flowModel(d) : null;
     renderFlowHeader(d, lastFlowModel);
-    renderFlowSummary(d, lastFlowModel);
-    if (lastFlowModel) renderFlowCharts(d, lastFlowModel); else renderFlowBars(d);
-    renderFlowQuadrants(d);
+    renderFlowAll(d, lastFlowModel);
   } catch (e) {
     console.error("loadSectorFlow", e);
     // 失敗也要清狀態：留著上一次的摘要、排行與 lastSectorFlow，按篩選會拿舊資料重畫
-    disposeFlowChart(); clearFlowBits();
-    el.innerHTML = '<div class="muted small" style="padding:12px">族群輪動載入失敗</div>';
-    lastSectorFlow = null; lastFlowModel = null;
+    clearFlowView("族群輪動載入失敗");
   }
 }
 
@@ -4198,43 +4185,86 @@ function renderFlowBars(d) {
   }).join("")}</div>`;
 }
 
-function renderFlowQuadrants(d) {
+// ---------- 象限領先者：2×2、每格類股數＋Top 3（ui72）----------
+// 每列寫明「法人」「大戶」（不再用「+0.36／+0.34」）；名稱過長省略號、title 帶全名。
+function flowLeaderRow(sector, x, y) {
+  return `<button type="button" class="flow-row" data-sector="${esc(sector)}" aria-pressed="${rotationSectorFilter === sector}">`
+    + `<span class="flow-row-name" title="${esc(sector)}">${esc(sector)}</span>`
+    + `<span class="flow-row-val"><span>法人 ${flowPct(x)}</span>${y == null ? "" : `<span>大戶 ${flowPct(y)}</span>`}</span></button>`;
+}
+function flowLeaderBox(q, title, count, rowsHtml) {
+  return `<div class="flow-q flow-q-${q}"><h4>${title}<span class="flow-q-count">${count} 類</span></h4>`
+    + (rowsHtml.join("") || '<div class="muted small">—</div>') + "</div>";
+}
+function renderFlowLeaders(d, m) {
   const el = $("flow-quadrants"); if (!el) return;
-  const secs = d.sectors.filter((s) => s.x != null);
-  const dist = (s) => Math.hypot(s.x, s.y == null ? 0 : s.y);
-  if (!d.has_custody) {   // 單軸時只分「法人買／法人賣」兩欄
-    const cols = [["in", "法人買超", (s) => s.x > 0], ["out", "法人賣超", (s) => s.x <= 0]];
-    el.innerHTML = cols.map(([k, title, pred]) => flowColumn(k, title, secs.filter(pred).sort((a, b) => dist(b) - dist(a)), false)).join("");
+  if (!m) {   // 單軸降級：法人買超／賣超各 Top 3
+    const secs = (d.sectors || []).filter((s) => s.x != null);
+    const buy = secs.filter((s) => s.x > 0).sort((a, b) => b.x - a.x);
+    const sell = secs.filter((s) => s.x <= 0).sort((a, b) => a.x - b.x);
+    el.innerHTML = flowLeaderBox("in", "法人買超", buy.length, buy.slice(0, 3).map((s) => flowLeaderRow(s.sector, s.x, null)))
+      + flowLeaderBox("out", "法人賣超", sell.length, sell.slice(0, 3).map((s) => flowLeaderRow(s.sector, s.x, null)));
     return;
   }
-  el.innerHTML = FLOW_Q.map(([k, title]) =>
-    flowColumn(k, title, secs.filter((s) => s.y != null && flowQuadrant(s) === k).sort((a, b) => dist(b) - dist(a)), true)).join("");
+  el.innerHTML = ["in", "big", "inst", "out"].map((q) => flowLeaderBox(q, FLOW_Q_NAME[q], m.leaders[q].count,
+    m.leaders[q].top.map((r) => flowLeaderRow(r.sector, r.s.x, r.s.y)))).join("");
 }
-function flowColumn(k, title, rows, withY) {
-  return `<div class="flow-q flow-q-${k}"><h4>${title} <span class="muted small">${rows.length}</span></h4>`
-    + (rows.map((s) => `<button type="button" class="flow-row" data-sector="${esc(s.sector)}" aria-pressed="${rotationSectorFilter === s.sector}">`
-      + `<span class="flow-row-name">${esc(s.sector)}</span><span class="flow-row-val">${fmtSigned(s.x, 2)}${withY ? "／" + fmtSigned(s.y, 2) : ""}</span></button>`).join("")
-      || '<div class="muted small">—</div>') + "</div>";
+
+// ---------- 選取細節列（ui72）----------
+// 主要貢獻個股就是 tooltip 既有的 top3（法人買最多），不新增 API。Δ 不著紅綠（資金流向不是漲跌）。
+function renderFlowDetail(d, m) {
+  const el = $("flow-detail"); if (!el) return;
+  const sel = rotationSectorFilter;
+  if (!sel) { el.innerHTML = '<span class="muted">點摘要卡、泡泡或右側排行，查看類股細節並篩選下方交叉選股</span>'; return; }
+  const r = m ? m.bySector[sel] : null;
+  const s = r ? r.s : (d.sectors || []).find((x) => x.sector === sel);
+  const clear = '<button type="button" class="tf flow-detail-clear">清除篩選</button>';
+  if (!s) { el.innerHTML = `<span class="flow-detail-name">${esc(sel)}</span><span class="muted">不在目前的族群資料中</span>${clear}`; return; }
+  const trans = r ? (r.prev ? `${FLOW_Q_NAME[r.qPrev]} → ${FLOW_Q_NAME[r.q]}` : FLOW_Q_NAME[r.q]) : "";
+  const dl = (k) => (r && r.prev ? `（Δ ${flowSigned2(s[k] - s[k + "_prev"])}）` : "");
+  const top = (s.top3 || []).map((t) => `${esc(t.code)} ${esc(t.name)} ${flowYi(t.amount)} 億`).join("、");
+  el.innerHTML = `<span class="flow-detail-name">${esc(s.sector)}</span>`
+    + (trans ? `<span class="flow-qtag flow-q-${r.q}">${esc(trans)}</span>` : "")
+    + `<span>法人 ${flowPct(s.x)}${dl("x")}</span>`
+    + (s.y != null ? `<span>大戶 ${flowPct(s.y)}${dl("y")}</span>` : "")
+    + (top ? `<span class="flow-detail-top">法人買最多：${top}</span>` : "")
+    + clear;
+}
+
+// 選取改變或載入完成時重畫（不含頁首：chips 是 aria-live，每點一次就重念會很吵）
+function renderFlowAll(d, m) {
+  renderFlowSummary(d, m);
+  if (m) renderFlowCharts(d, m); else renderFlowBars(d);
+  renderFlowLeaders(d, m);
+  renderFlowDetail(d, m);
+}
+function clearFlowView(msg) {
+  disposeFlowChart();
+  lastSectorFlow = null; lastFlowModel = null;
+  const el = $("flow-chart");
+  el.style.height = "auto";
+  el.innerHTML = `<div class="muted small" style="padding:12px">${esc(msg)}</div>`;
+  ["flow-quadrants", "flow-summary", "flow-detail", "flow-chip-list", "flow-help-body"].forEach((id) => { const n = $(id); if (n) n.innerHTML = ""; });
+  const h = $("flow-headline"); if (h) h.textContent = "";
+  const zw = document.querySelector(".flow-zoom-wrap"); if (zw) zw.classList.add("hidden");
 }
 
 // drill-down：篩下方交叉選股（不重打 API，只切 .hidden）；再點同一個取消。狀態不持久化。
+// 摘要卡、主圖泡泡、放大鏡泡泡、象限領先者列、細節列的「清除篩選」都走這裡，四處選取狀態永遠一致。
 function toggleRotationFilter(sector) {
   rotationSectorFilter = (sector && rotationSectorFilter !== sector) ? sector : null;
   applyRotationFilter();
   if (!lastSectorFlow) return;
   // 重繪會換掉整批按鈕 → 焦點掉回 body，只用鍵盤的人會失去位置（同 ss-picked-note 那段的作法）
   // 卡片用 data-card 找回焦點（同一個類股可能同時是兩張卡，data-sector 選不到唯一的那張）
-  const cur = document.activeElement && document.activeElement.closest
-    ? document.activeElement.closest(".flow-row, .flow-card[data-sector]") : null;
-  const keep = cur
-    ? (cur.classList.contains("flow-card")
-        ? `.flow-card[data-card="${CSS.escape(cur.dataset.card)}"]`
-        : `.flow-row[data-sector="${CSS.escape(cur.dataset.sector)}"]`)
-    : null;
-  renderFlowSummary(lastSectorFlow, lastFlowModel);
-  if (lastFlowModel) renderFlowCharts(lastSectorFlow, lastFlowModel);
-  renderFlowQuadrants(lastSectorFlow);
-  if (keep) { const again = $("view-rotation").querySelector(keep); if (again) again.focus(); }
+  const act = document.activeElement;
+  const cur = act && act.closest ? act.closest(".flow-card[data-sector], .flow-row[data-sector], .flow-detail-clear") : null;
+  const key = !cur ? null : cur.classList.contains("flow-detail-clear") ? "clear"
+    : cur.classList.contains("flow-card") ? `.flow-card[data-card="${CSS.escape(cur.dataset.card)}"]`
+    : `.flow-row[data-sector="${CSS.escape(cur.dataset.sector)}"]`;
+  renderFlowAll(lastSectorFlow, lastFlowModel);
+  if (key === "clear") { const dt = $("flow-detail"); if (dt) dt.focus(); }
+  else if (key) { const again = $("view-rotation").querySelector(key); if (again) again.focus(); }
 }
 function applyRotationFilter() {
   document.querySelectorAll("#cross .cross-grp").forEach((g) => {
@@ -5487,14 +5517,21 @@ window.addEventListener("resize", () => {
     renderSelfScreenBubbles(ssData.heatmap || []);
   }
 });
-// 族群輪動：四區排行與「顯示全部」都委派在靜態祖先上（CSP script-src 'self' 會丟掉 inline on*=）
-const flowQEl = $("flow-quadrants");
-if (flowQEl) flowQEl.addEventListener("click", (e) => { const b = e.target.closest(".flow-row"); if (b) toggleRotationFilter(b.dataset.sector); });
-const flowSummaryEl = $("flow-summary");
-if (flowSummaryEl) flowSummaryEl.addEventListener("click", (e) => {
-  const b = e.target.closest(".flow-card[data-sector]");
-  if (b && !b.disabled) toggleRotationFilter(b.dataset.sector);
-});
+// 族群輪動的按鈕都是動態產生的 → 委派在靜態 HTML 就有的 #view-rotation 上（CSP 擋 inline on*=）
+const rotationEl = $("view-rotation");
+if (rotationEl) {
+  rotationEl.addEventListener("click", (e) => {
+    if (e.target.closest(".flow-detail-clear")) { toggleRotationFilter(null); return; }
+    const b = e.target.closest(".flow-card[data-sector], .flow-row[data-sector]");
+    if (b && !b.disabled) toggleRotationFilter(b.dataset.sector);
+  });
+  const flowFocus = (on) => (e) => {
+    const b = e.target.closest && e.target.closest(".flow-card[data-sector], .flow-row[data-sector]");
+    if (b) flowHighlight(b.dataset.sector, on);
+  };
+  rotationEl.addEventListener("focusin", flowFocus(true));
+  rotationEl.addEventListener("focusout", flowFocus(false));
+}
 const flowHelpEl = $("flow-help");
 if (flowHelpEl) {
   flowHelpEl.addEventListener("beforetoggle", (e) => { if (e.newState === "open") positionFlowHelp(); });
