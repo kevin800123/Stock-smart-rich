@@ -702,7 +702,7 @@ function showView(name) {
       stockChart.applyOptions({ autoSize: true });
     }
   }
-  if (name === "rotation") { if (flowChart) flowChart.resize(); loadSectorFlow(); loadCross(); }
+  if (name === "rotation") { if (flowChart) flowChart.resize(); if (flowZoomChart) flowZoomChart.resize(); loadSectorFlow(); loadCross(); }
   // 高價股監控輪詢：進入才啟動、切走即停——控制請求量。海期監控 2026-07 起改排程
   // 每日兩次更新（見 main.py::osfut_job），切進頁面只讀快取，不再輪詢。
   if (name === "osfut") loadOsFutures();
@@ -4005,6 +4005,138 @@ function renderFlowSummary(d, m) {
   }).join("");
 }
 
+// ---------- 主圖（全範圍）＋核心放大鏡（ui72）----------
+// 兩張圖同一個 option 產生器，只差座標範圍。象限色讀 CSS token，不在 JS 寫死。
+const FLOW_COLOR = {
+  in: CSS_VAR("--flow-in", "#5fd6ee"), big: CSS_VAR("--flow-big", "#70b8ff"),
+  inst: CSS_VAR("--flow-inst", "#8b93f8"), out: CSS_VAR("--flow-out", "#8494ad"),
+};
+let flowZoomChart = null;
+const flowYi = (amt) => { const v = (amt || 0) / 1e8; return fmt(v, Math.abs(v) >= 10 ? 0 : 1); };
+
+function flowQuadrantAreas(rx, ry) {
+  const a = (q, x0, y0, x1, y1, alpha) => [{ xAxis: x0, yAxis: y0, itemStyle: { color: withAlpha(FLOW_COLOR[q], alpha) } }, { xAxis: x1, yAxis: y1 }];
+  return [a("in", 0, 0, rx[1], ry[1], 0.07), a("big", rx[0], 0, 0, ry[1], 0.05),
+          a("inst", 0, ry[0], rx[1], 0, 0.05), a("out", rx[0], ry[0], 0, 0, 0.04)];
+}
+function flowCoreBox(core) {
+  return [{ xAxis: core.x[0], yAxis: core.y[0],
+            itemStyle: { color: "transparent", borderColor: C.muted, borderWidth: 1, borderType: "dashed" },
+            label: { show: true, position: "insideTopLeft", formatter: "放大鏡", color: C.muted, fontSize: 10 } },
+          { xAxis: core.x[1], yAxis: core.y[1] }];
+}
+function flowTooltip(d, m, p) {
+  const r = p.data && p.data.sector ? m.bySector[p.data.sector] : null;
+  if (!r) return "";
+  const s = r.s, md = (x) => (x || "").slice(5), fd = d.flow_dates || [];
+  // 當日漲跌是行情 → 這裡是整頁唯一用紅綠的地方
+  const chg = s.chg_pct == null ? "—"
+    : `<span class="${chgClass(s.chg_pct)}">${s.chg_pct > 0 ? "▲" : s.chg_pct < 0 ? "▼" : ""}${fmt(Math.abs(s.chg_pct), 2)}%</span>`;
+  const pv = (k) => (r.prev ? `（上期 ${flowPct(s[k + "_prev"])}，Δ ${flowSigned2(s[k] - s[k + "_prev"])}）` : "");
+  const top = (s.top3 || []).map((t) => `${esc(t.code)} ${esc(t.name)} ${flowYi(t.amount)} 億`).join("<br>");
+  return `<b>${esc(s.sector)}</b>　${FLOW_Q_NAME[r.q]}　當日 ${chg}<br>`
+    + `法人 ${fd.length} 日 ${flowPct(s.x)}${pv("x")}（${md(fd[0])}～${md(fd[fd.length - 1])}）<br>`
+    + `大戶週增 ${flowPct(s.y)}${pv("y")}（樣本 ${s.n_cust}/${s.n} 檔）<br>`
+    + `市值 ${fmt(s.mcap / 1e8, 0)} 億` + (top ? `<br><span class="muted">法人買最多：</span><br>${top}` : "");
+}
+function flowChartOption(d, m, which) {
+  const zoom = which === "zoom";
+  const rx = zoom ? m.core.x : m.main.x, ry = zoom ? m.core.y : m.main.y;
+  const sel = rotationSectorFilter && m.bySector[rotationSectorFilter] ? rotationSectorFilter : null;
+  const mcMax = Math.max(1, ...m.rows.map((r) => r.s.mcap || 0));
+  const size = (mc) => Math.max(10, Math.min(56, 10 + 46 * Math.sqrt((mc || 0) / mcMax)));   // √市值
+  const faded = (r) => !!sel && r.sector !== sel;
+  const labelOn = new Set(m.labels); if (sel) labelOn.add(sel);
+  const n = (d.flow_dates || []).length;
+  const bubbles = {
+    id: "bubbles", type: "scatter", z: 5, clip: true, animation: false,
+    data: m.rows.map((r) => {
+      const col = FLOW_COLOR[r.q], isSel = r.sector === sel;
+      return {
+        name: r.sector, value: [r.s.x, r.s.y], sector: r.sector, symbolSize: size(r.s.mcap),
+        itemStyle: { color: withAlpha(col, faded(r) ? 0.12 : isSel ? 0.85 : 0.6),
+                     borderColor: withAlpha(col, faded(r) ? 0.3 : 1), borderWidth: isSel ? 2 : 1 },
+        // 常駐標籤最多 8 個（三卡＋位移最大者＋選取）；放大鏡只標框內的
+        label: { show: labelOn.has(r.sector) && (!zoom || r.inCore) },
+      };
+    }),
+    label: { show: false, position: "right", distance: 4, formatter: (p) => p.name, color: C.text, fontSize: 11,
+             fontFamily: HM_FONT, backgroundColor: withAlpha(C.panel, 0.85), padding: [2, 5], borderRadius: 3 },
+    labelLayout: { moveOverlap: "shiftY" },
+    emphasis: { scale: 1.12, label: { show: true } },
+    markLine: { silent: true, symbol: "none", animation: false, label: { show: false },
+                lineStyle: { color: C.borderStrong, type: "solid", width: 1 }, data: [{ xAxis: 0 }, { yAxis: 0 }] },
+    markArea: { silent: true, animation: false, data: flowQuadrantAreas(rx, ry).concat(zoom ? [] : [flowCoreBox(m.core)]) },
+  };
+  // 方向向量：上期（空心○）→ 本期（泡泡●）。拆成「上期→中點（畫箭頭）」與「中點→本期」兩段，箭頭不會被泡泡蓋住。
+  const prevRows = m.rows.filter((r) => r.prev);
+  const seg = (r, half) => {
+    const a = [r.s.x_prev, r.s.y_prev], b = [r.s.x, r.s.y], mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    const isSel = r.sector === sel;
+    return { coords: half === "head" ? [a, mid] : [mid, b],
+             lineStyle: { color: withAlpha(FLOW_COLOR[r.q], isSel ? 1 : faded(r) ? 0.12 : sel ? 0.7 : 0.45), width: isSel ? 2.5 : 1 } };
+  };
+  const lines = (id, data, arrowSize) => ({ id, type: "lines", coordinateSystem: "cartesian2d", polyline: false,
+    z: 3, silent: true, clip: true, animation: false,
+    symbol: arrowSize ? ["none", "arrow"] : "none", symbolSize: arrowSize || 0, data });
+  const selRow = sel ? prevRows.find((r) => r.sector === sel) : null;
+  const prevDots = { id: "prev", type: "scatter", z: 4, silent: true, clip: true, animation: false, symbolSize: 7,
+    data: prevRows.map((r) => ({ value: [r.s.x_prev, r.s.y_prev],
+      itemStyle: { color: "transparent", borderColor: withAlpha(FLOW_COLOR[r.q], faded(r) ? 0.25 : 0.95), borderWidth: 1.5 } })) };
+  const g = zoom ? { left: 48, right: 12, top: 18, bottom: 34 } : { left: 62, right: 18, top: 22, bottom: 46 };
+  const qText = (text, pos) => ({ type: "text", silent: true, ...pos, style: { text, fill: C.muted, fontSize: 11, fontFamily: HM_FONT } });
+  return {
+    animation: false,
+    tooltip: financeTooltip({ trigger: "item", formatter: (p) => flowTooltip(d, m, p) }),
+    grid: g,
+    xAxis: { type: "value", min: rx[0], max: rx[1], splitNumber: zoom ? 4 : 6, splitLine: { show: false },
+      name: zoom ? "法人（%）" : `法人近 ${n} 日淨買賣 ÷ 市值（%）`, nameLocation: "middle", nameGap: zoom ? 22 : 30,
+      nameTextStyle: { color: C.label, fontSize: 11 }, axisLabel: { color: C.muted, fontSize: 11, formatter: (v) => fmt(v, 2) } },
+    yAxis: { type: "value", min: ry[0], max: ry[1], splitNumber: zoom ? 4 : 6, splitLine: { show: false },
+      name: zoom ? "大戶（%）" : "大戶 400張↑ 週增 ÷ 市值（%）", nameLocation: "middle", nameGap: zoom ? 34 : 46,
+      nameTextStyle: { color: C.label, fontSize: 11 }, axisLabel: { color: C.muted, fontSize: 11, formatter: (v) => fmt(v, 2) } },
+    graphic: [
+      qText("大戶增・法人賣", { left: g.left + 6, top: g.top + 4 }),
+      qText("雙流入", { right: g.right + 6, top: g.top + 4 }),
+      qText("雙流出", { left: g.left + 6, bottom: g.bottom + 4 }),
+      qText("法人買・大戶減", { right: g.right + 6, bottom: g.bottom + 4 }),
+    ],
+    series: [bubbles, prevDots,
+      lines("vecHead", prevRows.filter((r) => r.sector !== sel).map((r) => seg(r, "head")), 6),
+      lines("vecTail", prevRows.map((r) => seg(r, "tail")), 0),
+      lines("vecSelHead", selRow ? [seg(selRow, "head")] : [], 10)],
+  };
+}
+function bindFlowChart(ch) {
+  ch.on("click", (p) => { if (p.data && p.data.sector) toggleRotationFilter(p.data.sector); });
+}
+function renderFlowCharts(d, m) {
+  const mainEl = $("flow-chart"), zoomEl = $("flow-zoom"), wrap = document.querySelector(".flow-zoom-wrap");
+  if (wrap) wrap.classList.remove("hidden");
+  mainEl.style.height = "";        // 單軸降級會寫 inline auto；雙軸時把高度交還給 CSS 斷點
+  if (!flowChart) { mainEl.innerHTML = ""; flowChart = initChart(mainEl); bindFlowChart(flowChart); }
+  if (!flowZoomChart) { zoomEl.innerHTML = ""; flowZoomChart = initChart(zoomEl); bindFlowChart(flowZoomChart); }
+  // 先有容器尺寸 → setOption → resize（echarts.init 會凍住它看到的尺寸）
+  flowChart.setOption(flowChartOption(d, m, "main"), true);
+  flowZoomChart.setOption(flowChartOption(d, m, "zoom"), true);
+  flowChart.resize(); flowZoomChart.resize();
+  const t = $("flow-zoom-title");
+  if (t) t.textContent = `核心放大鏡・框住 ${m.core.inside}/${m.core.n} 類`;
+  zoomEl.setAttribute("aria-label", `核心放大鏡：法人 ${fmt(m.core.x[0], 2)}～${fmt(m.core.x[1], 2)}%、`
+    + `大戶 ${fmt(m.core.y[0], 2)}～${fmt(m.core.y[1], 2)}%，框住 ${m.core.inside}/${m.core.n} 類`);
+}
+// 鍵盤 focus 到卡或排行列時，讓兩張圖的對應泡泡高亮（標籤跟著出現）＋主圖顯示 tooltip。
+// 這是鍵盤使用者唯一能「指到」canvas 泡泡的方式。bubbles 永遠是 seriesIndex 0。
+function flowHighlight(sector, on) {
+  if (!lastFlowModel) return;
+  const idx = lastFlowModel.rows.findIndex((r) => r.sector === sector);
+  if (idx < 0) return;
+  [flowChart, flowZoomChart].forEach((ch) => {
+    if (ch) ch.dispatchAction({ type: on ? "highlight" : "downplay", seriesIndex: 0, dataIndex: idx });
+  });
+  if (flowChart) flowChart.dispatchAction(on ? { type: "showTip", seriesIndex: 0, dataIndex: idx } : { type: "hideTip" });
+}
+
 async function loadSectorFlow() {
   const el = $("flow-chart");
   if (!el) return;
@@ -4023,7 +4155,7 @@ async function loadSectorFlow() {
     lastFlowModel = d.has_custody ? flowModel(d) : null;
     renderFlowHeader(d, lastFlowModel);
     renderFlowSummary(d, lastFlowModel);
-    if (d.has_custody) renderSectorFlow(d); else renderFlowBars(d);
+    if (lastFlowModel) renderFlowCharts(d, lastFlowModel); else renderFlowBars(d);
     renderFlowQuadrants(d);
   } catch (e) {
     console.error("loadSectorFlow", e);
@@ -4036,76 +4168,14 @@ async function loadSectorFlow() {
 
 function disposeFlowChart() {
   if (flowChart) { flowChart.dispose(); flowChart = null; }
-}
-
-function renderSectorFlow(d) {
-  const el = $("flow-chart");
-  const secs = d.sectors.filter((s) => s.x != null && s.y != null);
-  // 順序：先寫容器高 → setOption → resize（echarts.init 會凍住它看到的尺寸）
-  el.style.height = (matchMedia("(max-width: 600px)").matches ? 360 : 460) + "px";
-  if (!flowChart) { el.innerHTML = ""; flowChart = initChart(el); }
-  const absMax = (arr) => Math.max(0.05, ...arr.filter((v) => v != null).map((v) => Math.abs(v)));
-  const xm = Math.ceil(absMax(secs.flatMap((s) => [s.x, s.x_prev])) * 1.1 * 100) / 100;
-  const ym = Math.ceil(absMax(secs.flatMap((s) => [s.y, s.y_prev])) * 1.1 * 100) / 100;
-  const mcMax = Math.max(1, ...secs.map((s) => s.mcap));
-  const size = (m) => Math.max(10, Math.min(56, 10 + 46 * Math.sqrt(m / mcMax)));   // √市值，台積電那類不獨大
-  const alpha = (s) => 0.45 + 0.4 * Math.min(1, (Math.abs(s.x) / xm + Math.abs(s.y) / ym) / 2);
-  const md = (s) => (s || "").slice(5);
-  const tails = d.has_tail ? secs.filter((s) => s.x_prev != null && s.y_prev != null).map((s) => ({
-    type: "line", silent: true, showSymbol: false, z: 1, data: [[s.x_prev, s.y_prev], [s.x, s.y]],
-    lineStyle: { width: 1, color: withAlpha(C.info, 0.45) },
-  })) : [];
-  const prevDots = d.has_tail ? {
-    type: "scatter", silent: true, z: 2, symbolSize: 4, itemStyle: { color: withAlpha(C.info, 0.5) },
-    data: secs.filter((s) => s.x_prev != null && s.y_prev != null).map((s) => [s.x_prev, s.y_prev]),
-  } : null;
-  const bubbles = {
-    type: "scatter", z: 3,
-    data: secs.map((s) => ({
-      name: s.sector, value: [s.x, s.y], sector: s, symbolSize: size(s.mcap),
-      itemStyle: { color: withAlpha(C.info, alpha(s)), borderColor: C.info, borderWidth: 1 },
-      label: { show: size(s.mcap) >= 22, position: "inside", formatter: s.sector, fontSize: 11, color: C.text, fontFamily: HM_FONT },
-    })),
-    markLine: { silent: true, symbol: "none", lineStyle: { color: C.border, type: "solid" }, label: { show: false }, data: [{ xAxis: 0 }, { yAxis: 0 }] },
-    markArea: { silent: true, data: [
-      [{ xAxis: 0, yAxis: 0, itemStyle: { color: withAlpha(C.info, 0.10) } }, { xAxis: xm, yAxis: ym }],   // 雙流入略亮
-      [{ xAxis: -xm, yAxis: 0, itemStyle: { color: withAlpha(C.info, 0.04) } }, { xAxis: 0, yAxis: ym }],
-      [{ xAxis: 0, yAxis: -ym, itemStyle: { color: withAlpha(C.info, 0.04) } }, { xAxis: xm, yAxis: 0 }],
-      [{ xAxis: -xm, yAxis: -ym, itemStyle: { color: withAlpha(C.info, 0.02) } }, { xAxis: 0, yAxis: 0 }],
-    ] },
-  };
-  const qLabel = (text, left, top) => ({ type: "text", left, top, silent: true,
-    style: { text, fill: C.muted, fontSize: 11, fontFamily: HM_FONT } });
-  const tip = financeTooltip({ trigger: "item", formatter: (p) => {
-    const s = p.data && p.data.sector; if (!s) return "";
-    const chg = s.chg_pct == null ? "—" : `<span class="${chgClass(s.chg_pct)}">${s.chg_pct > 0 ? "▲" : s.chg_pct < 0 ? "▼" : ""}${fmt(Math.abs(s.chg_pct), 2)}%</span>`;
-    const top = (s.top3 || []).map((t) => `${esc(t.code)} ${esc(t.name)} ${fmt(t.amount / 1e8, 1)} 億`).join("<br>");
-    return `<b>${esc(s.sector)}</b>　當日 ${chg}<br>`
-      + `法人 ${d.flow_dates.length} 日 ${fmtSigned(s.x, 2)}%（${md(d.flow_dates[0])}～${md(d.flow_dates[d.flow_dates.length - 1])}）<br>`
-      + `大戶週增 ${fmtSigned(s.y, 2)}%（${md(d.custody_weeks[1])}→${md(d.custody_weeks[0])}，樣本 ${s.n_cust}/${s.n} 檔）<br>`
-      + `市值 ${fmt(s.mcap / 1e8, 0)} 億　${s.n} 檔` + (top ? `<br><span class="muted">法人買最多：</span><br>${top}` : "");
-  } });
-  flowChart.setOption({
-    tooltip: tip,
-    grid: { left: 60, right: 24, top: 30, bottom: 48 },
-    xAxis: { type: "value", min: -xm, max: xm, name: `法人近 ${d.flow_dates.length} 日淨買賣 ÷ 市值（%）`, nameLocation: "middle", nameGap: 30,
-      axisLabel: { color: C.muted, fontSize: 11 }, nameTextStyle: { color: C.label, fontSize: 11 }, splitLine: { show: false } },
-    yAxis: { type: "value", min: -ym, max: ym, name: "大戶 400張↑ 週增 ÷ 市值（%）", nameLocation: "middle", nameGap: 44,
-      axisLabel: { color: C.muted, fontSize: 11 }, nameTextStyle: { color: C.label, fontSize: 11 }, splitLine: { show: false } },
-    graphic: [qLabel("大戶增・法人賣", 68, 34), qLabel("雙流入", "right", 34), qLabel("雙流出", 68, "bottom"), qLabel("法人買・大戶減", "right", "bottom")]
-      .map((g, i) => (i === 1 || i === 3) ? { ...g, right: 30, left: undefined } : g)
-      .map((g, i) => (i >= 2) ? { ...g, bottom: 56, top: undefined } : g),
-    series: [...tails, ...(prevDots ? [prevDots] : []), bubbles],
-  }, true);
-  flowChart.resize();
-  flowChart.off("click");
-  flowChart.on("click", (p) => { if (p.data && p.data.sector) toggleRotationFilter(p.data.sector.sector); });
+  if (flowZoomChart) { flowZoomChart.dispose(); flowZoomChart = null; }
 }
 
 // 降級：集保不足兩個完整週 → 只有 X 軸，畫置中零點的水平長條（不畫沒有 Y 的散點）
 function renderFlowBars(d) {
   const el = $("flow-chart");
   disposeFlowChart();
+  const zw = document.querySelector(".flow-zoom-wrap"); if (zw) zw.classList.add("hidden");   // 單軸沒有放大鏡
   el.style.height = "auto";
   const secs = d.sectors.filter((s) => s.x != null).slice().sort((a, b) => b.x - a.x);
   const xm = Math.max(0.05, ...secs.map((s) => Math.abs(s.x)));
@@ -4151,6 +4221,7 @@ function toggleRotationFilter(sector) {
         : `.flow-row[data-sector="${CSS.escape(cur.dataset.sector)}"]`)
     : null;
   renderFlowSummary(lastSectorFlow, lastFlowModel);
+  if (lastFlowModel) renderFlowCharts(lastSectorFlow, lastFlowModel);
   renderFlowQuadrants(lastSectorFlow);
   if (keep) { const again = $("view-rotation").querySelector(keep); if (again) again.focus(); }
 }
@@ -5394,7 +5465,7 @@ $("ssf-margin-table").addEventListener("click", (e) => {
 // 停下來後重算一次。
 window.addEventListener("resize", () => {
   [chipChart, pulseChart, cupChart, distChart,
-    instBreadthChart, instAlphaChart, flowChart]
+    instBreadthChart, instAlphaChart, flowChart, flowZoomChart]
     .forEach((c) => c && c.resize());
   Object.values(ssfCharts).forEach(ch => ch && ch.resize());
   if (sectorChart) { sectorChart.resize(); if (lastHeatmapData) fitHeatmapFonts(lastHeatmapData); }
