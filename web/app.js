@@ -4080,7 +4080,7 @@ function flowTooltip(d, m, p) {
   const r = p.data && p.data.sector ? m.bySector[p.data.sector] : null;
   if (!r) return "";
   const s = r.s;
-  // 當日漲跌是行情 → 這裡是整頁唯一用紅綠的地方
+  // 當日漲跌是行情 → 圖上唯一用紅綠的地方（另一處是下方交叉選股的漲跌，其餘資金流向一律不碰紅綠）
   const chg = s.chg_pct == null ? "—"
     : `<span class="${chgClass(s.chg_pct)}">${s.chg_pct > 0 ? "▲" : s.chg_pct < 0 ? "▼" : ""}${fmt(Math.abs(s.chg_pct), 2)}%</span>`;
   // 壓寬度：不重複日期區間（頁首 chips 已經有了），一列一軸，Δ 只在有上期時才附
