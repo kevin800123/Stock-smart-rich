@@ -20,6 +20,14 @@ MI_INDEX_RWD = "https://www.twse.com.tw/rwd/zh/afterTrading/MI_INDEX"  # 各類�
 BFIAMU_RWD = "https://www.twse.com.tw/rwd/zh/afterTrading/BFIAMU"  # 各類指數日成交量值（熱力圖面積）
 T86_URL = "https://www.twse.com.tw/rwd/zh/fund/T86"  # 個股三大法人買賣超
 INDEX_OHLC_RWD = "https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST"  # 加權指數整月每日 OHLC（帶 date）
+# 臺股儀表板「信用交易」（2026-08-03 起提供）：BFIJ3U＝單日全市場整戶擔保維持率／追繳處分戶數／
+# 信用交易成交值；MI_MARGN_TREND＝逐日融資融券＋上市總市值（days 實測上限 60）；
+# MI_MARGN_HISTORY＝2000 年起的年度「融資占市值」「信用交易占成交值」。
+BFIJ3U_RWD = "https://www.twse.com.tw/rwd/zh/marginTrading/BFIJ3U"
+MARGIN_TREND_RWD = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN_TREND"
+MARGIN_HISTORY_RWD = "https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN_HISTORY"
+CREDIT_SINCE = "2026-08-03"   # 之前的日期證交所回「沒有符合條件的資料」，不要打
+_UA = {"User-Agent": "Mozilla/5.0"}
 NET_UNIT = 1e8  # 元 → 億
 
 
@@ -703,6 +711,79 @@ def fetch_margin(date: datetime.date | None = None) -> dict:
     except Exception:  # noqa: BLE001
         pass
     return {"margin_balance": None, "margin_chg": None, "short_balance": None, "short_chg": None}
+
+
+def _i(v):
+    f = _f(v)
+    return int(round(f)) if f is not None else None
+
+
+def parse_credit_summary(payload: dict) -> dict:
+    """BFIJ3U → 本站欄位。整戶擔保維持率是**券商申報的真實帳戶合計、全市場一個數字**
+    （TPEx dashboardOtc 的 keepRate 逐日相同）。crdAmt 是元，轉成億對齊 turnover。"""
+    if not payload or payload.get("stat") != "OK":
+        return {}
+    crd = _f(payload.get("crdAmt"))
+    return {"keep_rate": _f(payload.get("keepRate")),
+            "below_call_acc": _i(payload.get("belowAccNum")),
+            "call_acc": _i(payload.get("callAccNum")),
+            "exe_acc": _i(payload.get("exeAccNum")),
+            "credit_amt": round(crd / 1e8, 2) if crd is not None else None}
+
+
+def fetch_credit_summary(date: datetime.date) -> dict:
+    """單日信用交易概況。當日尚未產製或早於 CREDIT_SINCE 都回 {}（呼叫端據此記「尚未公布」）。"""
+    if date.isoformat() < CREDIT_SINCE:
+        return {}
+    r = httpx.get(BFIJ3U_RWD, params={"response": "json", "date": date.strftime("%Y%m%d")},
+                  headers=_UA, timeout=20, follow_redirects=True)
+    r.raise_for_status()
+    return parse_credit_summary(r.json())
+
+
+def parse_margin_trend(payload: dict) -> dict:
+    """MI_MARGN_TREND → {ISO 日期: 上市總市值(億)}。只取 marketValue（餘額本站已有官方值）。"""
+    if not payload or payload.get("stat") != "OK":
+        return {}
+    out = {}
+    for row in payload.get("data") or []:
+        d, mv = str(row.get("date") or ""), _f(row.get("marketValue"))
+        if len(d) == 8 and mv is not None:
+            out[f"{d[:4]}-{d[4:6]}-{d[6:]}"] = mv
+    return out
+
+
+def fetch_margin_trend(date: datetime.date, days: int = 60) -> dict:
+    r = httpx.get(MARGIN_TREND_RWD, params={"response": "json", "date": date.strftime("%Y%m%d"),
+                                            "days": min(int(days), 60)},
+                  headers=_UA, timeout=20, follow_redirects=True)
+    r.raise_for_status()
+    return parse_margin_trend(r.json())
+
+
+def parse_margin_history(payload: dict) -> dict:
+    """MI_MARGN_HISTORY（年度）→ 兩個比率的歷史區間，給卡片 tooltip 的「近 N 年 min～max」。"""
+    if not payload or payload.get("stat") != "OK":
+        return {}
+    rows = [r for r in (payload.get("data") or []) if r.get("year")]
+    if not rows:
+        return {}
+    out = {}
+    for key, field in (("margin_ratio", "marginRatio"), ("credit_ratio", "creditRatio")):
+        vals = [(r["year"], r.get("label") or r["year"], _f(r.get(field))) for r in rows]
+        vals = [v for v in vals if v[2] is not None]
+        if not vals:
+            continue
+        out[key] = {"min": min(v[2] for v in vals), "max": max(v[2] for v in vals),
+                    "since": vals[0][0], "latest": vals[-1][2], "latest_label": vals[-1][1]}
+    return out
+
+
+def fetch_margin_history() -> dict:
+    r = httpx.get(MARGIN_HISTORY_RWD, params={"response": "json"}, headers=_UA,
+                  timeout=20, follow_redirects=True)
+    r.raise_for_status()
+    return parse_margin_history(r.json())
 
 
 def fetch_valuation() -> list[dict]:

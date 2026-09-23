@@ -280,3 +280,38 @@ def test_parse_stock_daily_reuses_one_payload_for_price_and_volume():
         "2330": {"open": 2440.0, "high": 2445.0, "low": 2385.0, "close": 2400.0,
                  "volume_lots": 28754, "amount_twd": 69009600000.0}
     }
+
+
+def test_parse_credit_summary_maps_official_fields_and_converts_amount_to_yi():
+    payload = {"stat": "OK", "date": "20260922", "crdAmt": 143306121850, "keepRate": 193.92,
+               "belowAccNum": 147, "callAccNum": 27, "callAmt": 16071673, "exeAccNum": 11,
+               "exeAmt": 17705361, "marginAccNum": 78130, "marginAccRate": 0.29}
+    out = twse.parse_credit_summary(payload)
+    assert out == {"keep_rate": 193.92, "below_call_acc": 147, "call_acc": 27, "exe_acc": 11,
+                   "credit_amt": 1433.06}          # 143,306,121,850 元 → 億，2 位
+
+
+def test_parse_credit_summary_returns_empty_when_not_published():
+    # 08-03 之前、或當日尚未產製，證交所回這一句而不是 404
+    assert twse.parse_credit_summary({"stat": "很抱歉，沒有符合條件的資料!"}) == {}
+    assert twse.parse_credit_summary({}) == {}
+    assert twse.parse_credit_summary(None) == {}
+
+
+def test_parse_margin_trend_keeps_market_value_by_iso_date():
+    payload = {"stat": "OK", "date": "20260922", "days": 30, "data": [
+        {"date": "20260921", "marginShr": 9330477, "marginAmt": 603037778, "shortShr": 231582, "marketValue": 1560748.24},
+        {"date": "20260922", "marginShr": 9245371, "marginAmt": 604861415, "shortShr": 218839, "marketValue": 1563443.68}]}
+    assert twse.parse_margin_trend(payload) == {"2026-09-21": 1560748.24, "2026-09-22": 1563443.68}
+    assert twse.parse_margin_trend({"stat": "很抱歉，沒有符合條件的資料!"}) == {}
+
+
+def test_parse_margin_history_summarises_yearly_range():
+    payload = {"stat": "OK", "data": [
+        {"year": "2000", "label": "2000", "marginRatio": 2.31, "creditRatio": 40.98},
+        {"year": "2025", "label": "2025", "marginRatio": 0.36, "creditRatio": 5.78},
+        {"year": "2026", "label": "2026/08", "marginRatio": 0.38, "creditRatio": 6.09}]}
+    out = twse.parse_margin_history(payload)
+    assert out["margin_ratio"] == {"min": 0.36, "max": 2.31, "since": "2000", "latest": 0.38, "latest_label": "2026/08"}
+    assert out["credit_ratio"] == {"min": 5.78, "max": 40.98, "since": "2000", "latest": 6.09, "latest_label": "2026/08"}
+    assert twse.parse_margin_history({"stat": "X"}) == {}
