@@ -2570,6 +2570,7 @@ dict `{name: [...]}`，前端 `loadRotation` 沒跟著改，`d.sectors.length` �
   `resize` 事件，縮放後要手動 `window.dispatchEvent(new Event("resize"))`，否則圖停在舊尺寸。
 - 前端沒有自動化測試；驗證是把 2026-09-23 的真實快照注入 `getJSON` 後跑斷言（模型 28 項：放大鏡 28/34、三卡
   航運／汽車／光電、標籤 7 個、四象限 Top 3；圖 15 項；象限領先者與細節列 13 項——1560 與 375 都全綠），再在各寬度量溢出。
+- **pre-merge polish（2026-09-24）**：頁面用請求序號（同全域搜尋 `gsSeq`）捨棄慢到的舊回應，載入失敗時「ⓘ 指標說明」按鈕改成停用而不是打開一個空面板。
 
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):

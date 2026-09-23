@@ -919,7 +919,9 @@ body[data-public] .status-bar { display: none; }
 .flow-chip { display: inline-flex; align-items: center; min-height: 24px; padding: 2px 9px; border: 1px solid var(--border-subtle);
   border-radius: 999px; background: var(--bg-sunken); color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
 .flow-help-btn { min-height: 28px; color: var(--info); font: inherit; font-size: var(--fs-xs); cursor: pointer; }
-.flow-help-btn:hover { border-color: var(--info); }
+.flow-help-btn:not(:disabled):hover { border-color: var(--info); }
+/* 載入失敗／單軸降級時 #flow-help-body 是空的，按鈕改停用，不要讓它看起來還能點開一個空面板 */
+.flow-help-btn:disabled { opacity: .5; cursor: default; }
 .flow-help[popover] { position: fixed; inset: auto; margin: 0; width: min(440px, calc(100vw - 32px)); max-height: min(70vh, 560px);
   overflow: auto; padding: 12px 14px; color: var(--text); background: var(--bg-card); border: 1px solid var(--border);
   border-radius: var(--r-lg); box-shadow: var(--shadow-panel); }
@@ -929,7 +931,7 @@ body[data-public] .status-bar { display: none; }
 .flow-help dd { margin: 0; color: var(--text-secondary); }
 .flow-help p { margin: 10px 0 0; }
 .flow-summary-head { display: flex; align-items: baseline; gap: 10px; margin: 2px 0 -2px; }
-/* 載入中／載入失敗／尚無資料時 clearFlowBits 把 #flow-summary 清空——這時連靜態標題也不該留著 */
+/* 載入中／載入失敗／尚無資料時 clearFlowView 把 #flow-summary 清空——這時連靜態標題也不該留著 */
 .flow-summary-head:has(+ .flow-summary:empty) { display: none; }
 .flow-summary-head h3 { margin: 0; color: var(--text-primary); font-size: var(--fs-sm); }
 .flow-summary-note { color: var(--muted); font-size: var(--fs-xs); }

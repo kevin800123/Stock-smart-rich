@@ -3767,8 +3767,13 @@ async function addWatch() {
 // ========== 族群輪動：法人 × 大戶 資金流向四象限 ==========
 // 取代 bfd0a53 之後就再也畫不出來的「近 N 日類股漲跌表」（後端回 dict、前端當陣列用）。
 // X＝法人近 5 日淨買賣 ÷ 類股市值、Y＝大戶 400張↑ 週增 ÷ 類股市值，尾巴＝上一期→本期。
-// 資金流向不是漲跌 → 一律 C.info，不碰紅綠（紅綠鎖給行情；價格漲跌只在 tooltip）。
+// 資金流向不是漲跌 → 四個象限色改用冷色調 token（--flow-in/--flow-big/--flow-inst/--flow-out，
+// 經 CSS_VAR 讀進 FLOW_COLOR，靠明度遞減互相區分），不碰紅綠——紅綠鎖給行情漲跌，只留給
+// tooltip 的當日漲跌與交叉選股清單。
 let flowChart = null, lastSectorFlow = null, lastFlowModel = null, rotationSectorFilter = null, crossNoteBase = "";
+// flowSeq：同頂欄全域搜尋的 gsSeq，只認最後一次送出的請求，避免慢到的舊回應蓋掉新畫面（含失敗蓋成功）。
+// flowChipsLast：#flow-chip-list 是 aria-live，內容沒變就不該重寫觸發螢幕閱讀器重念。
+let flowSeq = 0, flowChipsLast = null;
 
 function flowQuadrant(s) {
   if (s.x > 0 && s.y > 0) return "in";
@@ -3935,8 +3940,15 @@ function flowChipsHtml(d) {
 }
 function flowHelpHtml(d, m) {
   const n = (d.flow_dates || []).length;
-  const core = m ? `今天每軸兩端各修 ${Math.round(m.core.trim * 100)}%，框住 ${m.core.inside}/${m.core.n} 類。` : "";
-  const scale = m ? `今天 X 寬 ${fmt(m.wx, 3)}、Y 寬 ${fmt(m.wy, 3)}。` : "";
+  if (!m) {
+    // 單軸降級：Y／放大鏡／向量／三卡都沒有東西可解釋，只留使用者看得到的 X 法人定義＋一句原因
+    return `<h4>指標說明</h4><dl>`
+      + `<dt>X 法人</dt><dd>法人近 ${n} 日淨買賣 ÷ 類股市值（%）。</dd>`
+      + `<dt>單軸顯示</dt><dd>集保不足兩個完整週，暫以法人單軸顯示；大戶軸、放大鏡、方向向量與摘要卡要等集保滿兩個完整週才出現。</dd>`
+      + `</dl><p class="muted small">規則式摘要，非投資建議。</p>`;
+  }
+  const core = `今天每軸兩端各修 ${Math.round(m.core.trim * 100)}%，框住 ${m.core.inside}/${m.core.n} 類。`;
+  const scale = `今天 X 寬 ${fmt(m.wx, 3)}、Y 寬 ${fmt(m.wy, 3)}。`;
   return `<h4>指標說明</h4><dl>`
     + `<dt>X 法人</dt><dd>法人近 ${n} 日淨買賣 ÷ 類股市值（%）。</dd>`
     + `<dt>Y 大戶</dt><dd>400 張以上大戶持股週增 ÷ 類股市值（%）。</dd>`
@@ -3952,8 +3964,15 @@ function renderFlowHeader(d, m) {
   const head = $("flow-headline"), chips = $("flow-chip-list"), help = $("flow-help-body");
   if (head) head.textContent = m ? flowHeadline(m)
     : (d.has_custody ? "暫無雙軸資料，以法人單軸顯示。" : "集保不足兩個完整週，暫以法人單軸顯示。");
-  if (chips) chips.innerHTML = flowChipsHtml(d);
+  if (chips) {
+    // aria-live 全文重念：內容沒變就不要重寫，否則每次進頁面都重複唸同樣的 ~7 個 chip
+    const html = flowChipsHtml(d);
+    if (html !== flowChipsLast) { chips.innerHTML = html; flowChipsLast = html; }
+  }
   if (help) help.innerHTML = flowHelpHtml(d, m);
+  // 上一次載入失敗時會把按鈕停用（面板空的、開不出東西），成功載入就解除
+  const btn = document.querySelector('#flow-chips [popovertarget="flow-help"]');
+  if (btn) btn.disabled = false;
 }
 // 原生 popover 預設置中；開啟前後各定位一次（開啟前量不到自己的高度，開啟後再修正）
 function positionFlowHelp() {
@@ -4158,6 +4177,9 @@ function setFlowLegends(show) {
 function renderFlowCharts(d, m) {
   const mainEl = $("flow-chart"), zoomEl = $("flow-zoom"), wrap = document.querySelector(".flow-zoom-wrap");
   if (wrap) wrap.classList.remove("hidden");
+  // 單軸長條／失敗畫面會藏起主圖表頭（「全範圍」對那兩種畫面沒有意義）；雙軸把它顯示回來
+  const mainHead = document.querySelector(".flow-main .flow-chart-head");
+  if (mainHead) mainHead.classList.remove("hidden");
   setFlowLegends(m.hasPrevAny);
   mainEl.style.height = "";        // 單軸降級會寫 inline auto；雙軸時把高度交還給 CSS 斷點
   if (!flowChart) { mainEl.innerHTML = ""; flowChart = initChart(mainEl); bindFlowChart(flowChart); }
@@ -4185,8 +4207,13 @@ function flowHighlight(sector, on) {
 
 async function loadSectorFlow() {
   if (!$("flow-chart")) return;
+  // showView("rotation") 無條件重打一次，可能兩個請求同時在飛；比照全域搜尋 gsSeq，只認
+  // 最後一次送出的請求，避免先送出但慢回來的舊回應蓋掉後送出但先回來的新畫面（含舊的失敗
+  // 蓋掉新的成功）。
+  const seq = ++flowSeq;
   try {
     const d = await getJSON("/api/sectors/flow");
+    if (seq !== flowSeq) return;
     if (!(d.sectors || []).length) { clearFlowView("尚無法人資料（stock_flow_daily 尚未累積）"); return; }
     lastSectorFlow = d;
     lastFlowModel = d.has_custody ? flowModel(d) : null;
@@ -4194,6 +4221,7 @@ async function loadSectorFlow() {
     renderFlowAll(d, lastFlowModel);
   } catch (e) {
     console.error("loadSectorFlow", e);
+    if (seq !== flowSeq) return;
     // 失敗也要清狀態：留著上一次的摘要、排行與 lastSectorFlow，按篩選會拿舊資料重畫
     clearFlowView("族群輪動載入失敗");
   }
@@ -4209,6 +4237,8 @@ function renderFlowBars(d) {
   const el = $("flow-chart");
   disposeFlowChart();
   const zw = document.querySelector(".flow-zoom-wrap"); if (zw) zw.classList.add("hidden");   // 單軸沒有放大鏡
+  const mainHead = document.querySelector(".flow-main .flow-chart-head");
+  if (mainHead) mainHead.classList.add("hidden");   // 單軸長條沒有「全範圍」可言
   setFlowLegends(false);   // 也沒有向量
   el.style.height = "auto";
   const secs = d.sectors.filter((s) => s.x != null).slice().sort((a, b) => b.x - a.x);
@@ -4281,10 +4311,17 @@ function clearFlowView(msg) {
   el.style.height = "auto";
   el.innerHTML = `<div class="muted small" style="padding:12px">${esc(msg)}</div>`;
   ["flow-quadrants", "flow-summary", "flow-detail", "flow-chip-list", "flow-help-body"].forEach((id) => { const n = $(id); if (n) n.innerHTML = ""; });
+  flowChipsLast = null;   // chips 已被清空；下次載入即使內容跟清空前相同也要重寫一次
   // 圖的容器是 role="img"，裡面那行字讀屏讀不到 → 訊息也寫進頁首判讀，當成一般文字給出
   const h = $("flow-headline"); if (h) h.textContent = msg;
   const zw = document.querySelector(".flow-zoom-wrap"); if (zw) zw.classList.add("hidden");
+  const mainHead = document.querySelector(".flow-main .flow-chart-head");
+  if (mainHead) mainHead.classList.add("hidden");   // 失敗／無資料時「全範圍」也沒有意義
   setFlowLegends(false);
+  // #flow-help-body 剛被清空：關掉開著的 popover、停用按鈕，不要讓它看起來還能點開一個空面板
+  const pop = $("flow-help"), btn = document.querySelector('#flow-chips [popovertarget="flow-help"]');
+  if (pop && pop.matches(":popover-open")) pop.hidePopover();
+  if (btn) btn.disabled = true;
 }
 
 // drill-down：篩下方交叉選股（不重打 API，只切 .hidden）；再點同一個取消。狀態不持久化。
@@ -5554,6 +5591,10 @@ window.addEventListener("resize", () => {
   if (ssData && $("view-self-screen").classList.contains("active")) {
     renderSelfScreenBubbles(ssData.heatmap || []);
   }
+  // 指標說明面板是 position:fixed，只在開關時定位一次；開著時縮放視窗會讓它錯位或被裁到畫面外。
+  // 用 $("flow-help") 現查，不用後面才宣告賦值的 flowHelpEl 常數（這裡執行時它還不存在）。
+  const fh = $("flow-help");
+  if (fh && fh.matches(":popover-open")) positionFlowHelp();
 });
 // 族群輪動的按鈕都是動態產生的 → 委派在靜態 HTML 就有的 #view-rotation 上（CSP 擋 inline on*=）
 const rotationEl = $("view-rotation");
