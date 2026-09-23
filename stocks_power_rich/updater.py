@@ -22,7 +22,7 @@ from .db import (
     upsert_market_daily,
     upsert_tx_history,
 )
-from . import analysis, stock_flow
+from . import stock_flow
 from .sources import financials, fred, intl, nasdaq, revenue, taifex, tdcc, tpex, twse
 
 
@@ -440,12 +440,16 @@ def _otc_margin_summary(D, detail=None):
             "otc_short_balance": d.get("short_balance")}
 
 
-def _backfill_credit(conn, days: int = 10, cap: int = 5) -> list:
+def _backfill_credit(conn, days: int = 10, cap: int = 5, errors: list | None = None) -> list:
     """回補近 days 天官方信用交易欄位的洞（只填 NULL，絕不覆蓋既有值）。
 
     三種洞、三個來源：上市總市值一次 MI_MARGN_TREND（60 天）補整段；keep_rate 等五欄逐日
     BFIJ3U（新→舊、最多 cap 個日期，當日尚未產製的明天再補）；otc_margin_value 逐日櫃買。
     CREDIT_SINCE 之前的日期證交所沒有資料，掃描視窗直接截在那裡、一次都不打。
+
+    `errors`（選用）收集每個端點失敗的簡短說明，不吞掉——單一端點被擋/逾時時，這是唯一
+    留得下原因的地方（呼叫端不傳就維持舊行為，錯誤原地消失）。單一日期或市值失敗都不中止
+    其餘迴圈，一個端點壞掉不該連帶讓其他日期／來源也補不到。
     """
     cutoff = max((_date.today() - timedelta(days=days)).isoformat(), twse.CREDIT_SINCE)
     rows = conn.execute(
@@ -458,8 +462,10 @@ def _backfill_credit(conn, days: int = 10, cap: int = 5) -> list:
     if mv_holes:
         try:
             trend = twse.fetch_margin_trend(_iso_to_date(rows[0][0]), days=60)
-        except Exception:  # noqa: BLE001 — 市值補不到不影響其餘欄位
+        except Exception as e:  # noqa: BLE001 — 市值補不到不影響其餘欄位
             trend = {}
+            if errors is not None:
+                errors.append(f"trend: {type(e).__name__}: {e}"[:120])
         for ds in mv_holes:
             if trend.get(ds) is not None:
                 upsert_market_daily(conn, {"date": ds, "market_value": trend[ds]})
@@ -476,13 +482,15 @@ def _backfill_credit(conn, days: int = 10, cap: int = 5) -> list:
         if kr is None:
             try:
                 patch.update({k: v for k, v in twse.fetch_credit_summary(D).items() if v is not None})
-            except Exception:  # noqa: BLE001 — 單日失敗略過，下次再補
-                pass
+            except Exception as e:  # noqa: BLE001 — 單日失敗略過，下次再補
+                if errors is not None:
+                    errors.append(f"{ds} credit: {type(e).__name__}: {e}"[:120])
         if omv is None:
             try:
                 patch.update(_otc_margin_summary(D))
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as e:  # noqa: BLE001
+                if errors is not None:
+                    errors.append(f"{ds} otc: {type(e).__name__}: {e}"[:120])
         if patch:
             upsert_market_daily(conn, {"date": ds, **patch})
             filled.add(ds)
@@ -938,9 +946,9 @@ def run_update(conn, intl_tickers: dict) -> dict:
     # 證交所官方「信用交易概況」（整戶擔保維持率／低於130%戶數／追繳／處分／信用交易成交值）。
     # 產製時間不固定、常晚於 21:00；當日沒有就記進 failed（看得見、不告警），由 _backfill_credit 隔天補。
     try:
-        credit = twse.fetch_credit_summary(D) if D else {}
+        credit = {k: v for k, v in (twse.fetch_credit_summary(D) if D else {}).items() if v is not None}
         if credit:
-            row.update({k: v for k, v in credit.items() if v is not None})
+            row.update(credit)
             success.append("twse_credit")
         elif D:
             failed.append({"source": "twse", "name": "twse_credit", "error": "信用交易概況尚未公布，稍後回補"})
@@ -989,8 +997,12 @@ def run_update(conn, intl_tickers: dict) -> dict:
 
     # 回補近期缺的官方信用交易欄位（BFIJ3U 常晚於 21:00 產製）＋ 年度歷史月更
     try:
-        if _backfill_credit(conn):
+        credit_errs: list = []
+        if _backfill_credit(conn, errors=credit_errs):
             success.append("twse_credit_backfill")
+        if credit_errs:
+            failed.append({"source": "twse", "name": "credit_backfill",
+                           "error": "；".join(credit_errs[:3])})
     except Exception as e:  # noqa: BLE001
         failed.append({"source": "twse", "name": "credit_backfill", "error": str(e)})
     try:

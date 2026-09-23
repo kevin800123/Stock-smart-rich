@@ -2,6 +2,8 @@ import threading
 import time
 from datetime import date, timedelta
 
+import httpx
+
 from stocks_power_rich import updater
 from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
 
@@ -1195,3 +1197,100 @@ def test_refresh_credit_history_is_monthly(tmp_path, monkeypatch):
     assert len(calls) == 1
     from stocks_power_rich.db import latest_ai_cache_with_prefix
     assert latest_ai_cache_with_prefix(conn, "credit_hist:")["margin_ratio"]["max"] == 2.42
+
+
+def test_backfill_credit_reports_endpoint_errors_instead_of_swallowing(tmp_path, monkeypatch):
+    """端點被擋/逾時時，_backfill_credit 要把原因收進 errors，不是整段吞掉、什麼痕跡都不留。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    for ds in ("2026-08-03", "2026-08-04"):
+        upsert_market_daily(conn, {"date": ds, "taiex": 1.0})
+
+    class _FrozenDate(date):
+        @classmethod
+        def today(cls):
+            return date(2026, 8, 6)
+    monkeypatch.setattr(updater, "_date", _FrozenDate)
+    monkeypatch.setattr(updater.twse, "CREDIT_SINCE", "2026-08-01")
+
+    def fake_trend(D, days=60):
+        raise RuntimeError("blocked")
+    monkeypatch.setattr(updater.twse, "fetch_margin_trend", fake_trend)
+
+    def fake_credit(D):
+        if D.isoformat() == "2026-08-04":
+            raise httpx.ReadTimeout("t")
+        return {"keep_rate": 190.0}
+    monkeypatch.setattr(updater.twse, "fetch_credit_summary", fake_credit)
+    monkeypatch.setattr(updater, "_otc_margin_summary", lambda D, detail=None: {})
+
+    errors: list = []
+    filled = updater._backfill_credit(conn, errors=errors)
+
+    assert filled == ["2026-08-03"]
+    r = conn.execute("SELECT keep_rate FROM market_daily WHERE date=?", ("2026-08-03",)).fetchone()
+    assert r[0] == 190.0
+    assert any(e.startswith("trend: RuntimeError") for e in errors)
+    assert any("credit: ReadTimeout" in e for e in errors)
+
+    # errors 是選用參數：不傳（維持舊行為）時同樣的端點失敗不拋例外，只是沒有地方可看。
+    filled_again = updater._backfill_credit(conn, days=10)
+    assert filled_again == []
+
+
+def test_run_update_records_official_credit_success_and_unpublished_failure(tmp_path, monkeypatch):
+    """run_update 的證交所信用交易概況：公布了就寫值記成功；還沒公布記進 failed（看得見、不當成功）。
+
+    D 用 2026-06-23（比照既有 run_update 測試的慣例）——這天早就在 _backfill_credit／
+    _refresh_recent／_backfill_chips 的近期回補視窗之外，所以那些函式的查詢會是空結果，
+    不需要另外樁它們各自的網路端點。
+    """
+    def _stub_common():
+        monkeypatch.setattr(updater.stock_flow, "update_day", lambda conn, D: {
+            "TWSE": {"quotes": {}, "margin": {}}, "TPEx": {"quotes": {}}})
+        monkeypatch.setattr(updater.twse, "fetch_taiex",
+                            lambda: {"taiex": 23000.0, "taiex_chg": 50.0, "date": "2026-06-23"})
+        monkeypatch.setattr(updater.twse, "fetch_institutional", lambda date=None: {})
+        monkeypatch.setattr(updater.twse, "fetch_margin", lambda date=None: {})
+        monkeypatch.setattr(updater.taifex, "fetch_chips_for_date", lambda date=None: {})
+        monkeypatch.setattr(updater.taifex, "fetch_tx_history", lambda *a, **k: [])
+        monkeypatch.setattr(updater.tdcc, "fetch_custody_distribution", lambda: {"week_date": None, "data": {}})
+        monkeypatch.setattr(updater.revenue, "fetch_twse_revenue", lambda: {})
+        monkeypatch.setattr(updater.revenue, "fetch_otc_revenue", lambda: {})
+        monkeypatch.setattr(updater.twse, "fetch_margin_history", lambda: {})
+        monkeypatch.setattr(updater.twse, "fetch_margin_trend", lambda D, days=60: {})
+        monkeypatch.setattr(updater.fred, "fetch_fred_series", lambda series_id, start_date: {})
+        monkeypatch.setattr(updater.nasdaq, "fetch_sox_history", lambda days=0: {})
+        monkeypatch.setattr(updater.intl, "fetch_dated_closes", lambda keys=None: {})
+
+    # Case A：官方已公布 → 值寫入、twse_credit／otc_margin 都算成功
+    conn_a = get_connection(str(tmp_path / "a.sqlite"))
+    init_db(conn_a)
+    _stub_common()
+    monkeypatch.setattr(updater.twse, "fetch_credit_summary", lambda D: {
+        "keep_rate": 193.92, "below_call_acc": 147, "call_acc": 27, "exe_acc": 11, "credit_amt": 1433.06})
+    monkeypatch.setattr(updater.tpex, "fetch_otc_margin", lambda D: {
+        "balance": 2335144, "short_balance": 35783, "value": 2085.2, "margin": {}, "short": {}})
+
+    result_a = updater.run_update(conn_a, intl_tickers={})
+    assert "twse_credit" in result_a["success"]
+    assert "otc_margin" in result_a["success"]
+    row_a = conn_a.execute(
+        "SELECT keep_rate, credit_amt, otc_margin_value FROM market_daily WHERE date=?",
+        ("2026-06-23",)).fetchone()
+    assert tuple(row_a) == (193.92, 1433.06, 2085.2)
+
+    # Case B：尚未公布（回空 dict）→ 記進 failed（看得見），keep_rate 留 NULL，不當成功
+    conn_b = get_connection(str(tmp_path / "b.sqlite"))
+    init_db(conn_b)
+    _stub_common()
+    monkeypatch.setattr(updater.twse, "fetch_credit_summary", lambda D: {})
+    monkeypatch.setattr(updater.tpex, "fetch_otc_margin", lambda D: {})
+
+    result_b = updater.run_update(conn_b, intl_tickers={})
+    assert {"source": "twse", "name": "twse_credit",
+            "error": "信用交易概況尚未公布，稍後回補"} in result_b["failed"]
+    assert "twse_credit" not in result_b["success"]
+    row_b = conn_b.execute(
+        "SELECT keep_rate FROM market_daily WHERE date=?", ("2026-06-23",)).fetchone()
+    assert row_b[0] is None
