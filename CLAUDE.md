@@ -2480,7 +2480,7 @@ dict `{name: [...]}`，前端 `loadRotation` 沒跟著改，`d.sectors.length` �
   ——**安靜地少一條尾巴跟「這週大戶沒動」長得一模一樣**。`y` 本身維持 weeks[0]-weeks[1]，與全站大戶增比
   `custody_change_map` 同一個定義，不動。
 - **挑集保週要帶 `as_of=法人最新日`**（全站其他呼叫點都帶）：法人窗口落後時不可拿更新的集保週。
-- **顏色不用紅綠**：資金流向不是漲跌，一律 `C.info`；價格漲跌只在 tooltip 的 `chg_pct`。
+- **顏色不用紅綠**：資金流向不是漲跌，一律 `C.info`；價格漲跌只在 tooltip 的 `chg_pct`。（ui72 起泡泡改依象限色、四區排行改象限領先者 Top 3，見下方 ui72 一節）
 - **四區排行是 canvas 的鍵盤替代**（同 ui29 chip），每列 `<button aria-pressed>`、`min-height: 28px`；
   點泡泡或列都篩下方交叉選股（`.cross-grp` 帶 `data-sector`、只切 `.hidden` 不重打 API）。
 - **降級**：集保不足兩完整週 → 單軸水平長條（`.flow-bars`）＋兩欄排行；法人不足 `2×days` 日 → 無尾巴；
@@ -2513,6 +2513,20 @@ dict `{name: [...]}`，前端 `loadRotation` 沒跟著改，`d.sectors.length` �
 - **ECharts 陷阱：item 層的 `label: { show: false }` 會被抄進該 item 的 `emphasis.label.show`**，安靜地蓋掉 series 層的
   `emphasis.label.show: true`。第一版每個點都寫 `label.show`，結果非常駐的泡泡 hover／鍵盤 focus 時永遠不出標籤；
   現在只在要常駐時才掛 item `label`，其餘整個省略這個欄位。
+- **標籤右側放不下就翻到泡泡左側、右對齊**（`flowLabelLayout`，兩張圖的常駐、選取、hover／鍵盤 focus 標籤都走它）：原本一律
+  `position: "right"`，而離群類股正好就是常駐標籤、主圖又只留 6% 邊界，所以幾乎天天有標籤被繪圖區右緣裁掉（2026-09-23：1560px
+  主圖「文化創意」少 13px、放大鏡「資訊服務」少 42px；375px 各少 32／46px）。選 `labelLayout` callback 而不是「座標軸右半邊一律
+  `position: "left"`」：放不放得下看的是像素（圖寬、泡泡大小、字數），規則式會把放得下的標籤也翻到左邊。三個踩過的點：
+  (1) 繪圖區右緣要在 callback 當下向**現在的**圖表實例要（`getWidth() − grid.right`）——window resize 只呼叫 `chart.resize()`，
+  建 option 時記下的寬度會過期；(2) **判斷要從泡泡框 `p.rect` 推回「放右側時」的位置，不能看 `p.labelRect` 的位置**：ECharts
+  的 `setLabelStyle` 是把 textConfig 合併進去而不是取代，上一次回傳的 `dx` 留在 `textConfig.offset`，下一次拿到的 labelRect 已含
+  上次位移——用它判斷的原型實測每次 resize 都左右來回翻（左→右→左→右）；(3) hover 放大 1.12 倍時標籤被往外推 `grow = r×0.12`：
+  右側判斷要把它算進去，翻到左側時多留一個 `grow`（否則最大泡泡 hover 時標籤壓進泡泡 2.8px）。修完 1560／375 兩張圖所有常駐、選取、
+  hover 標籤都在畫布內（最小右側餘裕：1560 主圖 63.7px、放大鏡 34px；375 為 44／30px），連續 resize 與重畫都不翻動；反證：把
+  callback 換回「永遠放右側」，同一個 hover 標籤右緣 755.8px、畫布只有 718px。**`moveOverlap: "shiftY"` 對這種附著在泡泡上的標籤
+  實測是 no-op**（照指示保留）：它改的是 `label.y`，但 zrender 繪製時依 `textConfig.position` 重算、把它蓋掉（水泥：shiftY 算出
+  y=165.8、實際畫在 150.9），所以 375px 的汽車×化學、水泥×資訊服務標籤重疊是既有狀況；翻邊只會減少（水泥×資訊服務 28→6px）、不會
+  新增。真要避開重疊得在 callback 回傳 `x`／`y`，那會連帶改掉 hover 時的定位，這次沒做。
 - **向量**：上期空心○ → 本期●，拆兩段、箭頭畫在中點（不被泡泡蓋住）；選取時該類股向量 2.5px，其餘泡泡、外框、
   向量、上期圓降到 25% 透明（`FLOW_FADE = 0.25`，spec §6）。
 - **tooltip 壓到 ≤ 300px（實測 34 類最寬 244.8px）**：放大鏡在 1024px 只有 349px、375px 只有 350px 寬，`confine`
@@ -2535,9 +2549,14 @@ dict `{name: [...]}`，前端 `loadRotation` 沒跟著改，`d.sectors.length` �
   （或取消選取）tooltip 與高亮會一直釘在圖上；focusout 一律 downplay／hideTip。反證：把 `matches(":focus-visible")`
   強制成 true，滑鼠點「光電」卡後 tooltip 就釘在主圖上。「清除篩選」後焦點移到 `#flow-detail`（`tabindex=-1`），
   只在 `:focus:not(:focus-visible)` 時去框——鍵盤操作看得到全站的琥珀框，滑鼠操作不畫。
-- **失敗／無資料的訊息也寫進 `#flow-headline`**：圖的容器是 `role="img"`，裡面那行字讀屏讀不到；同時藏掉主圖的
-  「○ 上期 → ● 本期」圖例（單軸降級 `renderFlowBars` 也藏，`renderFlowCharts` 再打開；放大鏡的圖例跟著
-  `.flow-zoom-wrap` 一起藏）。
+- **失敗／無資料的訊息也寫進 `#flow-headline`**：圖的容器是 `role="img"`，裡面那行字讀屏讀不到。「○ 上期 → ● 本期」圖例
+  （主圖與放大鏡各一個，一律經 `setFlowLegends`）只在 `m.hasPrevAny`——真的畫了向量——時出現：沒有上期（法人不足兩個窗口、
+  集保不相鄰）、單軸降級、載入失敗都藏起來，否則是在解釋一個不存在的東西。清空後的 `#flow-detail` 用 `:empty { display: none }`
+  收掉，不留一個 40px 高的空框。
+- **標題不准從字中間斷**（review round 1）：象限領先者的 `h4` 是「名稱＋N 類」的 flex 列，格子窄時名稱被擠斷成「法人買・大戶／減」
+  （標題列寬 601px 時 99px、865px 時 115px）；放大鏡標題被旁邊 `nowrap` 的圖例擠成「核心放大鏡・框住 28/34／類」（601px）。兩處都改成
+  `flex-wrap: wrap`＋名稱 `nowrap`，放不下時類股數／圖例整段換到下一行（圖例 `margin-left: auto`，換行後仍靠右）；高度不變（原本就被
+  擠成兩行），寬度夠時與原本一模一樣。頁首判讀加 `text-wrap: pretty`：1181–1280px 最後一行從「急。」變「最急。」。
 - **全寬度驗證修掉的兩件事**（2026-09-23 快照，1560／1280／1181／1180／601／600／375 逐一量）：
   (1) **1181px 右欄比主圖高 120px**（期望 ≤ 40）：右欄只有 356px，象限每列內寬 136.3px，一般內距下「法人 +0.30%　
   大戶 +0.34%」要 146.7px → 每列折成三行（42→58px）。改成對 `.flow-quadrants` 開容器查詢 `flow-quads`，寬 ≤ 390px

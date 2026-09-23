@@ -910,7 +910,8 @@ body[data-public] .status-bar { display: none; }
 .flow-q-inst { --q: var(--flow-inst); }
 .flow-q-out { --q: var(--flow-out); }
 .flow-command { align-items: center; }
-.flow-command .flow-headline { color: var(--text-secondary); font-size: var(--fs-sm); }
+/* pretty：1181–1280px 標題欄只有約 300px，最後一行原本只剩「急。」一個字 */
+.flow-command .flow-headline { color: var(--text-secondary); font-size: var(--fs-sm); text-wrap: pretty; }
 .flow-chips { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; max-width: 640px; }
 /* #flow-chip-list 只是承接 role="status" 的量測邊界，不能自己成一個 flex item，
    否則裡面的 chip span 會被關進單一格子，擠不進 .flow-chips 的 flex 排列 */
@@ -960,9 +961,12 @@ body[data-public] .status-bar { display: none; }
 .flow-side { grid-area: side; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .flow-zoom-wrap { min-width: 0; }
 .flow-detail { grid-area: detail; }
-.flow-chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin: 0 0 4px;
+/* 標題與圖例都不准從中間斷：放不下同一行時圖例整段換到下一行（仍靠右）。601px 放大鏡只有 239px，
+   原本 nowrap 的圖例把標題擠成「核心放大鏡・框住 28/34」／「類」兩行 */
+.flow-chart-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 0 8px; margin: 0 0 4px;
   color: var(--label); font-size: var(--fs-xs); }
-.flow-legend { color: var(--muted); white-space: nowrap; }
+.flow-chart-head > span:first-child { white-space: nowrap; }
+.flow-legend { margin-left: auto; color: var(--muted); white-space: nowrap; }
 /* .chart（後面定義、height:340px）同權重會蓋掉這裡——ui69 的 .flow-chart 高度就是這樣變成死規則的，
    所以用 #view-rotation 提高權重。 */
 #view-rotation .flow-chart { height: 580px; }
@@ -970,8 +974,11 @@ body[data-public] .status-bar { display: none; }
 .flow-quadrants { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; container: flow-quads / inline-size; }
 .flow-q { min-width: 0; padding: 8px 10px; background: var(--card); border: 1px solid var(--border);
   border-left: 3px solid var(--q, var(--border)); border-radius: var(--r); }
-.flow-q h4 { display: flex; justify-content: space-between; gap: 6px; margin: 0 0 4px; color: var(--q, var(--label));
+/* 象限名整段不斷：標題列太窄（601px 時 99px、865px 時 115px）放不下「名稱＋N 類」時，類股數換到下一行，
+   不再把「法人買・大戶減」拆成「法人買・大戶」／「減」 */
+.flow-q h4 { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 6px; margin: 0 0 4px; color: var(--q, var(--label));
   font-size: var(--fs-xs); font-weight: 700; }
+.flow-q-name { white-space: nowrap; }
 .flow-q-count { color: var(--muted); font-weight: 400; white-space: nowrap; }
 /* 兩行一列（名稱／法人・大戶）。字級 13px、行高 1.35：右欄（放大鏡 250＋Top3 兩列）才會與 580px 主圖大致齊高 */
 .flow-row { display: flex; flex-direction: column; align-items: stretch; gap: 1px; width: 100%; min-height: 28px; padding: 3px 6px;
@@ -995,6 +1002,8 @@ body[data-public] .status-bar { display: none; }
   background: var(--card); border: 1px solid var(--border-subtle); border-radius: var(--r); }
 /* 「清除篩選」後焦點移到這裡（tabindex=-1）：滑鼠操作不畫框，鍵盤操作留全站 :focus-visible 的框 */
 .flow-detail:focus:not(:focus-visible) { outline: none; }
+/* 載入失敗／尚無資料時 clearFlowView 把它清空：不留一個 40px 高的空框 */
+#flow-detail:empty { display: none; }
 .flow-detail-name { color: var(--text-primary); font-size: var(--fs-sm); font-weight: 700; }
 .flow-detail-top { color: var(--muted); }
 .flow-detail-clear { margin-left: auto; min-height: 28px; }

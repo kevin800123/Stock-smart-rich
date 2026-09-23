@@ -4011,8 +4011,37 @@ const FLOW_COLOR = {
   inst: CSS_VAR("--flow-inst", "#8b93f8"), out: CSS_VAR("--flow-out", "#8494ad"),
 };
 const FLOW_FADE = 0.25;   // 選取某類股時，其餘泡泡、外框、向量、上期圓的透明度（spec §6）
+const FLOW_LABEL_DIST = 4;      // 標籤與泡泡的間距（label.distance）；翻到左側時用同一個間距
+const FLOW_EMPH_SCALE = 1.12;   // hover／鍵盤 focus 時泡泡放大的倍數（emphasis.scale），標籤會跟著往外推
 let flowZoomChart = null;
 const flowYi = (amt) => { const v = (amt || 0) / 1e8; return fmt(v, Math.abs(v) >= 10 ? 0 : 1); };
+
+// 標籤預設在泡泡右側（spec §7）；右側會超出繪圖區右緣就翻到泡泡左側、右對齊；兩邊都放不下（極窄的圖）
+// 才夾進繪圖區（會壓到泡泡，但整個讀得到）。常駐、選取、hover／鍵盤 focus 的標籤都走這裡：非常駐泡泡的
+// 標籤平時是隱藏的，ECharts 仍會對它跑這個 callback，hover 時沿用算好的位移，所以一樣不會被裁掉。
+// 選 labelLayout callback 而不是「座標軸右半邊一律改 position:left」：後者會把放得下的標籤也翻到左邊，
+// 違背「預設在右側」；而放不放得下取決於像素寬度（圖寬、泡泡大小、字數），不是座標值。三個踩過的點：
+// (1) 繪圖區右緣要在 callback 當下向「現在的」圖表實例要（getWidth − grid.right）：window resize 只呼叫
+//     chart.resize()、不重建 option，建 option 時記下的寬度會過期。
+// (2) 判斷要從泡泡的框 p.rect 推回「放在右側時」的位置，不能看 p.labelRect 的位置：ECharts 的 setLabelStyle
+//     是把 textConfig 合併進去而不是取代，上一次回傳的 dx 會留在泡泡的 textConfig.offset，下一次版面計算拿到的
+//     labelRect 已經含上次的位移——用它判斷會在每次重畫之間左右來回翻（實測文化創意連續 resize：左→右→左→右）。
+// (3) hover 時泡泡放大 FLOW_EMPH_SCALE 倍、標籤跟著往右推 grow＝r×(倍數−1)：判斷右側放不放得下要把這段算進去，
+//     否則剛好塞得下的標籤一 hover 就超出右緣。翻到左側時同樣的 grow 會讓標籤往泡泡推、泡泡又往標籤長，
+//     所以左側多留一個 grow：平時間距 4＋grow（最大泡泡約 7px），hover 時仍不壓到泡泡（不多留時最大泡泡會壓 2.8px）；
+//     hover 時標籤是往右（往泡泡）移，不會因此超出左緣。
+function flowLabelLayout(p, ch, g) {
+  const keep = { moveOverlap: "shiftY" };
+  if (!ch || !p.rect || !p.labelRect) return keep;
+  const w = p.labelRect.width, r = p.rect.width / 2;
+  const lo = g.left, hi = ch.getWidth() - g.right;                // 繪圖區左右緣（canvas 座標）
+  const rightX = p.rect.x + p.rect.width + FLOW_LABEL_DIST;       // position:"right" 時標籤的左緣
+  const grow = r * (FLOW_EMPH_SCALE - 1);                         // hover 放大時標籤往右推的距離
+  if (rightX + grow + w <= hi) return keep;                       // 右側放得下（含 hover）：維持預設
+  let x = p.rect.x - FLOW_LABEL_DIST - grow - w;                  // 翻到泡泡左側、右對齊
+  if (x < lo) x = Math.max(lo, Math.min(rightX, hi - grow - w));  // 兩邊都不夠：夾進繪圖區
+  return { moveOverlap: "shiftY", dx: x - rightX };
+}
 
 function flowQuadrantAreas(rx, ry) {
   const a = (q, x0, y0, x1, y1, alpha) => [{ xAxis: x0, yAxis: y0, itemStyle: { color: withAlpha(FLOW_COLOR[q], alpha) } }, { xAxis: x1, yAxis: y1 }];
@@ -4053,6 +4082,7 @@ function flowChartOption(d, m, which) {
   const faded = (r) => !!sel && r.sector !== sel;
   const labelOn = new Set(m.labels); if (sel) labelOn.add(sel);
   const n = (d.flow_dates || []).length;
+  const g = zoom ? { left: 48, right: 12, top: 18, bottom: 34 } : { left: 62, right: 18, top: 22, bottom: 46 };
   const bubbles = {
     id: "bubbles", type: "scatter", z: 5, clip: true, animation: false,
     data: m.rows.map((r) => {
@@ -4070,10 +4100,11 @@ function flowChartOption(d, m, which) {
         ...(persistLabel ? { label: { show: true } } : {}),
       };
     }),
-    label: { show: false, position: "right", distance: 4, formatter: (p) => p.name, color: C.text, fontSize: 11,
+    label: { show: false, position: "right", distance: FLOW_LABEL_DIST, formatter: (p) => p.name, color: C.text, fontSize: 11,
              fontFamily: HM_FONT, backgroundColor: withAlpha(C.panel, 0.85), padding: [2, 5], borderRadius: 3 },
-    labelLayout: { moveOverlap: "shiftY" },
-    emphasis: { scale: 1.12, label: { show: true } },
+    // 右緣放不下就翻到左側（見 flowLabelLayout）。圖表實例在 callback 當下才取，resize 後才量得到新寬度。
+    labelLayout: (p) => flowLabelLayout(p, zoom ? flowZoomChart : flowChart, g),
+    emphasis: { scale: FLOW_EMPH_SCALE, label: { show: true } },
     markLine: { silent: true, symbol: "none", animation: false, label: { show: false },
                 lineStyle: { color: C.borderStrong, type: "solid", width: 1 }, data: [{ xAxis: 0 }, { yAxis: 0 }] },
     markArea: { silent: true, animation: false, data: flowQuadrantAreas(rx, ry).concat(zoom ? [] : [flowCoreBox(m.core)]) },
@@ -4093,7 +4124,6 @@ function flowChartOption(d, m, which) {
   const prevDots = { id: "prev", type: "scatter", z: 4, silent: true, clip: true, animation: false, symbolSize: 7,
     data: prevRows.map((r) => ({ value: [r.s.x_prev, r.s.y_prev],
       itemStyle: { color: "transparent", borderColor: withAlpha(FLOW_COLOR[r.q], faded(r) ? FLOW_FADE : 0.95), borderWidth: 1.5 } })) };
-  const g = zoom ? { left: 48, right: 12, top: 18, bottom: 34 } : { left: 62, right: 18, top: 22, bottom: 46 };
   const qText = (text, pos) => ({ type: "text", silent: true, ...pos, style: { text, fill: C.muted, fontSize: 11, fontFamily: HM_FONT } });
   return {
     animation: false,
@@ -4120,10 +4150,15 @@ function flowChartOption(d, m, which) {
 function bindFlowChart(ch) {
   ch.on("click", (p) => { if (p.data && p.data.sector) toggleRotationFilter(p.data.sector); });
 }
+// 「○ 上期 → ● 本期」圖例（主圖＋放大鏡各一個）只在真的畫了向量時才出現：沒有上期（法人不足兩個窗口、
+// 集保不相鄰）、單軸降級、載入失敗時，圖上沒有任何向量，留著圖例等於在解釋一個不存在的東西。
+function setFlowLegends(show) {
+  document.querySelectorAll("#rotation-flow .flow-legend").forEach((l) => l.classList.toggle("hidden", !show));
+}
 function renderFlowCharts(d, m) {
   const mainEl = $("flow-chart"), zoomEl = $("flow-zoom"), wrap = document.querySelector(".flow-zoom-wrap");
   if (wrap) wrap.classList.remove("hidden");
-  const legend = document.querySelector(".flow-main .flow-legend"); if (legend) legend.classList.remove("hidden");
+  setFlowLegends(m.hasPrevAny);
   mainEl.style.height = "";        // 單軸降級會寫 inline auto；雙軸時把高度交還給 CSS 斷點
   if (!flowChart) { mainEl.innerHTML = ""; flowChart = initChart(mainEl); bindFlowChart(flowChart); }
   if (!flowZoomChart) { zoomEl.innerHTML = ""; flowZoomChart = initChart(zoomEl); bindFlowChart(flowZoomChart); }
@@ -4174,7 +4209,7 @@ function renderFlowBars(d) {
   const el = $("flow-chart");
   disposeFlowChart();
   const zw = document.querySelector(".flow-zoom-wrap"); if (zw) zw.classList.add("hidden");   // 單軸沒有放大鏡
-  const legend = document.querySelector(".flow-main .flow-legend"); if (legend) legend.classList.add("hidden");   // 也沒有向量
+  setFlowLegends(false);   // 也沒有向量
   el.style.height = "auto";
   const secs = d.sectors.filter((s) => s.x != null).slice().sort((a, b) => b.x - a.x);
   const xm = Math.max(0.05, ...secs.map((s) => Math.abs(s.x)));
@@ -4194,7 +4229,7 @@ function flowLeaderRow(sector, x, y) {
     + `<span class="flow-row-val"><span>法人 ${flowPct(x)}</span>${y == null ? "" : `<span>大戶 ${flowPct(y)}</span>`}</span></button>`;
 }
 function flowLeaderBox(q, title, count, rowsHtml) {
-  return `<div class="flow-q flow-q-${q}"><h4>${title}<span class="flow-q-count">${count} 類</span></h4>`
+  return `<div class="flow-q flow-q-${q}"><h4><span class="flow-q-name">${title}</span><span class="flow-q-count">${count} 類</span></h4>`
     + (rowsHtml.join("") || '<div class="muted small">—</div>') + "</div>";
 }
 function renderFlowLeaders(d, m) {
@@ -4249,7 +4284,7 @@ function clearFlowView(msg) {
   // 圖的容器是 role="img"，裡面那行字讀屏讀不到 → 訊息也寫進頁首判讀，當成一般文字給出
   const h = $("flow-headline"); if (h) h.textContent = msg;
   const zw = document.querySelector(".flow-zoom-wrap"); if (zw) zw.classList.add("hidden");
-  const legend = document.querySelector(".flow-main .flow-legend"); if (legend) legend.classList.add("hidden");
+  setFlowLegends(false);
 }
 
 // drill-down：篩下方交叉選股（不重打 API，只切 .hidden）；再點同一個取消。狀態不持久化。
