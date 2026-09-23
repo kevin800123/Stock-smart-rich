@@ -171,6 +171,9 @@ def credit_backfill(days: int = 60):
 
     每日更新的 _backfill_credit 只回看 10 天、每次最多 5 個日期；官方 2026-08-03 才開始提供，
     上線那次要一口氣把 08-03 起補齊。BFIJ3U 每個日期一個請求，cap 放大到 90。
+
+    `remaining` 只數 `keep_rate` 的洞且不含今天（今天的 BFIJ3U 晚上才產製，交給每日排程）；
+    `market_value`／`otc_margin_value` 的洞也會被同一支回補填，但不計入。
     """
     if not _backfill_lock.acquire(blocking=False):
         return {"busy": True, "note": "回補進行中，請稍候再呼叫"}
@@ -179,11 +182,14 @@ def credit_backfill(days: int = 60):
         from ..sources import twse
         c = conn()
         days = max(5, min(days, 120))
-        filled = updater._backfill_credit(c, days=days, cap=90)
+        errs: list = []
+        filled = updater._backfill_credit(c, days=days, cap=90, errors=errs)
         cutoff = max((date.today() - timedelta(days=days)).isoformat(), twse.CREDIT_SINCE)
+        today_str = date.today().isoformat()
         remaining = c.execute(
-            "SELECT COUNT(*) FROM market_daily WHERE date >= ? AND keep_rate IS NULL", (cutoff,)).fetchone()[0]
-        return {"filled": filled, "remaining": remaining, "since": twse.CREDIT_SINCE}
+            "SELECT COUNT(*) FROM market_daily WHERE date >= ? AND date < ? AND keep_rate IS NULL",
+            (cutoff, today_str)).fetchone()[0]
+        return {"filled": filled, "remaining": remaining, "since": twse.CREDIT_SINCE, "errors": errs}
     finally:
         _backfill_lock.release()
 

@@ -187,6 +187,29 @@ def test_expected_after_close_data_is_not_a_line_alert(tmp_path, monkeypatch):
     assert sent == []
 
 
+def test_twse_credit_failure_with_real_error_still_alerts(tmp_path, monkeypatch):
+    """`expected_later` 只在 twse_credit 的 error 含「尚未」／「稍後回補」時才排除告警——
+    同一個欄位若因別的原因失敗（連線逾時等），仍要照常告警，不能用欄位名無條件排除。
+    """
+    db_file = str(tmp_path / "t4b.sqlite")
+    monkeypatch.setenv("SPR_DB_PATH", db_file)
+    c = get_connection(db_file)
+    init_db(c)
+    from stocks_power_rich import line_push
+    from stocks_power_rich.api.helpers import _check_update_result_and_alert
+
+    sent = []
+    monkeypatch.setattr(line_push, "broadcast_text", lambda token, text: sent.append(text))
+    _check_update_result_and_alert(c, {
+        "date": date.today().isoformat(),
+        "failed": [
+            {"source": "twse", "name": "twse_credit", "error": "ConnectTimeout: timed out"},
+        ],
+    })
+    assert sent, "應該要送出告警"
+    assert "twse_credit" in sent[0], sent[0]
+
+
 def test_alert_names_the_source_so_two_markets_are_distinguishable(monkeypatch, tmp_path):
     """月營收是**逐市場**判定的（上市 twse／上櫃 tpex 各自失敗），但告警只印 `name`，
     所以使用者看到的永遠是「revenue」——分不出是哪一邊。實測 2026-09-12 收到那則時

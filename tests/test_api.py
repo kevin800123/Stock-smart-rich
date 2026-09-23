@@ -497,6 +497,9 @@ def test_public_overview_reports_official_keep_rate(tmp_path, monkeypatch):
 
 
 def test_credit_backfill_endpoint_reports_remaining_within_official_window(tmp_path, monkeypatch):
+    """`remaining` 要能分辨「還沒補」與「今天／CREDIT_SINCE 之前本來就不算」，
+    `errors` 要能把端點被擋的原因帶出來，不能讓 filled=[] 跟「本來就沒東西可補」長得一樣。
+    """
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
     from stocks_power_rich import updater
@@ -504,9 +507,19 @@ def test_credit_backfill_endpoint_reports_remaining_within_official_window(tmp_p
     from datetime import date, timedelta
     for i in (1, 2):
         upsert_market_daily(c, {"date": (date.today() - timedelta(days=i)).isoformat(), "taiex": 1.0})
-    monkeypatch.setattr(updater, "_backfill_credit", lambda conn, days=10, cap=5, errors=None: ["2026-09-22"])
+    # 07-31 早於 CREDIT_SINCE（2026-08-03）該被 cutoff 濾掉；今天則交給每日排程，不計入 remaining
+    upsert_market_daily(c, {"date": "2026-07-31", "taiex": 1.0})
+    upsert_market_daily(c, {"date": date.today().isoformat(), "taiex": 1.0})
+
+    def _fake_backfill_credit(conn, days=10, cap=5, errors=None):
+        if errors is not None:
+            errors.append("trend: RuntimeError: blocked")
+        return ["2026-09-22"]
+
+    monkeypatch.setattr(updater, "_backfill_credit", _fake_backfill_credit)
     r = TestClient(create_app()).get("/api/credit/backfill?days=60").json()
     assert r["filled"] == ["2026-09-22"] and r["remaining"] == 2
+    assert r["errors"] == ["trend: RuntimeError: blocked"]
     assert TestClient(create_app()).get("/api/margin-maintenance/heal").status_code == 404
 
 
@@ -564,7 +577,7 @@ def test_dashboard_pulse_scores_from_real_checklist_inputs(tmp_path, monkeypatch
     for i, taiex in enumerate([100.0 + i for i in range(10)]):
         upsert_market_daily(c, {
             "date": f"2026-07-{10 + i:02d}", "taiex": taiex,
-            "margin_maintenance": 180.1, "otc_margin_maintenance": 166.8,
+            "keep_rate": 193.9, "margin_value": 6048.6, "otc_margin_value": 2085.2,
             "vix": 16.0, "margin_balance": 5000.0 - i, "turnover": 3000.0,
         })
 
