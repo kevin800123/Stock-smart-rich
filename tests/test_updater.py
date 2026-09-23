@@ -1127,6 +1127,7 @@ def test_backfill_credit_fills_only_nulls_and_never_before_credit_since(tmp_path
     """官方信用交易概況的洞掃描：只填 NULL、CREDIT_SINCE 之前不打、市值一次 TREND 補整段。"""
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
+    monkeypatch.setattr(updater, "_CREDIT_THROTTLE", 0)   # 測試不等真實節流
     monkeypatch.setattr(updater.twse, "CREDIT_SINCE", "2026-08-03")
     class _FrozenDate(date):
         @classmethod
@@ -1164,6 +1165,7 @@ def test_backfill_credit_fills_only_nulls_and_never_before_credit_since(tmp_path
 def test_backfill_credit_respects_cap_newest_first(tmp_path, monkeypatch):
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
+    monkeypatch.setattr(updater, "_CREDIT_THROTTLE", 0)   # 測試不等真實節流
     class _FrozenDate(date):
         @classmethod
         def today(cls):
@@ -1174,8 +1176,11 @@ def test_backfill_credit_respects_cap_newest_first(tmp_path, monkeypatch):
     asked = []
     monkeypatch.setattr(updater.twse, "fetch_credit_summary", lambda D: asked.append(D.isoformat()) or {"keep_rate": 190.0})
     monkeypatch.setattr(updater.twse, "fetch_margin_trend", lambda D, days=60: {})
+    slept = []
+    monkeypatch.setattr(updater.time, "sleep", lambda s: slept.append(s))
     updater._backfill_credit(conn, days=10, cap=3)
     assert asked == ["2026-09-07", "2026-09-06", "2026-09-05"]
+    assert len(slept) == 2          # 節流只放在日期「之間」：3 個日期睡 2 次，第一個不等
 
 
 def test_otc_margin_summary_keeps_balances_without_computing_maintenance():
@@ -1191,7 +1196,8 @@ def test_refresh_credit_history_is_monthly(tmp_path, monkeypatch):
     init_db(conn)
     calls = []
     monkeypatch.setattr(updater.twse, "fetch_margin_history",
-                        lambda: calls.append(1) or {"margin_ratio": {"min": 0.36, "max": 2.42}})
+                        lambda: calls.append(1) or {"margin_ratio": {"min": 0.36, "max": 2.42},
+                                                    "credit_ratio": {"min": 5.1, "max": 21.3}})
     assert updater._refresh_credit_history(conn) is True
     assert updater._refresh_credit_history(conn) is False        # 同月第二次不再連外
     assert len(calls) == 1
@@ -1199,10 +1205,25 @@ def test_refresh_credit_history_is_monthly(tmp_path, monkeypatch):
     assert latest_ai_cache_with_prefix(conn, "credit_hist:")["margin_ratio"]["max"] == 2.42
 
 
+def test_refresh_credit_history_does_not_cache_a_partial_payload(tmp_path, monkeypatch):
+    """鍵一個月才換一次——只拿到其中一個序列就寫進去，另一張卡的歷史區間會缺一整個月。"""
+    conn = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(conn)
+    calls = []
+    monkeypatch.setattr(updater.twse, "fetch_margin_history",
+                        lambda: calls.append(1) or {"margin_ratio": {"min": 0.36, "max": 2.42}})
+    assert updater._refresh_credit_history(conn) is False
+    assert updater._refresh_credit_history(conn) is False        # 沒快取 → 下次仍會重抓
+    assert len(calls) == 2
+    from stocks_power_rich.db import latest_ai_cache_with_prefix
+    assert latest_ai_cache_with_prefix(conn, "credit_hist:") is None
+
+
 def test_backfill_credit_reports_endpoint_errors_instead_of_swallowing(tmp_path, monkeypatch):
     """端點被擋/逾時時，_backfill_credit 要把原因收進 errors，不是整段吞掉、什麼痕跡都不留。"""
     conn = get_connection(str(tmp_path / "t.sqlite"))
     init_db(conn)
+    monkeypatch.setattr(updater, "_CREDIT_THROTTLE", 0)   # 測試不等真實節流
     for ds in ("2026-08-03", "2026-08-04"):
         upsert_market_daily(conn, {"date": ds, "taiex": 1.0})
 

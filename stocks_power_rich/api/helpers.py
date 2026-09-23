@@ -773,6 +773,10 @@ def _cup_push_info(c) -> dict | None:
             "picks": has_list, "picks_label": picks_info["label"]}
 
 
+# 官方信用交易概況（BFIJ3U）同一次產製的欄位：一起退到最近有值的那一列，不可混用兩天
+_KEEP_RATE_KEYS = ("keep_rate", "below_call_acc", "call_acc", "exe_acc")
+
+
 def _daily_messages(c, full: bool, force: bool = False) -> tuple[list, dict | None]:
     """組盤後 LINE 訊息。回 (messages, err)；err 非 None 時 messages 為空。
 
@@ -844,10 +848,26 @@ def _daily_messages(c, full: bool, force: bool = False) -> tuple[list, dict | No
             p = c.execute("SELECT * FROM market_daily WHERE date < ? ORDER BY date DESC LIMIT 1",
                           (margin_row["date"],)).fetchall()
             margin_prev = dict(p[0]) if p else None
+        # 整戶維持率（BFIJ3U）多半在 21:00 之後才產製，所以 21:00 那列有融資、keep_rate 卻是
+        # NULL——不處理的話卡片會安靜地少掉那一列。退到最近一筆有 keep_rate 的交易日，
+        # 把那幾欄併進 margin_row，並把日期傳下去讓卡片標「截至 MM-DD」。
+        keep_rate_asof = margin_row.get("date") if margin_row and margin_row.get("keep_rate") is not None else None
+        if margin_row and margin_row.get("keep_rate") is None:
+            krows = c.execute(
+                "SELECT * FROM market_daily WHERE keep_rate IS NOT NULL "
+                "ORDER BY date DESC LIMIT 2").fetchall()
+            if krows:
+                krow = dict(krows[0])
+                kprev = dict(krows[1]) if len(krows) > 1 else {}
+                margin_row = {**margin_row, **{k: krow.get(k) for k in _KEEP_RATE_KEYS}}
+                # 「昨」要跟著退：用 keep_rate 那一列的前一筆，不可拿 margin_prev（常是同一天）
+                margin_prev = {**(margin_prev or {}), "keep_rate": kprev.get("keep_rate")}
+                keep_rate_asof = krow["date"]
         # AI 解讀改由卡片第二頁承載（使用者拍板：自選股/杯柄不放，改看 AI）→ 只回一則
         msgs = [line_push.compose_daily_flex(m, secs, watch, full=full, tsmc=tsmc,
                                             prev=prev_row, cup=cup, ai_text=ai_text,
-                                            margin_row=margin_row, margin_prev=margin_prev)]
+                                            margin_row=margin_row, margin_prev=margin_prev,
+                                            keep_rate_asof=keep_rate_asof)]
     except Exception as e:  # noqa: BLE001 — fatal 才記推播失敗（缺資料/非今日屬正常略過）
         return [], {"ok": False, "error": str(e), "fatal": True}
     return msgs, None

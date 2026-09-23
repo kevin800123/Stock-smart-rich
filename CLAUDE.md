@@ -45,8 +45,8 @@ Gotchas:
 證交所公布的是**券商申報的真實帳戶合計、全市場一個數字**，08-03 起 19 天實測自算值比官方低
 0.3%～5.9%、比例還會跳。使用者拍板：**改用官方值，自算路徑刪除**（`_compute_margin_maintenance`／
 `_compute_otc_margin_maintenance`／`_heal_margin_maintenance`／`analysis.margin_maintenance`／
-`GET /api/margin-maintenance/heal` 全部移除；`market_daily` 舊欄位留在 schema 不寫值）。下面
-「兩個市場、兩條基準線」的舊推理因此整段作廢——那套推理的前提（自算、分市場）已不存在。
+`GET /api/margin-maintenance/heal` 全部移除；`market_daily` 舊欄位留在 schema 不寫值）。原本的
+「兩個市場、兩條基準線」一節已刪除——那套推理的前提（自算、分市場）已不存在。
 
 - **資料源**：`BFIJ3U`（單日：`keep_rate`／`below_call_acc`／`call_acc`／`exe_acc`／`credit_amt` 元，
   `twse.fetch_credit_summary`）、`MI_MARGN_TREND`（逐日上市總市值 `market_value` 億，
@@ -58,7 +58,9 @@ Gotchas:
   `failed name=twse_credit「信用交易概況尚未公布，稍後回補」`（`expected_later` 放行、不告警），
   `run_update` 把 BFIJ3U 回傳全欄皆 `None` 視為「尚未公布」而非成功。`_backfill_credit(conn,
   days=10, cap=5, errors=None)` 隔天只填 NULL、絕不覆蓋既有值，端點失敗原因收進選用的 `errors`
-  列表而不吞掉。一次性回補 `GET /api/credit/backfill?days=60`（內部 `cap=90`）回傳
+  列表而不吞掉。一次性回補 `GET /api/credit/backfill?days=60`（內部 `cap=30`，逐日請求之間
+  `updater._CREDIT_THROTTLE`＝0.3 秒，一次最多約十幾秒、不拖到代理逾時也不連打證交所；契約是
+  **重複呼叫直到 `remaining` 不再下降**，連假與尚未公布的日期會一直留著）回傳
   `filled`／`remaining`／`since`／`errors`；**`remaining` 只數 `keep_rate` 的洞且不含今天**——
   當日 BFIJ3U 晚上才產製，算進去只會讓數字卡在 1 永遠補不完，交給每日排程。`_refresh_credit_history`
   把年度歷史存進 `credit_hist:{YYYY-MM}`（月更一次即可），`dashboard` 一律用
@@ -86,6 +88,18 @@ Gotchas:
   `bands.keep_rate.call`，不寫死 130，bands 未到前不畫線；`index.html` 核取方塊標籤是「整戶維持率」）、
   公開總覽 `margin.keep_rate`、Gemini 輸入鍵名「整戶擔保維持率(%)」、`app.js` 的 `KEY_METRICS`
   換成「整戶擔保維持率」。
+- **自算路徑刪掉後還有兩個讀端要跟著改**（final review 抓到）：`short_mv`／`margin_mv`／
+  `otc_margin_mv`／`otc_short_mv` 的唯一寫入者是被刪的 `_maint`，此後不再寫值（欄位留在 schema），
+  而融券卡的副標「市值 X 億（估）」與對照圖「融資／融券」窗格（預設勾選）的「融券市值(估)」
+  都還在讀 `short_mv`——不改就是一條安靜變空的線。融券卡改成只報官方 `short_balance`（張），
+  副標拿掉；窗格的第二條（右）軸改畫官方「融券餘額」（`short_balance`，`unit2: "融券(張)"`），
+  仍與融資金額（億）分軸。**LINE 21:00 卡片的整戶維持率要退到最近有值的列**：BFIJ3U 多半在
+  21:00 之後才產製，21:00 那列有融資、`keep_rate` 卻是 NULL，卡片原本會安靜地少掉那一列——
+  `_daily_messages` 另查最近一筆 `keep_rate IS NOT NULL` 的列（連同 `below_call_acc`／`call_acc`／
+  `exe_acc`，同一次產製不混兩天；「昨」取那一列的前一筆），併進 `margin_row`，並把
+  `keep_rate_asof` 傳給 `compose_daily_flex`／`compose_daily_brief`，日期不同就標
+  「整戶維持率（截至 MM-DD）」（同融資小標的用語）。網頁的 `ratioCard` 同理改成**依自己的欄位**
+  找退回列（融資占市值吃 `market_value`、信用交易占比吃 `credit_amt`，與 `keep_rate` 何時有值無關）。
 - 刻意不做：不存上櫃的信用交易概況（同值）、不做信用交易戶數（與追繳壓力重疊、分母未說明）、
   不用自算值補 08-03 之前的對照圖（兩個定義不能接在同一條線上）。
 - **測試環境的坑**：這台機器跑 Python 3.14，`datetime.date.today` 已不可 monkeypatch（immutable
@@ -1166,7 +1180,9 @@ self_screen 三格都會是「尚未到期」，那是**正確**顯示不是故�
   拿到空行情算不出上櫃融資維持率，要靠 `_heal_margin_maintenance` 補」——這兩支函式已於 2026-09 隨官方
   整戶擔保維持率移除，此後果不再適用，見 ui70 那節。行情失敗現在仍會拖到的是 `otc_margin_value`——
   它不靠這批行情，是 `_otc_margin_summary` 直接讀 `tpex.fetch_otc_margin` 的 `margin/balance` 端點，
-  但同一晚若連這支也失敗，`ss_trader.blended_margin_ratio` 的加權兩平線當天就少一邊、退回只用上市成數。）
+  但同一晚若連這支也失敗，加權兩平線並不會退回只用上市成數：`api/market.py::_bands_for` 與
+  `ss_trader._last_valid` 都取視窗內**最近一筆非空**的 `otc_margin_value`，所以當天用的是前一交易日的
+  上櫃融資金額當權重——兩平線照算、只差一天的權重，不會安靜地變成另一個定義。）
   尚未處理；可行的方向是行情重抓失敗時改用 `stock_ohlc` 裡 17:30 已存好的當天收盤。
 
 ### 週集保一公布就反映到自算選股（custody_watch，2026-09）

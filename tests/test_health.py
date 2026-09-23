@@ -187,6 +187,26 @@ def test_expected_after_close_data_is_not_a_line_alert(tmp_path, monkeypatch):
     assert sent == []
 
 
+def test_otc_margin_unpublished_is_not_a_line_alert(tmp_path, monkeypatch):
+    """上櫃融資餘額約 21:00 後才公布——error 寫明「尚未發布，稍後回補」時屬預期晚到，不告警。"""
+    db_file = str(tmp_path / "t4c.sqlite")
+    monkeypatch.setenv("SPR_DB_PATH", db_file)
+    c = get_connection(db_file)
+    init_db(c)
+    from stocks_power_rich import line_push
+    from stocks_power_rich.api.helpers import _check_update_result_and_alert
+
+    sent = []
+    monkeypatch.setattr(line_push, "broadcast_text", lambda token, text: sent.append(text))
+    _check_update_result_and_alert(c, {
+        "date": date.today().isoformat(),
+        "failed": [
+            {"source": "tpex", "name": "otc_margin", "error": "上櫃融資餘額尚未發布，稍後回補"},
+        ],
+    })
+    assert sent == []
+
+
 def test_twse_credit_failure_with_real_error_still_alerts(tmp_path, monkeypatch):
     """`expected_later` 只在 twse_credit 的 error 含「尚未」／「稍後回補」時才排除告警——
     同一個欄位若因別的原因失敗（連線逾時等），仍要照常告警，不能用欄位名無條件排除。

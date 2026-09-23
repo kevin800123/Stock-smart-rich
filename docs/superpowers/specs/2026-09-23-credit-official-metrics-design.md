@@ -89,7 +89,7 @@
 ### 3. 加權兩平線（3a）
 
 - `ss_trader.blended_margin_ratio(tse_value, otc_value) -> float`：`(tse×0.6 + otc×0.5) ÷ (tse+otc)`，兩者皆
-  缺回 `None`，只缺一邊就用另一邊的成數。今天 6,048.6／2,085.2 億 → 成數 0.5741 → 兩平 `100/0.5741` ＝ **174.2%**。
+  缺回 `None`，只缺一邊就用另一邊的成數。今天 6,048.6／2,085.2 億 → 成數 0.5744 → 兩平 `100/0.5744` ＝ **174.1%**。
 - `margin_breakeven(ratio)`／`margin_verdict(maintenance, ratio)` 規則不動，改吃加權成數。
 - `/api/dashboard` 的 `bands["keep_rate"]`＝`{"breakeven": <當日加權兩平>, "call": 130}`（**依最新列每日算**，
   不再是常數；`_BANDS` 裡兩個舊鍵刪除）。前端一律讀 `lastBands.keep_rate`，不在 `app.js` 複寫公式。

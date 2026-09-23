@@ -170,7 +170,9 @@ def credit_backfill(days: int = 60):
     """一次性回補證交所官方信用交易欄位（整戶維持率／追繳處分戶數／信用交易成交值／上市總市值）。
 
     每日更新的 _backfill_credit 只回看 10 天、每次最多 5 個日期；官方 2026-08-03 才開始提供，
-    上線那次要一口氣把 08-03 起補齊。BFIJ3U 每個日期一個請求，cap 放大到 90。
+    上線那次要把 08-03 起補齊。BFIJ3U 每個日期一個請求，每次最多 30 個日期、日期之間
+    間隔 _CREDIT_THROTTLE（0.3 秒）——一次最多約十幾秒，不會拖到代理逾時，也不連打證交所。
+    契約：**重複呼叫直到 `remaining` 不再下降**（尚未公布的日期、連假會一直留著，不必等到 0）。
 
     `remaining` 只數 `keep_rate` 的洞且不含今天（今天的 BFIJ3U 晚上才產製，交給每日排程）；
     `market_value`／`otc_margin_value` 的洞也會被同一支回補填，但不計入。
@@ -183,7 +185,7 @@ def credit_backfill(days: int = 60):
         c = conn()
         days = max(5, min(days, 120))
         errs: list = []
-        filled = updater._backfill_credit(c, days=days, cap=90, errors=errs)
+        filled = updater._backfill_credit(c, days=days, cap=30, errors=errs)
         cutoff = max((date.today() - timedelta(days=days)).isoformat(), twse.CREDIT_SINCE)
         today_str = date.today().isoformat()
         remaining = c.execute(

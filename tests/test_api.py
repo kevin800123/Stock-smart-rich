@@ -915,6 +915,46 @@ def test_line_test_endpoint_composes_and_broadcasts(tmp_path, monkeypatch):
     assert s["line_configured"] is True and "tok" not in str(s)
 
 
+def test_daily_messages_keep_rate_falls_back_to_latest_row_with_value(tmp_path, monkeypatch):
+    """21:00 那列有融資、BFIJ3U 卻多半還沒產製（keep_rate NULL）——卡片不可安靜地少掉
+    整戶維持率那一列，要退到最近有值的交易日並標「截至 MM-DD」。卡片與純文字版都要有。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich import line_push
+    from stocks_power_rich.api.helpers import _daily_messages
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    from stocks_power_rich.sources import tpex, twse
+
+    c = get_connection(str(tmp_path / "t.sqlite"))
+    init_db(c)
+    upsert_market_daily(c, {"date": "2026-09-21", "taiex": 45000.0, "margin_balance": 9300000.0,
+                            "keep_rate": 192.4, "below_call_acc": 150.0})
+    upsert_market_daily(c, {"date": "2026-09-22", "taiex": 45100.0, "margin_balance": 9350000.0,
+                            "keep_rate": 193.11, "below_call_acc": 140.0, "call_acc": 20.0,
+                            "exe_acc": 9.0})
+    upsert_market_daily(c, {"date": "2026-09-23", "taiex": 45200.0, "taiex_chg": 100.0,
+                            "margin_balance": 9400000.0, "margin_chg": 50000.0})   # keep_rate NULL
+    monkeypatch.setattr(twse, "fetch_sector_indices", lambda date=None: [])
+    monkeypatch.setattr(twse, "fetch_stock_quotes", lambda date=None: {})
+    monkeypatch.setattr(tpex, "fetch_otc_quotes", lambda date=None: {})
+    monkeypatch.setattr(twse, "fetch_listed_industry", lambda: {})
+    monkeypatch.setattr(tpex, "fetch_otc_names", lambda: {})
+
+    # altText 會被 LINE 切到 400 字（融資券段在後面），所以直接攔下純文字版的完整輸出
+    briefs = []
+    real_brief = line_push.compose_daily_brief
+    monkeypatch.setattr(line_push, "compose_daily_brief",
+                        lambda *a, **k: briefs.append(real_brief(*a, **k)) or briefs[-1])
+
+    msgs, err = _daily_messages(c, full=True, force=True)
+    assert err is None and len(msgs) == 1
+    flex = str(msgs[0]["contents"])
+    assert "整戶維持率（截至 09-22）" in flex and "193.1%" in flex
+    assert "昨192.4%" in flex                      # 「昨」跟著退到 09-21，不是 09-22 自己
+    assert "9,400,000張" in flex                   # 融資本身仍是今天的
+    assert briefs and "整戶維持率（截至 09-22） 193.1%(昨192.4%)" in briefs[-1]
+    assert "低於130% 140戶" in briefs[-1]           # 同一次產製的戶數一起退，不混兩天
+
+
 def test_line_push_failure_recorded_retry_and_recovery_notice(tmp_path, monkeypatch):
     """推播失敗不再靜默（回歸：2026-07-07 16:00 速報失敗、使用者毫不知情）：
     broadcast 失敗先自動重試一次；仍失敗則持久化記錄，下次成功推播時

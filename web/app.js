@@ -2423,7 +2423,7 @@ function flowCard(label, v, prev, unit = "", rk = null, alert = false, trend = "
 }
 // 餘額卡（融資/融券）：當日尚未公布（晚間才出）時，退而顯示最近一筆有資料的交易日，並標註日期
 // amtKey＝該餘額對應的金額欄；est=true 代表那是我們用現價估的，不是官方數字（融券沒有官方金額）
-function balanceCard(label, srcRow, curDate, balKey, chgKey, hist = [], amtKey = "", est = false, amtChgKey = "") {
+function balanceCard(label, srcRow, curDate, balKey, chgKey, hist = [], amtKey = "", amtChgKey = "") {
   if (!srcRow || srcRow[balKey] === null || srcRow[balKey] === undefined) {
     return emptyStatCard(label);
   }
@@ -2431,14 +2431,14 @@ function balanceCard(label, srcRow, curDate, balKey, chgKey, hist = [], amtKey =
   const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
   const rk = pctile(hist, balKey, srcRow[balKey]);
   const amt = amtKey ? srcRow[amtKey] : null;
-  // 金額的較昨增減：融資有官方逐日值（margin_value_chg）；融券是我們自己估的市值，沒有官方增減
+  // 金額的較昨增減：融資有官方逐日值（margin_value_chg）；融券官方不發布金額，卡片不帶金額行
   const amtChg = amtChgKey ? srcRow[amtChgKey] : null;
   // 單位只講一次、方向用既有的 ▲▼ 字彙（比「較昨 -」省 5 個字）——原本「金額 5,070.1 億
   // 　較昨 -385.2 億」在 12px 下約 190px，超過卡片內容寬；而 .card-note 是 nowrap，
   // grid item 的 min-content 因此被撐大，整列 minmax(175px,1fr) 的欄寬就不齊了（跑版）。
   // 不著色：紅綠在本站鎖給「行情漲跌」，融資餘額減少是籌碼清洗、不是下跌，著色會誤導。
   const extra = amt == null ? ""
-    : `${est ? "市值" : "金額"} ${fmt(amt, 1)} 億${est ? "（估）" : ""}`
+    : `金額 ${fmt(amt, 1)} 億`
       + (amtChg == null ? "" : `　${amtChg > 0 ? "▲" : "▼"}${fmt(Math.abs(amtChg), 1)}`);
   const alert = cardAlert(balKey, label, srcRow[balKey], fmt(srcRow[balKey], 0), rk, "tw");
   const trend = trendHtml(hist, chgKey, { label: "近7日增減", unit: "張", digits: 0 });
@@ -2504,8 +2504,12 @@ function callPressureCard(hist, srcRow, curDate) {
   return card(lbl, fmt(v, 0), chg, null, '<span class="card-unit">戶</span>', tip, rk, alert, extra, trend, " 戶", "dir-neutral");
 }
 // 兩個官方比率共用一張卡型：融資占市值（上市）、信用交易占比（上市）。值由後端逐列算好（不落地）。
-function ratioCard(hist, srcRow, curDate, opts) {
+// 退回列依「這張卡自己的欄位」找：margin_mcap_pct 吃 market_value（TREND 另一個時程）、
+// credit_ratio 吃 credit_amt，與 keep_rate 何時有值無關——沿用 creditRow 會在 market_value
+// 晚到時整張卡空白。傳入的列只留作介面相容，不參與退回；「截至」仍對照 curDate。
+function ratioCard(hist, _row, curDate, opts) {
   const { label, col, tip, extra } = opts;
+  const srcRow = [...hist].reverse().find((r) => r && r[col] != null) || null;
   if (!srcRow || srcRow[col] == null) return emptyStatCard(label);
   const stale = srcRow.date && srcRow.date !== curDate;
   const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
@@ -2516,13 +2520,15 @@ function ratioCard(hist, srcRow, curDate, opts) {
   const rk = pctile(hist, col, v);
   const alert = cardAlert(col, label, v, `${fmt(v, 2)}%`, rk, "tw");
   const trend = trendHtml(hist, col, { delta: true, label: "近7日增減", unit: "%", digits: 2 });
-  return card(lbl, fmt(v, 2) + "%", chg, null, "", tip, rk, alert, extra, trend, null, "dir-neutral");
+  // extra 可為函式：副標要跟數字取自同一列（例如成交金額配信用交易占比），不能另找一列
+  const note = typeof extra === "function" ? extra(srcRow) : extra;
+  return card(lbl, fmt(v, 2) + "%", chg, null, "", tip, rk, alert, note, trend, null, "dir-neutral");
 }
 function histRangeText(key, unit = "%") {
   const h = (lastCreditHistory || {})[key];
   if (!h || h.min == null || h.max == null) return "";
-  const since = h.since ? `${new Date().getFullYear() - Number(h.since)} 年` : "歷史";
-  return `近 ${since} ${fmt(h.min, 2)}${unit}～${fmt(h.max, 2)}${unit}`;
+  const range = `${fmt(h.min, 2)}${unit}～${fmt(h.max, 2)}${unit}`;
+  return h.since ? `${h.since} 年以來 ${range}` : `歷史 ${range}`;
 }
 // 10 日均量卡：大盤量能的「絕對水位」（既有的爆量/量縮判定看的是相對變化，兩者互補）。
 // 讀數就是均量本身，不在卡面上放「距 8000 億 ±X%」——8000 只是一條參考線，把它
@@ -2751,19 +2757,20 @@ function renderCards(m, prev = {}, hist = []) {
       trendHtml(hist, "inst_trust", { label: "近7日淨額", unit: "億", digits: 1 })),
     flowCard("自營買賣超", m.inst_dealer, prev.inst_dealer, " 億", dealer.rk, dealer.alert,
       trendHtml(hist, "inst_dealer", { label: "近7日淨額", unit: "億", digits: 1 })),
-    // 融資金額是官方數字；融券金額官方不發布，只能以現價估算，故標「估」
-    balanceCard("融資餘額(張)", marginRow, m.date, "margin_balance", "margin_chg", hist, "margin_value", false, "margin_value_chg"),
-    balanceCard("融券餘額(張)", marginRow, m.date, "short_balance", "short_chg", hist, "short_mv", true),
+    // 融資金額是官方數字；融券金額官方不發布，原本以現價估算的「市值（估）」隨自算維持率一併移除
+    // （那一欄已不再寫入），融券卡只報官方餘額（張）。
+    balanceCard("融資餘額(張)", marginRow, m.date, "margin_balance", "margin_chg", hist, "margin_value", "margin_value_chg"),
+    balanceCard("融券餘額(張)", marginRow, m.date, "short_balance", "short_chg", hist),
     keepRateCard(hist, creditRow, m.date),
     callPressureCard(hist, creditRow, m.date),
     ratioCard(hist, creditRow, m.date, { label: "融資占市值（上市）", col: "margin_mcap_pct",
       tip: `證交所定義：融資餘額占上市股票總市值的比率，用以觀察市場使用融資槓桿的相對程度。\n＝融資金額 ÷ 上市總市值（MI_MARGN_TREND 的 marketValue）。`
-        + (histRangeText("margin_ratio") ? `\n${histRangeText("margin_ratio")}（年度資料，證交所 MI_MARGN_HISTORY）` : ""),
+        + (histRangeText("margin_ratio") ? `\n年度區間：${histRangeText("margin_ratio")}（證交所 MI_MARGN_HISTORY）` : ""),
       extra: histRangeText("margin_ratio") }),
     ratioCard(hist, creditRow, m.date, { label: "信用交易占比（上市）", col: "credit_ratio",
       tip: `證交所定義：信用交易成交值占市場總成交值的比率。\n＝信用交易成交值 ÷ (2 × 市場總成交值)——買賣兩邊各算一次成交值，故分母乘 2（證交所 JS 原式）。`
-        + (histRangeText("credit_ratio") ? `\n${histRangeText("credit_ratio")}（年度資料）` : ""),
-      extra: creditRow.credit_amt != null ? `成交 ${fmt(creditRow.credit_amt, 0)} 億` : "" }),
+        + (histRangeText("credit_ratio") ? `\n年度區間：${histRangeText("credit_ratio")}` : ""),
+      extra: (r) => (r.credit_amt != null ? `成交 ${fmt(r.credit_amt, 0)} 億` : "") }),
     volMaCard(hist, m, prev),
   ].join("");
   const foreignOi = rankedAlert("tx_foreign_oi", "外資台指淨未平倉", m.tx_foreign_oi,
@@ -3996,12 +4003,13 @@ const CHIP_PANES = [
   { key: "turnover", label: "成交金額", unit: "億", bar: true, series: (at) => [
       { name: "成交金額", type: "bar", data: at((r) => r.turnover), itemStyle: { color: SER.dealer, opacity: 0.55 } },
       { ...LP, name: "10日均量", symbolSize: 0, data: at((r) => r.turnover_ma10), lineStyle: { color: C.accent, width: 1.5 }, itemStyle: { color: C.accent } }] },
-  // 融資 ~5,000 億 vs 融券 ~200 億，量級差 25 倍——共用一條軸的話融券會被壓成貼底的
-  // 直線、完全讀不出轉折。故本窗格宣告第二條（右）軸，融券走 axis:1。
-  { key: "margin", label: "融資／融券", unit: "融資(億)", unit2: "融券(億)", series: (at) => [
+  // 融資金額（億）與融券餘額（張）單位不同、量級也差很多——共用一條軸的話融券會被壓成
+  // 貼底的直線、完全讀不出轉折。故本窗格宣告第二條（右）軸，融券走 axis:1。
+  // 融券原本畫「融券市值(估)」（現價估算），隨自算維持率一併移除，改用官方餘額。
+  { key: "margin", label: "融資／融券", unit: "融資(億)", unit2: "融券(張)", series: (at) => [
       { ...LP, name: "融資金額", data: at((r) => r.margin_value), lineStyle: { color: C.up, width: 2.2, shadowBlur: 8, shadowColor: withAlpha(C.up, 0.42) },
         itemStyle: { color: C.up, borderColor: C.panel, borderWidth: 1 }, areaStyle: techArea(C.up), markPoint: extremaMark(C.up) },
-      { ...LP, name: "融券市值(估)", axis: 1, data: at((r) => r.short_mv), lineStyle: { color: C.down, width: 2.2, shadowBlur: 8, shadowColor: withAlpha(C.down, 0.42) },
+      { ...LP, name: "融券餘額", axis: 1, data: at((r) => r.short_balance), lineStyle: { color: C.down, width: 2.2, shadowBlur: 8, shadowColor: withAlpha(C.down, 0.42) },
         itemStyle: { color: C.down, borderColor: C.panel, borderWidth: 1 }, areaStyle: techArea(C.down), markPoint: extremaMark(C.down) }] },
   // 追繳線取後端 bands.keep_rate.call（同卡片），不在這裡寫死 130；bands 未到時不畫線。
   { key: "maint", label: "整戶維持率", unit: "%", series: (at) => {

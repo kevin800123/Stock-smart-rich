@@ -708,6 +708,26 @@ def test_direction_colours_pass_aa_on_the_header_band():
         assert _contrast(colour, line_push._C_BG) >= 4.5
 
 
+def test_flex_keep_rate_row_marks_as_of_when_older_than_card():
+    """21:00 時 BFIJ3U 多半還沒產製：呼叫端把前一交易日的 keep_rate 併進 margin_row，
+    卡片那一列要照樣顯示數值並標「截至 MM-DD」（同融資小標的用語），純文字版也一樣。"""
+    today = {**_ROW, "date": "2026-09-23", "keep_rate": None}
+    mrow = {**today, "keep_rate": 193.11, "below_call_acc": 140, "call_acc": 20, "exe_acc": 9}
+    msg = line_push.compose_daily_flex(today, _SECTORS, _WATCH, full=True, tsmc=_TSMC, prev=_PREV,
+                                       margin_row=mrow, margin_prev={"keep_rate": 192.4},
+                                       keep_rate_asof="2026-09-22")
+    sect = str(_sect(msg, "融資"))
+    assert "整戶維持率（截至 09-22）" in sect and "193.1%" in sect and "昨192.4%" in sect
+    assert "融資（截至" not in sect                # 融資本身是今天的，小標不標
+    for b in _bubbles(msg):
+        assert line_push._bubble_size(b) <= line_push._BUBBLE_MAX
+    brief = line_push.compose_daily_brief(mrow, [], [], full=True, keep_rate_asof="2026-09-22")
+    assert "整戶維持率（截至 09-22） 193.1%" in brief
+    # 取值日＝區塊日期時不標（既有呼叫端不傳 keep_rate_asof 也不標）
+    same = str(_sect(line_push.compose_daily_flex(_ROW, [], [], keep_rate_asof=_ROW["date"]), "融資"))
+    assert "整戶維持率" in same and "截至" not in same
+
+
 def test_flex_margin_shows_one_official_keep_rate_row_and_call_pressure_only_in_full():
     row = dict(_ROW)
     brief = str(_sect(line_push.compose_daily_flex(row, [], [], full=False), "融資"))

@@ -100,8 +100,12 @@ def _px_line(label: str, price, chg) -> str:
 def compose_daily_brief(row: dict, sectors: list, watch: list,
                         ai_text: str = "", full: bool = False,
                         tsmc: dict | None = None, prev: dict | None = None,
-                        cup: dict | None = None) -> str:
+                        cup: dict | None = None,
+                        keep_rate_asof: str | None = None) -> str:
     """組盤後訊息。full=True 加融資券（21:00 完整版）；速報（16:00）不含。
+
+    keep_rate_asof：整戶維持率實際取自哪一天（ISO）。與 row 的日期不同時，該行標
+    「整戶維持率（截至 MM-DD）」——21:00 時 BFIJ3U 多半還沒產製，值是前一交易日的。
 
     row＝market_daily 最新列（含國際行情欄位）；prev＝前一交易日列（法人/期貨附「昨」對照）；
     sectors＝[{name, chg_pct}]；watch＝[{code, name, close, chg_pct, in_latest}]；
@@ -179,7 +183,7 @@ def compose_daily_brief(row: dict, sectors: list, watch: list,
         if row.get("short_balance") is not None:
             g.append(f"融券 {_fmt(row['short_balance'], 0)}張({_signed(row.get('short_chg'), 0)})")
         if row.get("keep_rate") is not None:      # 證交所公布的全市場整戶擔保維持率
-            line = f"整戶維持率 {_fmt(row['keep_rate'], 1)}%"
+            line = f"{_keep_rate_label(keep_rate_asof, row.get('date'))} {_fmt(row['keep_rate'], 1)}%"
             if pv.get("keep_rate") is not None:
                 line += f"(昨{_fmt(pv['keep_rate'], 1)}%)"
             g.append(line)
@@ -405,14 +409,17 @@ def _eyebrow(text, color=_C_SEC_INTL):
             "color": color, "margin": "xl"}
 
 
-def _kv(label, value, color=_C_TEXT, note=""):
+def _kv(label, value, color=_C_TEXT, note="", wrap=False):
     """一列：左標籤、中數值、右灰色昨值。三欄直接用 flex 分配——包一層 box 再塞 filler
     對齊效果一樣，但每列多花約 110 bytes，第一頁的 10 KB 額度禁不起這種浪費。
 
     字級 xs→md：手機上 13px 的數字在戶外幾乎看不見。放大後三欄會擠，所以標籤一併
     縮短（「外資台指OI」→「外資OI」）——Flex 的 text 預設不換行只截斷，字大就得字少。
     """
-    cells = [{"type": "text", "text": label, "size": "md", "color": _C_MUTED, "flex": 5},
+    lab = {"type": "text", "text": label, "size": "md", "color": _C_MUTED, "flex": 5}
+    if wrap:      # 帶「（截至 MM-DD）」的長標籤：寧可折兩行，也不要被截成「整戶維持率（…」
+        lab["wrap"] = True
+    cells = [lab,
              {"type": "text", "text": value, "size": "md", "color": color,
               "align": "end", "flex": 5}]
     if note:
@@ -457,11 +464,18 @@ def _pct_colour(v):
     return _C_MUTED if not v else (_C_UP if v > 0 else _C_DOWN)
 
 
+def _keep_rate_label(asof, ref_date) -> str:
+    """整戶維持率的列名：取值日與參照日期不同就標「（截至 MM-DD）」，同融資小標的用語。"""
+    stale = asof and ref_date and str(asof) != str(ref_date)
+    return "整戶維持率" + (f"（截至 {str(asof)[5:]}）" if stale else "")
+
+
 def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False,
                        tsmc: dict | None = None, prev: dict | None = None,
                        cup: dict | None = None, ai_text: str = "",
                        margin_row: dict | None = None,
-                       margin_prev: dict | None = None) -> dict:
+                       margin_prev: dict | None = None,
+                       keep_rate_asof: str | None = None) -> dict:
     """盤後速報 → Flex 卡片（AI 解讀不放這裡，長散文另發一則純文字）。
 
     開場刻意不是「加權指數大數字」而是三大法人資金天平：指數使用者一天看好幾次早就知道，
@@ -475,6 +489,8 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
 
     margin_row/margin_prev：融資 16:00 尚未公布，故由呼叫端給「最近一筆有融資的交易日」
     及其前一日；省略則退回 row/prev（既有呼叫端與測試不受影響）。
+    keep_rate_asof：整戶維持率那幾欄取自哪一天（呼叫端在 margin_row 缺 keep_rate 時退到
+    最近有值的列併進來）；與該區塊的日期不同就在那一列標「截至 MM-DD」。
     """
     pv = prev or {}
     taiex, chg = row.get("taiex"), row.get("taiex_chg")
@@ -568,8 +584,11 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
                           note=_delta(mrow.get("margin_chg"), 0)))
         # 2026-09 起改證交所公布的全市場整戶擔保維持率（券商申報的真實帳戶合計、上市上櫃同值）
         if mrow.get("keep_rate") is not None:
-            mg.append(_kv("整戶維持率", f"{_fmt(mrow['keep_rate'], 1)}%",
-                          note="" if mprev.get("keep_rate") is None else f"昨{_fmt(mprev['keep_rate'], 1)}%"))
+            # 參照日期取這個區塊的日期（小標已標過「截至」的就不重複標）
+            klabel = _keep_rate_label(keep_rate_asof, mrow.get("date") or row.get("date"))
+            mg.append(_kv(klabel, f"{_fmt(mrow['keep_rate'], 1)}%",
+                          note="" if mprev.get("keep_rate") is None else f"昨{_fmt(mprev['keep_rate'], 1)}%",
+                          wrap=klabel != "整戶維持率"))
         if full:      # 21:00 完整版才補這兩項細節，額度允許
             if mrow.get("margin_value") is not None:
                 mg.append(_kv("融資金額", f"{_fmt(mrow['margin_value'], 1)}億",
@@ -633,7 +652,14 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
                   "color": _C_GOLD},
                  {"type": "text", "text": str(row.get("date") or ""), "size": "xxs",
                   "color": _C_MUTED, "margin": "xs"}]
-    alt = compose_daily_brief(row, sectors, watch, full=full, tsmc=tsmc, prev=prev, cup=cup)
+    # altText 的融資券段讀的是 row；row 缺 keep_rate 而 mrow 有（呼叫端退到前一交易日併進來）
+    # 時一起帶過去，「昨」也跟著換成 mprev 的，否則純文字版同樣會少掉那一行。
+    brow, bprev = row, prev
+    if row.get("keep_rate") is None and mrow.get("keep_rate") is not None:
+        brow = {**row, **{k: mrow.get(k) for k in ("keep_rate", "below_call_acc", "call_acc", "exe_acc")}}
+        bprev = {**pv, "keep_rate": mprev.get("keep_rate")}
+    alt = compose_daily_brief(brow, sectors, watch, full=full, tsmc=tsmc, prev=bprev, cup=cup,
+                              keep_rate_asof=keep_rate_asof)
     return _carousel(alt, [(head, market), (read_head, read)])
 
 

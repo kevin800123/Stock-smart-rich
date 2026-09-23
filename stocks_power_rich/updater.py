@@ -440,6 +440,11 @@ def _otc_margin_summary(D, detail=None):
             "otc_short_balance": d.get("short_balance")}
 
 
+# 逐日 BFIJ3U／櫃買請求之間的間隔：/api/credit/backfill 一次最多 30 個日期，連打證交所
+# 不留間隔是自找限流（同 _REPORT_THROTTLE 的理由）。測試以 monkeypatch 設 0。
+_CREDIT_THROTTLE = 0.3
+
+
 def _backfill_credit(conn, days: int = 10, cap: int = 5, errors: list | None = None) -> list:
     """回補近 days 天官方信用交易欄位的洞（只填 NULL，絕不覆蓋既有值）。
 
@@ -476,6 +481,8 @@ def _backfill_credit(conn, days: int = 10, cap: int = 5, errors: list | None = N
             continue
         if attempts >= cap:
             break
+        if attempts:
+            time.sleep(_CREDIT_THROTTLE)
         attempts += 1
         D = _iso_to_date(ds)
         patch = {}
@@ -504,7 +511,8 @@ def _refresh_credit_history(conn) -> bool:
     if get_ai_cache(conn, key):
         return False
     data = twse.fetch_margin_history()
-    if not data:
+    # 兩個序列都要到齊才快取：鍵一個月才換一次，半份結果寫進去就會卡一整個月
+    if not data or not all(data.get(k) for k in ("margin_ratio", "credit_ratio")):
         return False
     set_ai_cache(conn, key, data)
     return True
