@@ -3768,7 +3768,7 @@ async function addWatch() {
 // 取代 bfd0a53 之後就再也畫不出來的「近 N 日類股漲跌表」（後端回 dict、前端當陣列用）。
 // X＝法人近 5 日淨買賣 ÷ 類股市值、Y＝大戶 400張↑ 週增 ÷ 類股市值，尾巴＝上一期→本期。
 // 資金流向不是漲跌 → 一律 C.info，不碰紅綠（紅綠鎖給行情；價格漲跌只在 tooltip）。
-let flowChart = null, lastSectorFlow = null, rotationSectorFilter = null, crossNoteBase = "";
+let flowChart = null, lastSectorFlow = null, lastFlowModel = null, rotationSectorFilter = null, crossNoteBase = "";
 
 function flowQuadrant(s) {
   if (s.x > 0 && s.y > 0) return "in";
@@ -3906,57 +3906,123 @@ function flowHeadline(m) {
   return parts.length ? parts.join("、") + "。" : "今天沒有明顯的雙流入或輪動訊號。";
 }
 
+// ---------- 頁首：一句判讀＋compact chips＋指標說明（ui72）----------
+// chips 取代原本那段長括號說明；日期／缺口的措辭沿用 ui69 的判斷（上期不連續、集保不相鄰）。
+function flowChipsHtml(d) {
+  const md = (s) => (s || "").slice(5);
+  const dayGap = (a, b) => (Date.parse(b) - Date.parse(a)) / 86400000;       // b − a，日曆天
+  const fd = d.flow_dates || [], pd = d.flow_prev_dates || [], chips = [];
+  if (fd.length) chips.push(`法人 ${md(fd[0])}～${md(fd[fd.length - 1])}・${fd.length} 日`);
+  if (d.has_tail && pd.length) {
+    const span = dayGap(pd[0], pd[pd.length - 1]);
+    chips.push(`上期 ${md(pd[0])}～${md(pd[pd.length - 1])}` + (span > fd.length * 2 + 4 ? "（不連續）" : ""));
+  } else if (!d.has_tail) {
+    chips.push(`法人不足 ${fd.length * 2} 日・無上期`);
+  }
+  if (d.has_custody) chips.push(`集保 ${md(d.custody_weeks[1])}→${md(d.custody_weeks[0])}`);
+  else chips.push("集保不足兩週・單軸");
+  const pw = d.custody_prev_weeks || [];
+  if (pw.length) chips.push(`上期集保 ${md(pw[1])}→${md(pw[0])}`);
+  else if (d.custody_prev_skipped === "weeks_not_adjacent" && d.custody_prev_gap) {
+    const g = d.custody_prev_gap, cw = d.custody_weeks || [];   // g＝[較新, 較舊]
+    const wk = Math.round(dayGap(g[1], g[0]) / 7);
+    chips.push(g[0] === cw[0] && g[1] === cw[1] ? `本期集保跨 ${wk} 週・無向量` : `上期集保跨 ${wk} 週・無向量`);
+  }
+  chips.push(`${(d.sectors || []).length} 類股`);
+  const ex = d.excluded || {};
+  if (ex.no_price) chips.push(`${ex.no_price} 檔缺收盤`);
+  if (ex.sectors_no_mcap) chips.push(`${ex.sectors_no_mcap} 類算不出市值`);
+  return chips.map((c) => `<span class="flow-chip">${esc(c)}</span>`).join("")
+    + '<button type="button" class="flow-chip flow-help-btn" popovertarget="flow-help">ⓘ 指標說明</button>';
+}
+function flowHelpHtml(d, m) {
+  const n = (d.flow_dates || []).length;
+  const core = m ? `今天每軸兩端各修 ${Math.round(m.core.trim * 100)}%，框住 ${m.core.inside}/${m.core.n} 類。` : "";
+  const scale = m ? `今天 X 寬 ${fmt(m.wx, 3)}、Y 寬 ${fmt(m.wy, 3)}。` : "";
+  return `<h4>指標說明</h4><dl>`
+    + `<dt>X 法人</dt><dd>法人近 ${n} 日淨買賣 ÷ 類股市值（%）。</dd>`
+    + `<dt>Y 大戶</dt><dd>400 張以上大戶持股週增 ÷ 類股市值（%）。</dd>`
+    + `<dt>上期</dt><dd>前一個 ${n} 日窗口與前一個集保週；向量由上期（○）指向本期（●）。</dd>`
+    + `<dt>核心放大鏡</dt><dd>兩軸同比例修剪兩端，取框住至少 80% 類股的最小範圍，含原點、外加 12% 邊界，座標皆為線性。${core}框外的類股只在全範圍圖出現。</dd>`
+    + `<dt>正規化</dt><dd>以放大鏡的 X 寬、Y 寬當刻度，避免某一軸因離群值主導。${scale}</dd>`
+    + `<dt>最強共振</dt><dd>雙流入類股中「X÷X寬＋Y÷Y寬」最大。</dd>`
+    + `<dt>加速轉強</dt><dd>相較上期「ΔX÷X寬＋ΔY÷Y寬」最大，且本期綜合值已轉正。</dd>`
+    + `<dt>風險外流</dt><dd>同一式最小，且本期綜合值為負。</dd>`
+    + `</dl><p class="muted small">規則式摘要，非投資建議。</p>`;
+}
+function renderFlowHeader(d, m) {
+  const head = $("flow-headline"), chips = $("flow-chips"), help = $("flow-help-body");
+  if (head) head.textContent = m ? flowHeadline(m)
+    : (d.has_custody ? "暫無雙軸資料，以法人單軸顯示。" : "集保不足兩個完整週，暫以法人單軸顯示。");
+  if (chips) chips.innerHTML = flowChipsHtml(d);
+  if (help) help.innerHTML = flowHelpHtml(d, m);
+}
+// 原生 popover 預設置中；開啟前後各定位一次（開啟前量不到自己的高度，開啟後再修正）
+function positionFlowHelp() {
+  const pop = $("flow-help"), btn = document.querySelector('#flow-chips [popovertarget="flow-help"]');
+  if (!pop || !btn) return;
+  const r = btn.getBoundingClientRect();
+  const w = Math.min(440, window.innerWidth - 32), h = pop.offsetHeight || 0;
+  pop.style.left = Math.max(16, Math.min(r.right - w, window.innerWidth - 16 - w)) + "px";
+  const below = r.bottom + 6;
+  pop.style.top = (h && below + h > window.innerHeight - 16 ? Math.max(16, r.top - 6 - h) : below) + "px";
+}
+
+// ---------- 今日輪動摘要（規則式，非投資建議；ui72）----------
+const FLOW_CARDS = [
+  ["strongest", "最強共振", "今天沒有雙流入的類股"],
+  ["accel", "加速轉強", "沒有類股本期轉正"],
+  ["outflow", "風險外流", "沒有類股本期轉負"],
+];
+function flowNoPrevReason(d) {
+  if (!d.has_tail) return `法人資料不足 ${(d.flow_dates || []).length * 2} 日，尚無上一期`;
+  return "上期集保不相鄰，無法比較";
+}
+function renderFlowSummary(d, m) {
+  const el = $("flow-summary"); if (!el) return;
+  if (!m) { el.innerHTML = '<div class="flow-summary-empty">集保不足兩個完整週，暫無雙軸摘要</div>'; return; }
+  el.innerHTML = FLOW_CARDS.map(([k, title, empty]) => {
+    const r = m.cards[k];
+    if (!r) {
+      const why = k !== "strongest" && !m.hasPrevAny ? flowNoPrevReason(d) : empty;
+      return `<button type="button" class="flow-card" disabled aria-pressed="false">`
+        + `<span class="flow-card-title">${title}</span><span class="flow-card-why">${esc(why)}</span></button>`;
+    }
+    const s = r.s, trans = r.prev ? `${FLOW_Q_NAME[r.qPrev]} → ${FLOW_Q_NAME[r.q]}` : FLOW_Q_NAME[r.q];
+    return `<button type="button" class="flow-card flow-q-${r.q}" data-sector="${esc(r.sector)}" aria-pressed="${rotationSectorFilter === r.sector}">`
+      + `<span class="flow-card-top"><span class="flow-card-title">${title}</span><span class="flow-qtag">${FLOW_Q_NAME[r.q]}</span></span>`
+      + `<span class="flow-card-name"><b title="${esc(r.sector)}">${esc(r.sector)}</b><span class="flow-card-arrow" aria-hidden="true">${flowArrow(r)}</span></span>`
+      + `<span class="flow-card-vals"><span>法人 ${flowPct(s.x)}</span><span>大戶 ${flowPct(s.y)}</span>`
+      + `<span class="flow-card-trans">${esc(trans)}</span></span>`
+      + `<span class="flow-card-note">${esc(flowCardNote(k, r))}</span></button>`;
+  }).join("");
+}
+
 async function loadSectorFlow() {
-  const el = $("flow-chart"), note = $("rotation-note");
+  const el = $("flow-chart");
   if (!el) return;
+  const clearFlowBits = () => {
+    ["flow-quadrants", "flow-summary", "flow-chips", "flow-help-body"].forEach((id) => { const n = $(id); if (n) n.innerHTML = ""; });
+    const h = $("flow-headline"); if (h) h.textContent = "";
+  };
   try {
     const d = await getJSON("/api/sectors/flow");
     lastSectorFlow = d;
-    const secs = d.sectors || [];
-    if (!secs.length) {
-      disposeFlowChart();
+    if (!(d.sectors || []).length) {
+      disposeFlowChart(); lastFlowModel = null; clearFlowBits();
       el.innerHTML = '<div class="muted small" style="padding:12px">尚無法人資料（stock_flow_daily 尚未累積）</div>';
-      $("flow-quadrants").innerHTML = "";
-      if (note) note.textContent = "";
       return;
     }
-    const md = (s) => (s || "").slice(5);
-    const dayGap = (a, b) => (Date.parse(b) - Date.parse(a)) / 86400000;       // b − a，日曆天
-    const bits = [`法人 ${md(d.flow_dates[0])}～${md(d.flow_dates[d.flow_dates.length - 1])}（${d.flow_dates.length} 日）`];
-    const pd = d.flow_prev_dates || [];
-    if (d.has_tail && pd.length) {
-      // 尾巴的起點是「上一期」，日期不寫出來就無從判斷它離現在多遠（停機幾天時前期會整段往前拉）
-      const span = dayGap(pd[0], pd[pd.length - 1]);
-      bits.push(`上一期 ${md(pd[0])}～${md(pd[pd.length - 1])}`
-        + (span > d.flow_dates.length * 2 + 4 ? "（不連續）" : ""));
-    }
-    bits.push(d.has_custody ? `集保 ${md(d.custody_weeks[1])}→${md(d.custody_weeks[0])}` : "集保不足兩個完整週，暫以法人單軸顯示");
-    const pw = d.custody_prev_weeks || [];
-    if (pw.length) bits.push(`上一期集保 ${md(pw[1])}→${md(pw[0])}`);
-    else if (d.custody_prev_skipped === "weeks_not_adjacent" && d.custody_prev_gap) {
-      const g = d.custody_prev_gap, cw = d.custody_weeks || [];   // g＝[較新, 較舊]；殘缺週被略過造成的洞
-      const wk = Math.round(dayGap(g[1], g[0]) / 7);
-      // 斷掉的可能是「本期」那一對（y 自己就是多週 delta），措辭要講對是哪一段斷掉
-      bits.push(g[0] === cw[0] && g[1] === cw[1]
-        ? `本期集保跨 ${wk} 週（${md(g[1])}→${md(g[0])}），上一期尾巴省略`
-        : `上一期集保不相鄰（${md(g[1])}→${md(g[0])} 跨 ${wk} 週），尾巴省略`);
-    }
-    if (!d.has_tail) bits.push(`法人資料不足 ${d.flow_dates.length * 2} 日，尚無上一期`);
-    bits.push(`${secs.length} 類股`);
-    const ex = d.excluded || {};
-    const gaps = [];
-    if (ex.no_price) gaps.push(`${ex.no_price} 檔查不到收盤`);
-    if (ex.sectors_no_mcap) gaps.push(`${ex.sectors_no_mcap} 類算不出市值未列`);
-    if (note) note.textContent = `（${bits.join("・")}${gaps.length ? "；" + gaps.join("、") : ""}）`;
+    lastFlowModel = d.has_custody ? flowModel(d) : null;
+    renderFlowHeader(d, lastFlowModel);
+    renderFlowSummary(d, lastFlowModel);
     if (d.has_custody) renderSectorFlow(d); else renderFlowBars(d);
     renderFlowQuadrants(d);
   } catch (e) {
-    // 失敗也要清狀態：留著上一次的四區排行與 lastSectorFlow 的話，按篩選會拿舊資料重畫
-    disposeFlowChart();
+    // 失敗也要清狀態：留著上一次的摘要、排行與 lastSectorFlow，按篩選會拿舊資料重畫
+    disposeFlowChart(); clearFlowBits();
     el.innerHTML = '<div class="muted small" style="padding:12px">族群輪動載入失敗</div>';
-    $("flow-quadrants").innerHTML = "";
-    if (note) note.textContent = "";       // 上一次成功的「法人 09-16～09-22…」留著會像是這次的資料
-    lastSectorFlow = null;
+    lastSectorFlow = null; lastFlowModel = null;
   }
 }
 
@@ -4067,15 +4133,13 @@ function toggleRotationFilter(sector) {
   rotationSectorFilter = (sector && rotationSectorFilter !== sector) ? sector : null;
   applyRotationFilter();
   if (!lastSectorFlow) return;
-  // 重繪會換掉整批 DOM 節點 → 焦點掉回 body，只用鍵盤的人會失去位置（同 ss-picked-note 那段的作法）
+  // 重繪會換掉整批按鈕 → 焦點掉回 body，只用鍵盤的人會失去位置（同 ss-picked-note 那段的作法）
   const cur = document.activeElement && document.activeElement.closest
-    ? document.activeElement.closest(".flow-row") : null;
-  const keep = cur && cur.dataset.sector;
+    ? document.activeElement.closest(".flow-row, .flow-card[data-sector]") : null;
+  const keep = cur ? `${cur.classList.contains("flow-card") ? ".flow-card" : ".flow-row"}[data-sector="${CSS.escape(cur.dataset.sector)}"]` : null;
+  renderFlowSummary(lastSectorFlow, lastFlowModel);
   renderFlowQuadrants(lastSectorFlow);
-  if (keep) {
-    const again = $("flow-quadrants").querySelector(`.flow-row[data-sector="${CSS.escape(keep)}"]`);
-    if (again) again.focus();
-  }
+  if (keep) { const again = $("view-rotation").querySelector(keep); if (again) again.focus(); }
 }
 function applyRotationFilter() {
   document.querySelectorAll("#cross .cross-grp").forEach((g) => {
@@ -5331,6 +5395,21 @@ window.addEventListener("resize", () => {
 // 族群輪動：四區排行與「顯示全部」都委派在靜態祖先上（CSP script-src 'self' 會丟掉 inline on*=）
 const flowQEl = $("flow-quadrants");
 if (flowQEl) flowQEl.addEventListener("click", (e) => { const b = e.target.closest(".flow-row"); if (b) toggleRotationFilter(b.dataset.sector); });
+const flowSummaryEl = $("flow-summary");
+if (flowSummaryEl) flowSummaryEl.addEventListener("click", (e) => {
+  const b = e.target.closest(".flow-card[data-sector]");
+  if (b && !b.disabled) toggleRotationFilter(b.dataset.sector);
+});
+const flowHelpEl = $("flow-help");
+if (flowHelpEl) {
+  flowHelpEl.addEventListener("beforetoggle", (e) => { if (e.newState === "open") positionFlowHelp(); });
+  flowHelpEl.addEventListener("toggle", (e) => { if (e.newState === "open") positionFlowHelp(); });
+  // position:fixed 的面板不會跟著 .content 捲動；捲動時收起，免得和按鈕錯位
+  const flowScroller = document.querySelector(".content");
+  if (flowScroller) flowScroller.addEventListener("scroll", () => {
+    if (flowHelpEl.matches(":popover-open")) flowHelpEl.hidePopover();
+  }, { passive: true });
+}
 const crossNoteEl = $("cross-note");
 if (crossNoteEl) crossNoteEl.addEventListener("click", (e) => { if (e.target.closest("#cross-clear")) toggleRotationFilter(null); });
 // 粉圓/M PLUS 是 async 載入。若熱力圖在字型載入前已排版，measureText 量到的是系統字寬度，

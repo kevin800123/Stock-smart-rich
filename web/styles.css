@@ -72,6 +72,13 @@
   --warning: #f2a64b;
   --danger: #ff7a66;
 
+  /* 族群輪動的四個象限（ui72）：同一冷色系、明度由雙流入到雙流出遞減；四色在 --bg-card 上都 ≥ 5.3:1。
+     資金流向不是漲跌，不可用紅綠。量測見 docs/superpowers/specs/2026-09-23-sector-rotation-redesign-design.md §11。 */
+  --flow-in: #5fd6ee;    /* cyan：雙流入 */
+  --flow-big: #70b8ff;   /* 冷藍：大戶增・法人賣（與 --info 同值） */
+  --flow-inst: #8b93f8;  /* indigo：法人買・大戶減 */
+  --flow-out: #8494ad;   /* slate：雙流出 */
+
   /* Design tokens — compact spacing */
   --space-xs: 4px;
   --space-sm: 8px;
@@ -896,20 +903,85 @@ body[data-public] .status-bar { display: none; }
 .cross-grp.down { border-left-color: var(--down); }
 .cross-h { font-size: var(--fs-sm); margin-bottom: 3px; }
 .cross-stocks { font-size: var(--fs-data); line-height: 1.95; }
-/* 族群輪動：法人 × 大戶 四象限。資金流向不是漲跌，一律 --info 藍，不碰紅綠。 */
-.rotation-flow { display: grid; grid-template-columns: 8fr 4fr; gap: 16px; align-items: start; }
-.flow-chart { height: 460px; }
-.flow-quadrants { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.flow-q { background: var(--card); border: 1px solid var(--border); border-radius: var(--r); padding: 8px 10px; min-width: 0; }
-.flow-q h4 { margin: 0 0 6px; font-size: var(--fs-sm); color: var(--label); font-weight: 700; }
-.flow-q-in { border-color: var(--info); }
-.flow-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; min-height: 28px;
-  padding: 3px 6px; background: transparent; border: 1px solid transparent; border-radius: var(--r);
-  color: var(--text); font: inherit; font-size: var(--fs-sm); cursor: pointer; text-align: left; }
+/* ===== 族群輪動（ui72）：摘要卡＋全範圍主圖＋核心放大鏡＋象限領先者＋細節列 =====
+   資金流向不是漲跌：象限一律用冷色系 token（--flow-*），紅綠只留給行情。 */
+.flow-q-in { --q: var(--flow-in); }
+.flow-q-big { --q: var(--flow-big); }
+.flow-q-inst { --q: var(--flow-inst); }
+.flow-q-out { --q: var(--flow-out); }
+.flow-command { align-items: center; }
+.flow-command .flow-headline { color: var(--text-secondary); font-size: var(--fs-sm); }
+.flow-chips { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; max-width: 640px; }
+.flow-chip { display: inline-flex; align-items: center; min-height: 24px; padding: 2px 9px; border: 1px solid var(--border-subtle);
+  border-radius: 999px; background: var(--bg-sunken); color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
+.flow-help-btn { min-height: 28px; color: var(--info); font: inherit; font-size: var(--fs-xs); cursor: pointer; }
+.flow-help-btn:hover { border-color: var(--info); }
+.flow-help[popover] { position: fixed; inset: auto; margin: 0; width: min(440px, calc(100vw - 32px)); max-height: min(70vh, 560px);
+  overflow: auto; padding: 12px 14px; color: var(--text); background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: var(--r-lg); box-shadow: var(--shadow-panel); }
+.flow-help h4 { margin: 0 0 8px; color: var(--text-primary); font-size: var(--fs-sm); }
+.flow-help dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px 12px; margin: 0; font-size: var(--fs-xs); line-height: 1.5; }
+.flow-help dt { color: var(--label); font-weight: 700; white-space: nowrap; }
+.flow-help dd { margin: 0; color: var(--text-secondary); }
+.flow-help p { margin: 10px 0 0; }
+.flow-summary-head { display: flex; align-items: baseline; gap: 10px; margin: 2px 0 -2px; }
+.flow-summary-head h3 { margin: 0; color: var(--text-primary); font-size: var(--fs-sm); }
+.flow-summary-note { color: var(--muted); font-size: var(--fs-xs); }
+.flow-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.flow-summary-empty { grid-column: 1 / -1; padding: 10px 12px; color: var(--muted); font-size: var(--fs-xs);
+  border: 1px dashed var(--border); border-radius: var(--r); }
+.flow-card { display: flex; flex-direction: column; gap: 3px; min-width: 0; min-height: 28px; padding: 8px 12px;
+  color: var(--text); font: inherit; text-align: left; cursor: pointer; background: var(--card);
+  border: 1px solid var(--border); border-left: 3px solid var(--q, var(--border)); border-radius: var(--r); }
+.flow-card:hover:not(:disabled) { background: var(--card-hover); }
+.flow-card[aria-pressed="true"] { border-color: var(--info); border-left-color: var(--q, var(--info)); background: rgba(112, 184, 255, 0.10); }
+.flow-card:disabled { cursor: default; }
+.flow-card-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.flow-card-title { color: var(--label); font-size: var(--fs-xs); font-weight: 700; }
+.flow-qtag { display: inline-block; padding: 0 7px; border: 1px solid var(--q, var(--border)); border-radius: 999px;
+  color: var(--q, var(--muted)); font-size: var(--fs-xs); line-height: 18px; white-space: nowrap; }
+.flow-card-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.flow-card-name b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); }
+.flow-card-arrow { color: var(--q, var(--muted)); font-size: var(--fs-md); line-height: 1; }
+.flow-card-vals { display: flex; flex-wrap: wrap; gap: 2px 12px; color: var(--text-secondary); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.flow-card-vals > span { white-space: nowrap; }
+.flow-card-trans { color: var(--muted); }
+.flow-card-note, .flow-card-why { color: var(--muted); font-size: var(--fs-xs); line-height: 1.4; }
+.rotation-flow { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  grid-template-areas: "main side" "detail detail"; gap: 12px 16px; align-items: start; }
+.flow-main { grid-area: main; min-width: 0; }
+.flow-side { grid-area: side; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.flow-zoom-wrap { min-width: 0; }
+.flow-detail { grid-area: detail; }
+.flow-chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin: 0 0 4px;
+  color: var(--label); font-size: var(--fs-xs); }
+.flow-legend { color: var(--muted); white-space: nowrap; }
+/* .chart（後面定義、height:340px）同權重會蓋掉這裡——ui69 的 .flow-chart 高度就是這樣變成死規則的，
+   所以用 #view-rotation 提高權重。 */
+#view-rotation .flow-chart { height: 580px; }
+#view-rotation .flow-zoom { height: 250px; }
+.flow-quadrants { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.flow-q { min-width: 0; padding: 8px 10px; background: var(--card); border: 1px solid var(--border);
+  border-left: 3px solid var(--q, var(--border)); border-radius: var(--r); }
+.flow-q h4 { display: flex; justify-content: space-between; gap: 6px; margin: 0 0 4px; color: var(--q, var(--label));
+  font-size: var(--fs-xs); font-weight: 700; }
+.flow-q-count { color: var(--muted); font-weight: 400; white-space: nowrap; }
+/* 兩行一列（名稱／法人・大戶）。字級 13px、行高 1.35：右欄（放大鏡 250＋Top3 兩列）才會與 580px 主圖大致齊高 */
+.flow-row { display: flex; flex-direction: column; align-items: stretch; gap: 1px; width: 100%; min-height: 28px; padding: 3px 6px;
+  color: var(--text); font: inherit; font-size: var(--fs-table); line-height: 1.35; text-align: left; cursor: pointer;
+  background: transparent; border: 1px solid transparent; border-radius: var(--r); }
 .flow-row:hover { background: var(--card-hover); }
-.flow-row[aria-pressed="true"] { border-color: var(--info); background: rgba(108, 182, 255, 0.10); }
-.flow-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.flow-row-val { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.flow-row[aria-pressed="true"] { border-color: var(--info); background: rgba(112, 184, 255, 0.10); }
+.flow-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
+.flow-row-val { display: flex; flex-wrap: wrap; gap: 0 10px; color: var(--text-secondary); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+.flow-row-val > span { white-space: nowrap; }
+.flow-detail { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; min-height: 40px; padding: 8px 12px;
+  color: var(--text-secondary); font-size: var(--fs-xs); font-variant-numeric: tabular-nums;
+  background: var(--card); border: 1px solid var(--border-subtle); border-radius: var(--r); }
+.flow-detail:focus { outline: none; }
+.flow-detail-name { color: var(--text-primary); font-size: var(--fs-sm); font-weight: 700; }
+.flow-detail-top { color: var(--muted); }
+.flow-detail-clear { margin-left: auto; min-height: 28px; }
 /* 降級：集保不足兩週時只剩 X 軸，畫置中零點的水平長條 */
 .flow-bars { display: flex; flex-direction: column; gap: 6px; padding: 10px; }
 .flow-bar-row { display: grid; grid-template-columns: 92px 1fr 64px; align-items: center; gap: var(--space-sm); }
@@ -920,8 +992,22 @@ body[data-public] .status-bar { display: none; }
 .flow-bar-val { font-size: var(--fs-sm); font-weight: 700; text-align: right; white-space: nowrap; }
 .flow-filter { margin-left: 8px; }
 .flow-filter .tf { margin-left: 6px; }
-@media (max-width: 1180px) { .rotation-flow { grid-template-columns: 1fr; } }
-@media (max-width: 600px) { .flow-chart { height: 360px; } .flow-quadrants { grid-template-columns: 1fr; } }
+@media (max-width: 1180px) {
+  .flow-chips { justify-content: flex-start; max-width: none; }
+  .rotation-flow { grid-template-columns: minmax(0, 1fr); grid-template-areas: "main" "side" "detail"; }
+  .flow-side { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+  #view-rotation .flow-chart { height: 460px; }
+  #view-rotation .flow-zoom { height: 300px; }
+}
+@media (max-width: 600px) {
+  .flow-summary { grid-template-columns: minmax(0, 1fr); }
+  .rotation-flow { grid-template-areas: "main" "zoom" "detail" "quads"; }
+  .flow-side { display: contents; }
+  .flow-zoom-wrap { grid-area: zoom; }
+  .flow-quadrants { grid-area: quads; }
+  #view-rotation .flow-chart { height: 340px; }
+  #view-rotation .flow-zoom { height: 300px; }
+}
 
 /* ===== Phase 1 — institutional ranking / selection tables ===== */
 .rank-split { display: flex; gap: var(--space-md); }

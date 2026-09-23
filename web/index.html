@@ -306,18 +306,29 @@
 
       <!-- ===== 族群輪動 ===== -->
       <section id="view-rotation" class="view picks-view">
-        <div class="picks-command">
+        <div class="picks-command flow-command">
           <div class="picks-command-copy">
             <div class="picks-title-row"><h2>族群輪動</h2></div>
-            <p>X＝法人近 5 日淨買賣、Y＝大戶 400張↑ 週增，皆除以類股市值。右上是錢正流入的族群、左下是正流出的；尾巴指向本期，顯示輪動方向。點泡泡或右側排行可篩下方交叉選股。</p>
+            <p id="flow-headline" class="flow-headline">載入中…</p>
           </div>
-          <div class="picks-command-foot">
-            <span id="rotation-note" class="picks-feedback" role="status" aria-live="polite"></span>
-          </div>
+          <div id="flow-chips" class="flow-chips" role="status" aria-live="polite"></div>
+          <div id="flow-help" class="flow-help" popover><div id="flow-help-body"></div></div>
         </div>
+        <div class="flow-summary-head"><h3>今日輪動摘要</h3><span class="flow-summary-note">規則式・非投資建議</span></div>
+        <div id="flow-summary" class="flow-summary"></div>
         <div id="rotation-flow" class="rotation-flow">
-          <div id="flow-chart" class="chart flow-chart" role="img" aria-label="族群資金流向四象限：X 軸法人、Y 軸大戶"></div>
-          <div id="flow-quadrants" class="flow-quadrants" aria-label="四區排行（鍵盤可操作）"></div>
+          <div class="flow-main">
+            <div class="flow-chart-head"><span>全範圍</span><span class="flow-legend" aria-hidden="true">○ 上期 → ● 本期</span></div>
+            <div id="flow-chart" class="chart flow-chart" role="img" aria-label="族群資金流向四象限（全範圍）：X 軸法人、Y 軸大戶"></div>
+          </div>
+          <div class="flow-side">
+            <div class="flow-zoom-wrap">
+              <div class="flow-chart-head"><span id="flow-zoom-title">核心放大鏡</span><span class="flow-legend" aria-hidden="true">○ 上期 → ● 本期</span></div>
+              <div id="flow-zoom" class="chart flow-zoom" role="img" aria-label="核心放大鏡"></div>
+            </div>
+            <div id="flow-quadrants" class="flow-quadrants" aria-label="象限領先者（鍵盤可操作）"></div>
+          </div>
+          <div id="flow-detail" class="flow-detail" tabindex="-1"></div>
         </div>
         <div class="pane-heading">
           <div><h3>交叉選股</h3><p>選股名單 × 當日族群，依當日漲跌排序，點股號開 K 線。名單優先用「自算籌碼／基本選股」，CSV 比較新時才用「籌碼／基本選股」。</p></div>
