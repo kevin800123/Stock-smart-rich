@@ -912,6 +912,9 @@ body[data-public] .status-bar { display: none; }
 .flow-command { align-items: center; }
 .flow-command .flow-headline { color: var(--text-secondary); font-size: var(--fs-sm); }
 .flow-chips { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; max-width: 640px; }
+/* #flow-chip-list 只是承接 role="status" 的量測邊界，不能自己成一個 flex item，
+   否則裡面的 chip span 會被關進單一格子，擠不進 .flow-chips 的 flex 排列 */
+.flow-chip-list { display: contents; }
 .flow-chip { display: inline-flex; align-items: center; min-height: 24px; padding: 2px 9px; border: 1px solid var(--border-subtle);
   border-radius: 999px; background: var(--bg-sunken); color: var(--muted); font-size: var(--fs-xs); white-space: nowrap; }
 .flow-help-btn { min-height: 28px; color: var(--info); font: inherit; font-size: var(--fs-xs); cursor: pointer; }
@@ -925,6 +928,8 @@ body[data-public] .status-bar { display: none; }
 .flow-help dd { margin: 0; color: var(--text-secondary); }
 .flow-help p { margin: 10px 0 0; }
 .flow-summary-head { display: flex; align-items: baseline; gap: 10px; margin: 2px 0 -2px; }
+/* 載入中／載入失敗／尚無資料時 clearFlowBits 把 #flow-summary 清空——這時連靜態標題也不該留著 */
+.flow-summary-head:has(+ .flow-summary:empty) { display: none; }
 .flow-summary-head h3 { margin: 0; color: var(--text-primary); font-size: var(--fs-sm); }
 .flow-summary-note { color: var(--muted); font-size: var(--fs-xs); }
 .flow-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
@@ -944,7 +949,7 @@ body[data-public] .status-bar { display: none; }
 .flow-card-name b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-md); }
 .flow-card-arrow { color: var(--q, var(--muted)); font-size: var(--fs-md); line-height: 1; }
 .flow-card-vals { display: flex; flex-wrap: wrap; gap: 2px 12px; color: var(--text-secondary); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
-.flow-card-vals > span { white-space: nowrap; }
+.flow-card-vals > span:not(.flow-card-trans) { white-space: nowrap; }
 .flow-card-trans { color: var(--muted); }
 .flow-card-note, .flow-card-why { color: var(--muted); font-size: var(--fs-xs); line-height: 1.4; }
 .rotation-flow { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
@@ -968,7 +973,7 @@ body[data-public] .status-bar { display: none; }
 .flow-q-count { color: var(--muted); font-weight: 400; white-space: nowrap; }
 /* 兩行一列（名稱／法人・大戶）。字級 13px、行高 1.35：右欄（放大鏡 250＋Top3 兩列）才會與 580px 主圖大致齊高 */
 .flow-row { display: flex; flex-direction: column; align-items: stretch; gap: 1px; width: 100%; min-height: 28px; padding: 3px 6px;
-  color: var(--text); font: inherit; font-size: var(--fs-table); line-height: 1.35; text-align: left; cursor: pointer;
+  color: var(--text); font: inherit; font-size: var(--font-size-table); line-height: 1.35; text-align: left; cursor: pointer;
   background: transparent; border: 1px solid transparent; border-radius: var(--r); }
 .flow-row:hover { background: var(--card-hover); }
 .flow-row[aria-pressed="true"] { border-color: var(--info); background: rgba(112, 184, 255, 0.10); }
@@ -993,11 +998,16 @@ body[data-public] .status-bar { display: none; }
 .flow-filter { margin-left: 8px; }
 .flow-filter .tf { margin-left: 6px; }
 @media (max-width: 1180px) {
-  .flow-chips { justify-content: flex-start; max-width: none; }
   .rotation-flow { grid-template-columns: minmax(0, 1fr); grid-template-areas: "main" "side" "detail"; }
   .flow-side { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
   #view-rotation .flow-chart { height: 460px; }
   #view-rotation .flow-zoom { height: 300px; }
+}
+/* .picks-command 只在 ≤1100px 才把右欄疊到下一行（見 .picks-command 規則本身）；
+   1101–1180px 之間 chips 仍在右欄，卻套著 1180px 那組 flex-start，會把 chips 推去
+   跟左邊的說明文字擠在同一角——要跟 .picks-command 疊行的斷點對齊才有意義。 */
+@media (max-width: 1100px) {
+  .flow-chips { justify-content: flex-start; max-width: none; }
 }
 @media (max-width: 600px) {
   .flow-summary { grid-template-columns: minmax(0, 1fr); }

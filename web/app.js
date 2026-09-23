@@ -3927,13 +3927,12 @@ function flowChipsHtml(d) {
     const g = d.custody_prev_gap, cw = d.custody_weeks || [];   // g＝[較新, 較舊]
     const wk = Math.round(dayGap(g[1], g[0]) / 7);
     chips.push(g[0] === cw[0] && g[1] === cw[1] ? `本期集保跨 ${wk} 週・無向量` : `上期集保跨 ${wk} 週・無向量`);
-  }
+  } else if (d.has_custody) chips.push("集保僅兩週・無上期");
   chips.push(`${(d.sectors || []).length} 類股`);
   const ex = d.excluded || {};
   if (ex.no_price) chips.push(`${ex.no_price} 檔缺收盤`);
   if (ex.sectors_no_mcap) chips.push(`${ex.sectors_no_mcap} 類算不出市值`);
-  return chips.map((c) => `<span class="flow-chip">${esc(c)}</span>`).join("")
-    + '<button type="button" class="flow-chip flow-help-btn" popovertarget="flow-help">ⓘ 指標說明</button>';
+  return chips.map((c) => `<span class="flow-chip">${esc(c)}</span>`).join("");
 }
 function flowHelpHtml(d, m) {
   const n = (d.flow_dates || []).length;
@@ -3943,7 +3942,7 @@ function flowHelpHtml(d, m) {
     + `<dt>X 法人</dt><dd>法人近 ${n} 日淨買賣 ÷ 類股市值（%）。</dd>`
     + `<dt>Y 大戶</dt><dd>400 張以上大戶持股週增 ÷ 類股市值（%）。</dd>`
     + `<dt>上期</dt><dd>前一個 ${n} 日窗口與前一個集保週；向量由上期（○）指向本期（●）。</dd>`
-    + `<dt>核心放大鏡</dt><dd>兩軸同比例修剪兩端，取框住至少 80% 類股的最小範圍，含原點、外加 12% 邊界，座標皆為線性。${core}框外的類股只在全範圍圖出現。</dd>`
+    + `<dt>核心放大鏡</dt><dd>兩軸同比例修剪兩端，取框住至少 ${Math.round(FLOW_CORE_SHARE * 100)}% 類股的最小範圍，含原點、外加 ${Math.round(FLOW_CORE_PAD * 100)}% 邊界，座標皆為線性。${core}框外的類股只在全範圍圖出現。</dd>`
     + `<dt>正規化</dt><dd>以放大鏡的 X 寬、Y 寬當刻度，避免某一軸因離群值主導。${scale}</dd>`
     + `<dt>最強共振</dt><dd>雙流入類股中「X÷X寬＋Y÷Y寬」最大。</dd>`
     + `<dt>加速轉強</dt><dd>相較上期「ΔX÷X寬＋ΔY÷Y寬」最大，且本期綜合值已轉正。</dd>`
@@ -3951,7 +3950,7 @@ function flowHelpHtml(d, m) {
     + `</dl><p class="muted small">規則式摘要，非投資建議。</p>`;
 }
 function renderFlowHeader(d, m) {
-  const head = $("flow-headline"), chips = $("flow-chips"), help = $("flow-help-body");
+  const head = $("flow-headline"), chips = $("flow-chip-list"), help = $("flow-help-body");
   if (head) head.textContent = m ? flowHeadline(m)
     : (d.has_custody ? "暫無雙軸資料，以法人單軸顯示。" : "集保不足兩個完整週，暫以法人單軸顯示。");
   if (chips) chips.innerHTML = flowChipsHtml(d);
@@ -3975,21 +3974,29 @@ const FLOW_CARDS = [
   ["outflow", "風險外流", "沒有類股本期轉負"],
 ];
 function flowNoPrevReason(d) {
-  if (!d.has_tail) return `法人資料不足 ${(d.flow_dates || []).length * 2} 日，尚無上一期`;
-  return "上期集保不相鄰，無法比較";
+  const n = (d.flow_dates || []).length;
+  if (!d.has_tail) return `法人資料不足 ${n * 2} 日，尚無上一期`;
+  const g = d.custody_prev_gap, cw = d.custody_weeks || [];
+  if (d.custody_prev_skipped === "weeks_not_adjacent" && g) {
+    // 斷掉的可能是「本期」那一對（y 自己就是多週 delta），措辭要講對是哪一段（同 ui69 的 chips）
+    const wk = Math.round((Date.parse(g[0]) - Date.parse(g[1])) / 86400000 / 7);
+    return g[0] === cw[0] && g[1] === cw[1] ? `本期集保跨 ${wk} 週，無法比較` : `上期集保跨 ${wk} 週，無法比較`;
+  }
+  if (!(d.custody_prev_weeks || []).length) return "集保僅兩個完整週，尚無上一期";
+  return "尚無上一期資料";
 }
 function renderFlowSummary(d, m) {
   const el = $("flow-summary"); if (!el) return;
-  if (!m) { el.innerHTML = '<div class="flow-summary-empty">集保不足兩個完整週，暫無雙軸摘要</div>'; return; }
+  if (!m) { el.innerHTML = `<div class="flow-summary-empty">${d.has_custody ? "暫無雙軸資料，暫不提供摘要" : "集保不足兩個完整週，暫無雙軸摘要"}</div>`; return; }
   el.innerHTML = FLOW_CARDS.map(([k, title, empty]) => {
     const r = m.cards[k];
     if (!r) {
       const why = k !== "strongest" && !m.hasPrevAny ? flowNoPrevReason(d) : empty;
-      return `<button type="button" class="flow-card" disabled aria-pressed="false">`
+      return `<button type="button" class="flow-card" data-card="${k}" disabled aria-pressed="false">`
         + `<span class="flow-card-title">${title}</span><span class="flow-card-why">${esc(why)}</span></button>`;
     }
     const s = r.s, trans = r.prev ? `${FLOW_Q_NAME[r.qPrev]} → ${FLOW_Q_NAME[r.q]}` : FLOW_Q_NAME[r.q];
-    return `<button type="button" class="flow-card flow-q-${r.q}" data-sector="${esc(r.sector)}" aria-pressed="${rotationSectorFilter === r.sector}">`
+    return `<button type="button" class="flow-card flow-q-${r.q}" data-card="${k}" data-sector="${esc(r.sector)}" aria-pressed="${rotationSectorFilter === r.sector}">`
       + `<span class="flow-card-top"><span class="flow-card-title">${title}</span><span class="flow-qtag">${FLOW_Q_NAME[r.q]}</span></span>`
       + `<span class="flow-card-name"><b title="${esc(r.sector)}">${esc(r.sector)}</b><span class="flow-card-arrow" aria-hidden="true">${flowArrow(r)}</span></span>`
       + `<span class="flow-card-vals"><span>法人 ${flowPct(s.x)}</span><span>大戶 ${flowPct(s.y)}</span>`
@@ -4002,7 +4009,7 @@ async function loadSectorFlow() {
   const el = $("flow-chart");
   if (!el) return;
   const clearFlowBits = () => {
-    ["flow-quadrants", "flow-summary", "flow-chips", "flow-help-body"].forEach((id) => { const n = $(id); if (n) n.innerHTML = ""; });
+    ["flow-quadrants", "flow-summary", "flow-chip-list", "flow-help-body"].forEach((id) => { const n = $(id); if (n) n.innerHTML = ""; });
     const h = $("flow-headline"); if (h) h.textContent = "";
   };
   try {
@@ -4019,6 +4026,7 @@ async function loadSectorFlow() {
     if (d.has_custody) renderSectorFlow(d); else renderFlowBars(d);
     renderFlowQuadrants(d);
   } catch (e) {
+    console.error("loadSectorFlow", e);
     // 失敗也要清狀態：留著上一次的摘要、排行與 lastSectorFlow，按篩選會拿舊資料重畫
     disposeFlowChart(); clearFlowBits();
     el.innerHTML = '<div class="muted small" style="padding:12px">族群輪動載入失敗</div>';
@@ -4134,9 +4142,14 @@ function toggleRotationFilter(sector) {
   applyRotationFilter();
   if (!lastSectorFlow) return;
   // 重繪會換掉整批按鈕 → 焦點掉回 body，只用鍵盤的人會失去位置（同 ss-picked-note 那段的作法）
+  // 卡片用 data-card 找回焦點（同一個類股可能同時是兩張卡，data-sector 選不到唯一的那張）
   const cur = document.activeElement && document.activeElement.closest
     ? document.activeElement.closest(".flow-row, .flow-card[data-sector]") : null;
-  const keep = cur ? `${cur.classList.contains("flow-card") ? ".flow-card" : ".flow-row"}[data-sector="${CSS.escape(cur.dataset.sector)}"]` : null;
+  const keep = cur
+    ? (cur.classList.contains("flow-card")
+        ? `.flow-card[data-card="${CSS.escape(cur.dataset.card)}"]`
+        : `.flow-row[data-sector="${CSS.escape(cur.dataset.sector)}"]`)
+    : null;
   renderFlowSummary(lastSectorFlow, lastFlowModel);
   renderFlowQuadrants(lastSectorFlow);
   if (keep) { const again = $("view-rotation").querySelector(keep); if (again) again.focus(); }
