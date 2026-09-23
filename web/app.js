@@ -3776,7 +3776,6 @@ function flowQuadrant(s) {
   if (s.x > 0 && s.y <= 0) return "inst";
   return "out";
 }
-const FLOW_Q = [["in", "雙流入"], ["big", "大戶增・法人賣"], ["inst", "法人買・大戶減"], ["out", "雙流出"]];
 
 // ---------- 族群輪動模型（純函式，不碰 DOM；ui72）----------
 // 主圖、放大鏡、摘要卡、象限領先者、標籤、細節列、頁首判讀都只讀 flowModel 的結果，同一個類股
@@ -4124,6 +4123,7 @@ function bindFlowChart(ch) {
 function renderFlowCharts(d, m) {
   const mainEl = $("flow-chart"), zoomEl = $("flow-zoom"), wrap = document.querySelector(".flow-zoom-wrap");
   if (wrap) wrap.classList.remove("hidden");
+  const legend = document.querySelector(".flow-main .flow-legend"); if (legend) legend.classList.remove("hidden");
   mainEl.style.height = "";        // 單軸降級會寫 inline auto；雙軸時把高度交還給 CSS 斷點
   if (!flowChart) { mainEl.innerHTML = ""; flowChart = initChart(mainEl); bindFlowChart(flowChart); }
   if (!flowZoomChart) { zoomEl.innerHTML = ""; flowZoomChart = initChart(zoomEl); bindFlowChart(flowZoomChart); }
@@ -4174,6 +4174,7 @@ function renderFlowBars(d) {
   const el = $("flow-chart");
   disposeFlowChart();
   const zw = document.querySelector(".flow-zoom-wrap"); if (zw) zw.classList.add("hidden");   // 單軸沒有放大鏡
+  const legend = document.querySelector(".flow-main .flow-legend"); if (legend) legend.classList.add("hidden");   // 也沒有向量
   el.style.height = "auto";
   const secs = d.sectors.filter((s) => s.x != null).slice().sort((a, b) => b.x - a.x);
   const xm = Math.max(0.05, ...secs.map((s) => Math.abs(s.x)));
@@ -4222,7 +4223,7 @@ function renderFlowDetail(d, m) {
   if (!s) { el.innerHTML = `<span class="flow-detail-name">${esc(sel)}</span><span class="muted">不在目前的族群資料中</span>${clear}`; return; }
   const trans = r ? (r.prev ? `${FLOW_Q_NAME[r.qPrev]} → ${FLOW_Q_NAME[r.q]}` : FLOW_Q_NAME[r.q]) : "";
   const dl = (k) => (r && r.prev ? `（Δ ${flowSigned2(s[k] - s[k + "_prev"])}）` : "");
-  const top = (s.top3 || []).map((t) => `${esc(t.code)} ${esc(t.name)} ${flowYi(t.amount)} 億`).join("、");
+  const top = (s.top3 || []).slice(0, 3).map((t) => `${esc(t.code)} ${esc(t.name)} ${flowYi(t.amount)} 億`).join("、");
   el.innerHTML = `<span class="flow-detail-name">${esc(s.sector)}</span>`
     + (trans ? `<span class="flow-qtag flow-q-${r.q}">${esc(trans)}</span>` : "")
     + `<span>法人 ${flowPct(s.x)}${dl("x")}</span>`
@@ -4245,8 +4246,10 @@ function clearFlowView(msg) {
   el.style.height = "auto";
   el.innerHTML = `<div class="muted small" style="padding:12px">${esc(msg)}</div>`;
   ["flow-quadrants", "flow-summary", "flow-detail", "flow-chip-list", "flow-help-body"].forEach((id) => { const n = $(id); if (n) n.innerHTML = ""; });
-  const h = $("flow-headline"); if (h) h.textContent = "";
+  // 圖的容器是 role="img"，裡面那行字讀屏讀不到 → 訊息也寫進頁首判讀，當成一般文字給出
+  const h = $("flow-headline"); if (h) h.textContent = msg;
   const zw = document.querySelector(".flow-zoom-wrap"); if (zw) zw.classList.add("hidden");
+  const legend = document.querySelector(".flow-main .flow-legend"); if (legend) legend.classList.add("hidden");
 }
 
 // drill-down：篩下方交叉選股（不重打 API，只切 .hidden）；再點同一個取消。狀態不持久化。
@@ -5525,9 +5528,11 @@ if (rotationEl) {
     const b = e.target.closest(".flow-card[data-sector], .flow-row[data-sector]");
     if (b && !b.disabled) toggleRotationFilter(b.dataset.sector);
   });
+  // 高亮＋tooltip 只給鍵盤 focus（:focus-visible）：Chrome 用滑鼠點按鈕也會給它焦點，
+  // 不擋的話點完卡片（或取消選取）tooltip 與高亮會一直釘在圖上。focusout 一律收掉。
   const flowFocus = (on) => (e) => {
     const b = e.target.closest && e.target.closest(".flow-card[data-sector], .flow-row[data-sector]");
-    if (b) flowHighlight(b.dataset.sector, on);
+    if (b && (!on || b.matches(":focus-visible"))) flowHighlight(b.dataset.sector, on);
   };
   rotationEl.addEventListener("focusin", flowFocus(true));
   rotationEl.addEventListener("focusout", flowFocus(false));

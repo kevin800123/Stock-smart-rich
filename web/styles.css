@@ -941,8 +941,10 @@ body[data-public] .status-bar { display: none; }
 .flow-card:hover:not(:disabled) { background: var(--card-hover); }
 .flow-card[aria-pressed="true"] { border-color: var(--info); border-left-color: var(--q, var(--info)); background: rgba(112, 184, 255, 0.10); }
 .flow-card:disabled { cursor: default; }
-.flow-card-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.flow-card-title { color: var(--label); font-size: var(--fs-xs); font-weight: 700; }
+/* 601–約700px 三張卡並排、每張內寬只剩約 128px：標題＋象限小標放不下同一行時，讓小標換到下一行。
+   不換行的話 CJK 標題會被擠成一字一行（實測 601px「風險外流」22×72px） */
+.flow-card-top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 2px 8px; }
+.flow-card-title { color: var(--label); font-size: var(--fs-xs); font-weight: 700; white-space: nowrap; }
 .flow-qtag { display: inline-block; padding: 0 7px; border: 1px solid var(--q, var(--border)); border-radius: 999px;
   color: var(--q, var(--muted)); font-size: var(--fs-xs); line-height: 18px; white-space: nowrap; }
 .flow-card-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
@@ -965,7 +967,7 @@ body[data-public] .status-bar { display: none; }
    所以用 #view-rotation 提高權重。 */
 #view-rotation .flow-chart { height: 580px; }
 #view-rotation .flow-zoom { height: 250px; }
-.flow-quadrants { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.flow-quadrants { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; container: flow-quads / inline-size; }
 .flow-q { min-width: 0; padding: 8px 10px; background: var(--card); border: 1px solid var(--border);
   border-left: 3px solid var(--q, var(--border)); border-radius: var(--r); }
 .flow-q h4 { display: flex; justify-content: space-between; gap: 6px; margin: 0 0 4px; color: var(--q, var(--label));
@@ -980,10 +982,19 @@ body[data-public] .status-bar { display: none; }
 .flow-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; }
 .flow-row-val { display: flex; flex-wrap: wrap; gap: 0 10px; color: var(--text-secondary); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
 .flow-row-val > span { white-space: nowrap; }
+/* 1181–約1262px 右欄只有 356–390px：一般內距下「法人 +0.30%　大戶 +0.34%」需 146.7px、列內只有 136.3px，
+   每列折成三行（42→58px），右欄比主圖高 120px。窄時收內距與字距，留在一行（375px 手機的象限區 351px 同樣受惠）。
+   看的是象限區自己的寬度，不是視窗——側欄與版面欄數都會改變它。 */
+@container flow-quads (max-width: 390px) {
+  .flow-q { padding-inline: 6px; }
+  .flow-row { padding-inline: 3px; }
+  .flow-row-val { column-gap: 7px; }
+}
 .flow-detail { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; min-height: 40px; padding: 8px 12px;
   color: var(--text-secondary); font-size: var(--fs-xs); font-variant-numeric: tabular-nums;
   background: var(--card); border: 1px solid var(--border-subtle); border-radius: var(--r); }
-.flow-detail:focus { outline: none; }
+/* 「清除篩選」後焦點移到這裡（tabindex=-1）：滑鼠操作不畫框，鍵盤操作留全站 :focus-visible 的框 */
+.flow-detail:focus:not(:focus-visible) { outline: none; }
 .flow-detail-name { color: var(--text-primary); font-size: var(--fs-sm); font-weight: 700; }
 .flow-detail-top { color: var(--muted); }
 .flow-detail-clear { margin-left: auto; min-height: 28px; }

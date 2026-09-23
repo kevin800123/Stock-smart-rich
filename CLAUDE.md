@@ -2490,6 +2490,68 @@ dict `{name: [...]}`，前端 `loadRotation` 沒跟著改，`d.sectors.length` �
 - 刻意不做：潮汐的 108 板塊（本站 32 個官方產業別剛好一屏，細分類 530 太碎）、合成分數（不手訂權重）、
   加速度四區（尾巴已表達方向）。
 
+### 族群輪動重新設計（ui72，2026-09）
+
+目標是讓使用者 5 秒內回答「最強共振／加速轉強／風險外流」。只改前端，API 與 X／Y 定義不動
+（spec `docs/superpowers/specs/2026-09-23-sector-rotation-redesign-design.md`）。
+
+- **一份模型、所有區塊共用**：`flowModel(d)`（純函式）算出放大鏡範圍、正規化刻度、三卡、常駐標籤、象限 Top 3、主圖範圍；
+  摘要卡、兩張圖、象限領先者、細節列、頁首判讀都只讀它，同一類股不會在不同區塊有不同判定。
+- **核心放大鏡＝兩軸同比例修剪兩端、取框住至少 80% 類股的最小範圍**（從各修 10% 起每次放寬 1 點，含原點、加 12% 邊界）。
+  2026-09-23 實測：修 8%、框住 28/34；固定修 10% 只框 74%、固定修 5% 框 91%。主圖改成「本期＋上期＋原點」的實際範圍
+  （舊版對稱 ±最大值，Y 軸空約兩成），並用虛線框標出放大鏡範圍。座標全部線性。
+- **正規化刻度用放大鏡寬度，不用主圖全範圍**：主圖 Y 軸被汽車上期 −1.267 這一個點撐到 −1.38，拿它正規化，
+  Y 的變化被壓到約三分之一、X 變成主導（當天「加速轉強」會變文化創意）——正好違反「避免單一軸主導」。
+- **加速轉強／風險外流多一道「本期站到對的一邊」**（使用者 2026-09-23 選擇）：`comp > 0`／`< 0`，且 `move` 同號，
+  從很差變成沒那麼差不叫轉強；全部惡化的日子加速轉強卡顯示「沒有類股本期轉正」。
+- **「沒有上期」有三種原因，卡片文字與 chip 各自對應**（`flowNoPrevReason`／`flowChipsHtml`）：法人歷史不到兩個窗口
+  （`!has_tail`，窗口 N 日）→「法人資料不足 2N 日，尚無上一期」／「法人不足 2N 日・無上期」；集保週不相鄰 → 看 `custody_prev_gap`
+  斷的是本期還是上期那一對，寫「本期集保跨 N 週」或「上期集保跨 N 週」；只有兩個完整週 →「集保僅兩個完整週，尚無上一期」／
+  「集保僅兩週・無上期」。只寫一種原因，另外兩種狀態就會講錯。
+- **常駐標籤最多 8 個**（三卡＋位移最大者補到 7＋選取；沒有上期時改用離原點最遠的 `hypot(nx, ny)` 補滿），其他在
+  hover／鍵盤 focus／選取時才出現；放大鏡只標框內的。
+- **ECharts 陷阱：item 層的 `label: { show: false }` 會被抄進該 item 的 `emphasis.label.show`**，安靜地蓋掉 series 層的
+  `emphasis.label.show: true`。第一版每個點都寫 `label.show`，結果非常駐的泡泡 hover／鍵盤 focus 時永遠不出標籤；
+  現在只在要常駐時才掛 item `label`，其餘整個省略這個欄位。
+- **向量**：上期空心○ → 本期●，拆兩段、箭頭畫在中點（不被泡泡蓋住）；選取時該類股向量 2.5px，其餘泡泡、外框、
+  向量、上期圓降到 25% 透明（`FLOW_FADE = 0.25`，spec §6）。
+- **tooltip 壓到 ≤ 300px（實測 34 類最寬 244.8px）**：放大鏡在 1024px 只有 349px、375px 只有 350px 寬，`confine`
+  塞不下更寬的框；所以 tooltip 不重複日期區間（chips 已經有）、一列一軸、Δ 只在有上期時才附。
+- **象限色是新 token**（`--flow-in/big/inst/out`：cyan／冷藍／indigo／slate，明度遞減，在卡片底 5.31–9.61:1）；
+  紅綠只在 tooltip 的當日漲跌與交叉選股。
+- **數字固定兩位小數用 `flowPct`**：既有 `fmt()` 只設 `maximumFractionDigits`，`+0.30` 會變 `+0.3`，並排對不齊。
+- **`--fs-table` 不存在（只有 `--font-size-table`）**：未定義的自訂屬性讓整條 `font-size` 宣告失效、安靜地退回繼承值
+  （這裡是 16px，不是要的 13px）——與先前 `--accent-warn` 同一種失效形狀，不報錯、只能靠量。
+- **高度要用 `#view-rotation .flow-chart`**：`.chart { height: 340px }` 定義在後面、同權重，會把 `.flow-chart` 蓋掉
+  （ui69 那條就是這樣變成死規則，當時靠 inline style 撐著）。`.chart` 有 1px 框＋`border-box`，所以 `clientHeight`
+  比 CSS 高度少 1–2px（框依裝置像素取整：DPR 1.5 時 580→579），確認斷點高度要看 `offsetHeight`／computed height。
+- **頁首 chips 放在 `<span id="flow-chip-list" role="status" aria-live="polite">`，旁邊的「ⓘ 指標說明」是靜態按鈕**：
+  重新載入時只重寫 chips，按鈕不會跟著被重念。清空只能清 `#flow-chip-list`，**絕不能清 `#flow-chips`**（會把按鈕
+  一起刪掉）。選取時的重畫（`renderFlowAll`）只含卡／圖／排行／細節列，不含頁首，免得每點一次就被重念。
+- **摘要卡帶 `data-card`**：同一類股可以同時出現在兩張卡，重繪後若用 `data-sector` 找回焦點會選到錯的那張，
+  所以卡片以 `data-card`、排行列以 `data-sector` 找。
+- **鍵盤**：focus 到卡或排行列時對兩張圖 `highlight`＋主圖 `showTip`（bubbles 固定 seriesIndex 0），這是鍵盤使用者
+  唯一能指到 canvas 泡泡的方式。**只在 `:focus-visible` 時才做**：Chrome 用滑鼠點按鈕也會給它焦點，不擋的話點完卡片
+  （或取消選取）tooltip 與高亮會一直釘在圖上；focusout 一律 downplay／hideTip。反證：把 `matches(":focus-visible")`
+  強制成 true，滑鼠點「光電」卡後 tooltip 就釘在主圖上。「清除篩選」後焦點移到 `#flow-detail`（`tabindex=-1`），
+  只在 `:focus:not(:focus-visible)` 時去框——鍵盤操作看得到全站的琥珀框，滑鼠操作不畫。
+- **失敗／無資料的訊息也寫進 `#flow-headline`**：圖的容器是 `role="img"`，裡面那行字讀屏讀不到；同時藏掉主圖的
+  「○ 上期 → ● 本期」圖例（單軸降級 `renderFlowBars` 也藏，`renderFlowCharts` 再打開；放大鏡的圖例跟著
+  `.flow-zoom-wrap` 一起藏）。
+- **全寬度驗證修掉的兩件事**（2026-09-23 快照，1560／1280／1181／1180／601／600／375 逐一量）：
+  (1) **1181px 右欄比主圖高 120px**（期望 ≤ 40）：右欄只有 356px，象限每列內寬 136.3px，一般內距下「法人 +0.30%　
+  大戶 +0.34%」要 146.7px → 每列折成三行（42→58px）。改成對 `.flow-quadrants` 開容器查詢 `flow-quads`，寬 ≤ 390px
+  時收內距與欄距（格 6px、列 3px、欄距 7px），留在一行（最小餘裕 6.6px）；修完 1560／1280／1181 的右欄都比主圖高 23px。
+  看的是象限區自己的寬度而不是視窗（側欄與欄數都會改變它），所以 375px（象限區 351px）的每列也從三行變兩行、象限區 438→341px。
+  (2) **601px「風險外流」被擠成一字一行（22×72px）**：三卡並排時卡內寬只剩約 128px，象限小標 `nowrap` 佔滿，
+  而 CJK 標題可以在任何字之間斷。`.flow-card-top` 改 `flex-wrap: wrap`、標題 `nowrap`，小標放不下就換到下一行
+  （卡高 235→202px）。
+- **驗證環境的兩個怪癖**：預覽頁 `document.visibilityState === "hidden"`，ECharts 的狀態切換（highlight 後的標籤）與
+  tooltip 預設 0.4 秒的動畫都要等一次實際繪製才生效——讀狀態或量 tooltip 之前先截一張圖；`resize_window` 不會觸發
+  `resize` 事件，縮放後要手動 `window.dispatchEvent(new Event("resize"))`，否則圖停在舊尺寸。
+- 前端沒有自動化測試；驗證是把 2026-09-23 的真實快照注入 `getJSON` 後跑斷言（模型 28 項：放大鏡 28/34、三卡
+  航運／汽車／光電、標籤 7 個、四象限 Top 3；圖 15 項；象限領先者與細節列 13 項——1560 與 375 都全綠），再在各寬度量溢出。
+
 ### Public pages (`/public/*`)
 Never require auth. Serve market-level (non-personal) data via `/api/overview` (enhanced with intl indices, institutional rankings, futures positioning, margin/short data):
 - `GET /public/overview` — dashboard page (for LINE rich-menu): market summary, sectors, AI text.
