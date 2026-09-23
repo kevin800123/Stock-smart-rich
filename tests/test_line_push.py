@@ -6,7 +6,8 @@ _ROW = {
     "inst_foreign": 323.76, "inst_trust": 156.03, "inst_dealer": 59.38,
     "tx_foreign_oi": -84168, "retail_ls_mtx": 0.0769, "retail_ls_tmf": -0.123,
     "margin_balance": 9414925, "margin_chg": -20530,
-    "margin_value": 6074.6, "margin_value_chg": 135.3, "margin_maintenance": 165.2,
+    "margin_value": 6074.6, "margin_value_chg": 135.3, "keep_rate": 165.2,
+    "below_call_acc": 147, "call_acc": 27, "exe_acc": 11,
     "short_balance": 202194, "short_chg": -2061,
     "n225": 40123.0, "n225_chg": 1.2, "kospi": 2650.0, "kospi_chg": -0.3,
     "gold": 3340.0, "gold_chg": 0.5, "jpy": 151.25, "jpy_chg": -0.07,
@@ -65,7 +66,8 @@ def test_compose_full_margin_three_lines_and_handles_missing():
     assert "融資 9,414,925張(-20,530)" in txt
     assert "融資金額 6,074.6億(+135.3)" in txt
     assert "融券 202,194張(-2,061)" in txt
-    assert "融資維持率 165.2%" in txt         # prev 空 → 無(昨…)
+    assert "整戶維持率 165.2%" in txt          # prev 空 → 無(昨…)
+    assert "低於130% 147戶(追繳27/處分11)" in txt
     assert "【AI 解讀】" not in txt and "【自選股】" not in txt   # 無資料的段落整段省略
     # 無昨值（prev 空）→ 法人行不出現 (昨…)
     assert "(昨" not in txt
@@ -331,9 +333,9 @@ def test_compose_daily_flex_margin_falls_back_and_marks_as_of():
     """今日尚無融資 → 用呼叫端給的最近一筆，並在小標標「截至 MM-DD」（同網頁 balanceCard）。"""
     today = {"date": "2026-07-30", "taiex": 40039.18, "taiex_chg": -1564.18}
     mrow = {"date": "2026-07-29", "margin_balance": 8764868, "margin_chg": -331145,
-            "margin_maintenance": 173.6}
+            "keep_rate": 173.6}
     sect = str(_sect(line_push.compose_daily_flex(
-        today, [], [], margin_row=mrow, margin_prev={"margin_maintenance": 174.9}), "融資"))
+        today, [], [], margin_row=mrow, margin_prev={"keep_rate": 174.9}), "融資"))
     assert "截至 07-29" in sect and "8,764,868張" in sect
     # 增減用 ▲▼、昨值用「昨X」——兩種意義不可共用寫法，否則 -331,145 會被讀成昨天的餘額
     assert "▼331,145" in sect and "昨-331,145" not in sect
@@ -704,3 +706,13 @@ def test_direction_colours_pass_aa_on_the_header_band():
     for colour in (line_push._C_UP, line_push._C_DOWN):
         assert _contrast(colour, line_push._C_HEAD) >= 4.5
         assert _contrast(colour, line_push._C_BG) >= 4.5
+
+
+def test_flex_margin_shows_one_official_keep_rate_row_and_call_pressure_only_in_full():
+    row = dict(_ROW)
+    brief = str(_sect(line_push.compose_daily_flex(row, [], [], full=False), "融資"))
+    full = str(_sect(line_push.compose_daily_flex(row, [], [], full=True), "融資"))
+    assert "整戶維持率" in brief and "165.2%" in brief
+    assert "維持率(上市)" not in brief and "維持率(上櫃)" not in brief
+    assert "低於130%" not in brief                 # 16:00 精簡版不放
+    assert "低於130%" in full and "147" in full and "追繳 27" in full and "處分 11" in full

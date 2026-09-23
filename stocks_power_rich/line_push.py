@@ -178,11 +178,14 @@ def compose_daily_brief(row: dict, sectors: list, watch: list,
             g.append(f"融資金額 {_fmt(row['margin_value'], 1)}億({_signed(row.get('margin_value_chg'), 1)})")
         if row.get("short_balance") is not None:
             g.append(f"融券 {_fmt(row['short_balance'], 0)}張({_signed(row.get('short_chg'), 0)})")
-        if row.get("margin_maintenance") is not None:
-            line = f"融資維持率 {_fmt(row['margin_maintenance'], 1)}%"
-            if pv.get("margin_maintenance") is not None:
-                line += f"(昨{_fmt(pv['margin_maintenance'], 1)}%)"
+        if row.get("keep_rate") is not None:      # 證交所公布的全市場整戶擔保維持率
+            line = f"整戶維持率 {_fmt(row['keep_rate'], 1)}%"
+            if pv.get("keep_rate") is not None:
+                line += f"(昨{_fmt(pv['keep_rate'], 1)}%)"
             g.append(line)
+            if row.get("below_call_acc") is not None:
+                g.append(f"低於130% {_fmt(row['below_call_acc'], 0)}戶"
+                         f"(追繳{_fmt(row.get('call_acc'), 0)}/處分{_fmt(row.get('exe_acc'), 0)})")
         blocks.append(g)
     # 類股強弱
     ups = sorted([s for s in sectors if (s.get("chg_pct") or 0) > 0],
@@ -556,19 +559,17 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
     mrow = margin_row if (margin_row and margin_row.get("margin_balance") is not None) else row
     mprev = margin_prev if margin_row else pv
     mprev = mprev or {}
-    if any(mrow.get(k) is not None for k in ("margin_balance", "margin_maintenance")):
+    if any(mrow.get(k) is not None for k in ("margin_balance", "keep_rate")):
         stale = mrow.get("date") and row.get("date") and mrow["date"] != row["date"]
         mg = [_eyebrow("融資" + (f"（截至 {str(mrow['date'])[5:]}）" if stale else ""),
                        _C_SEC_MARGIN)]
         if mrow.get("margin_balance") is not None:
             mg.append(_kv("融資餘額", f"{_fmt(mrow['margin_balance'], 0)}張",
                           note=_delta(mrow.get("margin_chg"), 0)))
-        # 兩個市場的融資成數不同（60%/50%），兩平線 166.7% vs 200%，數字接近意義卻可能
-        # 相反，所以標清楚是哪個市場、不併成單一「大盤維持率」
-        for lb, k in (("維持率(上市)", "margin_maintenance"), ("維持率(上櫃)", "otc_margin_maintenance")):
-            if mrow.get(k) is not None:
-                mg.append(_kv(lb, f"{_fmt(mrow[k], 1)}%",
-                              note="" if mprev.get(k) is None else f"昨{_fmt(mprev[k], 1)}%"))
+        # 2026-09 起改證交所公布的全市場整戶擔保維持率（券商申報的真實帳戶合計、上市上櫃同值）
+        if mrow.get("keep_rate") is not None:
+            mg.append(_kv("整戶維持率", f"{_fmt(mrow['keep_rate'], 1)}%",
+                          note="" if mprev.get("keep_rate") is None else f"昨{_fmt(mprev['keep_rate'], 1)}%"))
         if full:      # 21:00 完整版才補這兩項細節，額度允許
             if mrow.get("margin_value") is not None:
                 mg.append(_kv("融資金額", f"{_fmt(mrow['margin_value'], 1)}億",
@@ -576,6 +577,9 @@ def compose_daily_flex(row: dict, sectors: list, watch: list, full: bool = False
             if mrow.get("short_balance") is not None:
                 mg.append(_kv("融券餘額", f"{_fmt(mrow['short_balance'], 0)}張",
                               note=_delta(mrow.get("short_chg"), 0)))
+            if mrow.get("below_call_acc") is not None:      # 分布的尾巴：斷頭潮來臨時先動的是這三個數
+                mg.append(_kv("低於130%", f"{_fmt(mrow['below_call_acc'], 0)}戶",
+                              note=f"追繳 {_fmt(mrow.get('call_acc'), 0)}／處分 {_fmt(mrow.get('exe_acc'), 0)}"))
         market.append({"type": "box", "layout": "vertical", "contents": mg})
 
     for i, (label, body_text) in enumerate(split_ai_sections(ai_text)):
