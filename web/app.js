@@ -4011,6 +4011,7 @@ const FLOW_COLOR = {
   in: CSS_VAR("--flow-in", "#5fd6ee"), big: CSS_VAR("--flow-big", "#70b8ff"),
   inst: CSS_VAR("--flow-inst", "#8b93f8"), out: CSS_VAR("--flow-out", "#8494ad"),
 };
+const FLOW_FADE = 0.25;   // 選取某類股時，其餘泡泡、外框、向量、上期圓的透明度（spec §6）
 let flowZoomChart = null;
 const flowYi = (amt) => { const v = (amt || 0) / 1e8; return fmt(v, Math.abs(v) >= 10 ? 0 : 1); };
 
@@ -4028,16 +4029,21 @@ function flowCoreBox(core) {
 function flowTooltip(d, m, p) {
   const r = p.data && p.data.sector ? m.bySector[p.data.sector] : null;
   if (!r) return "";
-  const s = r.s, md = (x) => (x || "").slice(5), fd = d.flow_dates || [];
+  const s = r.s;
   // 當日漲跌是行情 → 這裡是整頁唯一用紅綠的地方
   const chg = s.chg_pct == null ? "—"
     : `<span class="${chgClass(s.chg_pct)}">${s.chg_pct > 0 ? "▲" : s.chg_pct < 0 ? "▼" : ""}${fmt(Math.abs(s.chg_pct), 2)}%</span>`;
-  const pv = (k) => (r.prev ? `（上期 ${flowPct(s[k + "_prev"])}，Δ ${flowSigned2(s[k] - s[k + "_prev"])}）` : "");
-  const top = (s.top3 || []).map((t) => `${esc(t.code)} ${esc(t.name)} ${flowYi(t.amount)} 億`).join("<br>");
-  return `<b>${esc(s.sector)}</b>　${FLOW_Q_NAME[r.q]}　當日 ${chg}<br>`
-    + `法人 ${fd.length} 日 ${flowPct(s.x)}${pv("x")}（${md(fd[0])}～${md(fd[fd.length - 1])}）<br>`
-    + `大戶週增 ${flowPct(s.y)}${pv("y")}（樣本 ${s.n_cust}/${s.n} 檔）<br>`
-    + `市值 ${fmt(s.mcap / 1e8, 0)} 億` + (top ? `<br><span class="muted">法人買最多：</span><br>${top}` : "");
+  // 壓寬度：不重複日期區間（頁首 chips 已經有了），一列一軸，Δ 只在有上期時才附
+  const row = (label, k) => (r.prev
+    ? `${label} ${flowPct(s[k])}　上期 ${flowPct(s[k + "_prev"])}　Δ ${flowSigned2(s[k] - s[k + "_prev"])}`
+    : `${label} ${flowPct(s[k])}`);
+  const custNote = s.n_cust != null && s.n_cust < s.n ? `（集保樣本 ${s.n_cust} 檔）` : "";
+  const top = (s.top3 || []).slice(0, 3).map((t) => `${esc(t.code)} ${esc(t.name)} ${flowYi(t.amount)} 億`).join("<br>");
+  return `<b>${esc(s.sector)}</b>　${FLOW_Q_NAME[r.q]}<br>`
+    + `當日 ${chg}　${s.n} 檔　市值 ${fmt(s.mcap / 1e8, 0)} 億<br>`
+    + `${row("法人", "x")}<br>`
+    + `${row("大戶", "y")}${custNote}`
+    + (top ? `<br><span class="muted">法人買最多：</span><br>${top}` : "");
 }
 function flowChartOption(d, m, which) {
   const zoom = which === "zoom";
@@ -4052,12 +4058,17 @@ function flowChartOption(d, m, which) {
     id: "bubbles", type: "scatter", z: 5, clip: true, animation: false,
     data: m.rows.map((r) => {
       const col = FLOW_COLOR[r.q], isSel = r.sector === sel;
+      // 常駐標籤最多 8 個（三卡＋位移最大者＋選取）；放大鏡只標框內的。
+      // 只在該常駐時才寫 item.label——item 一旦自帶 label.show:false，ECharts 會拿它當
+      // emphasis 狀態的底，蓋掉 series 層的 emphasis.label.show:true，造成 hover／
+      // flowHighlight 永遠不出現標籤（F1）。不需要常駐時整個省略 label 欄位，讓它
+      // 照樣繼承 series 的 label.show:false ＋ emphasis.label.show:true。
+      const persistLabel = labelOn.has(r.sector) && (!zoom || r.inCore);
       return {
         name: r.sector, value: [r.s.x, r.s.y], sector: r.sector, symbolSize: size(r.s.mcap),
-        itemStyle: { color: withAlpha(col, faded(r) ? 0.12 : isSel ? 0.85 : 0.6),
-                     borderColor: withAlpha(col, faded(r) ? 0.3 : 1), borderWidth: isSel ? 2 : 1 },
-        // 常駐標籤最多 8 個（三卡＋位移最大者＋選取）；放大鏡只標框內的
-        label: { show: labelOn.has(r.sector) && (!zoom || r.inCore) },
+        itemStyle: { color: withAlpha(col, faded(r) ? FLOW_FADE : isSel ? 0.85 : 0.6),
+                     borderColor: withAlpha(col, faded(r) ? FLOW_FADE : 1), borderWidth: isSel ? 2 : 1 },
+        ...(persistLabel ? { label: { show: true } } : {}),
       };
     }),
     label: { show: false, position: "right", distance: 4, formatter: (p) => p.name, color: C.text, fontSize: 11,
@@ -4074,7 +4085,7 @@ function flowChartOption(d, m, which) {
     const a = [r.s.x_prev, r.s.y_prev], b = [r.s.x, r.s.y], mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
     const isSel = r.sector === sel;
     return { coords: half === "head" ? [a, mid] : [mid, b],
-             lineStyle: { color: withAlpha(FLOW_COLOR[r.q], isSel ? 1 : faded(r) ? 0.12 : sel ? 0.7 : 0.45), width: isSel ? 2.5 : 1 } };
+             lineStyle: { color: withAlpha(FLOW_COLOR[r.q], isSel ? 1 : faded(r) ? FLOW_FADE : 0.45), width: isSel ? 2.5 : 1 } };
   };
   const lines = (id, data, arrowSize) => ({ id, type: "lines", coordinateSystem: "cartesian2d", polyline: false,
     z: 3, silent: true, clip: true, animation: false,
@@ -4082,7 +4093,7 @@ function flowChartOption(d, m, which) {
   const selRow = sel ? prevRows.find((r) => r.sector === sel) : null;
   const prevDots = { id: "prev", type: "scatter", z: 4, silent: true, clip: true, animation: false, symbolSize: 7,
     data: prevRows.map((r) => ({ value: [r.s.x_prev, r.s.y_prev],
-      itemStyle: { color: "transparent", borderColor: withAlpha(FLOW_COLOR[r.q], faded(r) ? 0.25 : 0.95), borderWidth: 1.5 } })) };
+      itemStyle: { color: "transparent", borderColor: withAlpha(FLOW_COLOR[r.q], faded(r) ? FLOW_FADE : 0.95), borderWidth: 1.5 } })) };
   const g = zoom ? { left: 48, right: 12, top: 18, bottom: 34 } : { left: 62, right: 18, top: 22, bottom: 46 };
   const qText = (text, pos) => ({ type: "text", silent: true, ...pos, style: { text, fill: C.muted, fontSize: 11, fontFamily: HM_FONT } });
   return {
