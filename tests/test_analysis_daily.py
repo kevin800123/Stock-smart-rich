@@ -32,3 +32,16 @@ def test_credit_ratios_return_none_per_field_when_inputs_missing_or_zero():
     assert credit_ratios(6048.6, 0, 1433.06, 10787.8)["margin_mcap_pct"] is None
     assert credit_ratios(6048.6, 1563443.68, None, 10787.8)["credit_ratio"] is None
     assert credit_ratios(6048.6, 1563443.68, 1433.06, 0)["credit_ratio"] is None
+
+
+def test_short_margin_ratio_and_rolling_change():
+    from stocks_power_rich.analysis import short_margin_ratio, rolling_change
+
+    # 2026-09-22：融券 218,839 張 ÷ 融資 9,245,371 張 = 2.37%
+    assert short_margin_ratio(218839, 9245371) == 2.37
+    assert short_margin_ratio(None, 9245371) is None
+    assert short_margin_ratio(218839, 0) is None
+    # 5 日增減：往前第 5 個「有效值」，缺值略過不中斷；不足 6 筆有效值給 None
+    vals = [100, 110, None, 120, 130, 140, 150, 165]
+    assert rolling_change(vals, 5) == [None, None, None, None, None, None, 50, 55]
+    assert rolling_change([1, 2, 3], 5) == [None, None, None]

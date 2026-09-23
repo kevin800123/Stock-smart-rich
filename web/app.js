@@ -2524,11 +2524,31 @@ function ratioCard(hist, _row, curDate, opts) {
   const note = typeof extra === "function" ? extra(srcRow) : extra;
   return card(lbl, fmt(v, 2) + "%", chg, null, "", tip, rk, alert, note, trend, null, "dir-neutral");
 }
+// 融資餘額 5 日增減（張）：「融資 vs 大盤」的清洗／加碼判斷看的是速度，不只是水位。
+// 值本身就是差額，所以不再對它算日變化（chg 傳 null）；近 7 日柱直接畫每日的 5 日差額。
+// 不著紅綠：融資減少是籌碼清洗不是下跌（同融資餘額卡既有決定）。退回列依自己的欄位找。
+function marginChgCard(hist, curDate) {
+  const label = "融資 5 日增減", col = "margin_chg5";
+  const srcRow = [...hist].reverse().find((r) => r && r[col] != null) || null;
+  if (!srcRow) return emptyStatCard(label);
+  const stale = srcRow.date && srcRow.date !== curDate;
+  const lbl = label + (stale ? ` <span class="asof">截至 ${srcRow.date.slice(5)}</span>` : "");
+  const v = srcRow[col];
+  const sign = v > 0 ? "▲" : v < 0 ? "▼" : "";
+  const rk = pctile(hist, col, v);
+  const alert = cardAlert(col, label, v, `${sign}${fmt(Math.abs(v), 0)} 張`, rk, "tw");
+  const base = srcRow.margin_balance != null ? srcRow.margin_balance - v : null;   // 5 日前的餘額
+  const extra = base ? `較 5 日前 ${v > 0 ? "+" : ""}${fmt(v / base * 100, 2)}%` : "";
+  const tip = "融資餘額（張）減去 5 個交易日前的餘額。看的是融資進出的速度：大盤漲、融資減＝籌碼清洗；"
+    + "大盤跌、融資增＝散戶攤平。餘額缺值的日子略過不中斷。位階條落在近期分布頭尾 10% 才標琥珀。";
+  const trend = trendHtml(hist, col, { label: "近7日", unit: "張", digits: 0 });
+  return card(lbl, `${sign}${fmt(Math.abs(v), 0)}`, null, null, '<span class="card-unit">張</span>', tip, rk, alert, extra, trend, null, "dir-neutral");
+}
 function histRangeText(key, unit = "%") {
   const h = (lastCreditHistory || {})[key];
   if (!h || h.min == null || h.max == null) return "";
   const range = `${fmt(h.min, 2)}${unit}～${fmt(h.max, 2)}${unit}`;
-  return h.since ? `${h.since} 年以來 ${range}` : `歷史 ${range}`;
+  return h.since ? `${h.since} 起 ${range}` : `歷史 ${range}`;   // 「年以來」在 375px 卡片會溢出 8px
 }
 // 10 日均量卡：大盤量能的「絕對水位」（既有的爆量/量縮判定看的是相對變化，兩者互補）。
 // 讀數就是均量本身，不在卡面上放「距 8000 億 ±X%」——8000 只是一條參考線，把它
@@ -2761,6 +2781,12 @@ function renderCards(m, prev = {}, hist = []) {
     // （那一欄已不再寫入），融券卡只報官方餘額（張）。
     balanceCard("融資餘額(張)", marginRow, m.date, "margin_balance", "margin_chg", hist, "margin_value", "margin_value_chg"),
     balanceCard("融券餘額(張)", marginRow, m.date, "short_balance", "short_chg", hist),
+    // 券資比與融資 5 日增減：兩個餘額都是官方數字，後端逐列算好（ui71，補成 12 張讓 4 欄剛好 3 列）
+    ratioCard(hist, marginRow, m.date, { label: "券資比", col: "short_margin_ratio",
+      tip: "融券餘額 ÷ 融資餘額 × 100（兩個餘額都是證交所 MI_MARGN 官方數字）。券資比越高，空方部位相對越擁擠、"
+        + "回補時的軋空能量越大；這是讀數不是方向判斷，位階條落在近期分布頭尾 10% 才標琥珀。",
+      extra: (r) => (r.short_balance != null ? `融券 ${fmt(r.short_balance, 0)} 張` : "") }),
+    marginChgCard(hist, m.date),
     keepRateCard(hist, creditRow, m.date),
     callPressureCard(hist, creditRow, m.date),
     ratioCard(hist, creditRow, m.date, { label: "融資占市值（上市）", col: "margin_mcap_pct",

@@ -258,6 +258,11 @@ def dashboard():
     for r in asc:
         r.update(analysis.credit_ratios(r.get("margin_value"), r.get("market_value"),
                                         r.get("credit_amt"), r.get("turnover")))
+    # 券資比與融資餘額 N 日增減：同樣讀取時算、不落地（兩個餘額都是官方 MI_MARGN 數字）
+    chg5 = analysis.rolling_change([r.get("margin_balance") for r in asc], ss_trader.MARGIN_CHG_DAYS)
+    for r, delta in zip(asc, chg5):   # 不用 c 當變數名：外層的 c 是 DB 連線
+        r["short_margin_ratio"] = analysis.short_margin_ratio(r.get("short_balance"), r.get("margin_balance"))
+        r["margin_chg5"] = delta
     latest = rows[0] if rows else {}      # 與 asc[-1] 是同一個 dict，均量自動帶到
     now = datetime.now()
     today = now.strftime("%Y-%m-%d")

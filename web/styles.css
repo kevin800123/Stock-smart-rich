@@ -743,7 +743,7 @@ body[data-public] .status-bar { display: none; }
   overflow: hidden; background: var(--border-subtle); border: 1px solid var(--border-subtle);
   border-radius: calc(var(--r-lg) - 2px); font-variant-numeric: tabular-nums;
 }
-.stat-board--tw { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.stat-board--tw { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .stat-board--fut { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .stat-board--opt { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .stat-board--intl { grid-template-columns: repeat(6, minmax(0, 1fr)); }
@@ -768,13 +768,9 @@ body[data-public] .status-bar { display: none; }
 /* 長數值卡在中間寬度不能從 4 欄直接撐到 1000px 才切 2 欄：實測極端資料
    （453.51 億／▼303.44 億、8,918,284／▼51,555 張）在 1200px viewport 的
    4 欄卡片仍會溢出。先切 3 欄保留密度，再於 1100px 切 2 欄。 */
-/* 台股大盤 10 張卡、5 欄。中間寬度先退 4 欄再退 3 欄——ui68 的教訓：只測 1904/1280/375 會漏掉
-   中間那一段，每個斷點都要量卡片內容有沒有溢出（不只 .card-val：.card-chg 是 nowrap，
-   撐出去不會被 .card-val 的量測抓到）。原訂 1400，實測 1401px 的 5 欄卡片只有 212px，
-   「▲47.7 (+0.56%)」「▼85,096 張」溢出 25～35px（6 張）；5 欄至少要約 256px，故 1640。 */
-@media (max-width: 1640px) {
-  .stat-board--tw { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-}
+/* 台股大盤 12 張卡、固定 4 欄（3×4）；≤1240px 3 欄（4 列）、≤1100px 2 欄（6 列），每個斷點都剛好填滿。
+   ui70 曾是 10 張 5 欄（≤1640 退 4 欄），4 欄視窗右下角會空 2 格；ui71 補券資比與融資 5 日增減改 12 張。
+   量法的教訓不變：每個斷點都要量 .card-chg（nowrap）有沒有撐出卡片，不只 .card-val。 */
 @media (max-width: 1240px) {
   .stat-board--tw { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }

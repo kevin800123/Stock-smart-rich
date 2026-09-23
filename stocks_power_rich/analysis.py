@@ -440,6 +440,31 @@ def credit_ratios(margin_value, market_value, credit_amt, turnover) -> dict:
             "credit_ratio": pct(credit_amt, (turnover * 2) if turnover else None)}
 
 
+def short_margin_ratio(short_balance, margin_balance):
+    """券資比＝融券餘額(張) ÷ 融資餘額(張) × 100。兩個餘額都是官方數字（MI_MARGN），讀取時算、
+    不落地（同 credit_ratios）。任一缺或融資餘額為 0 回 None。高券資比＝空方部位相對擁擠
+    （回補時的軋空能量），只是讀數、不是方向判斷。"""
+    if short_balance is None or not margin_balance:
+        return None
+    return round(short_balance / margin_balance * 100, 2)
+
+
+def rolling_change(values: list, n: int = 5) -> list:
+    """逐點回傳「該點減去往前第 n 個有效值」，長度同輸入；有效值不足 n+1 筆、或該點本身缺值給 None。
+
+    None 是略過而非中斷（同 turnover_ma 的取捨）：融資餘額偶因當日尚未公布留 NULL，若要求
+    連續 n+1 筆非空，一個洞會讓後面整整 n 列都算不出來。代價是差額偶爾橫跨多於 n 個交易日。
+    """
+    out, seen = [], []
+    for v in values:
+        if v is None:
+            out.append(None)
+            continue
+        seen.append(v)
+        out.append(round(v - seen[-n - 1], 2) if len(seen) > n else None)
+    return out
+
+
 def estimate_price_range(revenue, gross_margin_pct, opex, tax, shares,
                          pe_low, pe_mid, pe_high) -> dict | None:
     """自選股「輸入預估」面板：單季逐步推導 EPS 再年化 ×4，套本益比低/中/高算價位區間。

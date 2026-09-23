@@ -483,6 +483,26 @@ def test_dashboard_injects_credit_ratios_per_row_and_credit_history(tmp_path, mo
     assert d["credit_history"]["margin_ratio"]["max"] == 2.42
 
 
+def test_dashboard_injects_short_margin_ratio_and_margin_change_per_row(tmp_path, monkeypatch):
+    """券資比與融資 5 日增減同樣是讀取時算的衍生值：逐列注入、不落地、缺值給 None。"""
+    monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
+    from stocks_power_rich import ss_trader
+    from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
+    c = get_connection(str(tmp_path / "t.sqlite")); init_db(c)
+    bal = [9_100_000, 9_150_000, 9_200_000, 9_250_000, 9_300_000, 9_330_477, 9_245_371]
+    for i, b in enumerate(bal, start=1):
+        upsert_market_daily(c, {"date": f"2026-09-{15 + i:02d}", "taiex": 1.0, "margin_balance": b,
+                                "short_balance": 218839 if i == 7 else None})
+    d = TestClient(create_app()).get("/api/dashboard").json()
+    by = {r["date"]: r for r in d["history"]}
+    assert ss_trader.MARGIN_CHG_DAYS == 5
+    assert by["2026-09-22"]["short_margin_ratio"] == 2.37
+    assert by["2026-09-21"]["short_margin_ratio"] is None          # 沒融券餘額
+    assert by["2026-09-22"]["margin_chg5"] == 9_245_371 - 9_150_000  # 往前第 5 個交易日
+    assert by["2026-09-20"]["margin_chg5"] is None                  # 不足 6 筆
+    assert d["latest"]["margin_chg5"] == by["2026-09-22"]["margin_chg5"]
+
+
 def test_public_overview_reports_official_keep_rate(tmp_path, monkeypatch):
     monkeypatch.setenv("SPR_DB_PATH", str(tmp_path / "t.sqlite"))
     from stocks_power_rich.db import get_connection, init_db, upsert_market_daily
@@ -1710,10 +1730,10 @@ def test_public_overview_shares_internal_frontend(tmp_path, monkeypatch):
     assert 'data-public="1"' in html.text
     # 資產必須是絕對路徑：本頁在 /public/overview，相對路徑會被解析成 /public/app.js → 404
     # （實測踩過：整頁樣式與程式都沒載入，畫面全空）
-    assert 'src="/app.js?v=20260817-ui70"' in html.text
-    assert 'href="/styles.css?v=20260817-ui70"' in html.text
-    assert 'src="app.js?v=20260817-ui70"' not in html.text
-    assert 'href="styles.css?v=20260817-ui70"' not in html.text
+    assert 'src="/app.js?v=20260817-ui71"' in html.text
+    assert 'href="/styles.css?v=20260817-ui71"' in html.text
+    assert 'src="app.js?v=20260817-ui71"' not in html.text
+    assert 'href="styles.css?v=20260817-ui71"' not in html.text
 
     # 前端靜態資產免帳密（否則公開頁載不到樣式/程式/圖表）
     for path in ("/styles.css", "/app.js", "/vendor/echarts.min.js",

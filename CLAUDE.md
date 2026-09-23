@@ -100,6 +100,13 @@ Gotchas:
   `keep_rate_asof` 傳給 `compose_daily_flex`／`compose_daily_brief`，日期不同就標
   「整戶維持率（截至 MM-DD）」（同融資小標的用語）。網頁的 `ratioCard` 同理改成**依自己的欄位**
   找退回列（融資占市值吃 `market_value`、信用交易占比吃 `credit_amt`，與 `keep_rate` 何時有值無關）。
+- **ui71：補券資比與融資 5 日增減，台股大盤組改 12 張、固定 4 欄。** 10 張在 5 欄下是 5+5，但 1641px 以下
+  退成 4 欄就是 4+4+2、右下角空兩格（使用者的螢幕 1568px 正是這一段）。補兩張都是官方餘額算得出的衍生值
+  （`analysis.short_margin_ratio`＝融券÷融資×100；`analysis.rolling_change`＝融資餘額減往前第
+  `ss_trader.MARGIN_CHG_DAYS`(5) 個有效值，缺值略過不中斷，同 `turnover_ma`），`dashboard()` 逐列注入
+  `short_margin_ratio`／`margin_chg5`、不落地。12 張在 4 欄是 3×4、3 欄 4 列、2 欄 6 列，每個斷點都填滿，
+  所以 ≥1641 的 5 欄規則一併移除（12 張在 5 欄又會空 3 格）。兩張卡都 `dir-neutral`（融資減少是清洗不是下跌）。
+  順序：外資／投信／自營／融資餘額｜融券餘額／券資比／融資 5 日增減／整戶維持率｜追繳／融資占市值／信用占比／10 日均量。
 - 刻意不做：不存上櫃的信用交易概況（同值）、不做信用交易戶數（與追繳壓力重疊、分母未說明）、
   不用自算值補 08-03 之前的對照圖（兩個定義不能接在同一條線上）。
 - **測試環境的坑**：這台機器跑 Python 3.14，`datetime.date.today` 已不可 monkeypatch（immutable
